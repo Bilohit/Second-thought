@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Second Thought</title>
+  <style>
+    /* Tokens mirrored from gui/src/index.css [data-theme="dark"] (Void) so
+       the popup reads as the same product as the desktop app: grayscale
+       accent, no coloured CTAs, radius 0, monospace. */
+    :root {
+      --bg: #0a0a0a;
+      --surface: #262626;
+      --surface-2: #404040;
+      --border: #383838;
+      --text: #fafafa;
+      --muted: #a1a1a1;
+      --accent: #737373;
+      --accent-d: rgba(115, 115, 115, 0.18);
+      --green: #4ade80;
+      --yellow: #facc15;
+      --red: #ff6467;
+      --radius: 0px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 320px;
+      font-family: "Geist Mono", ui-monospace, "SF Mono", Consolas, monospace;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+    }
+    header {
+      background: var(--surface);
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 { font-size: 15px; font-weight: 600; }
+    header .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--muted);
+      transition: background 0.3s;
+    }
+    header .dot.connected { background: var(--green); }
+
+    .section { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+
+    label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      padding: 6px 10px;
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+    }
+    input:focus { border-color: var(--accent); }
+
+    textarea {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      padding: 6px 10px;
+      font-size: 12px;
+      font-family: inherit;
+      resize: vertical;
+      min-height: 56px;
+      outline: none;
+    }
+    textarea:focus { border-color: var(--accent); }
+
+    .row { display: flex; gap: 8px; margin-top: 10px; }
+    button {
+      flex: 1;
+      padding: 7px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-primary { background: var(--accent-d); color: var(--text); border-color: var(--accent); }
+    .btn-secondary { background: var(--surface); color: var(--text); }
+
+    #status {
+      padding: 10px 16px;
+      font-size: 12px;
+      min-height: 36px;
+      color: var(--muted);
+    }
+    #status.ok  { color: var(--green); }
+    #status.err { color: var(--red); }
+
+    .step-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 4px 16px; font-size: 11px; color: var(--muted);
+    }
+    .step-row .pip {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--border); flex-shrink: 0;
+    }
+    .step-row.active .pip { background: var(--yellow); }
+    .step-row.done .pip   { background: var(--green); }
+    .step-row.error .pip  { background: var(--red); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="dot" id="dot"></div>
+  <h1>Second Thought</h1>
+</header>
+
+<!-- Current tab info -->
+<div class="section">
+  <label>Current page</label>
+  <input type="text" id="page-url" readonly />
+</div>
+
+<!-- Optional selection / note override -->
+<div class="section">
+  <label>Selection / note (optional — overrides page text)</label>
+  <textarea id="selection" placeholder="Leave blank to capture the full page URL…"></textarea>
+  <div class="row">
+    <button class="btn-primary" id="btn-capture">Capture</button>
+    <button class="btn-secondary" id="btn-settings">Settings</button>
+  </div>
+</div>
+
+<!-- Pipeline progress -->
+<div id="steps" style="display:none">
+  <div class="step-row" id="step-intercept"><div class="pip"></div>Intercept</div>
+  <div class="step-row" id="step-enrich"><div class="pip"></div>Enrich</div>
+  <div class="step-row" id="step-decide"><div class="pip"></div>Decide</div>
+  <div class="step-row" id="step-write"><div class="pip"></div>Write</div>
+</div>
+
+<div id="status">Ready.</div>
+
+<!-- Settings panel (hidden by default) -->
+<div id="settings-panel" class="section" style="display:none">
+  <label>Server URL</label>
+  <input type="text" id="server-url" placeholder="http://localhost:7070" />
+  <br /><br />
+  <label>X-Omni-Secret</label>
+  <input type="password" id="secret-input" placeholder="leave blank if not set" />
+  <div class="row" style="margin-top:10px">
+    <button class="btn-primary" id="btn-save">Save</button>
+  </div>
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>

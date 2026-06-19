@@ -1,0 +1,1 @@
+{"nodes": [{"id": "gui_index_html", "label": "Second Thought GUI Index", "file_type": "code", "source_file": "gui/index.html"}], "edges": [{"source": "gui_index_html", "target": "gui_src_main_tsx", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "gui/index.html"}], "hyperedges": []}

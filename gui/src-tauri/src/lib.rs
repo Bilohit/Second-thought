@@ -1,0 +1,656 @@
+/*!
+lib.rs — Second Thought Tauri app entry point
+
+Responsibilities:
+  1. Spawn the Python FastAPI server (uvicorn) as a child process on startup
+  2. Register the global hotkey (default: Ctrl+Shift+Space)
+     • Read the hotkey string from config.toml [gui] hotkey
+     • Fall back to "ctrl+shift+space" if the key is absent
+  3. On hotkey press: show the main window + emit "trigger-capture" event to JS
+  4. Create a system tray with "Vault Settings", "Open Settings", "Inbox",
+     "Stats", and "Quit" menu items
+  5. Kill the Python child process cleanly on app exit
+
+Config path: ../../omni_capture/config.toml (relative to the gui/ directory)
+*/
+
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{BufRead, BufReader, Write},
+    path::{Path, PathBuf},
+    process::{Child, Stdio},
+    sync::{
+        atomic::{AtomicU32, AtomicU64, Ordering},
+        Arc, Mutex, OnceLock,
+    },
+    thread,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use chrono::{SecondsFormat, Utc};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, Runtime,
+};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use rand::Rng;
+
+// ── App state (shared across Tauri commands / event handlers) ───────────────
+
+struct AppState {
+    python_child: Arc<Mutex<Option<Child>>>,
+    gui_secret: String,
+    active_shortcut: Mutex<Option<Shortcut>>,
+}
+
+// ── Logging ──────────────────────────────────────────────────────────────────
+//
+// Each launch gets its own plain-text log file alongside the project root in
+// `logs/`, named by the launch's start time plus PID so concurrent launches
+// can never collide. Within a launch the file still rolls over by size, with
+// old files pruned by age on boot. The frontend logger (src/lib/logger.ts)
+// formats its own lines and ships them here in batches via the `append_log`
+// command; Rust-origin events (including panics and the Python child's
+// stdout/stderr) go through `log_line` so every source shares one timeline
+// and one timestamp format (ISO-8601, matching `Date.prototype.toISOString`).
+//
+// Writes are serialized through a single `Mutex<LogHandle>` held in a
+// process-wide `OnceLock` (rather than reopening the file per call) so
+// concurrent `append_log` invocations from the frontend, Rust-origin events,
+// and the Python reader threads can never interleave or corrupt a line.
+
+const MAX_LOG_SIZE_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB before rolling within a launch
+const RETENTION_DAYS: u64 = 14;
+
+/// Log level numbers mirror the frontend's `LogLevel` enum so one runtime
+/// toggle (see `set_log_level`) can gate both sides.
+const LVL_TRACE: u32 = 10;
+const LVL_INFO: u32 = 30;
+const LVL_WARN: u32 = 40;
+const LVL_ERROR: u32 = 50;
+
+static LOG: OnceLock<Mutex<LogHandle>> = OnceLock::new();
+static LOG_LEVEL: AtomicU32 = AtomicU32::new(LVL_TRACE);
+
+/// Milliseconds since the Unix epoch.
+fn epoch_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+/// ISO-8601 / RFC3339 timestamp with millisecond precision and a `Z` suffix —
+/// identical shape to the frontend's `new Date().toISOString()`, so merged
+/// logs sort and read as one timeline.
+fn now_iso() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+/// Unique id for this process's launch — start-time millis + PID, so two
+/// instances launched in the same millisecond still get distinct files.
+fn launch_id() -> String {
+    format!("{}-{}", epoch_millis(), std::process::id())
+}
+
+fn log_dir() -> PathBuf {
+    compute_project_root().join("logs")
+}
+
+fn base_log_path(dir: &Path, launch: &str) -> PathBuf {
+    dir.join(format!("second-thought-{launch}.log"))
+}
+
+fn seq_log_path(dir: &Path, launch: &str, seq: u32) -> PathBuf {
+    dir.join(format!("second-thought-{launch}.{seq}.log"))
+}
+
+/// Delete log files whose last-modified time is older than `RETENTION_DAYS`
+/// — run once on boot so disk usage doesn't grow without bound.
+fn prune_old_logs(dir: &Path) {
+    let cutoff = SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(RETENTION_DAYS * 86_400))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let is_old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|modified| modified < cutoff);
+        if is_old {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// A single open log file plus enough state to decide when to roll over.
+struct LogHandle {
+    file: File,
+    dir: PathBuf,
+    launch: String,
+    seq: u32,
+    size: u64,
+}
+
+impl LogHandle {
+    fn open(dir: PathBuf) -> Self {
+        let _ = fs::create_dir_all(&dir);
+        prune_old_logs(&dir);
+        let launch = launch_id();
+        let path = base_log_path(&dir, &launch);
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap_or_else(|_| {
+                // Last-resort fallback so the app never fails to start over logging.
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join("second-thought-fallback.log"))
+                    .expect("could not open fallback log file")
+            });
+        Self { file, dir, launch, seq: 0, size: 0 }
+    }
+
+    fn path(&self) -> PathBuf {
+        if self.seq == 0 {
+            base_log_path(&self.dir, &self.launch)
+        } else {
+            seq_log_path(&self.dir, &self.launch, self.seq)
+        }
+    }
+
+    fn reopen(&mut self) {
+        let path = self.path();
+        if let Ok(f) = OpenOptions::new().create(true).append(true).open(&path) {
+            self.file = f;
+            self.size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        }
+    }
+
+    fn rotate_if_needed(&mut self, incoming_len: u64) {
+        if self.size + incoming_len > MAX_LOG_SIZE_BYTES {
+            self.seq += 1;
+            self.size = 0;
+            self.reopen();
+        }
+    }
+
+    fn write_line(&mut self, text: &str) {
+        let incoming = text.len() as u64 + 1;
+        self.rotate_if_needed(incoming);
+        if writeln!(self.file, "{text}").is_ok() {
+            self.size += incoming;
+        }
+    }
+}
+
+/// Install the global logger (file handle + panic hook). Call once at startup,
+/// before anything else that might log or panic. Returns the active log path.
+fn init_logging() -> PathBuf {
+    let handle = LogHandle::open(log_dir());
+    let path = handle.path();
+    let _ = LOG.set(Mutex::new(handle));
+    install_panic_hook();
+    path
+}
+
+/// Rust panics bypass the normal log call sites entirely; this hook makes
+/// sure one still lands in the unified file before the default handler runs.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log_line_raw("ERROR", "panic", &info.to_string());
+        default_hook(info);
+    }));
+}
+
+/// Append a single pre-formatted line, serialized through the shared file
+/// handle. Best-effort and re-entrancy-safe: a failed write is never retried
+/// through the logger itself (which could recurse) — it's dropped, console
+/// output (eprintln, in debug builds only) is the only fallback.
+fn append_to_log(text: &str) {
+    let Some(log) = LOG.get() else { return };
+    if let Ok(mut h) = log.lock() {
+        h.write_line(text);
+    }
+}
+
+/// Write a line without the level gate — used by the panic hook and as the
+/// shared formatter for `log_line`.
+fn log_line_raw(level: &str, scope: &str, msg: &str) {
+    append_to_log(&format!("{} [{level}] [rust:{scope}] {msg}", now_iso()));
+}
+
+/// Log a Rust-origin event in the same shape the frontend emits, gated by the
+/// runtime-adjustable level (see `set_log_level`).
+fn log_line(level_num: u32, level: &str, scope: &str, msg: &str) {
+    if level_num < LOG_LEVEL.load(Ordering::Relaxed) {
+        return;
+    }
+    log_line_raw(level, scope, msg);
+}
+
+#[tauri::command]
+fn append_log(line: String) {
+    append_to_log(&line);
+}
+
+#[tauri::command]
+fn log_file_path() -> String {
+    LOG.get()
+        .and_then(|m| m.lock().ok())
+        .map(|h| h.path().to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// Current runtime log level (mirrors frontend `LogLevel` numeric values).
+#[tauri::command]
+fn get_log_level() -> u32 {
+    LOG_LEVEL.load(Ordering::Relaxed)
+}
+
+/// Change the runtime log level without a rebuild — e.g. from a Settings
+/// toggle. Only gates Rust-origin `log_line` calls; the frontend's own level
+/// is controlled separately via `logger.setLevel()`.
+#[tauri::command]
+fn set_log_level(level: u32) {
+    LOG_LEVEL.store(level, Ordering::Relaxed);
+}
+
+/// Resolve the project root (works in both debug and release layouts).
+fn compute_project_root() -> PathBuf {
+    if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()                  // gui/
+            .and_then(|p| p.parent())  // project root
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    } else {
+        std::env::current_exe()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .parent()                  // target/release (binary dir)
+            .and_then(|p| p.parent())  // target
+            .and_then(|p| p.parent())  // src-tauri
+            .and_then(|p| p.parent())  // gui
+            .and_then(|p| p.parent())  // project root
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+}
+
+/// Generate a random 32-char alphanumeric secret for X-Omni-Secret auth.
+/// Never logged or printed — passed only via env to the Python child and
+/// returned to the webview through `get_gui_secret`.
+fn generate_gui_secret() -> String {
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut rng = rand::thread_rng();
+    (0..32)
+        .map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char)
+        .collect()
+}
+
+#[tauri::command]
+fn get_gui_secret(state: tauri::State<AppState>) -> String {
+    state.gui_secret.clone()
+}
+
+/// Unregister the currently-active global shortcut and register `hotkey` in its
+/// place. Called from Settings on save so a new hotkey takes effect without an
+/// app restart. Unregister happens strictly before register; on registration
+/// failure (e.g. the combo is already claimed by another app) the previous
+/// shortcut is restored so the app isn't left with no working hotkey at all.
+#[tauri::command]
+fn set_hotkey(app: AppHandle, state: tauri::State<AppState>, hotkey: String) -> Result<(), String> {
+    let new_shortcut = parse_shortcut(&hotkey).ok_or_else(|| format!("Could not parse hotkey '{hotkey}'"))?;
+
+    let mut guard = state
+        .active_shortcut
+        .lock()
+        .map_err(|_| "internal lock error".to_string())?;
+    let previous = guard.clone();
+
+    if let Some(prev) = previous.clone() {
+        let _ = app.global_shortcut().unregister(prev);
+    }
+
+    let app_for_handler = app.clone();
+    let register_result = app.global_shortcut().on_shortcut(new_shortcut, move |_app, _sc, event| {
+        if event.state == ShortcutState::Pressed {
+            show_window_emit_debounced(&app_for_handler, "trigger-capture");
+        }
+    });
+
+    match register_result {
+        Ok(()) => {
+            *guard = Some(new_shortcut);
+            Ok(())
+        }
+        Err(e) => {
+            if let Some(prev) = previous {
+                let app_for_rollback = app.clone();
+                let _ = app.global_shortcut().on_shortcut(prev, move |_app, _sc, event| {
+                    if event.state == ShortcutState::Pressed {
+                        show_window_emit_debounced(&app_for_rollback, "trigger-capture");
+                    }
+                });
+            }
+            Err(format!("Failed to register hotkey '{hotkey}': {e}"))
+        }
+    }
+}
+
+// ── Read hotkey from config.toml ────────────────────────────────────────────
+
+/// Parse config.toml for [gui] hotkey = "..." without pulling in a full TOML crate.
+/// Returns None if the key is absent or the file can't be read.
+fn read_hotkey_from_config(config_path: &PathBuf) -> Option<String> {
+    let text = std::fs::read_to_string(config_path).ok()?;
+    let mut in_gui_section = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_gui_section = trimmed == "[gui]";
+            continue;
+        }
+        if in_gui_section {
+            if let Some(rest) = trimmed.strip_prefix("hotkey") {
+                let rest = rest.trim();
+                if let Some(rest) = rest.strip_prefix('=') {
+                    let value = rest.trim().trim_matches('"').trim_matches('\'');
+                    if !value.is_empty() {
+                        return Some(value.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Convert a hotkey string like "ctrl+shift+space" into a Tauri Shortcut.
+fn parse_shortcut(hotkey: &str) -> Option<Shortcut> {
+    let mut modifiers = Modifiers::empty();
+    let mut key_code: Option<Code> = None;
+
+    for part in hotkey.split('+') {
+        match part.trim().to_lowercase().as_str() {
+            "ctrl" | "control" => modifiers |= Modifiers::CONTROL,
+            "cmd"  | "meta"    => modifiers |= Modifiers::META,
+            "alt"  | "option"  => modifiers |= Modifiers::ALT,
+            "shift"            => modifiers |= Modifiers::SHIFT,
+            "space"            => key_code = Some(Code::Space),
+            "enter" | "return" => key_code = Some(Code::Enter),
+            "tab"              => key_code = Some(Code::Tab),
+            "backspace"        => key_code = Some(Code::Backspace),
+            k if k.len() == 1  => {
+                // Single character keys: A–Z, 0–9
+                let c = k.chars().next().unwrap().to_ascii_uppercase();
+                key_code = match c {
+                    'A'..='Z' => {
+                        let idx = (c as u8 - b'A') as usize;
+                        [
+                            Code::KeyA, Code::KeyB, Code::KeyC, Code::KeyD, Code::KeyE,
+                            Code::KeyF, Code::KeyG, Code::KeyH, Code::KeyI, Code::KeyJ,
+                            Code::KeyK, Code::KeyL, Code::KeyM, Code::KeyN, Code::KeyO,
+                            Code::KeyP, Code::KeyQ, Code::KeyR, Code::KeyS, Code::KeyT,
+                            Code::KeyU, Code::KeyV, Code::KeyW, Code::KeyX, Code::KeyY,
+                            Code::KeyZ,
+                        ].get(idx).copied()
+                    }
+                    '0'..='9' => {
+                        let idx = (c as u8 - b'0') as usize;
+                        [
+                            Code::Digit0, Code::Digit1, Code::Digit2, Code::Digit3,
+                            Code::Digit4, Code::Digit5, Code::Digit6, Code::Digit7,
+                            Code::Digit8, Code::Digit9,
+                        ].get(idx).copied()
+                    }
+                    _ => None,
+                };
+            }
+            _ => {} // unknown key part — skip
+        }
+    }
+
+    key_code.map(|code| Shortcut::new(Some(modifiers), code))
+}
+
+// ── Tray icon setup ─────────────────────────────────────────────────────────
+
+fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
+    let quit_item   = MenuItem::with_id(app, "quit",     "Quit Second Thought", true, None::<&str>)?;
+    let vault_item    = MenuItem::with_id(app, "vault",    "Vault Settings",   true, None::<&str>)?;
+    let settings_item = MenuItem::with_id(app, "settings", "Open Settings",    true, None::<&str>)?;
+    let inbox_item    = MenuItem::with_id(app, "inbox",    "Inbox",            true, None::<&str>)?;
+    let stats_item    = MenuItem::with_id(app, "stats",    "Stats",            true, None::<&str>)?;
+
+    let menu = Menu::with_items(app, &[&vault_item, &settings_item, &inbox_item, &stats_item, &quit_item])?;
+
+    TrayIconBuilder::new()
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "quit" => {
+                // Kill Python child before exiting
+                if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(mut guard) = state.python_child.lock() {
+                        if let Some(mut child) = guard.take() {
+                            let _ = child.kill();
+                        }
+                    }
+                }
+                app.exit(0);
+            }
+            "settings" => {
+                show_window_emit(app, "open-settings");
+            }
+            "vault" => {
+                show_window_emit(app, "open-vault");
+            }
+            "inbox" => {
+                show_window_emit(app, "open-inbox");
+            }
+            "stats" => {
+                show_window_emit(app, "open-stats");
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            // Left-click on tray → toggle window visibility
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                if let Some(window) = app.get_webview_window("main") {
+                    if window.is_visible().unwrap_or(false) {
+                        let _ = window.hide();
+                    } else {
+                        show_window_emit(app, "trigger-capture");
+                    }
+                }
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
+// ── Utility: show window and emit an event to the frontend ──────────────────
+
+fn show_window_emit<R: Runtime>(app: &AppHandle<R>, event: &str) {
+    let Some(window) = app.get_webview_window("main") else {
+        log_line(LVL_ERROR, "ERROR", "tray", &format!("main window not found for event '{event}'"));
+        return;
+    };
+    if let Err(e) = window.show() {
+        log_line(LVL_WARN, "WARN", "tray", &format!("show() failed for event '{event}': {e}"));
+    }
+    if let Err(e) = window.set_focus() {
+        log_line(LVL_WARN, "WARN", "tray", &format!("set_focus() failed for event '{event}': {e}"));
+    }
+    if let Err(e) = app.emit(event, ()) {
+        log_line(LVL_ERROR, "ERROR", "tray", &format!("emit('{event}') failed: {e}"));
+    }
+}
+
+/// Minimum gap (ms) between accepted `trigger-capture` hotkey firings. OS key
+/// auto-repeat (holding the combo) and some AHK/Hammerspoon bindings can emit
+/// `Pressed` more than once for what the user experiences as a single press;
+/// without this gate each one starts its own concurrent `runCapture` in the
+/// frontend, which corrupts shared per-run state there (see useCapture.ts).
+const HOTKEY_DEBOUNCE_MS: u64 = 350;
+
+static LAST_HOTKEY_FIRE_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Debounced version of `show_window_emit` for hotkey press handlers — every
+/// `on_shortcut` callback (primary, rollback, and the one installed by
+/// `set_hotkey`) should route through this instead of calling
+/// `show_window_emit` directly, so they share one debounce clock.
+fn show_window_emit_debounced<R: Runtime>(app: &AppHandle<R>, event: &str) {
+    let now = epoch_millis() as u64;
+    let last = LAST_HOTKEY_FIRE_MS.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < HOTKEY_DEBOUNCE_MS {
+        log_line(LVL_TRACE, "TRACE", "hotkey", "debounced repeat-fire ignored");
+        return;
+    }
+    LAST_HOTKEY_FIRE_MS.store(now, Ordering::Relaxed);
+    show_window_emit(app, event);
+}
+
+// ── Main run() ──────────────────────────────────────────────────────────────
+
+pub fn run() {
+    let python_child: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
+    let python_child_clone = python_child.clone();
+    let gui_secret = generate_gui_secret();
+    let gui_secret_for_spawn = gui_secret.clone();
+
+    // Install the file logger + panic hook before anything else can log or panic.
+    init_logging();
+    log_line(LVL_INFO, "INFO", "boot", "Second Thought starting up");
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
+        .manage(AppState { python_child, gui_secret, active_shortcut: Mutex::new(None) })
+        .invoke_handler(tauri::generate_handler![
+            get_gui_secret, set_hotkey, append_log, log_file_path, get_log_level, set_log_level
+        ])
+        .setup(move |app| {
+            // ── 1. Spawn Python FastAPI server ─────────────────────────────
+            //
+            // In debug mode: CARGO_MANIFEST_DIR is src-tauri/ at compile time,
+            // so two .parent() calls reach the project root reliably.
+            // In release mode: walk up from the exe path.
+            let project_root = compute_project_root();
+
+            // Try "python" first, fall back to "python3"
+            let server_args = [
+                "-m", "uvicorn",
+                "omni_capture.server:app",
+                "--port", "7070",
+                "--log-level", "error",
+            ];
+
+            let child = std::process::Command::new("python")
+                .args(server_args)
+                .current_dir(&project_root)
+                .env("OMNI_GUI_SECRET", &gui_secret_for_spawn)
+                .env("PYTHONPATH", &project_root)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .or_else(|_| {
+                    std::process::Command::new("python3")
+                        .args(server_args)
+                        .current_dir(&project_root)
+                        .env("OMNI_GUI_SECRET", &gui_secret_for_spawn)
+                        .env("PYTHONPATH", &project_root)
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                });
+
+            match child {
+                Ok(mut c) => {
+                    log_line(LVL_INFO, "INFO", "server", &format!("Python server spawned (pid {})", c.id()));
+
+                    // uvicorn/server.py write to stdout/stderr; pipe both into the
+                    // same unified log file instead of letting them vanish into the
+                    // (often invisible, in a packaged build) parent console.
+                    if let Some(stdout) = c.stdout.take() {
+                        thread::spawn(move || {
+                            for line in BufReader::new(stdout).lines().flatten() {
+                                log_line(LVL_INFO, "INFO", "python:stdout", &line);
+                            }
+                        });
+                    }
+                    if let Some(stderr) = c.stderr.take() {
+                        thread::spawn(move || {
+                            for line in BufReader::new(stderr).lines().flatten() {
+                                log_line(LVL_WARN, "WARN", "python:stderr", &line);
+                            }
+                        });
+                    }
+
+                    if let Ok(mut guard) = python_child_clone.lock() {
+                        *guard = Some(c);
+                    }
+                }
+                Err(e) => {
+                    log_line(LVL_ERROR, "ERROR", "server", &format!("could not start Python server: {e}"));
+                    eprintln!("[Second Thought] Warning: could not start Python server: {e}");
+                    eprintln!("  Make sure 'python' is in PATH and uvicorn + fastapi are installed.");
+                }
+            }
+
+            // ── 2. Register global hotkey ──────────────────────────────────
+
+            let config_path = project_root.join("omni_capture").join("config.toml");
+            let hotkey_str = read_hotkey_from_config(&config_path)
+                .unwrap_or_else(|| "ctrl+shift+space".to_string());
+
+            if let Some(shortcut) = parse_shortcut(&hotkey_str) {
+                let app_handle = app.handle().clone();
+                app.global_shortcut().on_shortcut(shortcut, move |_app, _sc, event| {
+                    if event.state == ShortcutState::Pressed {
+                        show_window_emit_debounced(&app_handle, "trigger-capture");
+                    }
+                })?;
+                if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(mut guard) = state.active_shortcut.lock() {
+                        *guard = Some(shortcut);
+                    }
+                }
+                log_line(LVL_INFO, "INFO", "hotkey", &format!("registered: {hotkey_str}"));
+                println!("[Second Thought] Hotkey registered: {hotkey_str}");
+            } else {
+                log_line(LVL_WARN, "WARN", "hotkey", &format!("could not parse hotkey '{hotkey_str}'"));
+                eprintln!("[Second Thought] Warning: could not parse hotkey '{hotkey_str}'");
+            }
+
+            // ── 3. System tray ─────────────────────────────────────────────
+            setup_tray(app)?;
+
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Hide instead of close when the user presses the OS close button
+            // (though the window has no decorations, so this is for safety)
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                window.hide().ok();
+                api.prevent_close();
+            }
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running Second Thought");
+}

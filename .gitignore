@@ -1,0 +1,16 @@
+.claude/
+node_modules/
+target/
+dist/
+__pycache__/
+*.pyc
+.venv/
+venv/
+logs/
+*.log
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.DS_Store
+Thumbs.db

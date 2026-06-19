@@ -1,0 +1,76 @@
+[vault]
+root = "C:\\Users\\biloh\\second-thought-storage"
+
+[ollama]
+base_url = "http://localhost:11434"
+model = "llama3.2"
+vision_model = "llava"
+keep_alive = "30m"   # keep the model resident 30 min between captures (avoids cold reloads)
+# Prompt sent to the vision model for image captures. Override to tune behavior
+# (e.g. "extract only the code" vs "describe the UI").
+vision_prompt = "Describe this image in detail. If it contains code, a UI screenshot, a diagram, or text, transcribe or describe that content precisely."
+# If true, image capture hard-fails (raises) when the vision model is missing/unreachable.
+# If false (default), capture degrades gracefully and writes a placeholder note instead.
+image_required = false
+
+[whisper]
+model = "base"
+device = "auto"
+
+[capture]
+web_max_chars = 8000
+youtube_max_chars = 6000
+llm_max_retries = 3
+llm_temperature = 0.1
+# Max meaningful words kept in a generated filename (deterministic cap).
+filename_max_words = 2
+# Hard ceiling on the filename stem length (excludes extension).
+filename_max_chars = 40
+# Soft cap on note body length; 0 = unlimited.
+note_max_chars = 0
+
+# Map-Reduce token budgeting for the async YouTube summarizer. The per-chunk
+# limit is derived as:
+#   max_chunk_tokens = summary_model_context_tokens
+#                      - summary_safety_buffer_tokens
+#                      - summary_reserved_output_tokens
+summary_model_context_tokens = 8192    # model's max context window (Ollama num_ctx for llama3.2)
+summary_safety_buffer_tokens = 256     # headroom for the system/instruction prompt + chat template (>= 200)
+summary_reserved_output_tokens = 768   # space left for the model's generated summary
+summary_chunk_overlap_tokens = 80      # 50-100 tokens carried between consecutive chunks
+summary_max_chunks = 40                # hard cap; bounds total LLM calls / runtime
+summary_max_concurrency = 3            # parallel Map calls in flight (bound for local Ollama)
+reduce_max_depth = 3                   # recursion cap for the Reduce phase
+
+[log]
+path = "~/second-thought-storage/.omni_capture/captures.jsonl"
+
+[notifications]
+enabled = true
+title_prefix = "Second Thought"
+
+[gui]
+hotkey = "ctrl+shift+space"
+
+[ocr]
+# Run a dedicated OCR pass (rapidocr-onnxruntime, CPU-only) alongside the
+# vision model for image captures. More accurate than the vision model for
+# verbatim text/code transcription. Adds latency; off by default.
+enabled = false
+
+[youtube]
+# folder_name / description / job_ttl_seconds default in code; uncomment to override.
+# Whether to keep the full raw transcript section in the note (always written in v1).
+write_raw_transcript = true
+
+[vector]
+enabled = true
+# Embedding model used for semantic retrieval/merge. Must be an embedding model
+# that is actually pulled in Ollama (check with `ollama list`). The previous
+# default `nomic-embed-text` was not installed, so every capture logged a
+# "non-fatal index error: HTTP Error 404" — `all-minilm` is installed and works.
+embed_model = "all-minilm"
+top_k = 3
+# Candidates below this cosine similarity are dropped instead of being
+# injected as "Semantically Related Notes" context (0.14-0.35 is noise here).
+min_similarity = 0.4

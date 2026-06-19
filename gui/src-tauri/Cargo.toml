@@ -1,0 +1,30 @@
+[package]
+name = "second-thought"
+version = "0.1.0"
+edition = "2021"
+description = "Second Thought — Omni-Capture GUI"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# Required by Tauri v2: lib.rs is compiled as a separate crate so mobile targets can link it.
+[lib]
+name = "second_thought_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.3", features = [] }
+
+[dependencies]
+tauri               = { version = "2.3", features = ["tray-icon"] }
+tauri-plugin-global-shortcut  = "2.3"
+tauri-plugin-shell            = "2.3"
+tauri-plugin-clipboard-manager = "2.3"
+tauri-plugin-dialog           = "2.3"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+rand        = "0.8"
+chrono      = { version = "0.4", default-features = false, features = ["clock"] }
+
+[features]
+# This feature is used for production builds or when `devtools` feature is not enabled.
+custom-protocol = ["tauri/custom-protocol"]

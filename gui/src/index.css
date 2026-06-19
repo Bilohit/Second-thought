@@ -1,0 +1,298 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THEME SYSTEM — Grayscale (shadcn "neutral") palette
+   One light register (Paper) and one dark register (Void), each duplicated
+   into a warm/cool alias so the existing 4-theme switcher keeps working.
+   All colours are CSS custom properties so every component references
+   variables — never raw hex — making palette swaps instant.
+
+   LOCKS (from the supplied theme):
+     · Accent  — single grayscale --primary #737373. No coloured CTAs.
+                 Green / yellow / red are SEMANTIC STATE only.
+     · Shape   — radius 0 (sharp). One scale, no mixing.
+     · Font    — Geist Mono everywhere.
+     · Shadow  — near-flat; elevation reads from borders + surface, not blur.
+
+   Usage
+     <html data-theme="dark">          Void  (default dark)
+     <html data-theme="dark-ash">      Ash   (dark alias)
+     <html data-theme="light">         Paper (light)
+     <html data-theme="light-stone">   Stone (light alias)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Void (default dark) ─────────────────────────────────────────────────── */
+:root,
+[data-theme="dark"],
+[data-theme="dark-ash"] {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg:           #0a0a0a;   /* background  */
+  --surface:      #262626;   /* muted       */
+  --surface-2:    #404040;   /* accent      */
+  --border:       #383838;   /* border      */
+  --border-2:     #262626;
+
+  /* Text */
+  --text-1:       #fafafa;   /* foreground       */
+  --text-2:       #a1a1a1;   /* muted-foreground */
+  --text-3:       #737373;
+
+  /* Accent (grayscale --primary) */
+  --accent:       #737373;
+  --accent-d:     rgba(115, 115, 115, 0.18);
+  --accent-glow:  rgba(115, 115, 115, 0.30);
+  --on-accent:    #fafafa;   /* text/icon colour on top of --accent or --red fills */
+
+  /* Semantic state */
+  --green:        #4ade80;
+  --yellow:       #facc15;
+  --red:          #ff6467;   /* destructive */
+
+  /* Card surface ("glass" name kept; now an opaque card) */
+  --glass-bg:     #191919;   /* card   */
+  --glass-border: #383838;
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.40);
+
+  /* Command palette */
+  --palette-bg:   #262626;   /* popover */
+  --scrim:        rgba(0, 0, 0, 0.55);
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* Radius — sharp (theme --radius: 0rem). One scale. */
+  --radius-sm: 0px;
+  --radius:    0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+}
+
+/* ── Paper (light) ───────────────────────────────────────────────────────── */
+[data-theme="light"],
+[data-theme="light-stone"] {
+  color-scheme: light;
+  --bg:           #ffffff;   /* background  */
+  --surface:      #f5f5f5;   /* muted       */
+  --surface-2:    #e5e5e5;
+  --border:       #e5e5e5;   /* border      */
+  --border-2:     #f0f0f0;
+  --text-1:       #0a0a0a;   /* foreground       */
+  --text-2:       #717171;   /* muted-foreground */
+  --text-3:       #a1a1a1;   /* ring             */
+  --accent:       #737373;   /* primary */
+  --accent-d:     rgba(115, 115, 115, 0.10);
+  --accent-glow:  rgba(115, 115, 115, 0.22);
+  --on-accent:    #fafafa;   /* text/icon colour on top of --accent or --red fills */
+  --green:        #16a34a;
+  --yellow:       #92660a;
+  --red:          #e7000b;   /* destructive */
+  --glass-bg:     #ffffff;   /* card */
+  --glass-border: #e5e5e5;
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --palette-bg:   #ffffff;   /* popover */
+  --scrim:        rgba(0, 0, 0, 0.25);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   GLOBAL RESET
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  color: var(--text-1);
+  font-family: "Geist Mono", ui-monospace, "Cascadia Mono", "Segoe UI Mono", monospace;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   GLASS CARD — core visual primitive
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.glass-card {
+  background:            var(--glass-bg);
+  border:                1px solid var(--glass-border);
+  border-radius:         var(--radius-xl);
+  box-shadow:            var(--glass-shadow);
+}
+
+/* Focus mode — card strips down to bare essentials */
+.glass-card.focus-mode {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SCROLLBAR
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+::-webkit-scrollbar       { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-2); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DRAG REGIONS
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.drag-region {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   FOCUS RING — keyboard nav
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ANIMATIONS
+   prefers-reduced-motion: all motion collapses to an instant opacity fade
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes checkPop {
+  0%   { transform: scale(0.4); opacity: 0; }
+  65%  { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(1);   opacity: 1; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+@keyframes overlayIn {
+  from { opacity: 0; transform: scale(0.97) translateY(5px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes paletteIn {
+  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Reduced motion: collapse everything to a plain fade */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration:        0.01ms !important;
+    animation-iteration-count: 1      !important;
+    transition-duration:       0.01ms !important;
+    scroll-behavior:           auto   !important;
+  }
+
+  @keyframes checkPop {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  @keyframes overlayIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  @keyframes paletteIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   COMPONENT UTILITIES
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Accent glow ring */
+.accent-glow {
+  box-shadow:
+    0 0 0 1px var(--accent-glow),
+    0 0 16px var(--accent-d);
+}
+
+/* Spinner ring */
+.spinner-ring {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--accent-d);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+
+/* Icon button base */
+.icon-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: var(--space-1);
+  border-radius: var(--radius-sm);
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+
+.icon-btn:hover,
+.icon-btn:focus-visible {
+  color: var(--text-1);
+  background: var(--surface-2);
+}
+
+/* Subtle divider */
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 0;
+}
+
+/* Theme toggle visible label (screen-reader accessible) */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  white-space: nowrap;
+  border-width: 0;
+}
