@@ -59,6 +59,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from config import reload_config
+
 # -- CORS & shared-secret configuration ---------------------------------------
 # The webview origin differs between dev and the packaged build:
 #   - Vite dev server      -> http://localhost:1420
@@ -224,6 +226,10 @@ class ConfigPatch(BaseModel):
     ollama_model: Optional[str] = None
     ollama_base_url: Optional[str] = None
     hotkey: Optional[str] = None
+    confidence_threshold: Optional[float] = None
+    llm_scrutiny: Optional[str] = None
+    ocr_fast_path_enabled: Optional[bool] = None
+    ocr_text_min_chars: Optional[int] = None
 
 class CategoryCreate(BaseModel):
     name: str
@@ -751,10 +757,20 @@ async def patch_config(patch: ConfigPatch, _: None = Depends(_require_secret)):
         _set("ollama", "base_url", patch.ollama_base_url)
     if patch.hotkey is not None:
         _set("gui", "hotkey", patch.hotkey)
+    if patch.confidence_threshold is not None:
+        _set("capture", "confidence_threshold", float(patch.confidence_threshold))
+    if patch.llm_scrutiny is not None:
+        scrutiny = patch.llm_scrutiny.strip().lower()
+        if scrutiny not in ("relaxed", "balanced", "strict"):
+            raise HTTPException(status_code=400, detail="llm_scrutiny must be relaxed|balanced|strict")
+        _set("capture", "llm_scrutiny", scrutiny)
+    if patch.ocr_fast_path_enabled is not None:
+        _set("capture", "ocr_fast_path_enabled", bool(patch.ocr_fast_path_enabled))
+    if patch.ocr_text_min_chars is not None:
+        _set("capture", "ocr_text_min_chars", int(patch.ocr_text_min_chars))
 
     CONFIG_PATH.write_text(tomlkit.dumps(doc), encoding="utf-8")
 
-    from config import reload_config
     reload_config()
 
     return {"ok": True}
