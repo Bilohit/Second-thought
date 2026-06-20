@@ -54,6 +54,13 @@ _MAX_SNIPPET_CHARS   = 500
 _DEFAULT_EMBED_MODEL = "nomic-embed-text"
 _DB_NAME             = "vectors.db"
 
+
+def _preview(text: str, n: int = 80) -> str:
+    """Single-line truncated preview for diagnostic logs."""
+    one_line = " ".join((text or "").split())
+    return (one_line[:n] + "…") if len(one_line) > n else one_line
+
+
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS embeddings (
     id        TEXT PRIMARY KEY,
@@ -136,6 +143,14 @@ def _embed(text: str, base_url: str,
         base = base[:-3]
     snippet = text[:_MAX_EMBED_CHARS]
 
+    # Blank/whitespace input tokenizes to nothing -> Ollama returns
+    # {"embeddings": []}. Reject it here (caller bug / degraded placeholder)
+    # before spending a network round-trip, with a diagnostic.
+    if not snippet.strip():
+        raise RuntimeError(
+            f"refusing to embed blank input (len={len(text)}, preview={_preview(text)!r})"
+        )
+
     new_url = f"{base}/api/embed"
     old_url = f"{base}/api/embeddings"
 
@@ -149,7 +164,13 @@ def _embed(text: str, base_url: str,
         embedding = data.get("embedding")
         if isinstance(embedding, list) and embedding:
             return embedding
-        raise RuntimeError(f"Ollama returned unexpected shape from {new_url}: {data!r}")
+        raise RuntimeError(
+            f"Ollama returned empty/unknown embedding shape from {new_url} "
+            f"(input len={len(snippet)}, preview={_preview(snippet)!r}). "
+            f"If embeddings==[], the model '{model}' may not be resident "
+            f"(GPU thrash after a vision call) or the input was non-tokenizable. "
+            f"Raw: {data!r}"
+        )
     except urllib.error.HTTPError as exc:
         if exc.code != 404:
             raise RuntimeError(
@@ -241,6 +262,10 @@ def index_note(
     Failures are swallowed so they never abort a capture.
     """
     try:
+        if not (content or "").strip():
+            print(f"[VectorStore] skip index: blank content (len={len(content or '')})",
+                  file=sys.stderr, flush=True)
+            return
         embedding = _embed(content, base_url, embed_model)
         vec_bytes = np.array(embedding, dtype=np.float32).tobytes()
 
@@ -286,6 +311,10 @@ def retrieve_related(
     when the store is empty, nothing clears the floor, or any error occurs.
     """
     try:
+        if not (query_text or "").strip():
+            print(f"[VectorStore] skip retrieve: blank query (len={len(query_text or '')})",
+                  file=sys.stderr, flush=True)
+            return []
         with _connect(vault_root) as conn:
             rows = conn.execute(
                 "SELECT id, embedding, document, category FROM embeddings"
@@ -325,6 +354,10 @@ def best_match(
     back to deterministic logic.
     """
     try:
+        if not (query_text or "").strip():
+            print(f"[VectorStore] skip best_match: blank query (len={len(query_text or '')})",
+                  file=sys.stderr, flush=True)
+            return None
         with _connect(vault_root) as conn:
             if category:
                 rows = conn.execute(
@@ -381,7 +414,7 @@ if __name__ == "__main__":
         vault = pathlib.Path(tmp)
         (vault / "Tech_Notes").mkdir()
 
-        with mock.patch("vector_store._embed", side_effect=_fake_embed):
+        with mock.patch.object(sys.modules[__name__], "_embed", side_effect=_fake_embed):
 
             # T1: index two notes
             n1 = vault / "Tech_Notes" / "asyncio.md"
