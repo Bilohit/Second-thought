@@ -40,7 +40,17 @@ from config import DEFAULT_VAULT_ROOT
 # ---------------------------------------------------------------------------
 
 # Captures below this confidence threshold go to the scratchpad for review.
+# Kept as the fallback default; the live value is read from config at call time.
 SCRATCHPAD_CONFIDENCE_THRESHOLD: float = 0.6
+
+
+def _confidence_threshold() -> float:
+    """Live confidence floor from config, falling back to the module default."""
+    try:
+        from config import get_config
+        return float(get_config().capture.confidence_threshold)
+    except Exception:
+        return SCRATCHPAD_CONFIDENCE_THRESHOLD
 
 # Merge thresholds (unchanged from original)
 MERGE_MIN_SHARED_TAGS: int = 2
@@ -1072,8 +1082,9 @@ def write_to_named_category(
 
     output.category = category
     output.requires_new_category = False
-    if output.confidence < SCRATCHPAD_CONFIDENCE_THRESHOLD:
-        output.confidence = max(output.confidence, SCRATCHPAD_CONFIDENCE_THRESHOLD)
+    floor = _confidence_threshold()
+    if output.confidence < floor:
+        output.confidence = max(output.confidence, floor)
 
     return write_to_vault(
         output,
@@ -1152,10 +1163,11 @@ def write_to_vault(
             )
 
     # 2. Scratchpad routing
-    if output.confidence < SCRATCHPAD_CONFIDENCE_THRESHOLD or output.requires_new_category:
+    threshold = _confidence_threshold()
+    if output.confidence < threshold or output.requires_new_category:
         reason = (
-            f"confidence={round(output.confidence, 2)} < {SCRATCHPAD_CONFIDENCE_THRESHOLD}"
-            if output.confidence < SCRATCHPAD_CONFIDENCE_THRESHOLD
+            f"confidence={round(output.confidence, 2)} < {threshold}"
+            if output.confidence < threshold
             else "requires_new_category=True"
         )
         print(f"[StorageEngine] -> scratchpad ({reason})")
