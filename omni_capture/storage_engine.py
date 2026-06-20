@@ -781,7 +781,8 @@ def _build_deterministic_append(source_metadata: Optional[dict]) -> str:
         parts.append(embed)
     transcribed = source_metadata.get("transcribed_text")
     if transcribed:
-        parts.append(f"## Transcribed Text\n{transcribed}")
+        heading = "Extracted Text" if source_metadata.get("source_type") == "image_ocr" else "Transcribed Text"
+        parts.append(f"## {heading}\n{transcribed}")
     return "\n\n".join(parts)
 
 
@@ -1116,6 +1117,9 @@ def write_to_vault(
     """
     init_vault(vault_root, scratchpad_folder)
     deterministic_append = _build_deterministic_append(source_metadata)
+    extra_fm = None
+    if source_metadata and source_metadata.get("source_type"):
+        extra_fm = {"source_type": source_metadata["source_type"]}
 
     decided_category = _category_str(output)
 
@@ -1194,7 +1198,8 @@ def write_to_vault(
             _append_general(path, linked_content)
             action = "appended (smart-merge)"
         else:
-            _write_new_file(path, output, source_url, body_content=linked_content)
+            _write_new_file(path, output, source_url, body_content=linked_content,
+                            extra_frontmatter=extra_fm)
             action = "created"
     else:
         # File already exists — append when it's the same topic, or
@@ -1210,7 +1215,8 @@ def write_to_vault(
             action = "appended (general)"
         else:
             path = _unique_file_path(base_path)
-            _write_new_file(path, output, source_url, body_content=linked_content)
+            _write_new_file(path, output, source_url, body_content=linked_content,
+                            extra_frontmatter=extra_fm)
             action = "created (topic-collision avoided)"
             print(
                 f"[StorageEngine] WARNING: suggested_filename collision on different topic. "
