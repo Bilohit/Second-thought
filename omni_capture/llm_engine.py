@@ -208,13 +208,31 @@ _SYSTEM_PROMPT_TEMPLATE = textwrap.dedent("""
     TODAY'S DATE: {today}
 """).lstrip()
 
+_SCRUTINY_PARAGRAPHS = {
+    "relaxed": (
+        "\n    CLASSIFICATION POSTURE (relaxed)\n"
+        "    * Prefer to make a best-effort categorization even with limited signal.\n"
+        "    * Lean toward assigning a category rather than expressing uncertainty.\n"
+    ),
+    "balanced": "",  # current behavior -- no extra instruction
+    "strict": (
+        "\n    CLASSIFICATION POSTURE (strict)\n"
+        "    * Apply high scrutiny. If the content does not clearly and\n"
+        "      unambiguously fit a single category, assign a low confidence\n"
+        "      score (below the routing threshold) and let it route to the\n"
+        "      inbox for manual review. Do not guess.\n"
+    ),
+}
+
 
 def _build_system_prompt(
     category_descriptions: Dict[str, str],
     today: str,
+    scrutiny: str = "balanced",
 ) -> str:
     """
-    Render the system prompt with the current vault's categories.
+    Render the system prompt with the current vault's categories and the
+    configured classification posture (relaxed / balanced / strict).
 
     Each entry in category_descriptions is formatted as:
         Folder_Name    -> Description text
@@ -223,7 +241,9 @@ def _build_system_prompt(
         f"    {name:<25} -> {desc}"
         for name, desc in category_descriptions.items()
     )
-    return _SYSTEM_PROMPT_TEMPLATE.format(categories=cat_lines, today=today)
+    prompt = _SYSTEM_PROMPT_TEMPLATE.format(categories=cat_lines, today=today)
+    prompt += _SCRUTINY_PARAGRAPHS.get(scrutiny, "")
+    return prompt
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +257,7 @@ def run_llm_engine(
     today: Optional[str] = None,
     max_retries: Optional[int] = None,
     temperature: Optional[float] = None,
+    scrutiny: str = "balanced",
 ) -> CaptureOutput:
     """
     Run the LLM Decision Engine and return a validated CaptureOutput.
@@ -251,6 +272,8 @@ def run_llm_engine(
         today:                  ISO date string (defaults to today).
         max_retries:            Overrides config.toml [capture] llm_max_retries (default 3).
         temperature:            Overrides config.toml [capture] llm_temperature (default 0.1).
+        scrutiny:               Classification posture: "relaxed" / "balanced" / "strict".
+                                 Overrides config.toml [capture] llm_scrutiny (default "balanced").
     """
     from datetime import date
     from models import EnrichedPayload  # local import to keep top-level clean
@@ -267,7 +290,7 @@ def run_llm_engine(
     categories = list(category_descriptions.keys())
     CaptureModel = build_capture_model(categories)
 
-    system = _build_system_prompt(category_descriptions, today_str)
+    system = _build_system_prompt(category_descriptions, today_str, scrutiny=scrutiny)
 
     user_parts = [
         f"INPUT TYPE: {enriched.input_type}",

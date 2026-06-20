@@ -415,6 +415,7 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                 existing_context=existing_context,
                 max_retries=cfg.capture.llm_max_retries,
                 temperature=cfg.capture.llm_temperature,
+                scrutiny=cfg.capture.llm_scrutiny,
             )
 
             # Two-pass fallback: the pre-resolver was uncertain, but now that the
@@ -429,6 +430,7 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                         existing_context=fallback_context,
                         max_retries=cfg.capture.llm_max_retries,
                         temperature=cfg.capture.llm_temperature,
+                        scrutiny=cfg.capture.llm_scrutiny,
                     )
 
         emit("thinking",

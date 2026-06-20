@@ -281,6 +281,7 @@ def run_pipeline(
             existing_context=existing_context,
             max_retries=cfg.capture.llm_max_retries,
             temperature=cfg.capture.llm_temperature,
+            scrutiny=cfg.capture.llm_scrutiny,
         )
 
         # Two-pass fallback: the pre-resolver was uncertain, but now that the LLM
@@ -296,6 +297,7 @@ def run_pipeline(
                     existing_context=fallback_context,
                     max_retries=cfg.capture.llm_max_retries,
                     temperature=cfg.capture.llm_temperature,
+                    scrutiny=cfg.capture.llm_scrutiny,
                 )
                 pass_count = 2
     t_llm1 = time.perf_counter()
