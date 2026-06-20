@@ -28,6 +28,18 @@ filename_max_words = 2
 filename_max_chars = 40
 # Soft cap on note body length; 0 = unlimited.
 note_max_chars = 0
+# Captures whose LLM confidence is below this go to the _scratchpad inbox for
+# manual review instead of being filed. 0.0 = file everything, 1.0 = review all.
+confidence_threshold = 0.6
+# How demanding the classifier's system prompt is: "relaxed" (lean toward
+# assigning a category), "balanced" (default), or "strict" (only file on a
+# clear, unambiguous fit; otherwise low-confidence -> inbox).
+llm_scrutiny = "balanced"
+# OCR-first fast path: for text-heavy screenshots, run RapidOCR before the
+# slow vision model and, if it yields enough text, skip LLaVA and treat the
+# image as a plain-text capture.
+ocr_fast_path_enabled = true
+ocr_text_min_chars = 10   # min OCR characters required to skip LLaVA
 
 # Map-Reduce token budgeting for the async YouTube summarizer. The per-chunk
 # limit is derived as:

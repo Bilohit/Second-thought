@@ -65,6 +65,12 @@ class CaptureConfig:
     filename_max_chars: int = 40
     youtube_filename_max_chars: int = 80
     note_max_chars: int     = 0  # 0 = unlimited
+    # Routing/strictness knobs (user-tunable via the GUI settings panel).
+    confidence_threshold: float = 0.6   # captures below this -> scratchpad inbox
+    llm_scrutiny: str           = "balanced"  # "relaxed" | "balanced" | "strict"
+    # OCR-first fast path for text-heavy image captures (skips the slow LLaVA call).
+    ocr_fast_path_enabled: bool = True
+    ocr_text_min_chars: int     = 10   # min OCR chars to treat an image as a text capture
     # Map-Reduce token budgeting for the async YouTube summarizer.
     # max_chunk_tokens = summary_model_context_tokens - summary_safety_buffer_tokens - summary_reserved_output_tokens
     summary_model_context_tokens: int   = 8192
@@ -175,6 +181,11 @@ def load_config(config_path: Path | None = None) -> Config:
     cfg.capture.filename_max_chars = int(cap_raw.get("filename_max_chars", 40))
     cfg.capture.youtube_filename_max_chars = int(cap_raw.get("youtube_filename_max_chars", 80))
     cfg.capture.note_max_chars     = int(cap_raw.get("note_max_chars", 0))
+    cfg.capture.confidence_threshold = float(cap_raw.get("confidence_threshold", 0.6))
+    _scrutiny = str(cap_raw.get("llm_scrutiny", "balanced")).strip().lower()
+    cfg.capture.llm_scrutiny = _scrutiny if _scrutiny in ("relaxed", "balanced", "strict") else "balanced"
+    cfg.capture.ocr_fast_path_enabled = bool(cap_raw.get("ocr_fast_path_enabled", True))
+    cfg.capture.ocr_text_min_chars    = int(cap_raw.get("ocr_text_min_chars", 10))
 
     cfg.capture.summary_model_context_tokens   = int(cap_raw.get("summary_model_context_tokens", 8192))
     cfg.capture.summary_safety_buffer_tokens   = int(cap_raw.get("summary_safety_buffer_tokens", 256))
