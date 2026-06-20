@@ -152,6 +152,8 @@ export default function SettingsPanel({ visible, onClose, theme, themeLabel, onC
   const [saved, setSaved] = useState(false);
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   const [logLevel, setLogLevelState] = useState<LogLevel>(logger.getLevel());
+  const [confidence, setConfidence] = useState(0.6);
+  const [scrutiny, setScrutiny] = useState<"relaxed" | "balanced" | "strict">("balanced");
 
   // Load config when panel opens
   useEffect(() => {
@@ -172,6 +174,8 @@ export default function SettingsPanel({ visible, onClose, theme, themeLabel, onC
         setVaultRoot(root ?? "");
         setModel(cfg.ollama?.model ?? "llama3.2");
         setHotkey(cfg.gui?.hotkey ?? DEFAULT_HOTKEY);
+        setConfidence(cfg.capture?.confidence_threshold ?? 0.6);
+        setScrutiny(cfg.capture?.llm_scrutiny ?? "balanced");
       })
       .catch(() => {/* server may not be up yet — use defaults */});
   }, [visible]);
@@ -187,7 +191,13 @@ export default function SettingsPanel({ visible, onClose, theme, themeLabel, onC
     setSaving(true);
     setHotkeyError(null);
     try {
-      await patchConfig({ vault_root: vaultRoot, ollama_model: model, hotkey });
+      await patchConfig({
+        vault_root: vaultRoot,
+        ollama_model: model,
+        hotkey,
+        confidence_threshold: confidence,
+        llm_scrutiny: scrutiny,
+      });
       await setHotkeyRust(hotkey);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -326,6 +336,57 @@ export default function SettingsPanel({ visible, onClose, theme, themeLabel, onC
               (e.target as HTMLInputElement).style.boxShadow = "none";
             }}
           />
+        </Field>
+
+        {/* Inbox sensitivity (confidence threshold) */}
+        <Field label="Inbox Sensitivity">
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={confidence}
+              onChange={(e) => setConfidence(parseFloat(e.target.value))}
+              style={{ flex: 1, accentColor: "var(--accent)", cursor: "pointer" }}
+              aria-label="Inbox sensitivity (confidence threshold)"
+            />
+            <span style={{
+              fontFamily: "monospace", fontSize: 12, color: "var(--text-2)",
+              minWidth: 36, textAlign: "right",
+            }}>
+              {confidence.toFixed(2)}
+            </span>
+          </div>
+          <span style={{ fontSize: 10, color: "var(--text-3)" }}>
+            Higher = more captures sent to the inbox for review.
+          </span>
+        </Field>
+
+        {/* Classification strictness (llm_scrutiny) */}
+        <Field label="Classification Strictness">
+          <div style={{ display: "flex", gap: 4 }}>
+            {(["relaxed", "balanced", "strict"] as const).map((level) => {
+              const active = scrutiny === level;
+              return (
+                <button
+                  key={level}
+                  onClick={() => setScrutiny(level)}
+                  style={{
+                    ...BTN_SECONDARY,
+                    flex: 1,
+                    textTransform: "capitalize",
+                    background: active ? "var(--accent)" : (BTN_SECONDARY.background as string),
+                    color: active ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
+                    borderColor: active ? "var(--accent)" : "var(--border)",
+                  }}
+                  aria-pressed={active}
+                >
+                  {level}
+                </button>
+              );
+            })}
+          </div>
         </Field>
 
         {/* Log level — runtime toggle, no rebuild required */}

@@ -86,6 +86,12 @@ export interface Config {
   vault?: { root?: string };
   ollama?: { model?: string; base_url?: string };
   gui?: { hotkey?: string };
+  capture?: {
+    confidence_threshold?: number;
+    llm_scrutiny?: "relaxed" | "balanced" | "strict";
+    ocr_fast_path_enabled?: boolean;
+    ocr_text_min_chars?: number;
+  };
 }
 
 export interface InboxItem {
@@ -233,6 +239,10 @@ export async function patchConfig(patch: {
   ollama_model?: string;
   ollama_base_url?: string;
   hotkey?: string;
+  confidence_threshold?: number;
+  llm_scrutiny?: "relaxed" | "balanced" | "strict";
+  ocr_fast_path_enabled?: boolean;
+  ocr_text_min_chars?: number;
 }): Promise<void> {
   const r = await fetch(`${BASE}/config`, {
     method: "PATCH",
