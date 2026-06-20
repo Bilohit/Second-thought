@@ -41,3 +41,33 @@ def test_patch_rejects_invalid_scrutiny():
         with mock.patch.object(server, "reload_config", lambda *a, **k: None):
             r = client.patch("/config", json={"llm_scrutiny": "aggressive"})
         assert r.status_code == 400
+
+
+def test_patch_rejects_confidence_threshold_below_zero():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / "config.toml"
+        cfg.write_text('[vault]\nroot = "' + tmp.replace("\\", "/") + '"\n', encoding="utf-8")
+        client, server = _client(cfg)
+        with mock.patch.object(server, "reload_config", lambda *a, **k: None):
+            r = client.patch("/config", json={"confidence_threshold": -1.0})
+        assert r.status_code == 400
+
+
+def test_patch_rejects_confidence_threshold_above_one():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / "config.toml"
+        cfg.write_text('[vault]\nroot = "' + tmp.replace("\\", "/") + '"\n', encoding="utf-8")
+        client, server = _client(cfg)
+        with mock.patch.object(server, "reload_config", lambda *a, **k: None):
+            r = client.patch("/config", json={"confidence_threshold": 1.5})
+        assert r.status_code == 400
+
+
+def test_patch_rejects_negative_ocr_text_min_chars():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / "config.toml"
+        cfg.write_text('[vault]\nroot = "' + tmp.replace("\\", "/") + '"\n', encoding="utf-8")
+        client, server = _client(cfg)
+        with mock.patch.object(server, "reload_config", lambda *a, **k: None):
+            r = client.patch("/config", json={"ocr_text_min_chars": -5})
+        assert r.status_code == 400

@@ -758,7 +758,10 @@ async def patch_config(patch: ConfigPatch, _: None = Depends(_require_secret)):
     if patch.hotkey is not None:
         _set("gui", "hotkey", patch.hotkey)
     if patch.confidence_threshold is not None:
-        _set("capture", "confidence_threshold", float(patch.confidence_threshold))
+        threshold = float(patch.confidence_threshold)
+        if not (0.0 <= threshold <= 1.0):
+            raise HTTPException(status_code=400, detail="confidence_threshold must be between 0.0 and 1.0")
+        _set("capture", "confidence_threshold", threshold)
     if patch.llm_scrutiny is not None:
         scrutiny = patch.llm_scrutiny.strip().lower()
         if scrutiny not in ("relaxed", "balanced", "strict"):
@@ -767,7 +770,10 @@ async def patch_config(patch: ConfigPatch, _: None = Depends(_require_secret)):
     if patch.ocr_fast_path_enabled is not None:
         _set("capture", "ocr_fast_path_enabled", bool(patch.ocr_fast_path_enabled))
     if patch.ocr_text_min_chars is not None:
-        _set("capture", "ocr_text_min_chars", int(patch.ocr_text_min_chars))
+        min_chars = int(patch.ocr_text_min_chars)
+        if min_chars < 0:
+            raise HTTPException(status_code=400, detail="ocr_text_min_chars must be non-negative")
+        _set("capture", "ocr_text_min_chars", min_chars)
 
     CONFIG_PATH.write_text(tomlkit.dumps(doc), encoding="utf-8")
 
