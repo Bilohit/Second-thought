@@ -569,6 +569,39 @@ def _enrich_image(image_bytes: bytes) -> EnrichedPayload:
         print(f"[EnrichmentRouter] failed to persist image attachment: {exc}", flush=True)
     image_embed = f"![[{image_path.name}]]" if image_path is not None else None
 
+    # ── OCR-first fast path ────────────────────────────────────────────────
+    # For text-heavy screenshots, RapidOCR is both faster and more accurate
+    # than the vision LLM. If it yields enough text, skip the (slow) LLaVA
+    # call entirely and hand the OCR text to the LLM as a plain-text capture.
+    if cfg.capture.ocr_fast_path_enabled:
+        try:
+            fast_ocr = _run_ocr(upload_bytes)  # never raises; returns None on failure
+        except Exception as exc:               # belt-and-braces
+            print(f"[EnrichmentRouter] OCR fast-path probe failed (non-fatal): {exc}", flush=True)
+            fast_ocr = None
+        if fast_ocr and len(fast_ocr) >= cfg.capture.ocr_text_min_chars:
+            print(
+                f"[EnrichmentRouter] OCR fast path taken "
+                f"({len(fast_ocr)} chars >= {cfg.capture.ocr_text_min_chars}); "
+                f"skipping vision model.", flush=True,
+            )
+            source_metadata = {
+                "image_size_bytes": len(image_bytes),
+                "source_type": "image_ocr",
+                "ocr_fast_path": True,
+                "transcribed_text": fast_ocr,
+            }
+            if image_path is not None:
+                source_metadata["image_path"] = str(image_path)
+            if image_embed:
+                source_metadata["image_embed"] = image_embed
+            return EnrichedPayload(
+                raw_input="<image>",
+                input_type="image_ocr",
+                enriched_text=fast_ocr,
+                source_metadata=source_metadata,
+            )
+
     preflight_reason = _check_vision_model_available(cfg.ollama.base_url, vision_model)
     if preflight_reason is not None:
         if cfg.ollama.image_required:
@@ -855,6 +888,10 @@ if __name__ == "__main__":
         )
         cfg.vault = types.SimpleNamespace(root=tmp_root)
         cfg.ocr = types.SimpleNamespace(enabled=False)
+        cfg.capture = types.SimpleNamespace(
+            ocr_fast_path_enabled=False,  # keep legacy vision tests on the vision path
+            ocr_text_min_chars=10,
+        )
         return cfg
 
     def _tags_response(models):
