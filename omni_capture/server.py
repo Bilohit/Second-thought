@@ -283,6 +283,9 @@ def _sse(event: str, **data) -> str:
 def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
     tag = f"[run:{run_id}] " if run_id else ""
 
+    from timing import StageTimer
+    timer = StageTimer(run_id=run_id)
+
     def emit(event, **kwargs):
         loop.call_soon_threadsafe(q.put_nowait, {"event": event, **kwargs})
 
@@ -332,22 +335,23 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
 
         emit("step", step="enrich", status="active")
 
-        if content_type == "audio_b64":
-            # Audio: write temp file, run Whisper, delete temp file.
-            import tempfile, pathlib as _pathlib
-            from enrichment_router import _enrich_audio
-            audio_bytes = base64.b64decode(content)
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
-                tf.write(audio_bytes)
-                tmp_audio_path = tf.name
-            try:
-                enriched = _enrich_audio(tmp_audio_path)
-            finally:
-                _pathlib.Path(tmp_audio_path).unlink(missing_ok=True)
-        else:
-            # text, url, image_b64 -- route_and_enrich handles all three.
-            # image_b64 is dispatched internally to _enrich_image (LLaVA).
-            enriched = route_and_enrich(payload)
+        with timer.stage("enrich"):
+            if content_type == "audio_b64":
+                # Audio: write temp file, run Whisper, delete temp file.
+                import tempfile, pathlib as _pathlib
+                from enrichment_router import _enrich_audio
+                audio_bytes = base64.b64decode(content)
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+                    tf.write(audio_bytes)
+                    tmp_audio_path = tf.name
+                try:
+                    enriched = _enrich_audio(tmp_audio_path)
+                finally:
+                    _pathlib.Path(tmp_audio_path).unlink(missing_ok=True)
+            else:
+                # text, url, image_b64 -- route_and_enrich handles all three.
+                # image_b64 is dispatched internally to _enrich_image (LLaVA).
+                enriched = route_and_enrich(payload)
 
         emit("step", step="enrich", status="done")
 
@@ -360,11 +364,12 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
             from storage_engine import route_failed_vision
             emit("step", step="decide", status="done")
             emit("step", step="write", status="active")
-            written_path = route_failed_vision(
-                enriched.source_metadata,
-                vault_root=cfg.vault.root,
-                scratchpad_folder=cfg.vault.scratchpad_folder,
-            )
+            with timer.stage("write_scratchpad"):
+                written_path = route_failed_vision(
+                    enriched.source_metadata,
+                    vault_root=cfg.vault.root,
+                    scratchpad_folder=cfg.vault.scratchpad_folder,
+                )
             emit("step", step="write", status="done")
             emit("done", path=str(written_path), category="Unprocessed_Images")
             try:
@@ -379,50 +384,52 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
             return
 
         emit("step", step="decide", status="active")
-        resolved = pre_resolve(enriched, cfg.vault.root)
+        with timer.stage("retrieve"):
+            resolved = pre_resolve(enriched, cfg.vault.root)
 
-        semantic_snippets: list[str] = []
-        if cfg.vector.enabled:
-            semantic_snippets = retrieve_related(
-                cfg.vault.root,
-                enriched.enriched_text,
-                cfg.ollama.base_url,
-                cfg.vector.embed_model,
-                cfg.vector.top_k,
-                min_similarity=cfg.vector.min_similarity,
-            )
+            semantic_snippets: list[str] = []
+            if cfg.vector.enabled:
+                semantic_snippets = retrieve_related(
+                    cfg.vault.root,
+                    enriched.enriched_text,
+                    cfg.ollama.base_url,
+                    cfg.vector.embed_model,
+                    cfg.vector.top_k,
+                    min_similarity=cfg.vector.min_similarity,
+                )
 
-        ctx_parts: list[str] = []
-        if resolved.existing_context:
-            ctx_parts.append(resolved.existing_context)
-        if semantic_snippets:
-            ctx_parts.append(
-                "## Semantically Related Notes\n\n" + "\n\n".join(semantic_snippets)
-            )
-        existing_context = "\n\n---\n\n".join(ctx_parts) if ctx_parts else None
+            ctx_parts: list[str] = []
+            if resolved.existing_context:
+                ctx_parts.append(resolved.existing_context)
+            if semantic_snippets:
+                ctx_parts.append(
+                    "## Semantically Related Notes\n\n" + "\n\n".join(semantic_snippets)
+                )
+            existing_context = "\n\n---\n\n".join(ctx_parts) if ctx_parts else None
 
         category_descriptions = build_category_descriptions(cfg.vault.root, cfg.vault.scratchpad_folder)
-        output = run_llm_engine(
-            enriched,
-            category_descriptions=category_descriptions,
-            existing_context=existing_context,
-            max_retries=cfg.capture.llm_max_retries,
-            temperature=cfg.capture.llm_temperature,
-        )
+        with timer.stage("llm"):
+            output = run_llm_engine(
+                enriched,
+                category_descriptions=category_descriptions,
+                existing_context=existing_context,
+                max_retries=cfg.capture.llm_max_retries,
+                temperature=cfg.capture.llm_temperature,
+            )
 
-        # Two-pass fallback: the pre-resolver was uncertain, but now that the
-        # LLM has picked a category we can check for an existing CRM/Finance
-        # file and re-run with that context loaded.
-        if resolved.certainty == "low" and output.category in ("CRM", "Finance"):
-            fallback_context = read_existing_context(output, vault_root=cfg.vault.root)
-            if fallback_context:
-                output = run_llm_engine(
-                    enriched,
-                    category_descriptions=category_descriptions,
-                    existing_context=fallback_context,
-                    max_retries=cfg.capture.llm_max_retries,
-                    temperature=cfg.capture.llm_temperature,
-                )
+            # Two-pass fallback: the pre-resolver was uncertain, but now that the
+            # LLM has picked a category we can check for an existing CRM/Finance
+            # file and re-run with that context loaded.
+            if resolved.certainty == "low" and output.category in ("CRM", "Finance"):
+                fallback_context = read_existing_context(output, vault_root=cfg.vault.root)
+                if fallback_context:
+                    output = run_llm_engine(
+                        enriched,
+                        category_descriptions=category_descriptions,
+                        existing_context=fallback_context,
+                        max_retries=cfg.capture.llm_max_retries,
+                        temperature=cfg.capture.llm_temperature,
+                    )
 
         emit("thinking",
              rationale=output.rationale or "",
@@ -432,40 +439,47 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
         emit("step", step="decide", status="done")
 
         emit("step", step="write", status="active")
-        written_path = write_to_vault(
-            output, source_url=enriched.source_url,
-            vault_root=cfg.vault.root,
-            scratchpad_folder=cfg.vault.scratchpad_folder,
-            enable_semantic_merge=cfg.vector.enabled,
-            embed_base_url=cfg.ollama.base_url,
-            embed_model=cfg.vector.embed_model,
-            source_metadata=enriched.source_metadata,
-        )
-        if cfg.vector.enabled:
-            from pathlib import Path as _Path
-            note_text = _Path(written_path).read_text(encoding="utf-8", errors="ignore")
-            index_note(
-                cfg.vault.root, _Path(written_path), note_text,
-                cfg.ollama.base_url, cfg.vector.embed_model,
+        with timer.stage("write"):
+            written_path = write_to_vault(
+                output, source_url=enriched.source_url,
+                vault_root=cfg.vault.root,
+                scratchpad_folder=cfg.vault.scratchpad_folder,
+                enable_semantic_merge=cfg.vector.enabled,
+                embed_base_url=cfg.ollama.base_url,
+                embed_model=cfg.vector.embed_model,
+                source_metadata=enriched.source_metadata,
             )
+        if cfg.vector.enabled:
+            with timer.stage("index"):
+                from pathlib import Path as _Path
+                note_text = _Path(written_path).read_text(encoding="utf-8", errors="ignore")
+                index_note(
+                    cfg.vault.root, _Path(written_path), note_text,
+                    cfg.ollama.base_url, cfg.vector.embed_model,
+                )
         emit("step", step="write", status="done")
         emit("done", path=str(written_path), category=output.category)
 
-        try:
-            from notifier import notify_capture_success
-            from capture_log import log_capture
-            if cfg.notifications.enabled:
-                notify_capture_success(category=output.category,
-                                       filepath=str(written_path),
-                                       title_prefix=cfg.notifications.title_prefix)
-            log_capture(output, enriched, str(written_path), cfg.ollama.model)
-        except Exception:
-            pass
+        with timer.stage("notify"):
+            try:
+                from notifier import notify_capture_success
+                from capture_log import log_capture
+                if cfg.notifications.enabled:
+                    notify_capture_success(category=output.category,
+                                           filepath=str(written_path),
+                                           title_prefix=cfg.notifications.title_prefix)
+                log_capture(output, enriched, str(written_path), cfg.ollama.model)
+            except Exception:
+                pass
 
     except Exception as exc:
         print(f"[server] {tag}pipeline failed: {exc}", flush=True)
         emit("error", message=str(exc))
     finally:
+        try:
+            timer.log_summary()
+        except Exception:
+            pass
         loop.call_soon_threadsafe(q.put_nowait, None)
 
 

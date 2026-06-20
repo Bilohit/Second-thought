@@ -166,6 +166,9 @@ def run_pipeline(
     from capture_log       import log_capture
     from pre_resolver      import pre_resolve
     from vector_store      import retrieve_related, index_note
+    from timing            import StageTimer
+    import uuid as _uuid
+    timer = StageTimer(run_id=_uuid.uuid4().hex[:8])
 
     vault = cfg.vault.root
     scratchpad_folder = cfg.vault.scratchpad_folder
@@ -196,9 +199,11 @@ def run_pipeline(
     if audio:
         # Direct audio path: bypass route_and_enrich and call audio handler
         from enrichment_router import _enrich_audio
-        enriched = _enrich_audio(audio)
+        with timer.stage("enrich"):
+            enriched = _enrich_audio(audio)
     else:
-        enriched = route_and_enrich(payload)
+        with timer.stage("enrich"):
+            enriched = route_and_enrich(payload)
 
     if verbose:
         print(f"\n[Stage 2 -- Enrichment Router]")
@@ -216,11 +221,12 @@ def run_pipeline(
             print("\n[Dry Run] Vision failed -- would route to scratchpad for retry.")
             result["_written_to"] = None
         else:
-            written_path = route_failed_vision(
-                enriched.source_metadata,
-                vault_root=vault,
-                scratchpad_folder=scratchpad_folder,
-            )
+            with timer.stage("write_scratchpad"):
+                written_path = route_failed_vision(
+                    enriched.source_metadata,
+                    vault_root=vault,
+                    scratchpad_folder=scratchpad_folder,
+                )
             result["_written_to"] = str(written_path)
             print(f"\nVision recognition failed -- saved for retry -> {written_path}")
             if notify and cfg.notifications.enabled:
@@ -229,32 +235,34 @@ def run_pipeline(
                     "Vision recognition failed -- image saved for retry.",
                     title_prefix=cfg.notifications.title_prefix,
                 )
+        timer.log_summary()
         return result
 
     # -- Stage 3: Pre-Resolver + Semantic Retrieval -> LLM (single pass) -------
     t_res0 = time.perf_counter()
 
-    resolved = pre_resolve(enriched, vault)
+    with timer.stage("retrieve"):
+        resolved = pre_resolve(enriched, vault)
 
-    semantic_snippets: list[str] = []
-    if cfg.vector.enabled:
-        semantic_snippets = retrieve_related(
-            vault,
-            enriched.enriched_text,
-            cfg.ollama.base_url,
-            cfg.vector.embed_model,
-            cfg.vector.top_k,
-            min_similarity=cfg.vector.min_similarity,
-        )
+        semantic_snippets: list[str] = []
+        if cfg.vector.enabled:
+            semantic_snippets = retrieve_related(
+                vault,
+                enriched.enriched_text,
+                cfg.ollama.base_url,
+                cfg.vector.embed_model,
+                cfg.vector.top_k,
+                min_similarity=cfg.vector.min_similarity,
+            )
 
-    ctx_parts: list[str] = []
-    if resolved.existing_context:
-        ctx_parts.append(resolved.existing_context)
-    if semantic_snippets:
-        ctx_parts.append(
-            "## Semantically Related Notes\n\n" + "\n\n".join(semantic_snippets)
-        )
-    existing_context: str | None = "\n\n---\n\n".join(ctx_parts) if ctx_parts else None
+        ctx_parts: list[str] = []
+        if resolved.existing_context:
+            ctx_parts.append(resolved.existing_context)
+        if semantic_snippets:
+            ctx_parts.append(
+                "## Semantically Related Notes\n\n" + "\n\n".join(semantic_snippets)
+            )
+        existing_context: str | None = "\n\n---\n\n".join(ctx_parts) if ctx_parts else None
 
     t_res1 = time.perf_counter()
 
@@ -266,29 +274,30 @@ def run_pipeline(
         print(f"  total ctx chars  : {len(existing_context or '')}")
 
     t_llm0 = time.perf_counter()
-    output = run_llm_engine(
-        enriched,
-        category_descriptions=category_descriptions,
-        existing_context=existing_context,
-        max_retries=cfg.capture.llm_max_retries,
-        temperature=cfg.capture.llm_temperature,
-    )
+    with timer.stage("llm"):
+        output = run_llm_engine(
+            enriched,
+            category_descriptions=category_descriptions,
+            existing_context=existing_context,
+            max_retries=cfg.capture.llm_max_retries,
+            temperature=cfg.capture.llm_temperature,
+        )
 
-    # Two-pass fallback: the pre-resolver was uncertain, but now that the LLM
-    # has picked a category we can check for an existing CRM/Finance file and
-    # re-run with that context loaded.
-    pass_count = 1
-    if resolved.certainty == "low" and output.category in ("CRM", "Finance"):
-        fallback_context = read_existing_context(output, vault_root=vault)
-        if fallback_context:
-            output = run_llm_engine(
-                enriched,
-                category_descriptions=category_descriptions,
-                existing_context=fallback_context,
-                max_retries=cfg.capture.llm_max_retries,
-                temperature=cfg.capture.llm_temperature,
-            )
-            pass_count = 2
+        # Two-pass fallback: the pre-resolver was uncertain, but now that the LLM
+        # has picked a category we can check for an existing CRM/Finance file and
+        # re-run with that context loaded.
+        pass_count = 1
+        if resolved.certainty == "low" and output.category in ("CRM", "Finance"):
+            fallback_context = read_existing_context(output, vault_root=vault)
+            if fallback_context:
+                output = run_llm_engine(
+                    enriched,
+                    category_descriptions=category_descriptions,
+                    existing_context=fallback_context,
+                    max_retries=cfg.capture.llm_max_retries,
+                    temperature=cfg.capture.llm_temperature,
+                )
+                pass_count = 2
     t_llm1 = time.perf_counter()
 
     if verbose:
@@ -309,35 +318,38 @@ def run_pipeline(
         print(json.dumps(result, indent=2))
         result["_written_to"] = None
     else:
-        written_path = write_to_vault(
-            output,
-            source_url=enriched.source_url,
-            vault_root=vault,
-            scratchpad_folder=scratchpad_folder,
-            enable_semantic_merge=cfg.vector.enabled,
-            embed_base_url=cfg.ollama.base_url,
-            embed_model=cfg.vector.embed_model,
-            source_metadata=enriched.source_metadata,
-        )
+        with timer.stage("write"):
+            written_path = write_to_vault(
+                output,
+                source_url=enriched.source_url,
+                vault_root=vault,
+                scratchpad_folder=scratchpad_folder,
+                enable_semantic_merge=cfg.vector.enabled,
+                embed_base_url=cfg.ollama.base_url,
+                embed_model=cfg.vector.embed_model,
+                source_metadata=enriched.source_metadata,
+            )
         result["_written_to"] = str(written_path)
         print(f"\nCaptured -> {written_path}")
 
         if cfg.vector.enabled:
-            note_text = Path(written_path).read_text(encoding="utf-8", errors="ignore")
-            index_note(
-                vault,
-                Path(written_path),
-                note_text,
-                cfg.ollama.base_url,
-                cfg.vector.embed_model,
-            )
+            with timer.stage("index"):
+                note_text = Path(written_path).read_text(encoding="utf-8", errors="ignore")
+                index_note(
+                    vault,
+                    Path(written_path),
+                    note_text,
+                    cfg.ollama.base_url,
+                    cfg.vector.embed_model,
+                )
 
         if notify and cfg.notifications.enabled:
-            notify_capture_success(
-                category=output.category,
-                filepath=str(written_path),
-                title_prefix=cfg.notifications.title_prefix,
-            )
+            with timer.stage("notify"):
+                notify_capture_success(
+                    category=output.category,
+                    filepath=str(written_path),
+                    title_prefix=cfg.notifications.title_prefix,
+                )
 
         log_capture(output, enriched, str(written_path), cfg.ollama.model)
 
@@ -347,6 +359,7 @@ def run_pipeline(
                 f"{vault / scratchpad_folder}"
             )
 
+    timer.log_summary()
     return result
 
 
