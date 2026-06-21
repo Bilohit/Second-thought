@@ -618,7 +618,7 @@ export default function SettingsPanel({
                   })}
                 </div>
                 <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                  On = the pill stays visible at all times. Off = it only appears during a capture and hides again once it settles.
+                  When on, the window stays on screen until you choose Hide (from the menu or tray). When off, it hides itself after a capture and when you close a panel.
                 </span>
               </Field>
             )}

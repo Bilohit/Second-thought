@@ -427,8 +427,9 @@ fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     let settings_item = MenuItem::with_id(app, "settings", "Settings",         true, None::<&str>)?;
     let inbox_item    = MenuItem::with_id(app, "inbox",    "Inbox",            true, None::<&str>)?;
     let stats_item    = MenuItem::with_id(app, "stats",    "Stats",            true, None::<&str>)?;
+    let hide_item     = MenuItem::with_id(app, "hide",     "Hide",             true, None::<&str>)?;
 
-    let menu = Menu::with_items(app, &[&vault_item, &settings_item, &inbox_item, &stats_item, &quit_item])?;
+    let menu = Menu::with_items(app, &[&vault_item, &settings_item, &inbox_item, &stats_item, &hide_item, &quit_item])?;
 
     TrayIconBuilder::new()
         .menu(&menu)
@@ -457,10 +458,15 @@ fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             "stats" => {
                 show_window_emit(app, "open-stats");
             }
+            "hide" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            // Left-click on tray → toggle window visibility
+            // Left-click on tray → show window and emit trigger-capture
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
@@ -468,13 +474,7 @@ fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             } = event
             {
                 let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    if window.is_visible().unwrap_or(false) {
-                        let _ = window.hide();
-                    } else {
-                        show_window_emit(app, "trigger-capture");
-                    }
-                }
+                show_window_emit(app, "trigger-capture");
             }
         })
         .build(app)?;

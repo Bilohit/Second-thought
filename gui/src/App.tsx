@@ -271,8 +271,8 @@ export default function App() {
   // away by the post-capture auto-hide regardless of the Stay Pinned setting.
   const holdOpenRef = useRef(false);
   useEffect(() => {
-    holdOpenRef.current = displayMode !== "full" && (pillPinned || expanded);
-  }, [displayMode, pillPinned, expanded]);
+    holdOpenRef.current = pillPinned || expanded;
+  }, [pillPinned, expanded]);
 
   const { state: captureState, stepDefs } = useCapture(holdOpenRef);
 
@@ -301,29 +301,15 @@ export default function App() {
   // crossings; false (visible) the rest of the time.
   const [contentHidden, setContentHidden] = useState(false);
 
-  // Auto-hide the window once Stay Pinned is turned off, but only once the
-  // user is actually back at the idle pill — not while they're still sitting
-  // in the Settings panel where the toggle lives. `pendingHide` survives
-  // across renders (and across a detour through Settings) until the moment
-  // the guard condition is finally true, then fires once and clears itself.
-  // Re-enabling Stay Pinned before that moment cancels the pending hide.
-  const prevPillPinnedRef = useRef(pillPinned);
-  const pendingHideRef = useRef(false);
+  // Auto-hide when a panel closes while unpinned: if returning to capture
+  // view while not pinned and idle, hide immediately.
+  const prevViewRef = useRef(view);
   useEffect(() => {
-    const wasPinned = prevPillPinnedRef.current;
-    prevPillPinnedRef.current = pillPinned;
-    if (wasPinned && !pillPinned) pendingHideRef.current = true;
-    else if (pillPinned) pendingHideRef.current = false;
-
-    if (pendingHideRef.current) {
-      const idleAtPill =
-        displayMode !== "full" && view === "capture" && !expanded && !menuOpen && captureState.phase === "idle";
-      if (idleAtPill) {
-        pendingHideRef.current = false;
-        getCurrentWindow().hide();
-      }
+    if (prevViewRef.current !== "capture" && view === "capture" && !pillPinned && captureState.phase === "idle") {
+      getCurrentWindow().hide();
     }
-  }, [pillPinned, expanded, displayMode, view, captureState.phase, menuOpen]);
+    prevViewRef.current = view;
+  }, [view, pillPinned, captureState.phase]);
 
   // Poll the inbox count for the unread badge — best-effort, refreshed
   // whenever a capture completes and whenever the inbox view closes.
@@ -367,7 +353,6 @@ export default function App() {
         if (menuOpen)            { setMenuOpen(false); return; }
         if (search)             { setSearch(false); return; }
         if (view !== "capture"){ setView("capture"); return; }
-        getCurrentWindow().hide();
       }
     };
     window.addEventListener("keydown", handler);
