@@ -19,7 +19,12 @@ import { ALL_TARGETS, MENU_LABELS, MenuIcon, type MenuTarget } from "./icons";
 
 export const CAPSULE_CLOSED_W = 168;
 export const CAPSULE_ICON_W = 36;
-export const CAPSULE_OPEN_W = ALL_TARGETS.length * CAPSULE_ICON_W + 16;
+export const CAPSULE_GAP = 8;    // must equal --space-2 in index.css
+export const CAPSULE_PAD_X = 12; // must equal --space-3 in index.css
+export const CAPSULE_OPEN_W =
+  ALL_TARGETS.length * CAPSULE_ICON_W
+  + (ALL_TARGETS.length - 1) * CAPSULE_GAP
+  + CAPSULE_PAD_X * 2;
 export const CAPSULE_H = 36;
 
 interface Props {
