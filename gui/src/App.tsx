@@ -619,6 +619,7 @@ export default function App() {
         // it — otherwise the fan/morph would grow from the window's current
         // top-left instead of from the pill (for_sonnet.md §5.5).
         try {
+          const area = await getActiveWorkArea();
           const scale = await getCurrentWindow().scaleFactor();
           const pos = await getCurrentWindow().outerPosition();
           const size = await getCurrentWindow().outerSize();
@@ -629,23 +630,31 @@ export default function App() {
             setRadialGeometry({
               cx: curPos.x + curSize.w / 2,
               cy: curPos.y + curSize.h / 2,
-              sw: window.screen.availWidth,
-              sh: window.screen.availHeight,
+              sw: area.w,
+              sh: area.h,
+              originX: area.x,
+              originY: area.y,
             });
           }
           const centerX = curPos.x + curSize.w / 2;
           const centerY = curPos.y + curSize.h / 2;
-          const sw = window.screen.availWidth;
+          const sw = area.w;
           // Capsule grows toward the screen interior (for_sonnet.md "Problem
           // 5" decision #5c): pin whichever edge is nearer the screen edge
           // and grow the other way, instead of growing symmetrically from
           // center (which would clip a right-anchored capsule). Radial mode
-          // needs room on every side for the fan, so it keeps the centered
-          // grow it already had.
+          // needs room on every side for the fan, so it keeps the pill's true
+          // screen center fixed and grows unclamped — the fan geometry itself
+          // (fed the active monitor's work area above) is responsible for
+          // never drawing outside the visible bounds, so the window growing
+          // past the work-area edge here is invisible/harmless overhang
+          // rather than something that needs to shove the pill inward.
           const growX = displayMode === "capsule"
-            ? (curPos.x + curSize.w / 2 > sw / 2 ? curPos.x + curSize.w - targetWinW : curPos.x)
+            ? (curPos.x + curSize.w / 2 > area.x + sw / 2 ? curPos.x + curSize.w - targetWinW : curPos.x)
             : centerX - targetWinW / 2;
-          const clampedX = Math.max(0, Math.min(sw - targetWinW, growX));
+          const clampedX = displayMode === "capsule"
+            ? Math.max(area.x, Math.min(area.x + sw - targetWinW, growX))
+            : growX;
           targetPos = { x: Math.round(clampedX), y: Math.round(centerY - targetWinH / 2) };
         } catch { /* ignore */ }
       } else if (closingMenu && pillBoxBeforeMenuRef.current) {
