@@ -27,6 +27,7 @@ from index_writer import (
     init_db,
     log_capture_db,
     migrate_jsonl,
+    reindex_bodies,
     search,
     stats,
 )
@@ -290,6 +291,73 @@ class TestStats(unittest.TestCase):
             s = stats(vault)
             self.assertEqual(s["total"], 0)
             self.assertEqual(s["by_category"], [])
+
+
+class TestBodyIndexing(unittest.TestCase):
+    """Covers Issue 2: full-text search must reach the note body, not just metadata."""
+
+    def _write_note(self, vault: Path, name: str, body: str) -> str:
+        cat_dir = vault / "Tech_Notes"
+        cat_dir.mkdir(parents=True, exist_ok=True)
+        path = cat_dir / f"{name}.md"
+        path.write_text(
+            f"---\ntitle: {name}\n---\n{body}\n", encoding="utf-8"
+        )
+        return str(path)
+
+    def test_body_text_findable_via_search(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = _vault(Path(td))
+            filepath = self._write_note(
+                vault, "garden-note", "Photosynthesis converts sunlight into energy."
+            )
+            log_capture_db(_entry(filepath=filepath, filename="garden-note"), vault)
+
+            results = search("Photosynthesis", vault)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["filename"], "garden-note")
+
+    def test_body_excerpt_strips_frontmatter_and_caps_length(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            filepath = self._write_note(vault, "long-note", "x" * 5000)
+            log_capture_db(_entry(filepath=filepath, filename="long-note"), vault)
+            conn = init_db(vault)
+            row = conn.execute("SELECT body_excerpt FROM captures").fetchone()
+            conn.close()
+            self.assertNotIn("title:", row["body_excerpt"])
+            self.assertLessEqual(len(row["body_excerpt"]), 4000)
+
+    def test_reindex_bodies_backfills_existing_rows(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = _vault(Path(td))
+            filepath = self._write_note(vault, "old-note", "Quantum entanglement basics.")
+            # Simulate a pre-body_excerpt row: insert without the column populated.
+            conn = init_db(vault)
+            conn.execute(
+                "INSERT INTO captures (timestamp, category, path, filename) VALUES (?,?,?,?)",
+                ("2025-01-01T00:00:00", "Tech_Notes", filepath, "old-note"),
+            )
+            conn.commit()
+            conn.close()
+
+            updated = reindex_bodies(vault)
+            self.assertEqual(updated, 1)
+
+            results = search("entanglement", vault)
+            self.assertEqual(len(results), 1)
+
+    def test_reindex_bodies_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = _vault(Path(td))
+            filepath = self._write_note(vault, "note", "Some body text.")
+            log_capture_db(_entry(filepath=filepath, filename="note"), vault)
+
+            first = reindex_bodies(vault)
+            second = reindex_bodies(vault)
+            self.assertEqual(first, 1)   # one row visited and (re)backfilled
+            self.assertEqual(second, 0)  # gated by the _meta flag set after the first call
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────

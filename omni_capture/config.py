@@ -71,6 +71,9 @@ class CaptureConfig:
     # OCR-first fast path for text-heavy image captures (skips the slow LLaVA call).
     ocr_fast_path_enabled: bool = True
     ocr_text_min_chars: int     = 10   # min OCR chars to treat an image as a text capture
+    # When a folder is created through the app (inbox approve or Vault Manager
+    # "+"), auto-generate an LLM routing description for it. Opt-in.
+    auto_describe_new_folders: bool = False
     # Map-Reduce token budgeting for the async YouTube summarizer.
     # max_chunk_tokens = summary_model_context_tokens - summary_safety_buffer_tokens - summary_reserved_output_tokens
     summary_model_context_tokens: int   = 8192
@@ -186,6 +189,7 @@ def load_config(config_path: Path | None = None) -> Config:
     cfg.capture.llm_scrutiny = _scrutiny if _scrutiny in ("relaxed", "balanced", "strict") else "balanced"
     cfg.capture.ocr_fast_path_enabled = bool(cap_raw.get("ocr_fast_path_enabled", True))
     cfg.capture.ocr_text_min_chars    = int(cap_raw.get("ocr_text_min_chars", 10))
+    cfg.capture.auto_describe_new_folders = bool(cap_raw.get("auto_describe_new_folders", False))
 
     cfg.capture.summary_model_context_tokens   = int(cap_raw.get("summary_model_context_tokens", 8192))
     cfg.capture.summary_safety_buffer_tokens   = int(cap_raw.get("summary_safety_buffer_tokens", 256))

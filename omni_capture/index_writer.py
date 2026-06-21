@@ -8,21 +8,22 @@ Database file:  <vault_root>/.omni_capture/captures.db
 Schema
 ------
 captures
-  id          INTEGER PRIMARY KEY AUTOINCREMENT
-  timestamp   TEXT NOT NULL          -- ISO-8601 seconds
-  category    TEXT NOT NULL
-  path        TEXT NOT NULL UNIQUE
-  hash        TEXT                   -- SHA-256 of written note content
-  tags        TEXT DEFAULT '[]'      -- JSON array of strings
-  confidence  REAL DEFAULT 0.9
-  source_url  TEXT
-  input_type  TEXT
-  model       TEXT
-  filename    TEXT
+  id            INTEGER PRIMARY KEY AUTOINCREMENT
+  timestamp     TEXT NOT NULL          -- ISO-8601 seconds
+  category      TEXT NOT NULL
+  path          TEXT NOT NULL UNIQUE
+  hash          TEXT                   -- SHA-256 of written note content
+  tags          TEXT DEFAULT '[]'      -- JSON array of strings
+  confidence    REAL DEFAULT 0.9
+  source_url    TEXT
+  input_type    TEXT
+  model         TEXT
+  filename      TEXT
+  body_excerpt  TEXT                   -- note body, frontmatter stripped, capped ~4000 chars
 
 captures_fts   (FTS5 virtual table)
   rowid -> captures.id
-  body  -> category || ' ' || filename || ' ' || source_url || ' ' || tags
+  body  -> category || ' ' || filename || ' ' || source_url || ' ' || tags || ' ' || body_excerpt
 
 Public API
 ----------
@@ -37,11 +38,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+_BODY_EXCERPT_MAX_CHARS = 4000
 
 
 # ── Path helpers ──────────────────────────────────────────────────────────────
@@ -54,17 +58,18 @@ def get_db_path(vault_root: Path) -> Path:
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS captures (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp   TEXT    NOT NULL,
-    category    TEXT    NOT NULL,
-    path        TEXT    NOT NULL UNIQUE,
-    hash        TEXT,
-    tags        TEXT    DEFAULT '[]',
-    confidence  REAL    DEFAULT 0.9,
-    source_url  TEXT,
-    input_type  TEXT,
-    model       TEXT,
-    filename    TEXT
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp     TEXT    NOT NULL,
+    category      TEXT    NOT NULL,
+    path          TEXT    NOT NULL UNIQUE,
+    hash          TEXT,
+    tags          TEXT    DEFAULT '[]',
+    confidence    REAL    DEFAULT 0.9,
+    source_url    TEXT,
+    input_type    TEXT,
+    model         TEXT,
+    filename      TEXT,
+    body_excerpt  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_captures_timestamp ON captures(timestamp);
@@ -76,34 +81,53 @@ CREATE VIRTUAL TABLE IF NOT EXISTS captures_fts USING fts5(
     content_rowid=id
 );
 
-CREATE TRIGGER IF NOT EXISTS captures_ai AFTER INSERT ON captures BEGIN
+CREATE TABLE IF NOT EXISTS _meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+"""
+
+# Trigger bodies must stay in sync with the captures_fts concatenation used
+# by _row_fts_body() below. Defined as a template (rather than baked into
+# _DDL with CREATE TRIGGER IF NOT EXISTS) because existing databases already
+# have the pre-body_excerpt triggers installed under those names — bumping
+# the concat expression requires DROP + re-CREATE, not IF NOT EXISTS.
+_TRIGGERS_DDL = """
+DROP TRIGGER IF EXISTS captures_ai;
+DROP TRIGGER IF EXISTS captures_ad;
+DROP TRIGGER IF EXISTS captures_au;
+
+CREATE TRIGGER captures_ai AFTER INSERT ON captures BEGIN
     INSERT INTO captures_fts(rowid, body)
     VALUES (
         new.id,
         COALESCE(new.category,'') || ' ' ||
         COALESCE(new.filename,'') || ' ' ||
         COALESCE(new.source_url,'') || ' ' ||
-        COALESCE(new.tags,'')
+        COALESCE(new.tags,'') || ' ' ||
+        COALESCE(new.body_excerpt,'')
     );
 END;
 
-CREATE TRIGGER IF NOT EXISTS captures_ad AFTER DELETE ON captures BEGIN
+CREATE TRIGGER captures_ad AFTER DELETE ON captures BEGIN
     INSERT INTO captures_fts(captures_fts, rowid, body)
     VALUES ('delete', old.id,
         COALESCE(old.category,'') || ' ' ||
         COALESCE(old.filename,'') || ' ' ||
         COALESCE(old.source_url,'') || ' ' ||
-        COALESCE(old.tags,'')
+        COALESCE(old.tags,'') || ' ' ||
+        COALESCE(old.body_excerpt,'')
     );
 END;
 
-CREATE TRIGGER IF NOT EXISTS captures_au AFTER UPDATE ON captures BEGIN
+CREATE TRIGGER captures_au AFTER UPDATE ON captures BEGIN
     INSERT INTO captures_fts(captures_fts, rowid, body)
     VALUES ('delete', old.id,
         COALESCE(old.category,'') || ' ' ||
         COALESCE(old.filename,'') || ' ' ||
         COALESCE(old.source_url,'') || ' ' ||
-        COALESCE(old.tags,'')
+        COALESCE(old.tags,'') || ' ' ||
+        COALESCE(old.body_excerpt,'')
     );
     INSERT INTO captures_fts(rowid, body)
     VALUES (
@@ -111,10 +135,24 @@ CREATE TRIGGER IF NOT EXISTS captures_au AFTER UPDATE ON captures BEGIN
         COALESCE(new.category,'') || ' ' ||
         COALESCE(new.filename,'') || ' ' ||
         COALESCE(new.source_url,'') || ' ' ||
-        COALESCE(new.tags,'')
+        COALESCE(new.tags,'') || ' ' ||
+        COALESCE(new.body_excerpt,'')
     );
 END;
 """
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """
+    Idempotent schema upgrade for databases created before body_excerpt
+    existed: adds the column if missing and unconditionally re-installs the
+    FTS triggers so they pick up the new concatenation (CREATE TRIGGER IF NOT
+    EXISTS in _DDL would silently keep the stale ones).
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(captures)").fetchall()}
+    if "body_excerpt" not in cols:
+        conn.execute("ALTER TABLE captures ADD COLUMN body_excerpt TEXT")
+    conn.executescript(_TRIGGERS_DDL)
 
 
 def init_db(vault_root: Path) -> sqlite3.Connection:
@@ -132,6 +170,7 @@ def init_db(vault_root: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     # executescript handles multi-statement DDL including trigger bodies
     conn.executescript(_DDL)
+    _migrate_schema(conn)
     return conn
 
 
@@ -144,6 +183,23 @@ def _file_hash(path: str) -> Optional[str]:
         return hashlib.sha256(data).hexdigest()
     except OSError:
         return None
+
+
+def _read_body_excerpt(path: str) -> Optional[str]:
+    """
+    Read the note at *path*, strip leading YAML frontmatter, collapse
+    whitespace, and cap to _BODY_EXCERPT_MAX_CHARS. Returns None on any
+    read error -- this must never raise (callers index it best-effort).
+    """
+    if not path:
+        return None
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    text = re.sub(r"^---\n.*?\n---\n", "", text, count=1, flags=re.DOTALL)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:_BODY_EXCERPT_MAX_CHARS] if text else None
 
 
 # ── Write ─────────────────────────────────────────────────────────────────────
@@ -161,19 +217,21 @@ def log_capture_db(entry: dict, vault_root: Path) -> None:
         conn = init_db(vault_root)
         tags = json.dumps(entry.get("tags") or [])
         h    = _file_hash(entry.get("filepath", ""))
+        body = _read_body_excerpt(entry.get("filepath", ""))
 
         conn.execute(
             """
             INSERT INTO captures
                 (timestamp, category, path, hash, tags, confidence,
-                 source_url, input_type, model, filename)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 source_url, input_type, model, filename, body_excerpt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
-                hash       = excluded.hash,
-                tags       = excluded.tags,
-                confidence = excluded.confidence,
-                model      = excluded.model,
-                timestamp  = excluded.timestamp
+                hash         = excluded.hash,
+                tags         = excluded.tags,
+                confidence   = excluded.confidence,
+                model        = excluded.model,
+                timestamp    = excluded.timestamp,
+                body_excerpt = excluded.body_excerpt
             """,
             (
                 entry.get("timestamp") or datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -186,12 +244,56 @@ def log_capture_db(entry: dict, vault_root: Path) -> None:
                 entry.get("input_type"),
                 entry.get("model"),
                 entry.get("filename"),
+                body,
             ),
         )
         conn.commit()
         conn.close()
     except Exception as exc:
         print(f"[IndexWriter] Non-fatal DB error: {exc}", file=sys.stderr)
+
+
+# ── One-time body reindex ───────────────────────────────────────────────────
+
+def reindex_bodies(vault_root: Path) -> int:
+    """
+    One-time backfill of body_excerpt for rows written before this column
+    existed. Gated by a _meta flag so it only does real work once per vault;
+    safe to call repeatedly (e.g. best-effort on every server startup).
+
+    Returns the number of rows updated (0 if already indexed or on error).
+    """
+    try:
+        conn = init_db(vault_root)
+        cursor = conn.cursor()
+
+        flag = cursor.execute(
+            "SELECT value FROM _meta WHERE key = 'body_indexed'"
+        ).fetchone()
+        if flag and flag[0] == "1":
+            conn.close()
+            return 0
+
+        rows = cursor.execute("SELECT id, path FROM captures").fetchall()
+        updated = 0
+        for row in rows:
+            body = _read_body_excerpt(row["path"])
+            cursor.execute(
+                "UPDATE captures SET body_excerpt = ? WHERE id = ?",
+                (body, row["id"]),
+            )
+            updated += 1
+
+        cursor.execute(
+            "INSERT INTO _meta (key, value) VALUES ('body_indexed', '1') "
+            "ON CONFLICT(key) DO UPDATE SET value = '1'"
+        )
+        conn.commit()
+        conn.close()
+        return updated
+    except Exception as exc:
+        print(f"[IndexWriter] Non-fatal reindex error: {exc}", file=sys.stderr)
+        return 0
 
 
 # ── Migration ─────────────────────────────────────────────────────────────────

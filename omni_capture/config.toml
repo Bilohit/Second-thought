@@ -30,11 +30,11 @@ filename_max_chars = 40
 note_max_chars = 0
 # Captures whose LLM confidence is below this go to the _scratchpad inbox for
 # manual review instead of being filed. 0.0 = file everything, 1.0 = review all.
-confidence_threshold = 0.6
+confidence_threshold = 0.9
 # How demanding the classifier's system prompt is: "relaxed" (lean toward
 # assigning a category), "balanced" (default), or "strict" (only file on a
 # clear, unambiguous fit; otherwise low-confidence -> inbox).
-llm_scrutiny = "balanced"
+llm_scrutiny = "strict"
 # OCR-first fast path: for text-heavy screenshots, run RapidOCR before the
 # slow vision model and, if it yields enough text, skip LLaVA and treat the
 # image as a plain-text capture.
@@ -53,6 +53,7 @@ summary_chunk_overlap_tokens = 80      # 50-100 tokens carried between consecuti
 summary_max_chunks = 40                # hard cap; bounds total LLM calls / runtime
 summary_max_concurrency = 3            # parallel Map calls in flight (bound for local Ollama)
 reduce_max_depth = 3                   # recursion cap for the Reduce phase
+auto_describe_new_folders = true
 
 [log]
 path = "~/second-thought-storage/.omni_capture/captures.jsonl"

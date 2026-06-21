@@ -71,3 +71,30 @@ def test_patch_rejects_negative_ocr_text_min_chars():
         with mock.patch.object(server, "reload_config", lambda *a, **k: None):
             r = client.patch("/config", json={"ocr_text_min_chars": -5})
         assert r.status_code == 400
+
+
+def test_patch_survives_a_real_reload_from_disk():
+    """
+    Round-trip regression: PATCH /config, then load the config from a *fresh*
+    load_config() call (not the process-wide get_config() cache) to prove the
+    written file itself -- not just in-memory state -- carries the new
+    llm_scrutiny/confidence_threshold values. This is what a genuine app
+    restart does: a brand-new process calls load_config() with no prior
+    in-memory state to fall back on.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / "config.toml"
+        cfg.write_text('[vault]\nroot = "' + tmp.replace("\\", "/") + '"\n', encoding="utf-8")
+        client, server = _client(cfg)
+        with mock.patch.object(server, "reload_config", lambda *a, **k: None):
+            r = client.patch("/config", json={
+                "confidence_threshold": 0.85,
+                "llm_scrutiny": "relaxed",
+            })
+        assert r.status_code == 200
+
+        import config
+        importlib.reload(config)
+        fresh = config.load_config(cfg)
+        assert fresh.capture.confidence_threshold == 0.85
+        assert fresh.capture.llm_scrutiny == "relaxed"

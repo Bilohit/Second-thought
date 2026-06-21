@@ -54,6 +54,7 @@ try:
 except ImportError:
     raise ImportError("pip install tomlkit")
 
+import anyio
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -123,6 +124,22 @@ def _warm_model() -> None:
         except Exception as exc:
             print(f"[Warmup] skipped: {exc}", flush=True)
     _bg_executor.submit(_warm)
+
+
+@app.on_event("startup")
+def _reindex_bodies() -> None:
+    """Best-effort, run-once backfill of captures.body_excerpt for rows
+    written before full-text body indexing existed. Gated by a _meta flag
+    inside reindex_bodies itself, so this is cheap on every later startup."""
+    def _run():
+        try:
+            from index_writer import reindex_bodies
+            n = reindex_bodies(_get_vault_root())
+            if n:
+                print(f"[Reindex] body_excerpt backfilled for {n} rows", flush=True)
+        except Exception as exc:
+            print(f"[Reindex] skipped: {exc}", flush=True)
+    _bg_executor.submit(_run)
 
 # ---------------------------------------------------------------------------
 # Background job registry (in-process; the server is a single long-lived
@@ -230,6 +247,7 @@ class ConfigPatch(BaseModel):
     llm_scrutiny: Optional[str] = None
     ocr_fast_path_enabled: Optional[bool] = None
     ocr_text_min_chars: Optional[int] = None
+    auto_describe_new_folders: Optional[bool] = None
 
 class CategoryCreate(BaseModel):
     name: str
@@ -774,6 +792,8 @@ async def patch_config(patch: ConfigPatch, _: None = Depends(_require_secret)):
         if min_chars < 0:
             raise HTTPException(status_code=400, detail="ocr_text_min_chars must be non-negative")
         _set("capture", "ocr_text_min_chars", min_chars)
+    if patch.auto_describe_new_folders is not None:
+        _set("capture", "auto_describe_new_folders", bool(patch.auto_describe_new_folders))
 
     CONFIG_PATH.write_text(tomlkit.dumps(doc), encoding="utf-8")
 
@@ -805,13 +825,25 @@ async def list_categories(_: None = Depends(_require_secret)):
 
 @app.post("/vault/categories")
 async def create_category(body: CategoryCreate, _: None = Depends(_require_secret)):
+    from config import get_config
     root = _get_vault_root()
     new_dir = _safe_category_dir(root, body.name)
     name = new_dir.name
     if new_dir.exists():
         raise HTTPException(status_code=409, detail=f"'{name}' already exists.")
     new_dir.mkdir(parents=True, exist_ok=False)
-    return {"ok": True, "name": name, "path": str(new_dir)}
+
+    description = None
+    if get_config().capture.auto_describe_new_folders:
+        from storage_engine import generate_category_description, write_category_description
+        # generate_category_description() ends in a blocking asyncio.run(), which
+        # raises if called from a thread that already has a running event loop
+        # (true here -- this is an async route). Run it on a worker thread instead.
+        generated = await anyio.to_thread.run_sync(generate_category_description, name)
+        if generated:
+            description = write_category_description(new_dir, generated)
+
+    return {"ok": True, "name": name, "path": str(new_dir), "description": description}
 
 @app.patch("/vault/categories/{name}")
 async def rename_category(name: str, body: CategoryRename, _: None = Depends(_require_secret)):
@@ -843,49 +875,14 @@ async def update_category_description(
     Pass description=null (JSON null) or an empty string to clear it.
     Maximum length: 500 characters.
     """
+    from storage_engine import write_category_description
     root = _get_vault_root()
     target = _safe_category_dir(root, name)
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"'{name}' not found.")
 
-    desc = body.description
-    if desc is not None:
-        desc = desc.strip()[:500]  # enforce max length
-
-    config_file = target / ".category.toml"
-
-    # Load existing .category.toml (if any) so we don't clobber other keys.
-    existing: dict = {}
-    if config_file.exists():
-        try:
-            if sys.version_info >= (3, 11):
-                import tomllib
-            else:
-                import tomli as tomllib  # type: ignore[no-redef]
-            with open(config_file, "rb") as f:
-                existing = tomllib.load(f)
-        except Exception:
-            existing = {}
-
-    if not desc:
-        # Clear: remove the description key entirely.
-        existing.pop("description", None)
-    else:
-        existing["description"] = desc
-
-    # Write back using tomlkit so the file stays human-readable.
-    import tomlkit as _tomlkit
-    doc = _tomlkit.document()
-    for k, v in existing.items():
-        doc.add(k, v)  # type: ignore[arg-type]
-
-    if existing:
-        config_file.write_text(_tomlkit.dumps(doc), encoding="utf-8")
-    elif config_file.exists():
-        # No keys remain — remove the file rather than leaving it empty.
-        config_file.unlink()
-
-    return {"ok": True, "name": name, "description": desc or None}
+    desc = write_category_description(target, body.description)
+    return {"ok": True, "name": name, "description": desc}
 
 
 @app.delete("/vault/categories/{name}")
@@ -960,13 +957,49 @@ async def approve_inbox(
 ):
     """Move a scratchpad note to its final category."""
     from config import get_config
-    from storage_engine import approve_scratchpad_item
+    from storage_engine import approve_scratchpad_item, get_scratchpad_item_text
+
     root = _get_vault_root()
+    cfg = get_config()
+
+    is_new = bool(body.target_category) and not (root / body.target_category).exists()
+    sample_text = get_scratchpad_item_text(note_id, root, cfg.vault.scratchpad_folder) if is_new else None
+
     try:
-        dest = approve_scratchpad_item(note_id, root, get_config().vault.scratchpad_folder, target_category=body.target_category)
+        dest = approve_scratchpad_item(note_id, root, cfg.vault.scratchpad_folder, target_category=body.target_category)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+    if is_new and cfg.capture.auto_describe_new_folders:
+        from storage_engine import generate_category_description, write_category_description
+        # Same asyncio.run()-in-a-running-loop hazard as create_category() above --
+        # offload to a worker thread. run_sync takes positional args only, hence
+        # the partial for the sample_text kwarg.
+        from functools import partial
+        generated = await anyio.to_thread.run_sync(
+            partial(generate_category_description, body.target_category, sample_text=sample_text)
+        )
+        if generated:
+            write_category_description(root / body.target_category, generated)
+
     return {"ok": True, "note_id": note_id, "path": str(dest)}
+
+
+@app.get("/inbox/{note_id}/suggest-categories")
+async def suggest_inbox_categories(note_id: str, _: None = Depends(_require_secret)):
+    """Suggest 2-3 generalized, reusable folder names for a scratchpad item."""
+    from config import get_config
+    from storage_engine import discover_categories, get_scratchpad_item_text, suggest_category_names
+
+    root = _get_vault_root()
+    cfg = get_config()
+    text = get_scratchpad_item_text(note_id, root, cfg.vault.scratchpad_folder)
+    if text is None:
+        raise HTTPException(status_code=404, detail=f"Scratchpad item {note_id!r} not found.")
+
+    existing = discover_categories(root, cfg.vault.scratchpad_folder)
+    suggestions = suggest_category_names(text, existing)
+    return {"suggestions": suggestions}
 
 
 @app.delete("/inbox/{note_id}")

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sys
 import uuid
@@ -34,6 +35,8 @@ from typing import Dict, List, Optional
 
 from models import CaptureOutput
 from config import DEFAULT_VAULT_ROOT
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -154,6 +157,133 @@ def build_category_descriptions(
         )
         result[cat] = desc
     return result
+
+
+# ---------------------------------------------------------------------------
+# Category description generation (LLM-backed, fail-soft)
+# ---------------------------------------------------------------------------
+
+_CATEGORY_DESC_MAX_CHARS = 500
+
+
+def write_category_description(cat_dir: Path, description: Optional[str]) -> Optional[str]:
+    """
+    Merge a 'description' value into <cat_dir>/.category.toml, preserving any
+    other keys already in that file. Pass None or "" to clear the key.
+
+    Shared by the manual description-edit endpoint and the auto-describe
+    path so both write through the same toml read/merge/write logic.
+    Returns the value actually stored (None if cleared).
+    """
+    import tomlkit
+
+    desc = description.strip()[:_CATEGORY_DESC_MAX_CHARS] if description else None
+
+    config_file = cat_dir / ".category.toml"
+    existing: dict = read_category_config(cat_dir) if config_file.exists() else {}
+
+    if not desc:
+        existing.pop("description", None)
+    else:
+        existing["description"] = desc
+
+    if existing:
+        doc = tomlkit.document()
+        for k, v in existing.items():
+            doc.add(k, v)  # type: ignore[arg-type]
+        config_file.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    elif config_file.exists():
+        config_file.unlink()
+
+    return desc
+
+
+def generate_category_description(name: str, sample_text: Optional[str] = None) -> Optional[str]:
+    """
+    Ask the local LLM for a single concise (<=120 char) routing description
+    for a folder called `name`, optionally grounded in `sample_text`.
+
+    Fail-soft: any error (Ollama down, timeout, bad output) returns None
+    rather than raising, so callers can just skip writing a description.
+    """
+    try:
+        from config import get_config
+        from llm_engine import summarize
+
+        cfg = get_config()
+        instruction = (
+            "You are naming the routing rule for a folder in a personal note vault. "
+            f"Write ONE concise sentence (under 120 characters) describing what kind of "
+            f"content belongs in a folder called '{name}'. "
+            "No preamble, no quotes, just the sentence."
+        )
+        text = sample_text.strip()[:1500] if sample_text else f"Folder name: {name}"
+
+        result = summarize(
+            text,
+            instruction=instruction,
+            base_url=cfg.ollama.base_url,
+            model=cfg.ollama.model,
+            temperature=0.2,
+            max_retries=1,
+        )
+        result = result.strip().strip('"').strip("'")
+        return result[:_CATEGORY_DESC_MAX_CHARS] if result else None
+    except Exception:
+        logger.warning("generate_category_description('%s') failed", name, exc_info=True)
+        return None
+
+
+def suggest_category_names(sample_text: str, existing_names: List[str]) -> List[str]:
+    """
+    Ask the local LLM for 2-3 generalized, reusable folder names suited to
+    `sample_text`, excluding anything already in `existing_names`.
+
+    Fail-soft: any error returns [].
+    """
+    try:
+        from config import get_config
+        from llm_engine import summarize
+
+        cfg = get_config()
+        existing_str = ", ".join(existing_names) if existing_names else "(none yet)"
+        instruction = (
+            "Suggest 2-3 short, general, reusable folder names for organizing notes "
+            "in a personal knowledge vault, based on the content below. "
+            f"Do NOT reuse any of these existing folder names: {existing_str}. "
+            "Respond with ONLY the folder names, one per line, no numbering, "
+            "no punctuation, no explanation."
+        )
+        text = sample_text.strip()[:1500]
+        if not text:
+            return []
+
+        result = summarize(
+            text,
+            instruction=instruction,
+            base_url=cfg.ollama.base_url,
+            model=cfg.ollama.model,
+            temperature=0.3,
+            max_retries=1,
+        )
+
+        existing_lower = {n.strip().lower() for n in existing_names}
+        seen: set = set()
+        suggestions: List[str] = []
+        for line in result.splitlines():
+            cand = line.strip().strip("-*•").strip().strip('"').strip("'").strip()
+            if not cand or len(cand) > 40:
+                continue
+            key = cand.lower()
+            if key in existing_lower or key in seen:
+                continue
+            seen.add(key)
+            suggestions.append(cand)
+            if len(suggestions) >= 3:
+                break
+        return suggestions
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -677,6 +807,19 @@ def approve_scratchpad_item(
     item.unlink()
     print(f"[StorageEngine] scratchpad approved {note_id} -> {dest_path}")
     return dest_path
+
+
+def get_scratchpad_item_text(
+    note_id: str,
+    vault_root: Path,
+    scratchpad_folder: str = "_scratchpad",
+) -> Optional[str]:
+    """Return a scratchpad note's body text (frontmatter stripped), or None if not found."""
+    item = _find_scratchpad_item(note_id, vault_root, scratchpad_folder)
+    if item is None:
+        return None
+    text = item.read_text(encoding="utf-8", errors="ignore")
+    return re.sub(r"^---\n.*?\n---\n", "", text, count=1, flags=re.DOTALL).strip()
 
 
 def discard_scratchpad_item(
