@@ -44,6 +44,10 @@ interface Props {
   onTogglePillPinned?: (pinned: boolean) => void;
   pillAnchor?:       PillAnchor;
   onSelectPillAnchor?: (anchor: PillAnchor) => void;
+  pillFanStyle?:     "spread" | "capped";
+  onSelectPillFanStyle?: (style: "spread" | "capped") => void;
+  pillSnapEnabled?:  boolean;
+  onTogglePillSnap?: (enabled: boolean) => void;
 }
 
 // ── Theme swatch picker ──────────────────────────────────────────────────────
@@ -290,6 +294,8 @@ export default function SettingsPanel({
   pillCorner, onSelectPillCorner,
   pillPinned, onTogglePillPinned,
   pillAnchor, onSelectPillAnchor,
+  pillFanStyle, onSelectPillFanStyle,
+  pillSnapEnabled, onTogglePillSnap,
 }: Props) {
   const [vaultRoot, setVaultRoot] = useState("");
   const [model, setModel] = useState("llama3.2");
@@ -622,6 +628,67 @@ export default function SettingsPanel({
                 <AnchorGrid anchor={pillAnchor} onSelect={(a) => onSelectPillAnchor?.(a)} />
                 <span style={{ fontSize: 10, color: "var(--text-3)" }}>
                   Pick a corner/edge to snap there always, or leave on Custom (center) for wherever you last positioned it.
+                </span>
+              </Field>
+            )}
+
+            {onSelectPillFanStyle && pillFanStyle && (
+              <Field label="Fan Style">
+                <div style={{ display: "flex", gap: 4 }}>
+                  {([
+                    { v: "spread" as const, label: "Spread" },
+                    { v: "capped" as const, label: "Capped" },
+                  ]).map(({ v, label }) => {
+                    const active = pillFanStyle === v;
+                    return (
+                      <button
+                        key={v}
+                        onClick={() => onSelectPillFanStyle(v)}
+                        style={{
+                          ...BTN_SECONDARY,
+                          flex: 1,
+                          background: active ? "var(--accent)" : (BTN_SECONDARY.background as string),
+                          color: active ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
+                          borderColor: active ? "var(--accent)" : "var(--border)",
+                        }}
+                        aria-pressed={active}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <span style={{ fontSize: 10, color: "var(--text-3)" }}>
+                  Spread lets the radial menu open as wide as the screen allows. Capped keeps spoke spacing tight and even, even when more room is available.
+                </span>
+              </Field>
+            )}
+
+            {onTogglePillSnap && pillSnapEnabled !== undefined && (
+              <Field label="Snap to Edge & Corner">
+                <div style={{ display: "flex", gap: 4 }}>
+                  {([{ v: true, label: "On" }, { v: false, label: "Off" }] as const).map(({ v, label }) => {
+                    const active = pillSnapEnabled === v;
+                    return (
+                      <button
+                        key={label}
+                        onClick={() => onTogglePillSnap(v)}
+                        style={{
+                          ...BTN_SECONDARY,
+                          flex: 1,
+                          background: active ? "var(--accent)" : (BTN_SECONDARY.background as string),
+                          color: active ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
+                          borderColor: active ? "var(--accent)" : "var(--border)",
+                        }}
+                        aria-pressed={active}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <span style={{ fontSize: 10, color: "var(--text-3)" }}>
+                  On Custom placement, releasing the pill near a screen edge or corner snaps it there.
                 </span>
               </Field>
             )}

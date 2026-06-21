@@ -7,7 +7,7 @@ Responsibilities:
      • Read the hotkey string from config.toml [gui] hotkey
      • Fall back to "ctrl+shift+space" if the key is absent
   3. On hotkey press: show the main window + emit "trigger-capture" event to JS
-  4. Create a system tray with "Vault Settings", "Open Settings", "Inbox",
+  4. Create a system tray with "Vault", "Open Settings", "Inbox",
      "Stats", and "Quit" menu items
   5. Kill the Python child process cleanly on app exit
 
@@ -422,9 +422,9 @@ fn parse_shortcut(hotkey: &str) -> Option<Shortcut> {
 // ── Tray icon setup ─────────────────────────────────────────────────────────
 
 fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
-    let quit_item   = MenuItem::with_id(app, "quit",     "Quit Second Thought", true, None::<&str>)?;
-    let vault_item    = MenuItem::with_id(app, "vault",    "Vault Settings",   true, None::<&str>)?;
-    let settings_item = MenuItem::with_id(app, "settings", "Open Settings",    true, None::<&str>)?;
+    let quit_item   = MenuItem::with_id(app, "quit",     "Quit",             true, None::<&str>)?;
+    let vault_item    = MenuItem::with_id(app, "vault",    "Vault",            true, None::<&str>)?;
+    let settings_item = MenuItem::with_id(app, "settings", "Settings",         true, None::<&str>)?;
     let inbox_item    = MenuItem::with_id(app, "inbox",    "Inbox",            true, None::<&str>)?;
     let stats_item    = MenuItem::with_id(app, "stats",    "Stats",            true, None::<&str>)?;
 

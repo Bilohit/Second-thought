@@ -119,7 +119,7 @@ function Footer({ state }: { state: CaptureState }) {
 // ── One-time tray hint ───────────────────────────────────────────────────
 // The window now auto-hides quickly after a capture, so the header's vault
 // button is on screen only briefly. Tell the user, once, that the tray icon
-// (right-click → "Vault Settings") reaches the same place at any time.
+// (right-click → "Vault") reaches the same place at any time.
 
 const TRAY_HINT_KEY = "omni-tray-hint-seen";
 
@@ -361,29 +361,21 @@ export default function CaptureOverlay({
         </div>
 
         <div className="no-drag" style={{ display: "flex", gap: 2 }}>
-          {onCollapseToPill && (
-            <button className="icon-btn" onClick={onCollapseToPill} title="Collapse to pill" aria-label="Collapse to pill">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M16 3h3a2 2 0 0 1 2 2v3m0 8v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3m0-8V5a2 2 0 0 1 2-2h3"/>
-              </svg>
-            </button>
-          )}
           <button className="icon-btn" onClick={onOpenSearch} title="Search vault (Ctrl+K)" aria-label="Search vault">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <circle cx="11" cy="11" r="8" />
               <line x1="21" y1="21" x2="16.65" y2="16.65" />
             </svg>
           </button>
-          <button className="icon-btn" onClick={onOpenStats} title="Statistics" aria-label="Open statistics">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <line x1="18" y1="20" x2="18" y2="10" />
-              <line x1="12" y1="20" x2="12" y2="4" />
-              <line x1="6" y1="20" x2="6" y2="14" />
-            </svg>
-          </button>
           <button className="icon-btn" onClick={onOpenVault} title="Vault (Ctrl+\)" aria-label="Open vault manager">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+          </button>
+          <button className="icon-btn" onClick={onOpenSettings} title="Settings (Ctrl+,)" aria-label="Open settings">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M12 2v2m0 16v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M2 12h2m16 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
             </svg>
           </button>
           <button
@@ -408,12 +400,20 @@ export default function CaptureOverlay({
               />
             )}
           </button>
-          <button className="icon-btn" onClick={onOpenSettings} title="Settings (Ctrl+,)" aria-label="Open settings">
+          <button className="icon-btn" onClick={onOpenStats} title="Statistics" aria-label="Open statistics">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M12 2v2m0 16v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M2 12h2m16 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+              <line x1="18" y1="20" x2="18" y2="10" />
+              <line x1="12" y1="20" x2="12" y2="4" />
+              <line x1="6" y1="20" x2="6" y2="14" />
             </svg>
           </button>
+          {onCollapseToPill && (
+            <button className="icon-btn" onClick={onCollapseToPill} title="Collapse" aria-label="Collapse">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M16 3h3a2 2 0 0 1 2 2v3m0 8v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3m0-8V5a2 2 0 0 1 2-2h3"/>
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 
@@ -430,7 +430,7 @@ export default function CaptureOverlay({
       {showTrayHint && (
         <div style={{ padding: "10px 16px 0" }}>
           <span style={{ fontSize: 10.5, color: "var(--text-3)", letterSpacing: "0.02em" }}>
-            Tip: right-click the tray icon → Vault Settings to manage your vault anytime.
+            Tip: right-click the tray icon → Vault to manage your vault anytime.
           </span>
         </div>
       )}

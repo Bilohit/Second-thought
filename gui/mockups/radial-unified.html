@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Radial fan — unified geometry + troubleshooting tuner</title>
+<style>
+  :root {
+    --bg: #0e0f12; --surface: #1a1c20; --border: #2c2f36;
+    --text: #e7e9ee; --text-3: #7d828c; --accent: #6aa3ff; --red: #ff6a6a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--text); display: flex; height: 100vh; overflow: hidden; }
+
+  /* ── Left: the simulated screen ───────────────────────────── */
+  #stageWrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; min-width: 0; }
+  #screen {
+    position: relative; background: #08090b; border: 1px solid var(--border);
+    box-shadow: inset 0 0 0 9999px rgba(106,163,255,0.015);
+    overflow: visible; /* show off-screen items in red */
+  }
+  #screen::after { /* the real on-screen safe area */
+    content: ""; position: absolute; inset: var(--pad); border: 1px dashed rgba(255,255,255,0.06); pointer-events: none;
+  }
+  .pill {
+    position: absolute; width: var(--pillSize); height: var(--pillSize);
+    margin-left: calc(var(--pillSize) / -2); margin-top: calc(var(--pillSize) / -2);
+    background: var(--surface); border: 1px solid var(--accent); border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; cursor: grab; z-index: 10;
+    box-shadow: 0 0 0 4px rgba(106,163,255,0.12);
+  }
+  .pill:active { cursor: grabbing; }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .chip {
+    position: absolute; width: var(--chip); height: var(--chip);
+    margin-left: calc(var(--chip) / -2); margin-top: calc(var(--chip) / -2);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; color: var(--text-3);
+    font-size: 10px; font-weight: 600; transition: left .12s, top .12s; pointer-events: none;
+  }
+  .chip.off { border-color: var(--red); color: var(--red); background: rgba(255,106,106,0.08); }
+  .arc { position: absolute; pointer-events: none; }
+
+  /* ── Right: controls ──────────────────────────────────────── */
+  #panel { width: 280px; flex: none; background: var(--surface); border-left: 1px solid var(--border); padding: 16px; overflow-y: auto; }
+  h1 { font-size: 13px; margin: 0 0 4px; }
+  p.sub { color: var(--text-3); margin: 0 0 16px; font-size: 12px; }
+  .row { display: flex; justify-content: space-between; align-items: center; margin: 10px 0 4px; }
+  .row label { font-size: 12px; }
+  .row .val { color: var(--accent); font-variant-numeric: tabular-nums; font-size: 12px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .anchors { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0 16px; }
+  .anchors button { background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 8px 0; border-radius: 6px; cursor: pointer; font-size: 11px; }
+  .anchors button.active { border-color: var(--accent); color: var(--accent); }
+  .readout { font-size: 11px; color: var(--text-3); border-top: 1px solid var(--border); margin-top: 16px; padding-top: 12px; }
+  .readout b { color: var(--text); font-variant-numeric: tabular-nums; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+</style>
+</head>
+<body>
+  <div id="stageWrap"><div id="screen"></div></div>
+  <div id="panel">
+    <h1>Unified radial fan</h1>
+    <p class="sub">Drag the pill anywhere, or pick an anchor. <b>One</b> calculation runs for every position — pinned or custom. Red chips = would fall off the safe area.</p>
+
+    <div class="anchors" id="anchors"></div>
+
+    <div class="row"><label>Item count (n)</label><span class="val" id="vN">6</span></div>
+    <input type="range" id="n" min="2" max="8" value="6" />
+
+    <div class="row"><label>Radius (px)</label><span class="val" id="vR">100</span></div>
+    <input type="range" id="r" min="48" max="160" value="100" />
+
+    <div class="row"><label>Min spacing (°)</label><span class="val" id="vS">34</span></div>
+    <input type="range" id="s" min="10" max="60" value="34" />
+
+    <div class="row"><label>Chip max (px)</label><span class="val" id="vC">36</span></div>
+    <input type="range" id="c" min="24" max="48" value="36" />
+
+    <div class="row"><label>Chip min (px)</label><span class="val" id="vCm">33</span></div>
+    <input type="range" id="cm" min="20" max="40" value="33" />
+
+    <div class="row"><label>Edge padding (px)</label><span class="val" id="vP">0</span></div>
+    <input type="range" id="p" min="0" max="40" value="0" />
+
+    <div class="row"><label>Fan style</label></div>
+    <button id="fanStyle" style="width:100%;background:var(--bg);color:var(--accent);border:1px solid var(--accent);padding:8px;border-radius:6px;cursor:pointer;">spread (max arc)</button>
+
+    <hr/>
+    <div class="row"><label>Screen W</label><span class="val" id="vW">900</span></div>
+    <input type="range" id="sw" min="360" max="1200" value="900" />
+    <div class="row"><label>Screen H</label><span class="val" id="vH">560</span></div>
+    <input type="range" id="sh" min="320" max="800" value="560" />
+
+    <div class="readout" id="readout"></div>
+  </div>
+
+<script>
+// ── The unified geometry. This is the proposed production algorithm. ─────────
+// Inputs: pill center (cx,cy), screen (sw,sh), radius R, chip size, edge pad,
+// item count n, desired item spacing. Works identically for pinned & custom —
+// a pinned anchor is just a known (cx,cy).
+// Largest contiguous in-bounds arc for a given chip size. A chip is on-screen
+// only if its CENTER stays in [m, sw-m] x [m, sh-m], m = chip/2 + pad.
+function availableArc(cx, cy, sw, sh, R, chip, pad) {
+  const m = chip / 2 + pad;
+  const valid = (deg) => {
+    const a = deg * Math.PI / 180;
+    const x = cx + Math.cos(a) * R, y = cy + Math.sin(a) * R;
+    return x >= m && x <= sw - m && y >= m && y <= sh - m;
+  };
+  const STEP = 1, samples = [];
+  for (let d = 0; d < 360; d += STEP) samples.push(valid(d));
+  if (samples.every(Boolean)) return { availSpan: 360, availCenter: 0, valid, fullFits: true };
+  const N = samples.length;
+  let best = { len: 0, start: 0 }, len = 0, start = 0;
+  for (let i = 0; i < N * 2; i++) {           // doubled ring captures a wrap-around run
+    if (samples[i % N]) { if (len === 0) start = i; len++; if (len > best.len) best = { len, start: start % N }; }
+    else len = 0;
+  }
+  const availSpan = Math.min(best.len * STEP, 360);
+  return { availSpan, availCenter: best.start * STEP + availSpan / 2, valid, fullFits: false };
+}
+
+// THE unified fan. Same call for pinned & custom — a pinned anchor is just a
+// known (cx,cy). fanStyle: "spread" = use the whole available arc; "capped" =
+// cap each gap at `spacing`° for a tidier partial fan (full 360 still triggers
+// when a whole circle fits). Chip size shrinks from chipMax toward chipMin only
+// as far as needed to stop adjacent chips overlapping.
+const SPREAD_MAX_ARC = 300;   // spread mode never exceeds this when NOT a full wheel
+function unifiedFan({ cx, cy, sw, sh, R, chipMax, chipMin, pad, n, spacing, fanStyle }) {
+  let chip = chipMax, arc, span, center;
+  for (let pass = 0; pass < 4; pass++) {       // converges in 2-3 passes
+    arc = availableArc(cx, cy, sw, sh, R, chip, pad);
+    if (arc.fullFits) {                          // a whole circle fits -> closed wheel
+      span = 360; center = 0;
+    } else {
+      span = fanStyle === "capped"
+        ? Math.min(arc.availSpan, spacing * (n - 1))
+        : Math.min(arc.availSpan, SPREAD_MAX_ARC);
+      center = arc.availCenter;
+    }
+    const gapDeg = span >= 360 ? 360 / n : (n > 1 ? span / (n - 1) : 0);
+    const chord = 2 * R * Math.sin((gapDeg * Math.PI / 180) / 2);   // distance between adjacent chip centers
+    const want = Math.max(chipMin, Math.min(chipMax, chord));        // largest non-overlapping chip in [min,max]
+    if (Math.abs(want - chip) < 0.5) { chip = want; break; }
+    chip = want;
+  }
+  const startA = span >= 360 ? -90 : center - span / 2;
+  const items = [];
+  for (let i = 0; i < n; i++) {
+    const deg = span >= 360 ? startA + (360 / n) * i : startA + (span / (n - 1)) * i;
+    const a = deg * Math.PI / 180;
+    items.push({ deg, x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R, on: arc.valid(deg) });
+  }
+  return { items, span, center, availSpan: arc.availSpan, fullFits: arc.fullFits, chip };
+}
+
+const LABELS = ["Se","Va","St","In","Sa","Hi","x7","x8"];
+const ANCHORS = [["tl",.0,.0],["tc",.5,.0],["tr",1,.0],["lc",.0,.5],["custom",.5,.5],["rc",1,.5],["bl",.0,1],["bc",.5,1],["br",1,1]];
+const screen = document.getElementById("screen");
+const state = { cx:.5, cy:.5, anchor:"custom" }; // cx,cy as fractions when anchored; px when dragged
+let dragging = false, usingFraction = true;
+
+const ab = document.getElementById("anchors");
+ANCHORS.forEach(([id,fx,fy]) => {
+  const b = document.createElement("button"); b.textContent = id; b.dataset.id = id;
+  b.onclick = () => { state.anchor=id; usingFraction=true; state.cx=fx; state.cy=fy; render(); };
+  ab.appendChild(b);
+});
+
+let fanStyle = "spread";
+document.getElementById("fanStyle").onclick = (e) => {
+  fanStyle = fanStyle === "spread" ? "capped" : "spread";
+  e.target.textContent = fanStyle === "spread" ? "spread (max arc)" : "capped (tidy fan)";
+  render();
+};
+const ctrls = ["n","r","s","c","cm","p","sw","sh"];
+ctrls.forEach(id => document.getElementById(id).addEventListener("input", render));
+
+function render() {
+  const SW = +sw.value, SH = +sh.value;
+  // size the screen div, keep aspect within stage
+  const wrap = document.getElementById("stageWrap");
+  const maxW = wrap.clientWidth - 48, maxH = wrap.clientHeight - 48;
+  const scale = Math.min(maxW / SW, maxH / SH, 1);
+  screen.style.width = SW*scale + "px"; screen.style.height = SH*scale + "px";
+
+  const R = +r.value, chipMax = +c.value, chipMin = Math.min(+cm.value, chipMax), pad = +p.value;
+  const n = +document.getElementById("n").value, spacing = +s.value;
+  screen.style.setProperty("--pillSize", 36*scale+"px");
+  screen.style.setProperty("--pad", pad*scale+"px");
+
+  // pill center in screen px — the PILL itself is clamped so its body never
+  // leaves the screen (half pill = 18px).
+  let cx, cy;
+  if (usingFraction) {
+    const margin = 12 + 18; // anchor margin + half pill
+    cx = state.cx===0 ? margin : state.cx===1 ? SW-margin : SW*state.cx;
+    cy = state.cy===0 ? margin : state.cy===1 ? SH-margin : SH*state.cy;
+  } else { cx = state.cx; cy = state.cy; }
+  cx = Math.max(18, Math.min(SW-18, cx)); cy = Math.max(18, Math.min(SH-18, cy));
+
+  const fan = unifiedFan({ cx, cy, sw:SW, sh:SH, R, chipMax, chipMin, pad, n, spacing, fanStyle });
+  const chip = fan.chip;
+  screen.style.setProperty("--chip", chip*scale+"px");
+
+  // draw
+  screen.querySelectorAll(".chip,.pill,.arc").forEach(e=>e.remove());
+  // arc guide
+  const ns="http://www.w3.org/2000/svg";
+  const svg=document.createElementNS(ns,"svg"); svg.classList.add("arc");
+  svg.setAttribute("width",SW*scale); svg.setAttribute("height",SH*scale);
+  const a0=(fan.center-fan.span/2)*Math.PI/180, a1=(fan.center+fan.span/2)*Math.PI/180;
+  const large = fan.span>180?1:0;
+  if(fan.span<360){
+    const path=document.createElementNS(ns,"path");
+    path.setAttribute("d",`M ${(cx+Math.cos(a0)*R)*scale} ${(cy+Math.sin(a0)*R)*scale} A ${R*scale} ${R*scale} 0 ${large} 1 ${(cx+Math.cos(a1)*R)*scale} ${(cy+Math.sin(a1)*R)*scale}`);
+    path.setAttribute("stroke","rgba(106,163,255,.25)"); path.setAttribute("fill","none"); svg.appendChild(path);
+  }
+  screen.appendChild(svg);
+
+  fan.items.forEach((it,i)=>{
+    const el=document.createElement("div"); el.className="chip"+(it.on?"":" off");
+    el.style.left=it.x*scale+"px"; el.style.top=it.y*scale+"px"; el.textContent=LABELS[i];
+    screen.appendChild(el);
+  });
+  const pill=document.createElement("div"); pill.className="pill";
+  pill.style.left=cx*scale+"px"; pill.style.top=cy*scale+"px";
+  pill.innerHTML='<span class="dot"></span>';
+  pill.addEventListener("pointerdown",e=>{ dragging=true; pill.setPointerCapture(e.pointerId); usingFraction=false; state.anchor="custom"; });
+  pill.addEventListener("pointermove",e=>{ if(!dragging)return; const rct=screen.getBoundingClientRect(); state.cx=(e.clientX-rct.left)/scale; state.cy=(e.clientY-rct.top)/scale; render(); });
+  pill.addEventListener("pointerup",()=>dragging=false);
+  screen.appendChild(pill);
+
+  // labels & readout
+  vN.textContent=n; vR.textContent=R; vS.textContent=spacing; vC.textContent=chipMax; vCm.textContent=chipMin; vP.textContent=pad; vW.textContent=SW; vH.textContent=SH;
+  document.querySelectorAll("#anchors button").forEach(b=>b.classList.toggle("active",b.dataset.id===state.anchor));
+  const offCount=fan.items.filter(x=>!x.on).length;
+  readout.innerHTML=`available arc: <b>${fan.availSpan.toFixed(0)}°</b>${fan.fullFits?' (full 360 fits)':''}<br>used span: <b>${fan.span.toFixed(0)}°</b><br>chip (dynamic): <b>${chip.toFixed(0)}px</b><br>off-screen items: <b style="color:${offCount?'var(--red)':'var(--text)'}">${offCount}</b>`;
+}
+window.addEventListener("resize", render);
+render();
+</script>
+</body>
+</html>
