@@ -5,7 +5,6 @@
  *
  * Changes from prior version
  *   - All hard-coded rgba/hex replaced with CSS variables (theme-aware)
- *   - Focus mode: header + thinking panel hidden, only step shown
  *   - Animation via CSS keyframe overlayIn (reduced-motion-safe via index.css)
  *   - Full ARIA: role="dialog", aria-label, aria-live, aria-pressed
  *   - Icon buttons use .icon-btn utility class (focus-visible ring included)
@@ -25,11 +24,13 @@ interface Props {
   onOpenSettings: () => void;
   onOpenVault:    () => void;
   onOpenInbox:    () => void;
-  onOpenPalette:  () => void;
+  onOpenSearch:   () => void;
+  onOpenStats:    () => void;
   visible:        boolean;
-  focusMode:      boolean;
-  onToggleFocus:  () => void;
   inboxCount:     number;
+  /** Only set when Display Mode (Settings) is Capsule/Minimal — shows a
+   *  "collapse back to pill" icon button next to the other header actions. */
+  onCollapseToPill?: () => void;
 }
 
 // ── Content preview ────────────────────────────────────────────────────────
@@ -91,7 +92,7 @@ function useHotkeyLabel(): string {
   return formatHotkey(hotkey);
 }
 
-function Footer({ state, focusMode }: { state: CaptureState; focusMode: boolean }) {
+function Footer({ state }: { state: CaptureState }) {
   const hotkeyLabel = useHotkeyLabel();
   if (state.phase === "done" && state.result) {
     const short = state.result.path ? state.result.path.split(/[\\/]/).slice(-2).join("/") : null;
@@ -112,7 +113,6 @@ function Footer({ state, focusMode }: { state: CaptureState; focusMode: boolean 
   // Background job in progress: the step list above already shows live
   // status, so the footer stays quiet instead of showing the idle hotkey hint.
   if (state.phase === "background") return null;
-  if (focusMode) return null;
   return <span style={{ fontSize: 11, color: "var(--text-3)", letterSpacing: "0.03em" }}>{hotkeyLabel} to capture</span>;
 }
 
@@ -288,11 +288,11 @@ export default function CaptureOverlay({
   onOpenSettings,
   onOpenVault,
   onOpenInbox,
-  onOpenPalette,
+  onOpenSearch,
+  onOpenStats,
   visible,
-  focusMode,
-  onToggleFocus,
   inboxCount,
+  onCollapseToPill,
 }: Props) {
   const [mounted, setMounted] = useState(false);
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -320,7 +320,7 @@ export default function CaptureOverlay({
   );
 
   const isCapturing = captureState.phase === "capturing" || captureState.phase === "background";
-  const showTrayHint = useTrayHintVisible(!focusMode && captureState.phase === "idle");
+  const showTrayHint = useTrayHintVisible(captureState.phase === "idle");
 
   return (
     <div
@@ -329,7 +329,7 @@ export default function CaptureOverlay({
       aria-label="Second Thought capture"
       aria-live="polite"
       tabIndex={-1}
-      className={`glass-card${focusMode ? " focus-mode" : ""}`}
+      className="glass-card"
       style={{
         width: 440,
         padding: "0 0 14px 0",
@@ -340,88 +340,90 @@ export default function CaptureOverlay({
         outline: "none",
       }}
     >
-      {/* Header — hidden in focus mode */}
-      {!focusMode && (
-        <div
-          className="drag-region"
-          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: HEADER_PAD, borderBottom: "1px solid var(--border)" }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span
-              aria-hidden="true"
-              style={{
-                display: "inline-block", width: 7, height: 7, borderRadius: "50%",
-                background: isCapturing ? "var(--accent)" : "var(--border)",
-                boxShadow: isCapturing ? "0 0 8px var(--accent-glow)" : "none",
-                transition: "all 0.3s ease",
-              }}
-            />
-            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)", letterSpacing: "0.02em" }}>
-              Second Thought
-            </span>
-          </div>
-
-          <div className="no-drag" style={{ display: "flex", gap: 2 }}>
-            <button className="icon-btn" onClick={onOpenPalette} title="Command palette (Ctrl+K)" aria-label="Open command palette">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3H6a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3h12a3 3 0 0 0 3-3 3 3 0 0 0-3-3z"/>
-              </svg>
-            </button>
-            <button className="icon-btn" onClick={onOpenVault} title="Vault (Ctrl+\)" aria-label="Open vault manager">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-              </svg>
-            </button>
-            <button
-              className="icon-btn"
-              onClick={onOpenInbox}
-              title="Inbox (Ctrl+I)"
-              aria-label={inboxCount > 0 ? `Open inbox, ${inboxCount} item${inboxCount === 1 ? "" : "s"} need review` : "Open inbox"}
-              style={{ position: "relative" }}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M22 12h-6l-2 3h-4l-2-3H2" />
-                <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
-              </svg>
-              {inboxCount > 0 && (
-                <span
-                  aria-hidden="true"
-                  style={{
-                    position: "absolute", top: 2, right: 2,
-                    minWidth: 7, height: 7, borderRadius: "50%",
-                    background: "var(--accent)",
-                  }}
-                />
-              )}
-            </button>
-            <button className="icon-btn" onClick={onOpenSettings} title="Settings (Ctrl+,)" aria-label="Open settings">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="3"/>
-                <path d="M12 2v2m0 16v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M2 12h2m16 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-              </svg>
-            </button>
-            <button
-              className="icon-btn"
-              onClick={onToggleFocus}
-              title={focusMode ? "Exit focus mode" : "Focus mode"}
-              aria-label={focusMode ? "Exit focus mode" : "Enter focus mode"}
-              aria-pressed={focusMode}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
-              </svg>
-            </button>
-          </div>
+      {/* Header */}
+      <div
+        className="drag-region"
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: HEADER_PAD, borderBottom: "1px solid var(--border)" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            aria-hidden="true"
+            style={{
+              display: "inline-block", width: 7, height: 7, borderRadius: "50%",
+              background: isCapturing ? "var(--accent)" : "var(--border)",
+              boxShadow: isCapturing ? "0 0 8px var(--accent-glow)" : "none",
+              transition: "all 0.3s ease",
+            }}
+          />
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)", letterSpacing: "0.02em" }}>
+            Second Thought
+          </span>
         </div>
-      )}
+
+        <div className="no-drag" style={{ display: "flex", gap: 2 }}>
+          {onCollapseToPill && (
+            <button className="icon-btn" onClick={onCollapseToPill} title="Collapse to pill" aria-label="Collapse to pill">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M16 3h3a2 2 0 0 1 2 2v3m0 8v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3m0-8V5a2 2 0 0 1 2-2h3"/>
+              </svg>
+            </button>
+          )}
+          <button className="icon-btn" onClick={onOpenSearch} title="Search vault (Ctrl+K)" aria-label="Search vault">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+          </button>
+          <button className="icon-btn" onClick={onOpenStats} title="Statistics" aria-label="Open statistics">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <line x1="18" y1="20" x2="18" y2="10" />
+              <line x1="12" y1="20" x2="12" y2="4" />
+              <line x1="6" y1="20" x2="6" y2="14" />
+            </svg>
+          </button>
+          <button className="icon-btn" onClick={onOpenVault} title="Vault (Ctrl+\)" aria-label="Open vault manager">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+          </button>
+          <button
+            className="icon-btn"
+            onClick={onOpenInbox}
+            title="Inbox (Ctrl+I)"
+            aria-label={inboxCount > 0 ? `Open inbox, ${inboxCount} item${inboxCount === 1 ? "" : "s"} need review` : "Open inbox"}
+            style={{ position: "relative" }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+              <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+            </svg>
+            {inboxCount > 0 && (
+              <span
+                aria-hidden="true"
+                style={{
+                  position: "absolute", top: 2, right: 2,
+                  minWidth: 7, height: 7, borderRadius: "50%",
+                  background: "var(--accent)",
+                }}
+              />
+            )}
+          </button>
+          <button className="icon-btn" onClick={onOpenSettings} title="Settings (Ctrl+,)" aria-label="Open settings">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M12 2v2m0 16v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M2 12h2m16 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+            </svg>
+          </button>
+        </div>
+      </div>
 
       {/* Body */}
-      <div style={{ padding: focusMode ? "16px 16px 0" : "13px 16px 0", display: "flex", flexDirection: "column", gap: focusMode ? 10 : 14 }}>
-        {!focusMode && <ContentPreview preview={captureState.preview} />}
+      <div style={{ padding: "13px 16px 0", display: "flex", flexDirection: "column", gap: 14 }}>
+        <ContentPreview preview={captureState.preview} />
         {!captureState.backgroundJob && (
-          <StepIndicator steps={captureState.steps} stepDefs={stepDefs} focusMode={focusMode} />
+          <StepIndicator steps={captureState.steps} stepDefs={stepDefs} />
         )}
-        {!focusMode && <ThinkingPanel thinking={captureState.thinking ?? null} />}
+        <ThinkingPanel thinking={captureState.thinking ?? null} />
         {captureState.backgroundJob && <BackgroundJobIndicator job={captureState.backgroundJob} />}
       </div>
 
@@ -435,20 +437,7 @@ export default function CaptureOverlay({
 
       {/* Footer */}
       <div style={{ padding: "10px 16px 0", display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 18 }}>
-        <Footer state={captureState} focusMode={focusMode} />
-        {focusMode && (
-          <button
-            className="icon-btn"
-            onClick={onToggleFocus}
-            style={{ marginLeft: "auto" }}
-            aria-label="Exit focus mode"
-            aria-pressed={true}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/>
-            </svg>
-          </button>
-        )}
+        <Footer state={captureState} />
       </div>
     </div>
   );

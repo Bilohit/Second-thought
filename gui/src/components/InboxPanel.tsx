@@ -12,13 +12,16 @@ import {
   approveInboxItem,
   discardInboxItem,
   getVaultCategories,
+  suggestCategories,
   type InboxItem,
 } from "../lib/api";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
-  BTN_GHOST, BTN_PRIMARY, ROW_CARD,
-  hoverEnter, hoverLeave,
+  BTN_GHOST, BTN_PRIMARY, ROW_CARD, INPUT_STYLE,
+  hoverEnter, hoverLeave, focusRing, blurRing,
 } from "./ui/styles";
+
+const NEW_FOLDER_SENTINEL = "__new_folder__";
 
 interface Props {
   visible: boolean;
@@ -42,6 +45,10 @@ function InboxRow({
 }) {
   const fallbackTarget = categories.includes(item.category) ? item.category : (categories[0] ?? "");
   const [target, setTarget] = useState(fallbackTarget);
+  const [creatingNew, setCreatingNew] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [suggestions, setSuggestions] = useState<string[] | null>(null);
+  const [suggestLoading, setSuggestLoading] = useState(false);
 
   // Re-clamp if the category list arrives/changes after this row's initial
   // render (the seeded item.category may be "unknown" or otherwise absent
@@ -56,6 +63,20 @@ function InboxRow({
     month: "short", day: "numeric",
   });
 
+  const enterNewFolderMode = () => {
+    setCreatingNew(true);
+    setNewName("");
+    if (suggestions === null && !suggestLoading) {
+      setSuggestLoading(true);
+      suggestCategories(item.note_id)
+        .then((res) => setSuggestions(res.suggestions))
+        .catch(() => setSuggestions([]))
+        .finally(() => setSuggestLoading(false));
+    }
+  };
+
+  const effectiveTarget = creatingNew ? newName.trim() : target;
+
   return (
     <div
       style={{
@@ -66,7 +87,7 @@ function InboxRow({
         gap: 8,
         opacity: leaving ? 0 : 1,
         transform: leaving ? "translateX(12px)" : "translateX(0)",
-        maxHeight: leaving ? 0 : 200,
+        maxHeight: leaving ? 0 : 260,
         overflow: "hidden",
         marginBottom: leaving ? 0 : undefined,
         transition: "opacity 0.18s ease, transform 0.18s ease, max-height 0.22s ease, margin-bottom 0.22s ease",
@@ -80,36 +101,54 @@ function InboxRow({
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <select
-          value={target}
-          onChange={(e) => setTarget(e.target.value)}
-          aria-label={`Target category for ${item.filename}`}
-          style={{
-            flex: 1,
-            background: "var(--surface-2)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius-sm)",
-            padding: "5px 8px",
-            fontSize: 11,
-            color: "var(--text-2)",
-            outline: "none",
-            fontFamily: "inherit",
-          }}
-        >
-          {categories.map((c) => (
-            <option key={c} value={c}>{c}</option>
-          ))}
-        </select>
+        {creatingNew ? (
+          <input
+            autoFocus
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="New folder name"
+            aria-label={`New folder name for ${item.filename}`}
+            style={{ ...INPUT_STYLE, flex: 1, padding: "5px 8px", fontSize: 11 }}
+            onFocus={focusRing}
+            onBlur={blurRing}
+            onKeyDown={(e) => { if (e.key === "Escape") setCreatingNew(false); }}
+          />
+        ) : (
+          <select
+            value={target}
+            onChange={(e) => {
+              if (e.target.value === NEW_FOLDER_SENTINEL) enterNewFolderMode();
+              else setTarget(e.target.value);
+            }}
+            aria-label={`Target category for ${item.filename}`}
+            style={{
+              flex: 1,
+              background: "var(--surface-2)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius-sm)",
+              padding: "5px 8px",
+              fontSize: 11,
+              color: "var(--text-2)",
+              outline: "none",
+              fontFamily: "inherit",
+            }}
+          >
+            {categories.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+            <option value={NEW_FOLDER_SENTINEL}>+ New folder…</option>
+          </select>
+        )}
         <button
-          onClick={() => target && onApprove(item.note_id, target)}
-          disabled={!target}
+          onClick={() => effectiveTarget && onApprove(item.note_id, effectiveTarget)}
+          disabled={!effectiveTarget}
           style={{
             ...BTN_PRIMARY,
             padding: "5px 12px",
             fontSize: 11,
             whiteSpace: "nowrap",
-            opacity: target ? 1 : 0.5,
-            cursor: target ? "pointer" : "not-allowed",
+            opacity: effectiveTarget ? 1 : 0.5,
+            cursor: effectiveTarget ? "pointer" : "not-allowed",
           }}
         >
           Approve
@@ -129,6 +168,37 @@ function InboxRow({
           </svg>
         </button>
       </div>
+
+      {creatingNew && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          {!suggestLoading && suggestions?.map((s) => (
+            <button
+              key={s}
+              onClick={() => setNewName(s)}
+              style={{
+                background: "var(--surface-2)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius-sm)",
+                padding: "3px 8px",
+                fontSize: 10,
+                color: "var(--text-3)",
+                cursor: "pointer",
+                transition: "color 0.15s, border-color 0.15s",
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--text-1)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--text-3)"; }}
+            >
+              {s}
+            </button>
+          ))}
+          <button
+            onClick={() => setCreatingNew(false)}
+            style={{ fontSize: 10, color: "var(--text-3)", background: "none", border: "none", cursor: "pointer", padding: "3px 4px" }}
+          >
+            Use existing folder
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -181,6 +251,13 @@ export default function InboxPanel({ visible, onClose, onCountChange, measureRef
     try {
       await approveInboxItem(noteId, target);
       removeItem(noteId);
+      // Target may be a brand-new folder name (the backend auto-creates it
+      // on approve) -- refresh the category list so it shows up elsewhere.
+      if (target && !categories.includes(target)) {
+        getVaultCategories()
+          .then((res) => setCategories(res.categories.map((c) => c.name)))
+          .catch(() => {});
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to approve item");
     }

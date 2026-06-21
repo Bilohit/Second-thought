@@ -23,17 +23,16 @@ const TILE_LABEL: React.CSSProperties = {
   fontSize: 10, color: "var(--text-3)", letterSpacing: "0.08em", textTransform: "uppercase",
 };
 
-// Bento tile — ROW_CARD surface + motivated entrance (fade-up, staggered by
-// index to read top-down). Reduced-motion collapses fadeIn to a plain opacity
-// step via index.css, so no transform motion plays.
+// Tile — ROW_CARD surface + motivated entrance (fade-up, staggered by index
+// to read top-down). Reduced-motion collapses fadeIn to a plain opacity step
+// via index.css, so no transform motion plays. Single-column stack: every
+// tile is inherently full-width, so there's no span/solo logic needed.
 function Tile({
   index,
-  span,
   style,
   children,
 }: {
   index: number;
-  span?: boolean;
   style?: React.CSSProperties;
   children: React.ReactNode;
 }) {
@@ -41,7 +40,6 @@ function Tile({
     <div
       style={{
         ...ROW_CARD,
-        ...(span ? { gridColumn: "1 / -1" } : null),
         animation: `fadeIn 0.42s cubic-bezier(0.16,1,0.3,1) ${index * 0.06}s both`,
         ...style,
       }}
@@ -170,23 +168,17 @@ export default function StatsPanel({ visible, onClose, measureRef }: Props) {
         )}
 
         {stats && !loading && !error && (() => {
-          // N data facts → N bento tiles, no empty trailing cell. When only one
-          // of category/recent is present it spans the full width so the grid
-          // never leaves a hanging half-tile.
           const hasCats   = maxByCategory.length > 0;
           const hasRecent = stats.recent.length > 0;
-          const solo      = hasCats !== hasRecent;
           return (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              {/* Hero — total captures, 2-span. Tinted bg gives the grid the
-                  2–3 varied cells the bento language wants (not all white). */}
-              <Tile index={0} span style={{ padding: "16px 16px", background: "var(--surface)" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <Tile index={0} style={{ padding: "16px 16px", background: "var(--surface)" }}>
                 <div style={{ fontSize: 30, fontWeight: 600, color: "var(--text-1)", lineHeight: 1 }}>{stats.total}</div>
                 <div style={{ ...TILE_LABEL, marginTop: 4 }}>Total captures</div>
               </Tile>
 
               {hasCats && (
-                <Tile index={1} span={solo} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <Tile index={1} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   <span style={TILE_LABEL}>By category</span>
                   {maxByCategory.map((c) => (
                     <CategoryBar key={c.category} category={c.category} count={c.count} pct={c.pct} />
@@ -195,14 +187,14 @@ export default function StatsPanel({ visible, onClose, measureRef }: Props) {
               )}
 
               {stats.by_day.length > 0 && (
-                <Tile index={2} span style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <Tile index={2} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <span style={TILE_LABEL}>Daily activity (30 days)</span>
                   <DaySparkline days={stats.by_day} />
                 </Tile>
               )}
 
               {hasRecent && (
-                <Tile index={3} span={solo} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <Tile index={3} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   <span style={TILE_LABEL}>Recent activity</span>
                   {stats.recent.slice(0, 10).map((r) => (
                     <div key={r.id} style={{ display: "flex", flexDirection: "column", gap: 2, padding: "4px 0", borderBottom: "1px solid var(--border-2)" }}>

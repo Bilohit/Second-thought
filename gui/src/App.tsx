@@ -1,44 +1,62 @@
 /**
  * App.tsx
  * -------
- * Root component — theme system, command palette, focus mode.
+ * Root component — theme system, search modal.
  *
  * Keyboard bindings
- *   Ctrl+K          command palette (toggle)
+ *   Ctrl+K          search vault (toggle)
  *   Ctrl+,          settings
  *   Ctrl+\          vault
  *   Ctrl+I          inbox
- *   Ctrl+Shift+F    focus mode toggle
  *   Escape          close panel / hide window
  *
  * Themes (persisted to localStorage)
- *   dark            Void  (default)
- *   dark-ash        Ash   (warmer dark)
- *   light           Paper
- *   light-stone     Stone (cooler light)
+ *   dark            Void        (default, grayscale dark)
+ *   light           Paper       (grayscale light)
+ *   sage            Sage        (light pastel)
+ *   sky             Sky         (light pastel)
+ *   bubba-pink      Bubba Pink  (light pastel)
+ *   mist            Mist        (dark pastel)
+ *   lilac           Lilac       (dark pastel)
+ *   sand            Sand        (dark pastel)
+ *   wine            Wine        (dark pastel)
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { LogicalSize } from "@tauri-apps/api/dpi";
+import { LogicalSize, LogicalPosition, PhysicalPosition } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import CaptureOverlay from "./components/CaptureOverlay";
+import PillOverlay, { PILL_DIMS, type PillMode, type PillCorner } from "./components/PillOverlay";
 import SettingsPanel from "./components/SettingsPanel";
 import VaultManager from "./components/VaultManager";
 import InboxPanel from "./components/InboxPanel";
 import StatsPanel from "./components/StatsPanel";
-import CommandPalette, { type PaletteAction } from "./components/CommandPalette";
+import SearchModal, { type SearchAction } from "./components/SearchModal";
 import { useCapture } from "./hooks/useCapture";
-import { getVaultCategories, getInbox } from "./lib/api";
+import { getInbox } from "./lib/api";
+import { type PillAnchor, anchorPosition } from "./lib/pillAnchor";
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 
-export type Theme = "dark" | "dark-ash" | "light" | "light-stone";
-export const THEMES: Theme[] = ["dark", "dark-ash", "light", "light-stone"];
-const THEME_LABELS: Record<Theme, string> = {
-  "dark":        "Void",
-  "dark-ash":    "Ash",
-  "light":       "Paper",
-  "light-stone": "Stone",
+export type Theme =
+  | "dark" | "light"
+  | "sage" | "sky" | "bubba-pink"
+  | "mist" | "lilac" | "sand" | "wine";
+export const THEMES: Theme[] = [
+  "dark", "light",
+  "sage", "sky", "bubba-pink",
+  "mist", "lilac", "sand", "wine",
+];
+export const THEME_LABELS: Record<Theme, string> = {
+  "dark":       "Void",
+  "light":      "Paper",
+  "sage":       "Sage",
+  "sky":        "Sky",
+  "bubba-pink": "Bubba Pink",
+  "mist":       "Mist",
+  "lilac":      "Lilac",
+  "sand":       "Sand",
+  "wine":       "Wine",
 };
 const STORAGE_KEY = "omni-theme";
 
@@ -55,36 +73,201 @@ function applyTheme(theme: Theme) {
   try { localStorage.setItem(STORAGE_KEY, theme); } catch { /* ignore */ }
 }
 
+// ── Display Mode (Item 2: pill/minimized window) ────────────────────────────
+// Client-only preferences, persisted to localStorage exactly like theme —
+// these never touch the server config.
+
+type DisplayMode = "full" | PillMode;
+
+const DISPLAY_MODE_KEY = "omni-pill-mode";
+const PILL_CORNER_KEY  = "omni-pill-corner";
+const PILL_PINNED_KEY  = "omni-pill-pinned";
+const PILL_ANCHOR_KEY  = "omni-pill-anchor";
+
+function getInitialDisplayMode(): DisplayMode {
+  try {
+    const saved = localStorage.getItem(DISPLAY_MODE_KEY);
+    if (saved === "full" || saved === "capsule" || saved === "minimal") return saved;
+  } catch { /* ignore */ }
+  return "full";
+}
+function getInitialPillCorner(): PillCorner {
+  try {
+    const saved = localStorage.getItem(PILL_CORNER_KEY);
+    if (saved === "sharp" || saved === "rounded") return saved;
+  } catch { /* ignore */ }
+  return "sharp";
+}
+function getInitialPillPinned(): boolean {
+  try { return localStorage.getItem(PILL_PINNED_KEY) !== "0"; } catch { return true; }
+}
+function getInitialPillAnchor(): PillAnchor {
+  try {
+    const saved = localStorage.getItem(PILL_ANCHOR_KEY);
+    if (saved && ["tl", "tc", "tr", "lc", "custom", "rc", "bl", "bc", "br"].includes(saved)) return saved as PillAnchor;
+  } catch { /* ignore */ }
+  return "custom";
+}
+
 // ── View ───────────────────────────────────────────────────────────────────
 
 type View = "capture" | "settings" | "vault" | "inbox" | "stats";
+
+// ── Animated window movement ────────────────────────────────────────────────
+// Tauri's setPosition is an instant OS-level jump; everything else in this app
+// moves on the same cubic-bezier(0.16,1,0.3,1) curve, so pill snaps/recenters
+// get this evaluator-driven equivalent instead of a clunky teleport. Kept
+// snappy (not the 200ms standard) per the "quick moving to the pinned spot"
+// brief for window repositioning specifically.
+const MOVE_DURATION_MS = 140;
+
+function cubicBezierEase(p1x: number, p1y: number, p2x: number, p2y: number) {
+  const cx = 3 * p1x, bx = 3 * (p2x - p1x) - cx, ax = 1 - cx - bx;
+  const cy = 3 * p1y, by = 3 * (p2y - p1y) - cy, ay = 1 - cy - by;
+  const sampleX = (t: number) => ((ax * t + bx) * t + cx) * t;
+  const sampleY = (t: number) => ((ay * t + by) * t + cy) * t;
+  const sampleDX = (t: number) => (3 * ax * t + 2 * bx) * t + cx;
+  return (x: number) => {
+    let t = x;
+    for (let i = 0; i < 8; i++) {
+      const dx = sampleX(t) - x;
+      if (Math.abs(dx) < 1e-4) break;
+      const d = sampleDX(t);
+      if (Math.abs(d) < 1e-6) break;
+      t -= dx / d;
+    }
+    return sampleY(t);
+  };
+}
+const MOVE_EASE = cubicBezierEase(0.16, 1, 0.3, 1);
+
+// Animates the window's size AND position together to a *logical*-pixel
+// target by sampling MOVE_EASE across requestAnimationFrame ticks. Combining
+// both in one loop (instead of an instant setSize followed by an animated
+// setPosition) avoids the "snap to full size, then slide to the target spot"
+// look — every frame moves and resizes in lockstep on the same curve.
+// `targetPos: null` means "keep the window's current position" (size-only
+// change). Falls back to an instant jump if reading current geometry fails
+// (e.g. window not fully initialized yet).
+async function animateWindowAndSizeTo(
+  targetSize: { w: number; h: number },
+  targetPos: { x: number; y: number } | null,
+) {
+  const win = getCurrentWindow();
+  let startLogical: { x: number; y: number };
+  let startSize: { w: number; h: number };
+  try {
+    const scale = await win.scaleFactor();
+    const p = await win.outerPosition();
+    const s = await win.outerSize();
+    startLogical = { x: p.x / scale, y: p.y / scale };
+    startSize = { w: s.width / scale, h: s.height / scale };
+  } catch {
+    await win.setSize(new LogicalSize(targetSize.w, targetSize.h)).catch(() => {});
+    if (targetPos) await win.setPosition(new LogicalPosition(targetPos.x, targetPos.y)).catch(() => {});
+    return;
+  }
+  const endPos = targetPos ?? startLogical;
+  const dx = endPos.x - startLogical.x;
+  const dy = endPos.y - startLogical.y;
+  const dw = targetSize.w - startSize.w;
+  const dh = targetSize.h - startSize.h;
+  if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 && Math.abs(dw) < 0.5 && Math.abs(dh) < 0.5) return;
+
+  const startTime = performance.now();
+  await new Promise<void>((resolve) => {
+    const frame = (now: number) => {
+      const t = Math.min(1, (now - startTime) / MOVE_DURATION_MS);
+      const e = MOVE_EASE(t);
+      win.setSize(new LogicalSize(startSize.w + dw * e, startSize.h + dh * e)).catch(() => {});
+      win.setPosition(new LogicalPosition(startLogical.x + dx * e, startLogical.y + dy * e)).catch(() => {});
+      if (t < 1) requestAnimationFrame(frame);
+      else resolve();
+    };
+    requestAnimationFrame(frame);
+  });
+}
 
 // ── Component ──────────────────────────────────────────────────────────────
 
 export default function App() {
   const [view, setView]             = useState<View>("capture");
-  const [palette, setPalette]       = useState(false);
-  const [focusMode, setFocusMode]   = useState(false);
+  const [search, setSearch]         = useState(false);
   const [theme, setTheme]           = useState<Theme>(getInitialTheme);
-  const [categories, setCategories] = useState<string[]>([]);
   const [openResult, setOpenResult] = useState<{ category: string; path: string } | null>(null);
   const [inboxCount, setInboxCount] = useState(0);
 
-  const { state: captureState, stepDefs } = useCapture();
+  // Display Mode (Item 2) state — persisted like theme, applied immediately.
+  const [displayMode, setDisplayMode] = useState<DisplayMode>(getInitialDisplayMode);
+  const [pillCorner, setPillCorner]   = useState<PillCorner>(getInitialPillCorner);
+  const [pillPinned, setPillPinned]   = useState<boolean>(getInitialPillPinned);
+  const [pillAnchor, setPillAnchor]   = useState<PillAnchor>(getInitialPillAnchor);
+  // True once the user clicks the pill (or it's irrelevant because Display
+  // Mode is Full) — shows the full overlay instead of the small pill. Never
+  // toggled automatically by the capture lifecycle, only by explicit clicks.
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => { try { localStorage.setItem(DISPLAY_MODE_KEY, displayMode); } catch { /* ignore */ } }, [displayMode]);
+  useEffect(() => { try { localStorage.setItem(PILL_CORNER_KEY, pillCorner); } catch { /* ignore */ } }, [pillCorner]);
+  useEffect(() => { try { localStorage.setItem(PILL_PINNED_KEY, pillPinned ? "1" : "0"); } catch { /* ignore */ } }, [pillPinned]);
+  useEffect(() => { try { localStorage.setItem(PILL_ANCHOR_KEY, pillAnchor); } catch { /* ignore */ } }, [pillAnchor]);
+
+  // Read via a ref inside useCapture so its dismiss-timer closures always see
+  // the latest pin state without re-subscribing every render. An explicit
+  // manual expand (clicking the pill) holds the window open the same way
+  // Stay Pinned does, so a deliberately-opened full view never gets yanked
+  // away by the post-capture auto-hide regardless of the Stay Pinned setting.
+  const holdOpenRef = useRef(false);
+  useEffect(() => {
+    holdOpenRef.current = displayMode !== "full" && (pillPinned || expanded);
+  }, [displayMode, pillPinned, expanded]);
+
+  const { state: captureState, stepDefs } = useCapture(holdOpenRef);
 
   // Apply theme on mount and whenever it changes
   useEffect(() => { applyTheme(theme); }, [theme]);
 
-  const cycleTheme = useCallback(() => {
-    setTheme((t) => THEMES[(THEMES.indexOf(t) + 1) % THEMES.length]);
-  }, []);
+  const selectTheme = useCallback((t: Theme) => setTheme(t), []);
 
-  // Fetch vault categories for the command palette (best-effort)
+  // Only Capsule/Minimal ever collapse to a pill, and only in the capture
+  // view — Settings/Vault/Inbox/Stats always show full-size regardless.
+  const showPill = displayMode !== "full" && view === "capture" && !expanded;
+
+  // `renderPill` is what actually picks the early-return branch below — it
+  // deliberately *lags* `showPill` by one resize-animation's worth of time
+  // when crossing the pill/full boundary, so the full-size content can finish
+  // fading out before the window shrinks (collapsing to pill), and the window
+  // can finish growing before the content fades in (expanding from pill).
+  // Every other transition (switching between full-size views, ordinary pill
+  // resizes within pill mode) keeps the two in sync with no extra delay.
+  const [renderPill, setRenderPill] = useState(showPill);
+  // Gates the opacity of the full-size content box during exactly those two
+  // crossings; false (visible) the rest of the time.
+  const [contentHidden, setContentHidden] = useState(false);
+
+  // Auto-hide the window once Stay Pinned is turned off, but only once the
+  // user is actually back at the idle pill — not while they're still sitting
+  // in the Settings panel where the toggle lives. `pendingHide` survives
+  // across renders (and across a detour through Settings) until the moment
+  // the guard condition is finally true, then fires once and clears itself.
+  // Re-enabling Stay Pinned before that moment cancels the pending hide.
+  const prevPillPinnedRef = useRef(pillPinned);
+  const pendingHideRef = useRef(false);
   useEffect(() => {
-    getVaultCategories()
-      .then((res) => setCategories(res.categories.map((c) => c.name)))
-      .catch(() => {});
-  }, []);
+    const wasPinned = prevPillPinnedRef.current;
+    prevPillPinnedRef.current = pillPinned;
+    if (wasPinned && !pillPinned) pendingHideRef.current = true;
+    else if (pillPinned) pendingHideRef.current = false;
+
+    if (pendingHideRef.current) {
+      const idleAtPill =
+        displayMode !== "full" && view === "capture" && !expanded && captureState.phase === "idle";
+      if (idleAtPill) {
+        pendingHideRef.current = false;
+        getCurrentWindow().hide();
+      }
+    }
+  }, [pillPinned, expanded, displayMode, view, captureState.phase]);
 
   // Poll the inbox count for the unread badge — best-effort, refreshed
   // whenever a capture completes and whenever the inbox view closes.
@@ -103,42 +286,36 @@ export default function App() {
 
       if (mod && e.key === "k") {
         e.preventDefault();
-        setPalette((o) => !o);
+        setSearch((o) => !o);
         return;
       }
       if (mod && e.key === ",") {
         e.preventDefault();
-        setPalette(false);
+        setSearch(false);
         setView((v) => (v === "settings" ? "capture" : "settings"));
         return;
       }
       if (mod && e.key === "\\") {
         e.preventDefault();
-        setPalette(false);
+        setSearch(false);
         setView((v) => (v === "vault" ? "capture" : "vault"));
         return;
       }
       if (mod && e.key === "i") {
         e.preventDefault();
-        setPalette(false);
+        setSearch(false);
         setView((v) => (v === "inbox" ? "capture" : "inbox"));
         return;
       }
-      if (mod && e.shiftKey && (e.key === "f" || e.key === "F")) {
-        e.preventDefault();
-        setFocusMode((f) => !f);
-        return;
-      }
       if (e.key === "Escape") {
-        if (palette)           { setPalette(false); return; }
-        if (focusMode)         { setFocusMode(false); return; }
+        if (search)             { setSearch(false); return; }
         if (view !== "capture"){ setView("capture"); return; }
         getCurrentWindow().hide();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [view, palette, focusMode]);
+  }, [view, search]);
 
   // ── Tauri events ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -218,19 +395,138 @@ export default function App() {
 
   const displayH =
     view === "capture" ? Math.min(contentH, MAX_CONTENT_H) : SECONDARY_H;
-  const targetWinH = displayH + V_MARGIN;
+
+  // Breathing room around the pill so the rotating-ring overlay (inset -2px)
+  // never gets clipped by the OS window edge.
+  const PILL_MARGIN = 6;
+  const targetWinW = showPill ? PILL_DIMS[displayMode as PillMode].w + PILL_MARGIN * 2 : 480;
+  const targetWinH = showPill ? PILL_DIMS[displayMode as PillMode].h + PILL_MARGIN * 2 : displayH + V_MARGIN;
+
+  // Remember window position across restarts. The window is created hidden
+  // (tauri.conf.json `visible: false`) and only ever shown via the global
+  // hotkey/tray click, so this restore always lands before the user can see
+  // it -- no flash. Header bars (drag-region) in every panel and both pill
+  // shapes make the window freely draggable, so this isn't just the pill's
+  // anchor system: it also covers the full expanded view, which the anchor
+  // effect below never positions at all.
+  const WINDOW_POS_KEY = "omni-window-pos";
+
+  // Guards every programmatic setPosition (pill-anchor snap, secondary-panel
+  // recenter, Custom-position restore) so the onMoved listener below never
+  // mistakes one of those for a real user drag and overwrites the saved
+  // Custom position with a centered/anchored coordinate.
+  const programmaticMove = useRef(false);
+  const markProgrammaticMove = () => {
+    programmaticMove.current = true;
+    setTimeout(() => { programmaticMove.current = false; }, 350);
+  };
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let saveTimer: ReturnType<typeof setTimeout> | undefined;
+    (async () => {
+      try {
+        const saved = localStorage.getItem(WINDOW_POS_KEY);
+        if (saved) {
+          const { x, y } = JSON.parse(saved);
+          if (typeof x === "number" && typeof y === "number") {
+            await getCurrentWindow().setPosition(new PhysicalPosition(x, y));
+          }
+        }
+      } catch { /* ignore */ }
+      try {
+        unlisten = await getCurrentWindow().onMoved(({ payload }) => {
+          if (programmaticMove.current) return;
+          clearTimeout(saveTimer);
+          saveTimer = setTimeout(() => {
+            try {
+              localStorage.setItem(WINDOW_POS_KEY, JSON.stringify({ x: payload.x, y: payload.y }));
+            } catch { /* ignore */ }
+          }, 300);
+        });
+      } catch { /* ignore */ }
+    })();
+    return () => { clearTimeout(saveTimer); unlisten?.(); };
+  }, []);
+
+  // Whenever the window resizes (pill <-> secondary panel <-> full capture,
+  // or Display Mode itself changing), reassert Placement: any fixed anchor
+  // (not "custom") always wins and snaps the window — pill-sized, secondary
+  // panel, or full capture alike — to that corner, sized for whatever the
+  // new targetWinW/targetWinH actually are. This covers Full display mode
+  // too (placement used to be a pill-only no-op there).
+  //
+  // "custom" means "leave it wherever it was dragged" and has no anchor to
+  // snap back to, so it instead needs the recenter-to-middle/restore dance:
+  // growing out of the pill shape into a much wider panel at the old small
+  // pill's corner position would otherwise hang off-screen.
+  const prevShowPillRef = useRef(showPill);
+  const prePanelPos = useRef<{ x: number; y: number } | null>(null);
 
   // Grow the OS window immediately (nothing to clip); shrink only after the
   // 200ms cross-fade/collapse has finished, so the outgoing panel's still-
   // fading bottom is never sheared.
-  const prevH = useRef(targetWinH);
+  const prevSize = useRef({ w: targetWinW, h: targetWinH });
   useEffect(() => {
-    const growing = targetWinH >= prevH.current;
-    const apply = () => {
-      getCurrentWindow()
-        .setSize(new LogicalSize(480, targetWinH))
-        .catch(() => {/* ignore if window not yet ready */});
-      prevH.current = targetWinH;
+    const pillModeActive = displayMode !== "full";
+    const prevShowPill = prevShowPillRef.current;
+    const leavingPill = pillModeActive && prevShowPill && !showPill;   // pill -> full
+    const enteringPill = pillModeActive && !prevShowPill && showPill; // full -> pill
+
+    // Expanding out of the pill is always treated as "growing" (start the
+    // grow immediately) even though prevSize/targetWinH comparisons alone
+    // might disagree — there's no outgoing full-size content to protect from
+    // shearing yet (renderPill is about to flip the tree to the full view).
+    // Collapsing into the pill keeps the existing shrink-delay gate, which
+    // now doubles as the window for the content fade-out below to play.
+    const growing = leavingPill || targetWinH >= prevSize.current.h;
+
+    // Kick off the content hide/tree-swap synchronously, in the same tick
+    // the crossing is detected — not inside `apply()` — so the fade-out (or
+    // the full tree's hidden-but-mounted grow-in) starts immediately rather
+    // than waiting on the shrink-delay timer below.
+    if (leavingPill) {
+      setRenderPill(false);
+      setContentHidden(true);
+    } else if (enteringPill) {
+      setContentHidden(true);
+    }
+
+    const apply = async () => {
+      if (pillAnchor === "custom" && leavingPill) {
+        try {
+          const pos = await getCurrentWindow().outerPosition();
+          prePanelPos.current = { x: pos.x, y: pos.y };
+        } catch { /* ignore */ }
+      }
+
+      let targetPos: { x: number; y: number } | null = null;
+      if (pillAnchor !== "custom") {
+        targetPos = anchorPosition(pillAnchor, targetWinW, targetWinH);
+      } else if (enteringPill && prePanelPos.current) {
+        const restore = prePanelPos.current;
+        prePanelPos.current = null;
+        try {
+          const scale = await getCurrentWindow().scaleFactor();
+          targetPos = { x: restore.x / scale, y: restore.y / scale };
+        } catch { /* ignore */ }
+      } else if (leavingPill) {
+        const sw = window.screen.availWidth;
+        const sh = window.screen.availHeight;
+        targetPos = { x: Math.round((sw - targetWinW) / 2), y: Math.round((sh - targetWinH) / 2) };
+      }
+
+      if (targetPos) markProgrammaticMove();
+      await animateWindowAndSizeTo({ w: targetWinW, h: targetWinH }, targetPos);
+
+      // Reveal only after the window has actually finished resizing/moving —
+      // the whole point being the window never shows a clipped 440px card
+      // mid-grow, and never shrinks out from under still-visible content.
+      if (leavingPill) setContentHidden(false);
+      else if (enteringPill) setRenderPill(true);
+
+      prevSize.current = { w: targetWinW, h: targetWinH };
+      prevShowPillRef.current = showPill;
     };
     if (growing) {
       apply();
@@ -238,25 +534,39 @@ export default function App() {
       const t = setTimeout(apply, 220);
       return () => clearTimeout(t);
     }
-  }, [targetWinH]);
+  }, [targetWinW, targetWinH, showPill, pillAnchor, displayMode]);
 
-  // ── Palette action handler ───────────────────────────────────────────────
-  const handlePaletteAction = useCallback((action: PaletteAction) => {
-    if (action === "settings") {
-      setView("settings");
-    } else if (action === "vault") {
-      setView("vault");
-    } else if (action === "inbox") {
-      setView("inbox");
-    } else if (action === "stats") {
-      setView("stats");
-    } else if (typeof action === "object" && action.kind === "category") {
-      setView("vault");
-    } else if (typeof action === "object" && action.kind === "openResult") {
+  // ── Search action handler ────────────────────────────────────────────────
+  const handleSearchAction = useCallback((action: SearchAction) => {
+    if (action.kind === "openResult") {
       setOpenResult({ category: action.category, path: action.path });
       setView("vault");
     }
   }, []);
+
+  if (renderPill) {
+    return (
+      <div
+        style={{
+          width: "100vw",
+          height: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "transparent",
+          overflow: "hidden",
+        }}
+      >
+        <PillOverlay
+          mode={displayMode as PillMode}
+          corner={pillCorner}
+          captureState={captureState}
+          stepDefs={stepDefs}
+          onExpand={() => setExpanded(true)}
+        />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -282,7 +592,9 @@ export default function App() {
           position: "relative",
           width: 440,
           height: displayH,
-          transition: "height 0.2s cubic-bezier(0.16,1,0.3,1)",
+          transition: "height 0.2s cubic-bezier(0.16,1,0.3,1), opacity 0.2s cubic-bezier(0.16,1,0.3,1)",
+          opacity: contentHidden ? 0 : 1,
+          pointerEvents: contentHidden ? "none" : undefined,
         }}
       >
         <CaptureOverlay
@@ -292,11 +604,11 @@ export default function App() {
           onOpenSettings={() => setView("settings")}
           onOpenVault={() => setView("vault")}
           onOpenInbox={() => setView("inbox")}
-          onOpenPalette={() => setPalette(true)}
+          onOpenSearch={() => setSearch(true)}
+          onOpenStats={() => setView("stats")}
           visible={view === "capture"}
-          focusMode={focusMode}
-          onToggleFocus={() => setFocusMode((f) => !f)}
           inboxCount={inboxCount}
+          onCollapseToPill={displayMode !== "full" ? () => setExpanded(false) : undefined}
         />
         <SettingsPanel
           measureRef={setMeasureEl("settings")}
@@ -304,7 +616,15 @@ export default function App() {
           onClose={() => setView("capture")}
           theme={theme}
           themeLabel={THEME_LABELS[theme]}
-          onCycleTheme={cycleTheme}
+          onSelectTheme={selectTheme}
+          displayMode={displayMode}
+          onSelectDisplayMode={setDisplayMode}
+          pillCorner={pillCorner}
+          onSelectPillCorner={setPillCorner}
+          pillPinned={pillPinned}
+          onTogglePillPinned={setPillPinned}
+          pillAnchor={pillAnchor}
+          onSelectPillAnchor={setPillAnchor}
         />
         <VaultManager
           measureRef={setMeasureEl("vault")}
@@ -326,12 +646,11 @@ export default function App() {
         />
       </div>
 
-      {/* Command palette — sits above everything */}
-      <CommandPalette
-        open={palette}
-        categories={categories}
-        onClose={() => setPalette(false)}
-        onAction={handlePaletteAction}
+      {/* Search modal — sits above everything */}
+      <SearchModal
+        open={search}
+        onClose={() => setSearch(false)}
+        onAction={handleSearchAction}
       />
     </div>
   );

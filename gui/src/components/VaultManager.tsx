@@ -17,6 +17,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { open as openPath } from "@tauri-apps/plugin-shell";
 import {
   getVaultCategories,
   createVaultCategory,
@@ -50,10 +51,16 @@ interface CategoryCardProps {
   onDrillIn: (name: string) => void;
   onRename: (name: string) => void;
   onEditDescription: (name: string, current: string | null) => void;
-  onDelete: (name: string, count: number) => void;
+  confirming: boolean;
+  onRequestDelete: (name: string) => void;
+  onCancelDelete: () => void;
+  onConfirmDelete: (name: string, count: number) => void;
 }
 
-function CategoryCard({ cat, onDrillIn, onRename, onEditDescription, onDelete }: CategoryCardProps) {
+function CategoryCard({
+  cat, onDrillIn, onRename, onEditDescription,
+  confirming, onRequestDelete, onCancelDelete, onConfirmDelete,
+}: CategoryCardProps) {
   const isSystem = cat.name.startsWith("_");
 
   return (
@@ -61,13 +68,13 @@ function CategoryCard({ cat, onDrillIn, onRename, onEditDescription, onDelete }:
       style={{
         ...ROW_CARD,
         display: "flex",
-        alignItems: "center",
-        gap: 10,
-        cursor: "pointer",
+        flexDirection: "column",
+        cursor: confirming ? "default" : "pointer",
         transition: "background 0.15s, border-color 0.15s",
       }}
-      onClick={() => onDrillIn(cat.name)}
+      onClick={() => !confirming && onDrillIn(cat.name)}
       onMouseEnter={(e) => {
+        if (confirming) return;
         (e.currentTarget as HTMLElement).style.background = "var(--surface-2)";
         (e.currentTarget as HTMLElement).style.borderColor = "var(--accent)";
       }}
@@ -76,86 +83,132 @@ function CategoryCard({ cat, onDrillIn, onRename, onEditDescription, onDelete }:
         (e.currentTarget as HTMLElement).style.borderColor = "var(--border)";
       }}
     >
-      {/* Folder icon */}
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={isSystem ? "var(--text-3)" : "var(--accent)"} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-      </svg>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, opacity: confirming ? 0.5 : 1, transition: "opacity 0.18s" }}>
+        {/* Folder icon */}
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={isSystem ? "var(--text-3)" : "var(--accent)"} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        </svg>
 
-      {/* Name + count + description */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{
-          fontSize: 12, fontWeight: 500,
-          color: isSystem ? "var(--text-3)" : "var(--text-1)",
-          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-        }}>
-          {cat.name}
-        </div>
-        <div style={{ fontSize: 10, color: "var(--text-3)", marginTop: 1 }}>
-          {cat.file_count} {cat.file_count === 1 ? "note" : "notes"}
-        </div>
-        {cat.description && (
+        {/* Name + count + description */}
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{
-            fontSize: 10,
-            color: "color-mix(in srgb, var(--accent) 70%, var(--text-2))",
-            marginTop: 3,
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            maxWidth: "100%",
+            fontSize: 12, fontWeight: 500,
+            color: isSystem ? "var(--text-3)" : "var(--text-1)",
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
           }}>
-            {cat.description}
+            {cat.name}
           </div>
-        )}
+          <div style={{ fontSize: 10, color: "var(--text-3)", marginTop: 1 }}>
+            {cat.file_count} {cat.file_count === 1 ? "note" : "notes"}
+          </div>
+          {cat.description && (
+            <div style={{
+              fontSize: 10,
+              color: "color-mix(in srgb, var(--accent) 70%, var(--text-2))",
+              marginTop: 3,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              maxWidth: "100%",
+            }}>
+              {cat.description}
+            </div>
+          )}
+        </div>
+
+        {/* Actions (stop click bubbling) */}
+        <div
+          style={{ display: "flex", gap: 2, flexShrink: 0, pointerEvents: confirming ? "none" : "auto" }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Edit description */}
+          <button
+            style={BTN_GHOST}
+            title={cat.description ? "Edit description" : "Add LLM routing description"}
+            onMouseEnter={(e) => hoverEnter(e, "var(--accent)")}
+            onMouseLeave={hoverLeave}
+            onClick={() => onEditDescription(cat.name, cat.description)}
+          >
+            {/* Pencil icon */}
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+            </svg>
+          </button>
+          {/* Rename */}
+          <button
+            style={BTN_GHOST}
+            title="Rename"
+            onMouseEnter={(e) => hoverEnter(e)}
+            onMouseLeave={hoverLeave}
+            onClick={() => onRename(cat.name)}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+            </svg>
+          </button>
+          {/* Delete */}
+          <button
+            style={BTN_GHOST}
+            title="Delete"
+            onMouseEnter={(e) => hoverEnter(e, "var(--red)")}
+            onMouseLeave={hoverLeave}
+            onClick={() => onRequestDelete(cat.name)}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6l-1 14H6L5 6" />
+              <path d="M10 11v6M14 11v6" />
+              <path d="M9 6V4h6v2" />
+            </svg>
+          </button>
+        </div>
       </div>
 
-      {/* Actions (stop click bubbling) */}
-      <div
-        style={{ display: "flex", gap: 2, flexShrink: 0 }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Edit description */}
-        <button
-          style={BTN_GHOST}
-          title={cat.description ? "Edit description" : "Add LLM routing description"}
-          onMouseEnter={(e) => hoverEnter(e, "var(--accent)")}
-          onMouseLeave={hoverLeave}
-          onClick={() => onEditDescription(cat.name, cat.description)}
+      {/* Inline delete confirmation — expands downward from this row */}
+      {confirming && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            marginTop: 10,
+            background: "color-mix(in srgb, var(--red) 8%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--red) 25%, var(--border))",
+            borderRadius: "var(--radius)",
+            padding: "10px 12px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            animation: "fadeIn 0.2s cubic-bezier(0.16,1,0.3,1) both",
+          }}
         >
-          {/* Pencil icon */}
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 20h9" />
-            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-          </svg>
-        </button>
-        {/* Rename */}
-        <button
-          style={BTN_GHOST}
-          title="Rename"
-          onMouseEnter={(e) => hoverEnter(e)}
-          onMouseLeave={hoverLeave}
-          onClick={() => onRename(cat.name)}
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-          </svg>
-        </button>
-        {/* Delete */}
-        <button
-          style={BTN_GHOST}
-          title="Delete"
-          onMouseEnter={(e) => hoverEnter(e, "var(--red)")}
-          onMouseLeave={hoverLeave}
-          onClick={() => onDelete(cat.name, cat.file_count)}
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="3 6 5 6 21 6" />
-            <path d="M19 6l-1 14H6L5 6" />
-            <path d="M10 11v6M14 11v6" />
-            <path d="M9 6V4h6v2" />
-          </svg>
-        </button>
-      </div>
+          <span style={{ fontSize: 12, color: "var(--text-2)" }}>
+            Delete <strong style={{ color: "var(--text-1)" }}>{cat.name}</strong>?
+            {cat.file_count > 0 && (
+              <> It contains <strong style={{ color: "var(--yellow)" }}>{cat.file_count} file{cat.file_count !== 1 ? "s" : ""}</strong>.</>
+            )}
+          </span>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
+            <button
+              onClick={onCancelDelete}
+              style={{ ...BTN_GHOST, color: "var(--text-2)", fontSize: 12, padding: "5px 10px" }}
+              onMouseEnter={(e) => hoverEnter(e)}
+              onMouseLeave={hoverLeave}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => onConfirmDelete(cat.name, cat.file_count)}
+              style={{
+                padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: "var(--radius)",
+                border: "none", background: "var(--red)", color: "var(--on-accent)", cursor: "pointer",
+              }}
+            >
+              {cat.file_count > 0 ? "Delete anyway" : "Delete"}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -343,8 +396,7 @@ type ModalState =
   | { kind: "none" }
   | { kind: "create" }
   | { kind: "rename"; name: string }
-  | { kind: "editDescription"; name: string; current: string | null }
-  | { kind: "deleteConfirm"; name: string; count: number };
+  | { kind: "editDescription"; name: string; current: string | null };
 
 export default function VaultManager({ visible, onClose, openResult, onConsumeOpenResult, measureRef }: Props) {
   // Mounted+visible pattern (mirrors SettingsPanel): the panel stays mounted
@@ -365,6 +417,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
 
   const [modal, setModal] = useState<ModalState>({ kind: "none" });
   const [actionError, setActionError] = useState<string | null>(null);
+  const [confirmingDeleteName, setConfirmingDeleteName] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -413,6 +466,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
       setModal({ kind: "none" });
       setActionError(null);
       setHighlightFile(null);
+      setConfirmingDeleteName(null);
     }
     wasVisible.current = visible;
   }, [visible]);
@@ -474,11 +528,20 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
     setActionError(null);
     try {
       await deleteVaultCategory(name, force);
-      setModal({ kind: "none" });
+      setConfirmingDeleteName(null);
       if (drillCat === name) setDrillCat(null);
       await load();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Failed to delete");
+    }
+  };
+
+  const handleOpenVaultFolder = async () => {
+    setActionError(null);
+    try {
+      await openPath(vaultRoot);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Failed to open vault folder");
     }
   };
 
@@ -527,6 +590,21 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
         </div>
 
         <div className="no-drag" style={{ display: "flex", gap: 4 }}>
+          {/* Open vault folder (only on top-level view, once we know the path) */}
+          {!drillCat && vaultRoot && (
+            <button
+              style={BTN_GHOST}
+              title="Open vault folder"
+              onMouseEnter={(e) => hoverEnter(e)}
+              onMouseLeave={hoverLeave}
+              onClick={handleOpenVaultFolder}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                <path d="M2 10h20" />
+              </svg>
+            </button>
+          )}
           {/* Refresh */}
           <button
             style={BTN_GHOST}
@@ -617,41 +695,6 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
           </div>
         )}
 
-        {/* Delete confirmation */}
-        {modal.kind === "deleteConfirm" && (
-          <div style={{
-            background: "color-mix(in srgb, var(--red) 8%, transparent)",
-            border: "1px solid color-mix(in srgb, var(--red) 25%, var(--border))",
-            borderRadius: "var(--radius)", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8,
-          }}>
-            <span style={{ fontSize: 12, color: "var(--text-2)" }}>
-              Delete <strong style={{ color: "var(--text-1)" }}>{modal.name}</strong>?
-              {modal.count > 0 && (
-                <> It contains <strong style={{ color: "var(--yellow)" }}>{modal.count} file{modal.count !== 1 ? "s" : ""}</strong>.</>
-              )}
-            </span>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
-              <button
-                onClick={() => { setModal({ kind: "none" }); setActionError(null); }}
-                style={{ ...BTN_GHOST, color: "var(--text-2)", fontSize: 12, padding: "5px 10px" }}
-                onMouseEnter={(e) => hoverEnter(e)}
-                onMouseLeave={hoverLeave}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => handleDelete(modal.name, modal.count > 0)}
-                style={{
-                  padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: "var(--radius)",
-                  border: "none", background: "var(--red)", color: "var(--on-accent)", cursor: "pointer",
-                }}
-              >
-                {modal.count > 0 ? "Delete anyway" : "Delete"}
-              </button>
-            </div>
-          </div>
-        )}
-
         {actionError && (
           <span style={{ fontSize: 11, color: "var(--red)", padding: "0 2px" }}>{actionError}</span>
         )}
@@ -681,7 +724,10 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
                 onDrillIn={drillInto}
                 onRename={(name) => { setActionError(null); setModal({ kind: "rename", name }); }}
                 onEditDescription={(name, current) => { setActionError(null); setModal({ kind: "editDescription", name, current }); }}
-                onDelete={(name, count) => { setActionError(null); setModal({ kind: "deleteConfirm", name, count }); }}
+                confirming={confirmingDeleteName === cat.name}
+                onRequestDelete={(name) => { setActionError(null); setConfirmingDeleteName(name); }}
+                onCancelDelete={() => { setActionError(null); setConfirmingDeleteName(null); }}
+                onConfirmDelete={(name, count) => handleDelete(name, count > 0)}
               />
             ))}
           </>

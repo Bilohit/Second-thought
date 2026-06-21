@@ -11,14 +11,12 @@
  *   - State changes animate (scale/rotate icon swap, rail fill) — reduced-motion
  *     collapses these to instant via index.css.
  *   - Optional per-step `detail` renders as a muted sub-line when present.
- *   - focusMode: renders only the current active/most-recent step.
  */
 import type { CaptureStep, StepState } from "../hooks/useCapture";
 
 interface Props {
   steps:      Record<string, StepState>;
   stepDefs:   CaptureStep[];
-  focusMode?: boolean;
 }
 
 // Geometry — connector derives from these so it scales with the icon box.
@@ -89,24 +87,20 @@ function StepIcon({ status }: { status: StepState }) {
   );
 }
 
-export default function StepIndicator({ steps, stepDefs, focusMode = false }: Props) {
-  const visibleDefs = focusMode
-    ? stepDefs.filter((def) => steps[def.id] === "active" || steps[def.id] === "done").slice(-1)
-    : stepDefs;
-
+export default function StepIndicator({ steps, stepDefs }: Props) {
   return (
     <ol
       role="list"
       aria-label="Capture pipeline steps"
       style={{
         margin: 0, padding: 0, listStyle: "none",
-        display: "flex", flexDirection: "column", gap: focusMode ? 0 : ROW_GAP,
+        display: "flex", flexDirection: "column", gap: ROW_GAP,
       }}
     >
-      {visibleDefs.map((def, i) => {
+      {stepDefs.map((def, i) => {
         const status = steps[def.id];
         const cfg    = statusConfig[status];
-        const isLast = i === visibleDefs.length - 1;
+        const isLast = i === stepDefs.length - 1;
         // Rail entering the NEXT step takes this step's rail colour once done,
         // so the connector "fills" as the pipeline advances.
         const railColor = status === "done" ? statusConfig.done.rail
@@ -133,7 +127,7 @@ export default function StepIndicator({ steps, stepDefs, focusMode = false }: Pr
             </div>
 
             {/* Dashed connector — centred on the icon column, derived offset. */}
-            {!focusMode && !isLast && (
+            {!isLast && (
               <span
                 aria-hidden="true"
                 style={{
@@ -152,7 +146,7 @@ export default function StepIndicator({ steps, stepDefs, focusMode = false }: Pr
             <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
               <span
                 style={{
-                  fontSize: focusMode ? 14 : 13,
+                  fontSize: 13,
                   fontWeight: cfg.weight,
                   color: cfg.fg,
                   transition: "color 0.2s ease",
@@ -161,7 +155,7 @@ export default function StepIndicator({ steps, stepDefs, focusMode = false }: Pr
               >
                 {def.label}
               </span>
-              {!focusMode && def.detail && (
+              {def.detail && (
                 <span style={{ fontSize: 11, color: "var(--text-3)", lineHeight: 1.4 }}>
                   {def.detail}
                 </span>

@@ -200,7 +200,14 @@ const BLANK_STATE: CaptureState = {
 
 const JOB_POLL_MS = 1500;
 
-export function useCapture() {
+/**
+ * holdOpenRef: when `.current` is true, the window is never auto-hidden at
+ * the end of a run (pinned pill mode) — state just resets to idle instead,
+ * so the pill stays on screen as a calm persistent indicator. Read via a
+ * ref (not a parameter re-passed on every call) so the dismiss timer's
+ * closure always sees the latest value without re-subscribing.
+ */
+export function useCapture(holdOpenRef?: { current: boolean }) {
   const [state, setState] = useState<CaptureState>(BLANK_STATE);
   const abortRef = useRef<AbortController | null>(null);
   const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -223,10 +230,15 @@ export function useCapture() {
   const scheduleDismiss = useCallback((delayMs: number) => {
     if (dismissTimer.current) clearTimeout(dismissTimer.current);
     dismissTimer.current = setTimeout(async () => {
+      if (holdOpenRef?.current) {
+        // Pinned pill: stay visible, just settle back to idle.
+        setState(BLANK_STATE);
+        return;
+      }
       await getCurrentWindow().hide();
       setTimeout(() => setState(BLANK_STATE), 300);
     }, delayMs);
-  }, []);
+  }, [holdOpenRef]);
 
   const stopJobPolling = useCallback(() => {
     if (jobPollTimer.current) {
@@ -354,7 +366,7 @@ export function useCapture() {
           // snap back to idle rather than getting stuck in "capturing".
           logger.debug("capture", "duplicate event absorbed");
           stopRun();
-          await getCurrentWindow().hide();
+          if (!holdOpenRef?.current) await getCurrentWindow().hide();
           setState(BLANK_STATE);
           return;
         } else if (event.kind === "job") {

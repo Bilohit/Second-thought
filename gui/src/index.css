@@ -3,64 +3,40 @@
 @tailwind utilities;
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   THEME SYSTEM — Grayscale (shadcn "neutral") palette
-   One light register (Paper) and one dark register (Void), each duplicated
-   into a warm/cool alias so the existing 4-theme switcher keeps working.
+   THEME SYSTEM — 9 themes: 2 grayscale + 7 pastel
    All colours are CSS custom properties so every component references
    variables — never raw hex — making palette swaps instant.
 
-   LOCKS (from the supplied theme):
+   LOCKS (grayscale themes only):
      · Accent  — single grayscale --primary #737373. No coloured CTAs.
-                 Green / yellow / red are SEMANTIC STATE only.
-     · Shape   — radius 0 (sharp). One scale, no mixing.
+
+   LOCKS (all themes):
+     · State   — green / yellow / red are SEMANTIC STATE only, never used as
+                 a theme accent.
+     · Shape   — radius 0 (sharp). One scale, shared at :root, never redefined
+                 per theme.
      · Font    — Geist Mono everywhere.
      · Shadow  — near-flat; elevation reads from borders + surface, not blur.
 
-   Usage
-     <html data-theme="dark">          Void  (default dark)
-     <html data-theme="dark-ash">      Ash   (dark alias)
-     <html data-theme="light">         Paper (light)
-     <html data-theme="light-stone">   Stone (light alias)
+   PASTEL EXCEPTION: the 7 pastel themes below deliberately relax the
+   grayscale-accent lock — each gets its own soft, distinct accent plus
+   gently tinted surfaces. Sharp 0px radii and Geist Mono still apply.
+
+   Usage — <html data-theme="...">
+     dark         Void        (default dark, grayscale)
+     light        Paper       (light, grayscale)
+     sage         Sage        (light pastel — green)
+     sky          Sky         (light pastel — saturated blue)
+     bubba-pink   Bubba Pink  (light pastel — custom, accent #A2556F)
+     mist         Mist        (dark pastel — teal)
+     lilac        Lilac       (dark pastel — purple)
+     sand         Sand        (dark pastel — gold)
+     wine         Wine        (dark pastel — custom, accent brightened from
+                                #751E3B for text-on-surface legibility)
    ═══════════════════════════════════════════════════════════════════════════ */
 
-/* ── Void (default dark) ─────────────────────────────────────────────────── */
-:root,
-[data-theme="dark"],
-[data-theme="dark-ash"] {
-  color-scheme: dark;
-
-  /* Surfaces */
-  --bg:           #0a0a0a;   /* background  */
-  --surface:      #262626;   /* muted       */
-  --surface-2:    #404040;   /* accent      */
-  --border:       #383838;   /* border      */
-  --border-2:     #262626;
-
-  /* Text */
-  --text-1:       #fafafa;   /* foreground       */
-  --text-2:       #a1a1a1;   /* muted-foreground */
-  --text-3:       #737373;
-
-  /* Accent (grayscale --primary) */
-  --accent:       #737373;
-  --accent-d:     rgba(115, 115, 115, 0.18);
-  --accent-glow:  rgba(115, 115, 115, 0.30);
-  --on-accent:    #fafafa;   /* text/icon colour on top of --accent or --red fills */
-
-  /* Semantic state */
-  --green:        #4ade80;
-  --yellow:       #facc15;
-  --red:          #ff6467;   /* destructive */
-
-  /* Card surface ("glass" name kept; now an opaque card) */
-  --glass-bg:     #191919;   /* card   */
-  --glass-border: #383838;
-  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.40);
-
-  /* Command palette */
-  --palette-bg:   #262626;   /* popover */
-  --scrim:        rgba(0, 0, 0, 0.55);
-
+/* ── Shared scale (every theme) ──────────────────────────────────────────── */
+:root {
   /* Spacing scale */
   --space-1: 4px;
   --space-2: 8px;
@@ -69,37 +45,238 @@
   --space-5: 24px;
   --space-6: 32px;
 
-  /* Radius — sharp (theme --radius: 0rem). One scale. */
+  /* Radius — sharp (theme --radius: 0rem). One scale. Never redefined. */
   --radius-sm: 0px;
   --radius:    0px;
   --radius-lg: 0px;
   --radius-xl: 0px;
 }
 
-/* ── Paper (light) ───────────────────────────────────────────────────────── */
-[data-theme="light"],
-[data-theme="light-stone"] {
+/* ── Void (default dark, grayscale) ──────────────────────────────────────── */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:           #0a0a0a;
+  --surface:      #262626;
+  --surface-2:    #404040;
+  --border:       #383838;
+  --border-2:     #262626;
+  --text-1:       #fafafa;
+  --text-2:       #a1a1a1;
+  --text-3:       #737373;
+  --accent:       #737373;
+  --accent-d:     rgba(115, 115, 115, 0.18);
+  --accent-glow:  rgba(115, 115, 115, 0.30);
+  --on-accent:    #fafafa;
+  --green:        #4ade80;
+  --yellow:       #facc15;
+  --red:          #ff6467;
+  --glass-bg:     #191919;
+  --glass-border: #383838;
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --palette-bg:   #262626;
+  --scrim:        rgba(0, 0, 0, 0.55);
+}
+
+/* ── Paper (light, grayscale) ────────────────────────────────────────────── */
+[data-theme="light"] {
   color-scheme: light;
-  --bg:           #ffffff;   /* background  */
-  --surface:      #f5f5f5;   /* muted       */
+  --bg:           #ffffff;
+  --surface:      #f5f5f5;
   --surface-2:    #e5e5e5;
-  --border:       #e5e5e5;   /* border      */
+  --border:       #e5e5e5;
   --border-2:     #f0f0f0;
-  --text-1:       #0a0a0a;   /* foreground       */
-  --text-2:       #717171;   /* muted-foreground */
-  --text-3:       #a1a1a1;   /* ring             */
-  --accent:       #737373;   /* primary */
+  --text-1:       #0a0a0a;
+  --text-2:       #717171;
+  --text-3:       #a1a1a1;
+  --accent:       #737373;
   --accent-d:     rgba(115, 115, 115, 0.10);
   --accent-glow:  rgba(115, 115, 115, 0.22);
-  --on-accent:    #fafafa;   /* text/icon colour on top of --accent or --red fills */
+  --on-accent:    #fafafa;
   --green:        #16a34a;
   --yellow:       #92660a;
-  --red:          #e7000b;   /* destructive */
-  --glass-bg:     #ffffff;   /* card */
+  --red:          #e7000b;
+  --glass-bg:     #ffffff;
   --glass-border: #e5e5e5;
   --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
-  --palette-bg:   #ffffff;   /* popover */
+  --palette-bg:   #ffffff;
   --scrim:        rgba(0, 0, 0, 0.25);
+}
+
+/* ── Sage (light pastel) ──────────────────────────────────────────────────── */
+[data-theme="sage"] {
+  color-scheme: light;
+  --bg:           #f6f8f3;
+  --surface:      #e9efe1;
+  --surface-2:    #dde6d1;
+  --border:       #cddabd;
+  --border-2:     #e3ead7;
+  --text-1:       #28331f;
+  --text-2:       #5c6b4c;
+  --text-3:       #8a9678;
+  --accent:       #7fa05f;
+  --accent-d:     rgba(127, 160, 95, 0.12);
+  --accent-glow:  rgba(127, 160, 95, 0.24);
+  --on-accent:    #f8fbf3;
+  --green:        #16a34a;
+  --yellow:       #92660a;
+  --red:          #e7000b;
+  --glass-bg:     #ffffff;
+  --glass-border: #cddabd;
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --palette-bg:   #e9efe1;
+  --scrim:        rgba(0, 0, 0, 0.25);
+}
+
+/* ── Sky (light pastel, saturated blue) ───────────────────────────────────── */
+[data-theme="sky"] {
+  color-scheme: light;
+  --bg:           #eef6fb;
+  --surface:      #d7ebf5;
+  --surface-2:    #c0deee;
+  --border:       #a8cfe3;
+  --border-2:     #cfe6f1;
+  --text-1:       #122a36;
+  --text-2:       #3c6b82;
+  --text-3:       #6c93a6;
+  --accent:       #1f7fb3;
+  --accent-d:     rgba(31, 127, 179, 0.12);
+  --accent-glow:  rgba(31, 127, 179, 0.24);
+  --on-accent:    #f3fafd;
+  --green:        #16a34a;
+  --yellow:       #92660a;
+  --red:          #e7000b;
+  --glass-bg:     #ffffff;
+  --glass-border: #a8cfe3;
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --palette-bg:   #d7ebf5;
+  --scrim:        rgba(0, 0, 0, 0.25);
+}
+
+/* ── Bubba Pink (light pastel, custom — accent #A2556F) ───────────────────── */
+[data-theme="bubba-pink"] {
+  color-scheme: light;
+  --bg:           #fdf6f8;
+  --surface:      #f6e6ec;
+  --surface-2:    #efd5df;
+  --border:       #e2bdca;
+  --border-2:     #f1dee5;
+  --text-1:       #371b24;
+  --text-2:       #7a4655;
+  --text-3:       #a8788a;
+  --accent:       #a2556f;
+  --accent-d:     rgba(162, 85, 111, 0.12);
+  --accent-glow:  rgba(162, 85, 111, 0.24);
+  --on-accent:    #fdf6f8;
+  --green:        #16a34a;
+  --yellow:       #92660a;
+  --red:          #e7000b;
+  --glass-bg:     #ffffff;
+  --glass-border: #e2bdca;
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --palette-bg:   #f6e6ec;
+  --scrim:        rgba(0, 0, 0, 0.25);
+}
+
+/* ── Mist (dark pastel, teal) ─────────────────────────────────────────────── */
+[data-theme="mist"] {
+  color-scheme: dark;
+  --bg:           #181c1d;
+  --surface:      #232a2b;
+  --surface-2:    #2f3839;
+  --border:       #3a4546;
+  --border-2:     #2a3132;
+  --text-1:       #eef3f3;
+  --text-2:       #aebcbd;
+  --text-3:       #7f9293;
+  --accent:       #6cb8b1;
+  --accent-d:     rgba(108, 184, 177, 0.18);
+  --accent-glow:  rgba(108, 184, 177, 0.30);
+  --on-accent:    #0d1717;
+  --green:        #4ade80;
+  --yellow:       #facc15;
+  --red:          #ff6467;
+  --glass-bg:     #1e2425;
+  --glass-border: #3a4546;
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --palette-bg:   #232a2b;
+  --scrim:        rgba(0, 0, 0, 0.55);
+}
+
+/* ── Lilac (dark pastel, purple) ──────────────────────────────────────────── */
+[data-theme="lilac"] {
+  color-scheme: dark;
+  --bg:           #1c1620;
+  --surface:      #2a1f30;
+  --surface-2:    #38293f;
+  --border:       #44324c;
+  --border-2:     #332639;
+  --text-1:       #f3eef7;
+  --text-2:       #c4aed4;
+  --text-3:       #9683a8;
+  --accent:       #c08fdd;
+  --accent-d:     rgba(192, 143, 221, 0.18);
+  --accent-glow:  rgba(192, 143, 221, 0.30);
+  --on-accent:    #170f1b;
+  --green:        #4ade80;
+  --yellow:       #facc15;
+  --red:          #ff6467;
+  --glass-bg:     #221a28;
+  --glass-border: #44324c;
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --palette-bg:   #2a1f30;
+  --scrim:        rgba(0, 0, 0, 0.55);
+}
+
+/* ── Sand (dark pastel, gold) ─────────────────────────────────────────────── */
+[data-theme="sand"] {
+  color-scheme: dark;
+  --bg:           #1e1a16;
+  --surface:      #2c2620;
+  --surface-2:    #3a3128;
+  --border:       #463b30;
+  --border-2:     #332b24;
+  --text-1:       #f5efe6;
+  --text-2:       #c2af97;
+  --text-3:       #93826c;
+  --accent:       #cf9e5c;
+  --accent-d:     rgba(207, 158, 92, 0.18);
+  --accent-glow:  rgba(207, 158, 92, 0.30);
+  --on-accent:    #19140f;
+  --green:        #4ade80;
+  --yellow:       #facc15;
+  --red:          #ff6467;
+  --glass-bg:     #241f1a;
+  --glass-border: #463b30;
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --palette-bg:   #2c2620;
+  --scrim:        rgba(0, 0, 0, 0.55);
+}
+
+/* ── Wine (dark pastel, custom — brand color #751E3B brightened to #a8415f
+   so it stays legible as direct text, e.g. the URL-domain label) ─────────── */
+[data-theme="wine"] {
+  color-scheme: dark;
+  --bg:           #160a0e;
+  --surface:      #241319;
+  --surface-2:    #321a23;
+  --border:       #43232d;
+  --border-2:     #2e171e;
+  --text-1:       #f7e3e9;
+  --text-2:       #c79aa7;
+  --text-3:       #8f6470;
+  --accent:       #a8415f;
+  --accent-d:     rgba(168, 65, 95, 0.18);
+  --accent-glow:  rgba(168, 65, 95, 0.30);
+  --on-accent:    #fdf2f5;
+  --green:        #4ade80;
+  --yellow:       #facc15;
+  --red:          #ff6467;
+  --glass-bg:     #1d0f14;
+  --glass-border: #43232d;
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --palette-bg:   #241319;
+  --scrim:        rgba(0, 0, 0, 0.55);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -133,12 +310,6 @@ html, body, #root {
   border:                1px solid var(--glass-border);
   border-radius:         var(--radius-xl);
   box-shadow:            var(--glass-shadow);
-}
-
-/* Focus mode — card strips down to bare essentials */
-.glass-card.focus-mode {
-  border-color: transparent;
-  box-shadow: none;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -207,6 +378,25 @@ html, body, #root {
 @keyframes paletteIn {
   from { opacity: 0; transform: translateY(-8px) scale(0.98); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Pill mode (capsule/minimal) — rotating conic ring + pulsing glow.
+   --pill-angle must be a registered custom property (not just a CSS var) so
+   the browser can animate it as an <angle>, which is what lets the
+   conic-gradient ring actually sweep instead of snapping. */
+@property --pill-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes pillSpin {
+  to { --pill-angle: 360deg; }
+}
+
+@keyframes pillPulseGlow {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-glow); }
+  50%      { box-shadow: 0 0 0 6px var(--accent-glow); }
 }
 
 /* Reduced motion: collapse everything to a plain fade */

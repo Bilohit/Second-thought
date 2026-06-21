@@ -91,6 +91,7 @@ export interface Config {
     llm_scrutiny?: "relaxed" | "balanced" | "strict";
     ocr_fast_path_enabled?: boolean;
     ocr_text_min_chars?: number;
+    auto_describe_new_folders?: boolean;
   };
 }
 
@@ -243,6 +244,7 @@ export async function patchConfig(patch: {
   llm_scrutiny?: "relaxed" | "balanced" | "strict";
   ocr_fast_path_enabled?: boolean;
   ocr_text_min_chars?: number;
+  auto_describe_new_folders?: boolean;
 }): Promise<void> {
   const r = await fetch(`${BASE}/config`, {
     method: "PATCH",
@@ -355,6 +357,17 @@ export async function approveInboxItem(noteId: string, targetCategory?: string):
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     throw new Error(body.detail ?? "Failed to approve item");
+  }
+  return r.json();
+}
+
+export async function suggestCategories(noteId: string): Promise<{ suggestions: string[] }> {
+  const r = await fetch(`${BASE}/inbox/${encodeURIComponent(noteId)}/suggest-categories`, {
+    headers: await authHeaders(),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.detail ?? "Failed to suggest categories");
   }
   return r.json();
 }
