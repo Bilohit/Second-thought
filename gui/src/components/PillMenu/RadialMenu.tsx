@@ -39,6 +39,8 @@ export interface PillGeometry {
   cy: number;
   sw: number;
   sh: number;
+  originX?: number;
+  originY?: number;
 }
 
 interface Props {
@@ -77,8 +79,10 @@ export default function RadialMenu({ open, corner, pillGeometry, fanStyle, inbox
       minSpacingDeg: tuning.minSpacingDeg,
       fanStyle: effectiveFanStyle,
       spreadMaxArc: tuning.spreadMaxArc,
+      originX: pillGeometry.originX ?? 0,
+      originY: pillGeometry.originY ?? 0,
     });
-  }, [pillGeometry?.cx, pillGeometry?.cy, pillGeometry?.sw, pillGeometry?.sh, effectiveFanStyle, tuning]);
+  }, [pillGeometry?.cx, pillGeometry?.cy, pillGeometry?.sw, pillGeometry?.sh, pillGeometry?.originX, pillGeometry?.originY, effectiveFanStyle, tuning]);
   const positions = fan.items;
   const chip = fan.chip;
 

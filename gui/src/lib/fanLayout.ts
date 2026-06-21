@@ -29,6 +29,12 @@ export interface FanParams {
   /** Overrides SPREAD_MAX_ARC — the dev tuner's escape hatch; production
    *  code omits this and gets the constant. */
   spreadMaxArc?: number;
+  /** Origin offset for work area (logical px, for multi-monitor support).
+   *  Defaults to 0 for single-monitor/primary-monitor layouts. */
+  originX?: number;
+  /** Origin offset for work area (logical px, for multi-monitor support).
+   *  Defaults to 0 for single-monitor/primary-monitor layouts. */
+  originY?: number;
 }
 
 export interface FanItemPosition {
@@ -61,14 +67,15 @@ export const SAFETY_EPSILON = 0.3;
 /** Largest contiguous in-bounds arc (chip-aware) containing the inward
  *  direction, refined to ~0.01deg accuracy then inset by a safety epsilon —
  *  erring inward only, never outward (see for_sonnet.md "off-by-a-step
- *  warning"). */
-export function availableArc(cx: number, cy: number, sw: number, sh: number, R: number, chip: number, pad: number): ArcResult {
+ *  warning"). Work area bounds can be offset for multi-monitor layouts via
+ *  originX/originY (defaults to 0). */
+export function availableArc(cx: number, cy: number, sw: number, sh: number, R: number, chip: number, pad: number, originX: number = 0, originY: number = 0): ArcResult {
   const m = chip / 2 + pad;
   const isValid = (deg: number) => {
     const a = (deg * Math.PI) / 180;
     const x = cx + Math.cos(a) * R;
     const y = cy + Math.sin(a) * R;
-    return x >= m && x <= sw - m && y >= m && y <= sh - m;
+    return x >= originX + m && x <= originX + sw - m && y >= originY + m && y <= originY + sh - m;
   };
 
   const N = Math.round(360 / COARSE_STEP);
@@ -131,11 +138,11 @@ function selectSpanAndCenter(arc: ArcResult, n: number, minSpacingDeg: number, f
 /** THE unified fan geometry — same call for a pinned anchor (known cx, cy)
  *  and a dragged custom position. See for_sonnet.md "Problem 2 + 3". */
 export function unifiedFan(p: FanParams): FanResult {
-  const { cx, cy, sw, sh, radius: R, chipMax, chipMin, pad, ids, minSpacingDeg, fanStyle, spreadMaxArc = SPREAD_MAX_ARC } = p;
+  const { cx, cy, sw, sh, radius: R, chipMax, chipMin, pad, ids, minSpacingDeg, fanStyle, spreadMaxArc = SPREAD_MAX_ARC, originX = 0, originY = 0 } = p;
   const n = ids.length;
 
   let chip = chipMax;
-  let arc = availableArc(cx, cy, sw, sh, R, chip, pad);
+  let arc = availableArc(cx, cy, sw, sh, R, chip, pad, originX, originY);
   let { span, center } = selectSpanAndCenter(arc, n, minSpacingDeg, fanStyle, spreadMaxArc);
 
   for (let pass = 0; pass < 4; pass++) {
@@ -147,13 +154,13 @@ export function unifiedFan(p: FanParams): FanResult {
       break;
     }
     chip = want;
-    arc = availableArc(cx, cy, sw, sh, R, chip, pad);
+    arc = availableArc(cx, cy, sw, sh, R, chip, pad, originX, originY);
     ({ span, center } = selectSpanAndCenter(arc, n, minSpacingDeg, fanStyle, spreadMaxArc));
   }
 
   // Ordering guarantee (G1): the arc/span used for placement must match the
   // chip actually rendered — recompute once more with the settled chip.
-  arc = availableArc(cx, cy, sw, sh, R, chip, pad);
+  arc = availableArc(cx, cy, sw, sh, R, chip, pad, originX, originY);
   ({ span, center } = selectSpanAndCenter(arc, n, minSpacingDeg, fanStyle, spreadMaxArc));
 
   const isFullWheel = span >= 360;

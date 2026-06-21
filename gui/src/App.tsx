@@ -40,6 +40,7 @@ import SearchModal, { type SearchAction } from "./components/SearchModal";
 import { useCapture } from "./hooks/useCapture";
 import { getInbox } from "./lib/api";
 import { type PillAnchor, anchorPosition } from "./lib/pillAnchor";
+import { getActiveWorkArea } from "./lib/monitor";
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 
@@ -527,15 +528,14 @@ export default function App() {
                   const scale = await win.scaleFactor();
                   const lx = x / scale;
                   const ly = y / scale;
-                  const sw = window.screen.availWidth;
-                  const sh = window.screen.availHeight;
+                  const area = await getActiveWorkArea();
                   const margin = 12;
-                  const nearLeft   = lx <= SNAP_THRESHOLD_PX;
-                  const nearRight  = sw - (lx + w) <= SNAP_THRESHOLD_PX;
-                  const nearTop    = ly <= SNAP_THRESHOLD_PX;
-                  const nearBottom = sh - (ly + h) <= SNAP_THRESHOLD_PX;
-                  const snappedX = nearLeft ? margin : nearRight ? sw - w - margin : lx;
-                  const snappedY = nearTop ? margin : nearBottom ? sh - h - margin : ly;
+                  const nearLeft   = lx <= area.x + SNAP_THRESHOLD_PX;
+                  const nearRight  = area.x + area.w - (lx + w) <= SNAP_THRESHOLD_PX;
+                  const nearTop    = ly <= area.y + SNAP_THRESHOLD_PX;
+                  const nearBottom = area.y + area.h - (ly + h) <= SNAP_THRESHOLD_PX;
+                  const snappedX = nearLeft ? area.x + margin : nearRight ? area.x + area.w - w - margin : lx;
+                  const snappedY = nearTop ? area.y + margin : nearBottom ? area.y + area.h - h - margin : ly;
                   if (snappedX !== lx || snappedY !== ly) {
                     markProgrammaticMove();
                     await win.setPosition(new LogicalPosition(snappedX, snappedY));
@@ -617,7 +617,8 @@ export default function App() {
 
       let targetPos: { x: number; y: number } | null = null;
       if (pillAnchor !== "custom") {
-        targetPos = anchorPosition(pillAnchor, targetWinW, targetWinH);
+        const area = await getActiveWorkArea();
+        targetPos = anchorPosition(pillAnchor, targetWinW, targetWinH, area);
       } else if (enteringPill && prePanelPos.current) {
         const restore = prePanelPos.current;
         prePanelPos.current = null;
@@ -626,9 +627,8 @@ export default function App() {
           targetPos = { x: restore.x / scale, y: restore.y / scale };
         } catch { /* ignore */ }
       } else if (leavingPill) {
-        const sw = window.screen.availWidth;
-        const sh = window.screen.availHeight;
-        targetPos = { x: Math.round((sw - targetWinW) / 2), y: Math.round((sh - targetWinH) / 2) };
+        const area = await getActiveWorkArea();
+        targetPos = { x: Math.round(area.x + (area.w - targetWinW) / 2), y: Math.round(area.y + (area.h - targetWinH) / 2) };
       } else if (openingMenu) {
         // Keep the pill's visual center fixed while the window grows around
         // it — otherwise the fan/morph would grow from the window's current
