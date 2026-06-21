@@ -15,6 +15,7 @@
     "global-shortcut:allow-unregister",
     "global-shortcut:allow-is-registered",
     "core:window:allow-hide",
-    "core:window:allow-set-size"
+    "core:window:allow-set-size",
+    "core:window:allow-set-position"
   ]
 }
