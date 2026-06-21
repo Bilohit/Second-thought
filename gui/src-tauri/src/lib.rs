@@ -650,6 +650,13 @@ pub fn run() {
                 window.hide().ok();
                 api.prevent_close();
             }
+            // Belt-and-suspenders: if the window somehow gets maximized despite
+            // config.maximizable=false, immediately unmaximize it.
+            if let tauri::WindowEvent::Resized(_) = event {
+                if window.is_maximized().unwrap_or(false) {
+                    let _ = window.unmaximize();
+                }
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running Second Thought");

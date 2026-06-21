@@ -26,6 +26,8 @@
         "maxHeight": 700,
         "resizable": false,
         "decorations": false,
+        "maximizable": false,
+        "maximized": false,
         "transparent": true,
         "alwaysOnTop": true,
         "visible": false,
