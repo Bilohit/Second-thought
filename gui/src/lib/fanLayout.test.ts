@@ -49,6 +49,16 @@ describe("availableArc", () => {
     expect(arc.isValid(lo - SAFETY_EPSILON - 0.05)).toBe(false);
     expect(arc.isValid(hi + SAFETY_EPSILON + 0.05)).toBe(false);
   });
+
+  it("is origin-invariant under translation (multi-monitor offset)", () => {
+    // Pill hard against the left edge of a 1920x1080 work area at origin 0.
+    const a = availableArc(12, 540, 1920, 1080, 100, 36, 0);
+    // Same pill, same work area, shifted to a secondary monitor at x=1920.
+    const b = availableArc(1920 + 12, 540, 1920, 1080, 100, 36, 0, 1920, 0);
+    expect(b.availSpan).toBeCloseTo(a.availSpan, 5);
+    expect(b.availCenter).toBeCloseTo(a.availCenter, 5);
+    expect(b.fullFits).toBe(a.fullFits);
+  });
 });
 
 describe("unifiedFan — G1 no chip off-screen (zero tolerance)", () => {

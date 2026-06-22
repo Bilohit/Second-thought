@@ -109,15 +109,6 @@ export const BTN_GHOST: CSSProperties = {
   transition: "color 0.15s, background 0.15s",
 };
 
-export function hoverEnter(e: React.MouseEvent<HTMLButtonElement>, color = "var(--text-2)") {
-  (e.currentTarget as HTMLElement).style.color = color;
-  (e.currentTarget as HTMLElement).style.background = "var(--surface-2)";
-}
-export function hoverLeave(e: React.MouseEvent<HTMLButtonElement>) {
-  (e.currentTarget as HTMLElement).style.color = "var(--text-3)";
-  (e.currentTarget as HTMLElement).style.background = "none";
-}
-
 export function focusRing(e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) {
   e.target.style.borderColor = "color-mix(in srgb, var(--accent) 50%, transparent)";
   e.target.style.boxShadow = "0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent)";

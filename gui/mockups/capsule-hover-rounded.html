@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Capsule item hover — rounded + headroom options</title>
+<style>
+  :root {
+    --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  }
+  :root, [data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0a0a0a; --surface: #262626; --surface-2: #404040; --border: #383838; --border-2: #262626;
+    --text-1: #fafafa; --text-2: #a1a1a1; --text-3: #737373;
+    --accent: #737373; --accent-d: rgba(115,115,115,0.18); --accent-glow: rgba(115,115,115,0.30); --on-accent: #fafafa;
+    --green: #4ade80; --yellow: #facc15; --red: #ff6467;
+    --glass-bg: #191919; --glass-border: #383838; --glass-shadow: 0 1px 2px rgba(0,0,0,0.40); --palette-bg: #262626;
+  }
+  [data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff; --surface: #f5f5f5; --surface-2: #e5e5e5; --border: #e5e5e5; --border-2: #f0f0f0;
+    --text-1: #0a0a0a; --text-2: #717171; --text-3: #a1a1a1;
+    --accent: #737373; --accent-d: rgba(115,115,115,0.10); --accent-glow: rgba(115,115,115,0.22); --on-accent: #fafafa;
+    --green: #16a34a; --yellow: #92660a; --red: #e7000b;
+    --glass-bg: #ffffff; --glass-border: #e5e5e5; --glass-shadow: 0 1px 2px rgba(0,0,0,0.08); --palette-bg: #ffffff;
+  }
+  [data-theme="sage"] {
+    color-scheme: light;
+    --bg: #f6f8f3; --surface: #e9efe1; --surface-2: #dde6d1; --border: #cddabd; --border-2: #e3ead7;
+    --text-1: #28331f; --text-2: #5c6b4c; --text-3: #8a9678;
+    --accent: #7fa05f; --accent-d: rgba(127,160,95,0.12); --accent-glow: rgba(127,160,95,0.24); --on-accent: #f8fbf3;
+    --green: #16a34a; --yellow: #92660a; --red: #e7000b;
+    --glass-bg: #ffffff; --glass-border: #cddabd; --glass-shadow: 0 1px 2px rgba(0,0,0,0.08); --palette-bg: #e9efe1;
+  }
+  [data-theme="sky"] {
+    color-scheme: light;
+    --bg: #eef6fb; --surface: #d7ebf5; --surface-2: #c0deee; --border: #a8cfe3; --border-2: #cfe6f1;
+    --text-1: #122a36; --text-2: #3c6b82; --text-3: #49626f;
+    --accent: #6eb8dd; --accent-d: rgba(31,127,179,0.12); --accent-glow: rgba(31,127,179,0.24); --on-accent: #f3fafd;
+    --green: #16a34a; --yellow: #92660a; --red: #ff000d;
+    --glass-bg: #ffffff; --glass-border: #a8cfe3; --glass-shadow: 0 1px 2px rgba(0,0,0,0.08); --palette-bg: #d7ebf5;
+  }
+  [data-theme="bubba-pink"] {
+    color-scheme: light;
+    --bg: #fdf6f8; --surface: #f6e6ec; --surface-2: #efd5df; --border: #e2bdca; --border-2: #f1dee5;
+    --text-1: #371b24; --text-2: #7a4655; --text-3: #a8788a;
+    --accent: #a2556f; --accent-d: rgba(162,85,111,0.12); --accent-glow: rgba(162,85,111,0.24); --on-accent: #fdf6f8;
+    --green: #16a34a; --yellow: #92660a; --red: #e7000b;
+    --glass-bg: #ffffff; --glass-border: #e2bdca; --glass-shadow: 0 1px 2px rgba(0,0,0,0.08); --palette-bg: #f6e6ec;
+  }
+  [data-theme="mist"] {
+    color-scheme: dark;
+    --bg: #181c1d; --surface: #232a2b; --surface-2: #2f3839; --border: #3a4546; --border-2: #2a3132;
+    --text-1: #eef3f3; --text-2: #aebcbd; --text-3: #7f9293;
+    --accent: #6cb8b1; --accent-d: rgba(108,184,177,0.18); --accent-glow: rgba(108,184,177,0.30); --on-accent: #0d1717;
+    --green: #4ade80; --yellow: #facc15; --red: #ff6467;
+    --glass-bg: #1e2425; --glass-border: #3a4546; --glass-shadow: 0 1px 2px rgba(0,0,0,0.40); --palette-bg: #232a2b;
+  }
+  [data-theme="lilac"] {
+    color-scheme: dark;
+    --bg: #1c1620; --surface: #2a1f30; --surface-2: #38293f; --border: #44324c; --border-2: #332639;
+    --text-1: #f3eef7; --text-2: #c4aed4; --text-3: #9683a8;
+    --accent: #c08fdd; --accent-d: rgba(192,143,221,0.18); --accent-glow: rgba(192,143,221,0.30); --on-accent: #170f1b;
+    --green: #4ade80; --yellow: #facc15; --red: #ff6467;
+    --glass-bg: #221a28; --glass-border: #44324c; --glass-shadow: 0 1px 2px rgba(0,0,0,0.40); --palette-bg: #2a1f30;
+  }
+  [data-theme="sand"] {
+    color-scheme: dark;
+    --bg: #1e1a16; --surface: #2c2620; --surface-2: #3a3128; --border: #463b30; --border-2: #332b24;
+    --text-1: #f5efe6; --text-2: #c2af97; --text-3: #93826c;
+    --accent: #cf9e5c; --accent-d: rgba(207,158,92,0.18); --accent-glow: rgba(207,158,92,0.30); --on-accent: #19140f;
+    --green: #4ade80; --yellow: #facc15; --red: #ff6467;
+    --glass-bg: #241f1a; --glass-border: #463b30; --glass-shadow: 0 1px 2px rgba(0,0,0,0.40); --palette-bg: #2c2620;
+  }
+  [data-theme="wine"] {
+    color-scheme: dark;
+    --bg: #160a0e; --surface: #241319; --surface-2: #321a23; --border: #43232d; --border-2: #2e171e;
+    --text-1: #f7e3e9; --text-2: #c79aa7; --text-3: #8f6470;
+    --accent: #a8415f; --accent-d: rgba(168,65,95,0.18); --accent-glow: rgba(168,65,95,0.30); --on-accent: #fdf2f5;
+    --green: #4ade80; --yellow: #facc15; --red: #ff6467;
+    --glass-bg: #1d0f14; --glass-border: #43232d; --glass-shadow: 0 1px 2px rgba(0,0,0,0.40); --palette-bg: #241319;
+  }
+
+  /* hover recipe tokens, copied from index.css */
+  :root {
+    --hover-dur: 260ms;
+    --hover-ease: cubic-bezier(0.34, 1.3, 0.64, 1);
+    --hover-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --hover-bg: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text-1);
+    font-family: "Geist Mono", ui-monospace, "Segoe UI Mono", monospace;
+  }
+  body { padding: 32px; display: flex; flex-direction: column; gap: 30px; max-width: 720px; }
+
+  h1 { font-size: 14px; margin: 0; }
+  p.lede { font-size: 12px; color: var(--text-3); margin: 0; max-width: 560px; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .toggle { display: flex; gap: 6px; flex-wrap: wrap; }
+  .toggle button {
+    padding: 5px 11px; font-size: 11px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text-2); cursor: pointer;
+    border-radius: 4px;
+  }
+  .toggle button.active { border-color: var(--accent); color: var(--text-1); background: var(--hover-bg); }
+  .controls-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-3); margin-right: 4px; }
+
+  section.variant {
+    display: flex; flex-direction: column; gap: 10px;
+    border: 1px solid var(--border-2); padding: 16px; border-radius: 8px;
+  }
+  .variant h2 { font-size: 12px; margin: 0; color: var(--text-1); }
+  .variant .desc { font-size: 11px; color: var(--text-3); margin: 0; }
+  .variant .pick { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-2); }
+
+  /* ── Capsule shell (open state only, static for the mock) ───────────── */
+  .capsule-row { display: flex; align-items: center; gap: 16px; }
+  .capsule {
+    display: flex; align-items: center;
+    height: 36px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-1);
+    border-radius: 18px;
+    overflow: hidden;
+  }
+  .capsule[data-corner="sharp"] { border-radius: 0; }
+
+  .capsule-item {
+    position: relative;
+    flex: 0 0 auto;
+    width: 44px;
+    height: 36px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-3);
+    cursor: pointer;
+  }
+  .capsule-item svg { position: relative; z-index: 1; transition: transform var(--hover-dur) var(--hover-ease); }
+  .capsule-item:hover svg { color: var(--text-1); }
+  .capsule-item:hover { color: var(--text-1); }
+
+  .capsule-item-hide { position: relative; }
+  .capsule-item-hide::after {
+    content: ""; position: absolute; left: 0; top: 20%; bottom: 20%; width: 1px;
+    background: var(--border); pointer-events: none; z-index: 2;
+  }
+
+  /* ── Highlight pseudo-element: hit target stays full-height/edge-to-edge,
+     only the *visual* highlight box is inset + rounded. Each variant tunes
+     inset/radius/scale on .hl via data-variant on the row. ──────────────── */
+  .capsule-item .hl {
+    position: absolute; z-index: 0;
+    background: transparent;
+    transition: background var(--hover-dur) var(--hover-ease-out),
+                inset var(--hover-dur) var(--hover-ease-out),
+                border-radius var(--hover-dur) var(--hover-ease-out),
+                transform var(--hover-dur) var(--hover-ease-out);
+  }
+  .capsule-item:hover .hl {
+    background: var(--hover-bg);
+    transition: background var(--hover-dur) var(--hover-ease),
+                inset var(--hover-dur) var(--hover-ease),
+                border-radius var(--hover-dur) var(--hover-ease),
+                transform var(--hover-dur) var(--hover-ease);
+  }
+
+  /* current (baseline, sharp, edge-to-edge) */
+  [data-variant="current"] .hl { inset: 0; border-radius: 0; }
+
+  /* A — soft square, 4px headroom top/bottom, 8px radius */
+  [data-variant="a"] .hl { inset: 4px 2px; border-radius: 8px; }
+
+  /* B — circle, generous headroom, sized to a centered 28px disc */
+  [data-variant="b"] .hl { inset: 4px 8px; border-radius: 50%; }
+
+  /* C — rounded pill matching outer capsule curvature, 5px headroom */
+  [data-variant="c"] .hl { inset: 5px 1px; border-radius: 12px; }
+
+  /* D — soft square + tiny lift, 5px headroom, 10px radius */
+  [data-variant="d"] .hl { inset: 5px 3px; border-radius: 10px; }
+  [data-variant="d"] .capsule-item:hover .hl { transform: translateY(-1px); }
+</style>
+</head>
+<body data-theme="dark">
+
+  <h1>Capsule menu — open-item hover highlight</h1>
+  <p class="lede">
+    Current behaviour: the hover tint fills the full 36px item box, edge-to-edge,
+    with 0 radius — a sharp rectangle that clips right against the icon. Each
+    variant below insets the highlight from the item's hit target (hit target
+    stays full-size/full-height for click accuracy) and rounds it, giving the
+    icon some headroom. Hover the icons to compare. Switch theme/corner to
+    check contrast everywhere.
+  </p>
+
+  <div class="controls">
+    <span class="controls-label">Theme</span>
+    <div class="toggle" id="theme-toggle">
+      <button data-theme-btn="dark" class="active">Void</button>
+      <button data-theme-btn="light">Paper</button>
+      <button data-theme-btn="sage">Sage</button>
+      <button data-theme-btn="sky">Sky</button>
+      <button data-theme-btn="bubba-pink">Bubba Pink</button>
+      <button data-theme-btn="mist">Mist</button>
+      <button data-theme-btn="lilac">Lilac</button>
+      <button data-theme-btn="sand">Sand</button>
+      <button data-theme-btn="wine">Wine</button>
+    </div>
+  </div>
+  <div class="controls">
+    <span class="controls-label">Corner</span>
+    <div class="toggle" id="corner-toggle">
+      <button data-corner-btn="round" class="active">Round (default)</button>
+      <button data-corner-btn="sharp">Sharp</button>
+    </div>
+  </div>
+
+  <section class="variant" data-variant="current">
+    <h2>Baseline — current (sharp, edge-to-edge)</h2>
+    <p class="desc">inset: 0 · radius: 0 — for comparison only.</p>
+    <div class="capsule-row"><div class="capsule"></div></div>
+  </section>
+
+  <section class="variant" data-variant="a">
+    <h2>A — Soft square</h2>
+    <p class="desc">inset: 4px top/bottom, 2px sides · radius: 8px</p>
+    <div class="capsule-row"><div class="capsule"></div></div>
+  </section>
+
+  <section class="variant" data-variant="b">
+    <h2>B — Circle</h2>
+    <p class="desc">inset: 4px top/bottom, 8px sides · radius: 50%</p>
+    <div class="capsule-row"><div class="capsule"></div></div>
+  </section>
+
+  <section class="variant" data-variant="c">
+    <h2>C — Rounded pill (echoes outer capsule curve)</h2>
+    <p class="desc">inset: 5px top/bottom, 1px sides · radius: 12px</p>
+    <div class="capsule-row"><div class="capsule"></div></div>
+  </section>
+
+  <section class="variant" data-variant="d">
+    <h2>D — Soft square + lift</h2>
+    <p class="desc">inset: 5px top/bottom, 3px sides · radius: 10px · 1px translateY on hover</p>
+    <div class="capsule-row"><div class="capsule"></div></div>
+  </section>
+
+  <p class="lede">Note: the divider before the last (hide) item, and the full hit-target size, are unchanged in every variant — only the visual tint shape moves.</p>
+
+<script>
+  const ICONS = {
+    search:  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
+    vault:   '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
+    settings:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M2 12h2m16 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>',
+    inbox:   '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>',
+    stats:   '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>',
+    hide:    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v9"/><path d="M8 10l4 4 4-4"/><path d="M4 18h16"/></svg>',
+  };
+  const ORDER = ["search", "vault", "settings", "inbox", "stats", "hide"];
+
+  document.querySelectorAll(".capsule").forEach((capsule) => {
+    ORDER.forEach((id) => {
+      const item = document.createElement("div");
+      item.className = "capsule-item" + (id === "hide" ? " capsule-item-hide" : "");
+      item.title = id;
+      item.innerHTML = '<span class="hl" aria-hidden="true"></span>' + ICONS[id];
+      capsule.appendChild(item);
+    });
+  });
+
+  document.getElementById("theme-toggle").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-theme-btn]");
+    if (!btn) return;
+    document.body.setAttribute("data-theme", btn.dataset.themeBtn);
+    document.querySelectorAll("[data-theme-btn]").forEach((b) => b.classList.toggle("active", b === btn));
+  });
+
+  document.getElementById("corner-toggle").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-corner-btn]");
+    if (!btn) return;
+    const sharp = btn.dataset.cornerBtn === "sharp";
+    document.querySelectorAll(".capsule").forEach((c) => c.setAttribute("data-corner", sharp ? "sharp" : "round"));
+    document.querySelectorAll("[data-corner-btn]").forEach((b) => b.classList.toggle("active", b === btn));
+  });
+</script>
+</body>
+</html>

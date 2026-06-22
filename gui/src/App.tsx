@@ -306,10 +306,11 @@ export default function App() {
   const prevViewRef = useRef(view);
   useEffect(() => {
     if (prevViewRef.current !== "capture" && view === "capture" && !pillPinned && captureState.phase === "idle") {
+      if (displayMode !== "full") setExpanded(false); // return to the pill on next show
       getCurrentWindow().hide();
     }
     prevViewRef.current = view;
-  }, [view, pillPinned, captureState.phase]);
+  }, [view, pillPinned, captureState.phase, displayMode]);
 
   // Poll the inbox count for the unread badge — best-effort, refreshed
   // whenever a capture completes and whenever the inbox view closes.
@@ -601,7 +602,7 @@ export default function App() {
       }
 
       let targetPos: { x: number; y: number } | null = null;
-      if (pillAnchor !== "custom") {
+      if (pillAnchor !== "custom" && !openingMenu && !closingMenu) {
         const area = await getActiveWorkArea();
         targetPos = anchorPosition(pillAnchor, targetWinW, targetWinH, area);
       } else if (enteringPill && prePanelPos.current) {

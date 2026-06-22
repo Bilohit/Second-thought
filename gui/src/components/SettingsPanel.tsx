@@ -71,6 +71,7 @@ function ThemeSwatchPicker({ theme, onSelectTheme }: { theme: Theme; onSelectThe
             title={THEME_LABELS[t]}
             onClick={() => onSelectTheme(t)}
             data-theme={t}
+            className="btn-hover"
             style={{
               width: 26,
               height: 26,
@@ -130,6 +131,7 @@ function AnchorGrid({ anchor, onSelect }: { anchor: PillAnchor; onSelect: (a: Pi
             aria-label={isCustom ? "Custom (last position)" : a}
             title={isCustom ? "Custom — keep last position" : a}
             onClick={() => onSelect(a)}
+            className="btn-hover"
             style={{
               width: ANCHOR_CELL,
               height: ANCHOR_CELL,
@@ -269,16 +271,9 @@ function HotkeyRecorder({
         )}
       </div>
       <button
+        className="btn-hover"
         style={BTN_SECONDARY}
         onClick={() => setRecording((r) => !r)}
-        onMouseEnter={(e) => {
-          (e.currentTarget as HTMLElement).style.background = "var(--surface-2)";
-          (e.currentTarget as HTMLElement).style.color = "var(--text-1)";
-        }}
-        onMouseLeave={(e) => {
-          (e.currentTarget as HTMLElement).style.background = BTN_SECONDARY.background as string;
-          (e.currentTarget as HTMLElement).style.color = BTN_SECONDARY.color as string;
-        }}
       >
         {recording ? "Cancel" : "Record"}
       </button>
@@ -478,28 +473,7 @@ export default function SettingsPanel({
         <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
           Settings
         </span>
-        <button
-          className="no-drag"
-          onClick={onClose}
-          style={{
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            padding: 4,
-            borderRadius: "var(--radius-sm)",
-            color: "var(--text-3)",
-            display: "flex",
-            transition: "color 0.15s, background 0.15s",
-          }}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLElement).style.color = "var(--text-1)";
-            (e.currentTarget as HTMLElement).style.background = "var(--surface-2)";
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLElement).style.color = "var(--text-3)";
-            (e.currentTarget as HTMLElement).style.background = "none";
-          }}
-        >
+        <button className="no-drag icon-close-btn" onClick={onClose} title="Close">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="2" y1="2" x2="12" y2="12" />
             <line x1="12" y1="2" x2="2" y2="12" />
@@ -545,6 +519,7 @@ export default function SettingsPanel({
                       <button
                         key={v}
                         onClick={() => onSelectDisplayMode(v)}
+                        className="btn-hover"
                         style={{
                           ...BTN_SECONDARY,
                           flex: 1,
@@ -574,6 +549,7 @@ export default function SettingsPanel({
                       <button
                         key={v}
                         onClick={() => onSelectPillCorner?.(v)}
+                        className="btn-hover"
                         style={{
                           ...BTN_SECONDARY,
                           flex: 1,
@@ -603,6 +579,7 @@ export default function SettingsPanel({
                       <button
                         key={label}
                         onClick={() => onTogglePillPinned?.(v)}
+                        className="btn-hover"
                         style={{
                           ...BTN_SECONDARY,
                           flex: 1,
@@ -617,8 +594,11 @@ export default function SettingsPanel({
                     );
                   })}
                 </div>
-                <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                  When on, the window stays on screen until you choose Hide (from the menu or tray). When off, it hides itself after a capture and when you close a panel.
+                <span style={{ fontSize: 10, color: "var(--text-3)", display: "block" }}>
+                  On: stays on screen until you choose Hide (menu or tray).
+                </span>
+                <span style={{ fontSize: 10, color: "var(--text-3)", display: "block" }}>
+                  Off: hides itself after a capture and when you close a panel.
                 </span>
               </Field>
             )}
@@ -628,6 +608,9 @@ export default function SettingsPanel({
                 <AnchorGrid anchor={pillAnchor} onSelect={(a) => onSelectPillAnchor?.(a)} />
                 <span style={{ fontSize: 10, color: "var(--text-3)" }}>
                   Pick a corner/edge to snap there always, or leave on Custom (center) for wherever you last positioned it.
+                </span>
+                <span style={{ fontSize: 10, color: "var(--text-3)" }}>
+                  Center ("Custom") keeps the pill wherever you drag it.
                 </span>
               </Field>
             )}
@@ -644,6 +627,7 @@ export default function SettingsPanel({
                       <button
                         key={v}
                         onClick={() => onSelectPillFanStyle(v)}
+                        className="btn-hover"
                         style={{
                           ...BTN_SECONDARY,
                           flex: 1,
@@ -664,34 +648,42 @@ export default function SettingsPanel({
               </Field>
             )}
 
-            {onTogglePillSnap && pillSnapEnabled !== undefined && (
-              <Field label="Snap to Edge & Corner">
-                <div style={{ display: "flex", gap: 4 }}>
-                  {([{ v: true, label: "On" }, { v: false, label: "Off" }] as const).map(({ v, label }) => {
-                    const active = pillSnapEnabled === v;
-                    return (
-                      <button
-                        key={label}
-                        onClick={() => onTogglePillSnap(v)}
-                        style={{
-                          ...BTN_SECONDARY,
-                          flex: 1,
-                          background: active ? "var(--accent)" : (BTN_SECONDARY.background as string),
-                          color: active ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
-                          borderColor: active ? "var(--accent)" : "var(--border)",
-                        }}
-                        aria-pressed={active}
-                      >
-                        {label}
-                      </button>
-                    );
-                  })}
-                </div>
-                <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                  On Custom placement, releasing the pill near a screen edge or corner snaps it there.
-                </span>
-              </Field>
-            )}
+            {onTogglePillSnap && pillSnapEnabled !== undefined && (() => {
+              const snapApplicable = pillAnchor === "custom";
+              return (
+                <Field label="Snap to Edge & Corner">
+                  <div style={{ display: "flex", gap: 4, opacity: snapApplicable ? 1 : 0.4 }}>
+                    {([{ v: true, label: "On" }, { v: false, label: "Off" }] as const).map(({ v, label }) => {
+                      const active = pillSnapEnabled === v;
+                      return (
+                        <button
+                          key={label}
+                          disabled={!snapApplicable}
+                          onClick={() => snapApplicable && onTogglePillSnap(v)}
+                          className={snapApplicable ? "btn-hover" : undefined}
+                          style={{
+                            ...BTN_SECONDARY,
+                            flex: 1,
+                            background: active ? "var(--accent)" : (BTN_SECONDARY.background as string),
+                            color: active ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
+                            borderColor: active ? "var(--accent)" : "var(--border)",
+                            cursor: snapApplicable ? "pointer" : "not-allowed",
+                          }}
+                          aria-pressed={active}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <span style={{ fontSize: 10, color: "var(--text-3)" }}>
+                    {snapApplicable
+                      ? "Releasing the pill near a screen edge or corner snaps it there."
+                      : "Edge-snapping only applies to the Custom position."}
+                  </span>
+                </Field>
+              );
+            })()}
           </>
         )}
 
@@ -715,14 +707,9 @@ export default function SettingsPanel({
                   }}
                 />
                 <button
+                  className="btn-hover"
                   style={BTN_SECONDARY}
                   onClick={handlePickFolder}
-                  onMouseEnter={(e) => {
-                    (e.currentTarget as HTMLElement).style.background = "var(--surface-2)";
-                  }}
-                  onMouseLeave={(e) => {
-                    (e.currentTarget as HTMLElement).style.background = BTN_SECONDARY.background as string;
-                  }}
                 >
                   Browse
                 </button>
@@ -789,6 +776,7 @@ export default function SettingsPanel({
                     <button
                       key={level}
                       onClick={() => { setScrutiny(level); markDirty(); }}
+                      className="btn-hover"
                       style={{
                         ...BTN_SECONDARY,
                         flex: 1,
@@ -815,6 +803,7 @@ export default function SettingsPanel({
                     <button
                       key={label}
                       onClick={() => { setAutoDescribe(v); markDirty(); }}
+                      className="btn-hover"
                       style={{
                         ...BTN_SECONDARY,
                         flex: 1,

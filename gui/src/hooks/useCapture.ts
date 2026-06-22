@@ -60,7 +60,7 @@ export interface CaptureState {
 }
 
 const STEP_DEFS: CaptureStep[] = [
-  { id: "intercept", label: "Intercepting clipboard" },
+  { id: "intercept", label: "Intercepting" },
   { id: "enrich",    label: "Enriching content"      },
   { id: "decide",    label: "Deciding category"       },
   { id: "write",     label: "Writing to vault"        },
@@ -84,7 +84,7 @@ const AUTO_DISMISS_ERROR_MS = 2200;
 // _run_youtube_job in server.py for the statuses this mirrors.
 const YT_STAGE_DEFS: CaptureStep[] = [
   { id: "detect",             label: "Detecting YouTube link" },
-  { id: "fetching",           label: "Fetching transcript & title" },
+  { id: "fetching",           label: "Fetching metadata" },
   { id: "writing_transcript", label: "Saving transcript" },
   { id: "summarizing",        label: "Summarizing" },
   { id: "combining",          label: "Combining sections" },

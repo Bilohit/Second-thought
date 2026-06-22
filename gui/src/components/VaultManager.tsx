@@ -31,7 +31,7 @@ import {
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
   INPUT_STYLE, BTN_GHOST, ROW_CARD, ROW_DIVIDER,
-  hoverEnter, hoverLeave, focusRing, blurRing,
+  focusRing, blurRing,
 } from "./ui/styles";
 
 interface Props {
@@ -65,23 +65,14 @@ function CategoryCard({
 
   return (
     <div
+      className={confirming ? undefined : "row-hover-lift"}
       style={{
         ...ROW_CARD,
         display: "flex",
         flexDirection: "column",
         cursor: confirming ? "default" : "pointer",
-        transition: "background 0.15s, border-color 0.15s",
       }}
       onClick={() => !confirming && onDrillIn(cat.name)}
-      onMouseEnter={(e) => {
-        if (confirming) return;
-        (e.currentTarget as HTMLElement).style.background = "var(--surface-2)";
-        (e.currentTarget as HTMLElement).style.borderColor = "var(--accent)";
-      }}
-      onMouseLeave={(e) => {
-        (e.currentTarget as HTMLElement).style.background = "var(--surface)";
-        (e.currentTarget as HTMLElement).style.borderColor = "var(--border)";
-      }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, opacity: confirming ? 0.5 : 1, transition: "opacity 0.18s" }}>
         {/* Folder icon */}
@@ -123,10 +114,9 @@ function CategoryCard({
         >
           {/* Edit description */}
           <button
+            className="btn-hover"
             style={BTN_GHOST}
             title={cat.description ? "Edit description" : "Add LLM routing description"}
-            onMouseEnter={(e) => hoverEnter(e, "var(--accent)")}
-            onMouseLeave={hoverLeave}
             onClick={() => onEditDescription(cat.name, cat.description)}
           >
             {/* Pencil icon */}
@@ -137,10 +127,9 @@ function CategoryCard({
           </button>
           {/* Rename */}
           <button
+            className="btn-hover"
             style={BTN_GHOST}
             title="Rename"
-            onMouseEnter={(e) => hoverEnter(e)}
-            onMouseLeave={hoverLeave}
             onClick={() => onRename(cat.name)}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -150,10 +139,9 @@ function CategoryCard({
           </button>
           {/* Delete */}
           <button
+            className="btn-hover hover-danger"
             style={BTN_GHOST}
             title="Delete"
-            onMouseEnter={(e) => hoverEnter(e, "var(--red)")}
-            onMouseLeave={hoverLeave}
             onClick={() => onRequestDelete(cat.name)}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -191,9 +179,8 @@ function CategoryCard({
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
             <button
               onClick={onCancelDelete}
+              className="btn-hover"
               style={{ ...BTN_GHOST, color: "var(--text-2)", fontSize: 12, padding: "5px 10px" }}
-              onMouseEnter={(e) => hoverEnter(e)}
-              onMouseLeave={hoverLeave}
             >
               Cancel
             </button>
@@ -222,14 +209,23 @@ function FileRow({ file, highlighted }: { file: VaultFile; highlighted?: boolean
   });
 
   return (
-    <div style={{
-      ...ROW_DIVIDER,
-      margin: "0 -6px",
-      padding: "7px 6px",
-      borderRadius: "var(--radius-sm)",
-      background: highlighted ? "var(--accent-d)" : "transparent",
-      transition: "background 0.6s ease-out",
-    }}>
+    <div
+      className="row-hover-flat"
+      style={{
+        ...ROW_DIVIDER,
+        margin: "0 -6px",
+        padding: "7px 6px",
+        borderRadius: "var(--radius-sm)",
+        // The highlight flash owns `background`/`transition` inline (and
+        // therefore wins over the hover class's CSS) only while it's
+        // actually playing — at rest those properties are left to
+        // .row-hover-flat so the bold hover tint isn't shadowed by an
+        // always-on inline background.
+        ...(highlighted
+          ? { background: "var(--accent-d)", transition: "background 0.6s ease-out" }
+          : {}),
+      }}
+    >
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
         <polyline points="14 2 14 8 20 8" />
@@ -287,9 +283,8 @@ function InlinePrompt({
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
         <button
           onClick={onCancel}
+          className="btn-hover"
           style={{ ...BTN_GHOST, color: "var(--text-2)", fontSize: 12, padding: "5px 10px" }}
-          onMouseEnter={(e) => hoverEnter(e)}
-          onMouseLeave={hoverLeave}
         >
           Cancel
         </button>
@@ -357,19 +352,17 @@ function DescriptionEditor({
           {val.trim() && (
             <button
               onClick={() => onConfirm(null)}
+              className="btn-hover hover-danger"
               style={{ ...BTN_GHOST, color: "var(--text-3)", fontSize: 11, padding: "5px 8px" }}
               title="Clear description"
-              onMouseEnter={(e) => hoverEnter(e, "var(--red)")}
-              onMouseLeave={hoverLeave}
             >
               Clear
             </button>
           )}
           <button
             onClick={onCancel}
+            className="btn-hover"
             style={{ ...BTN_GHOST, color: "var(--text-2)", fontSize: 12, padding: "5px 10px" }}
-            onMouseEnter={(e) => hoverEnter(e)}
-            onMouseLeave={hoverLeave}
           >
             Cancel
           </button>
@@ -564,10 +557,8 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {drillCat ? (
             <button
-              className="no-drag"
+              className="no-drag btn-hover"
               style={BTN_GHOST}
-              onMouseEnter={(e) => hoverEnter(e)}
-              onMouseLeave={hoverLeave}
               onClick={() => setDrillCat(null)}
               title="Back"
             >
@@ -593,10 +584,9 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
           {/* Open vault folder (only on top-level view, once we know the path) */}
           {!drillCat && vaultRoot && (
             <button
+              className="btn-hover"
               style={BTN_GHOST}
               title="Open vault folder"
-              onMouseEnter={(e) => hoverEnter(e)}
-              onMouseLeave={hoverLeave}
               onClick={handleOpenVaultFolder}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -607,10 +597,9 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
           )}
           {/* Refresh */}
           <button
+            className="btn-hover"
             style={BTN_GHOST}
             title="Refresh"
-            onMouseEnter={(e) => hoverEnter(e)}
-            onMouseLeave={hoverLeave}
             onClick={() => drillCat ? drillInto(drillCat) : load()}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -621,10 +610,9 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
           {/* New folder (only on top-level view) */}
           {!drillCat && (
             <button
+              className="btn-hover"
               style={{ ...BTN_GHOST, color: "var(--accent)" }}
               title="New category"
-              onMouseEnter={(e) => hoverEnter(e, "var(--accent)")}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--accent)"; (e.currentTarget as HTMLElement).style.background = "none"; }}
               onClick={() => { setActionError(null); setModal({ kind: "create" }); }}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -635,10 +623,8 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
           )}
           {/* Close */}
           <button
-            style={BTN_GHOST}
+            className="icon-close-btn"
             title="Close"
-            onMouseEnter={(e) => hoverEnter(e)}
-            onMouseLeave={hoverLeave}
             onClick={onClose}
           >
             <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">

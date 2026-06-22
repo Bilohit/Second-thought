@@ -18,7 +18,7 @@ import {
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
   BTN_GHOST, BTN_PRIMARY, ROW_CARD, INPUT_STYLE,
-  hoverEnter, hoverLeave, focusRing, blurRing,
+  focusRing, blurRing,
 } from "./ui/styles";
 
 const NEW_FOLDER_SENTINEL = "__new_folder__";
@@ -79,18 +79,28 @@ function InboxRow({
 
   return (
     <div
+      className="row-hover-lift"
       style={{
         ...ROW_CARD,
         padding: "10px 12px",
         display: "flex",
         flexDirection: "column",
         gap: 8,
-        opacity: leaving ? 0 : 1,
-        transform: leaving ? "translateX(12px)" : "translateX(0)",
         maxHeight: leaving ? 0 : 260,
         overflow: "hidden",
-        marginBottom: leaving ? 0 : undefined,
-        transition: "opacity 0.18s ease, transform 0.18s ease, max-height 0.22s ease, margin-bottom 0.22s ease",
+        // The leaving slide-out owns `transform`/`transition` inline (and
+        // therefore wins over the hover class's CSS) only while it's
+        // actually playing — at rest those properties are left to
+        // .row-hover-lift so the bold hover lift isn't shadowed by an
+        // always-on inline transform.
+        ...(leaving
+          ? {
+              opacity: 0,
+              transform: "translateX(12px)",
+              marginBottom: 0,
+              transition: "opacity 0.18s ease, transform 0.18s ease, max-height 0.22s ease, margin-bottom 0.22s ease",
+            }
+          : {}),
       }}
     >
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
@@ -156,9 +166,8 @@ function InboxRow({
         <button
           onClick={() => onDiscard(item.note_id)}
           title="Discard"
+          className="btn-hover hover-danger"
           style={BTN_GHOST}
-          onMouseEnter={(e) => hoverEnter(e, "var(--red)")}
-          onMouseLeave={hoverLeave}
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="3 6 5 6 21 6" />
@@ -175,6 +184,7 @@ function InboxRow({
             <button
               key={s}
               onClick={() => setNewName(s)}
+              className="btn-hover"
               style={{
                 background: "var(--surface-2)",
                 border: "1px solid var(--border)",
@@ -183,10 +193,7 @@ function InboxRow({
                 fontSize: 10,
                 color: "var(--text-3)",
                 cursor: "pointer",
-                transition: "color 0.15s, border-color 0.15s",
               }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--text-1)"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--text-3)"; }}
             >
               {s}
             </button>
@@ -291,10 +298,9 @@ export default function InboxPanel({ visible, onClose, onCountChange, measureRef
         </span>
         <div className="no-drag" style={{ display: "flex", gap: 4 }}>
           <button
+            className="btn-hover"
             style={BTN_GHOST}
             title="Refresh"
-            onMouseEnter={(e) => hoverEnter(e)}
-            onMouseLeave={hoverLeave}
             onClick={load}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -303,11 +309,9 @@ export default function InboxPanel({ visible, onClose, onCountChange, measureRef
             </svg>
           </button>
           <button
-            className="no-drag"
+            className="no-drag icon-close-btn"
             onClick={onClose}
-            style={BTN_GHOST}
-            onMouseEnter={(e) => hoverEnter(e)}
-            onMouseLeave={hoverLeave}
+            title="Close"
           >
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="2" y1="2" x2="12" y2="12" />

@@ -10,7 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getStats, type Stats } from "../lib/api";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
-  BTN_GHOST, ROW_CARD, hoverEnter, hoverLeave,
+  BTN_GHOST, ROW_CARD,
 } from "./ui/styles";
 
 interface Props {
@@ -142,13 +142,13 @@ export default function StatsPanel({ visible, onClose, measureRef }: Props) {
       <div className="drag-region" style={PANEL_HEADER}>
         <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>Statistics</span>
         <div className="no-drag" style={{ display: "flex", gap: 4 }}>
-          <button style={BTN_GHOST} title="Refresh" onMouseEnter={hoverEnter} onMouseLeave={hoverLeave} onClick={load}>
+          <button className="btn-hover" style={BTN_GHOST} title="Refresh" onClick={load}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="23 4 23 10 17 10" />
               <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
             </svg>
           </button>
-          <button className="no-drag" onClick={onClose} style={BTN_GHOST} onMouseEnter={hoverEnter} onMouseLeave={hoverLeave}>
+          <button className="no-drag icon-close-btn" onClick={onClose} title="Close">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="2" y1="2" x2="12" y2="12" />
               <line x1="12" y1="2" x2="2" y2="12" />
@@ -197,7 +197,7 @@ export default function StatsPanel({ visible, onClose, measureRef }: Props) {
                 <Tile index={3} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   <span style={TILE_LABEL}>Recent activity</span>
                   {stats.recent.slice(0, 10).map((r) => (
-                    <div key={r.id} style={{ display: "flex", flexDirection: "column", gap: 2, padding: "4px 0", borderBottom: "1px solid var(--border-2)" }}>
+                    <div key={r.id} className="row-hover-flat" style={{ display: "flex", flexDirection: "column", gap: 2, padding: "4px 0", borderBottom: "1px solid var(--border-2)" }}>
                       <span style={{
                         fontSize: 9, fontWeight: 600, color: "var(--text-3)",
                         background: "var(--surface-2)", border: "1px solid var(--border)",

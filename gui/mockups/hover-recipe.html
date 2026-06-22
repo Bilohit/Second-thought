@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Hover recipe — Bold (for_sonnet.md §3)</title>
+<style>
+  /* Theme tokens copied verbatim (values only) from gui/src/index.css — see
+     gui/mockups/_theme.css. Standalone mock, not imported by the app. */
+  :root {
+    --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+    --radius-sm: 0px; --radius: 0px; --radius-lg: 0px; --radius-xl: 0px;
+  }
+  :root, [data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0a0a0a; --surface: #262626; --surface-2: #404040; --border: #383838; --border-2: #262626;
+    --text-1: #fafafa; --text-2: #a1a1a1; --text-3: #737373;
+    --accent: #737373; --accent-d: rgba(115,115,115,0.18); --accent-glow: rgba(115,115,115,0.30); --on-accent: #fafafa;
+    --glass-bg: #191919; --glass-border: #383838; --glass-shadow: 0 1px 2px rgba(0,0,0,0.40);
+  }
+  [data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff; --surface: #f5f5f5; --surface-2: #cccccc; --border: #c7c7c7; --border-2: #f0f0f0;
+    --text-1: #0a0a0a; --text-2: #717171; --text-3: #a1a1a1;
+    --accent: #737373; --accent-d: rgba(115,115,115,0.10); --accent-glow: rgba(115,115,115,0.22); --on-accent: #fafafa;
+    --glass-bg: #ffffff; --glass-border: #e5e5e5; --glass-shadow: 0 1px 2px rgba(0,0,0,0.08);
+  }
+
+  /* ── Hover recipe (signed off — "Bold", for_sonnet.md §3.1) ────────────── */
+  :root {
+    --hover-lift: -2px;
+    --hover-bg: color-mix(in srgb, var(--accent) 5%, var(--surface));
+    --hover-border: color-mix(in srgb, var(--accent) 90%, var(--border));
+    --hover-dur: 300ms;
+    --hover-ease: cubic-bezier(0.16, 1, 0.3, 1);
+    --hover-shadow-dark: 0 4px 12px rgba(0, 0, 0, 0.25);
+    --hover-shadow-light: 0 4px 12px rgba(0, 0, 0, 0.12);
+  }
+  [data-theme="light"] { --hover-shadow: var(--hover-shadow-light); }
+  [data-theme="dark"], :root { --hover-shadow: var(--hover-shadow-dark); }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text-1);
+    font-family: "Geist Mono", ui-monospace, "Segoe UI Mono", monospace;
+  }
+  body { padding: 32px; display: flex; flex-direction: column; gap: 28px; max-width: 480px; }
+
+  .toggle { display: flex; gap: 8px; }
+  .toggle button {
+    padding: 6px 14px; font-size: 12px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text-2); cursor: pointer;
+  }
+  .toggle button.active { border-color: var(--accent); color: var(--text-1); }
+
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-3); margin: 0 0 10px; }
+  section { display: flex; flex-direction: column; gap: 10px; }
+
+  /* Lift + bg + border — buttons (BTN_SECONDARY) */
+  .btn-secondary {
+    padding: 6px 12px; font-size: 12px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text-2); cursor: pointer;
+    width: fit-content;
+    transition: background var(--hover-dur) var(--hover-ease),
+                border-color var(--hover-dur) var(--hover-ease),
+                color var(--hover-dur) var(--hover-ease),
+                box-shadow var(--hover-dur) var(--hover-ease),
+                transform var(--hover-dur) var(--hover-ease);
+  }
+  .btn-secondary:hover {
+    transform: translateY(var(--hover-lift));
+    background: var(--hover-bg);
+    border-color: var(--hover-border);
+    color: var(--text-1);
+    box-shadow: var(--hover-shadow);
+  }
+
+  /* Lift + bg + border — actionable row/card (ROW_CARD, e.g. Inbox item) */
+  .row-card {
+    background: var(--surface); border: 1px solid var(--border);
+    padding: 11px 12px; cursor: pointer;
+    transition: background var(--hover-dur) var(--hover-ease),
+                border-color var(--hover-dur) var(--hover-ease),
+                box-shadow var(--hover-dur) var(--hover-ease),
+                transform var(--hover-dur) var(--hover-ease);
+  }
+  .row-card:hover {
+    transform: translateY(var(--hover-lift));
+    background: var(--hover-bg);
+    border-color: var(--hover-border);
+    box-shadow: var(--hover-shadow);
+  }
+  .row-card .title { font-size: 13px; color: var(--text-1); }
+  .row-card .sub { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+
+  /* bg + border only, NO lift — read-only scroll row (ROW_DIVIDER) */
+  .row-divider {
+    display: flex; align-items: center; gap: 8px; padding: 7px 8px;
+    border-bottom: 1px solid var(--border-2);
+    transition: background var(--hover-dur) var(--hover-ease),
+                border-color var(--hover-dur) var(--hover-ease);
+  }
+  .row-divider:hover {
+    background: var(--hover-bg);
+    border-color: var(--hover-border);
+  }
+  .row-divider .title { font-size: 12px; color: var(--text-2); }
+
+  p.note { font-size: 11px; color: var(--text-3); margin: 0; }
+</style>
+</head>
+<body data-theme="dark">
+  <div class="toggle">
+    <button data-theme-btn="dark" class="active">Void</button>
+    <button data-theme-btn="light">Paper</button>
+  </div>
+
+  <section>
+    <h2>Button (lift + bg + border)</h2>
+    <button class="btn-secondary">Browse…</button>
+  </section>
+
+  <section>
+    <h2>Actionable card — Inbox item (lift + bg + border)</h2>
+    <div class="row-card">
+      <div class="title">Article: "Local-first sync patterns"</div>
+      <div class="sub">captured 2m ago — pending review</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Read-only scroll row — Stats recent activity (bg + border only, no lift)</h2>
+    <div class="row-divider"><span class="title">Captured note → CRM/Acme Corp.md</span></div>
+    <div class="row-divider"><span class="title">Captured note → Finance/Invoices.md</span></div>
+  </section>
+
+  <p class="note">Hover any row above. 2px lift on the button and the inbox card; the read-only rows tint/border only, no lift, so a scrolling list doesn't jitter.</p>
+
+  <script>
+    document.querySelectorAll('[data-theme-btn]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.body.setAttribute('data-theme', btn.dataset.themeBtn);
+        document.querySelectorAll('[data-theme-btn]').forEach((b) => b.classList.toggle('active', b === btn));
+      });
+    });
+  </script>
+</body>
+</html>

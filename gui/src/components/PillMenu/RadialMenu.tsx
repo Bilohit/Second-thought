@@ -14,7 +14,7 @@
  * mockups, so spokes radiate from the pill's true visual center regardless
  * of where that wrapper sits on screen.
  */
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { PillCorner } from "../PillOverlay";
 import { unifiedFan, type FanResult } from "../../lib/fanLayout";
 import { useRadialTuning } from "../../lib/devTuning";
@@ -28,8 +28,8 @@ export const RADIAL_CHIP_MIN = 33;
 export const RADIAL_PAD = 0;
 export const RADIAL_MIN_SPACING_DEG = 34;
 export const RADIAL_ICON_SIZE = 16;
-export const RADIAL_STAGGER_MS = 22;
-export const RADIAL_ANIM_MS = 220;
+export const RADIAL_STAGGER_MS = 45;
+export const RADIAL_ANIM_MS = 260;
 export const RADIAL_SCALE_CLOSED = 0.6;
 export const RADIAL_SCALE_HOVER = 1.06;
 export const RADIAL_SCALE_PRESS = 0.95;
@@ -88,6 +88,27 @@ export default function RadialMenu({ open, corner, pillGeometry, fanStyle, inbox
 
   const itemRefs = useRef<Partial<Record<MenuTarget, HTMLButtonElement | null>>>({});
 
+  const [entered, setEntered] = useState(false);
+
+  useEffect(() => {
+    if (open && positions.length > 0) {
+      let r2 = 0;
+      const r1 = requestAnimationFrame(() => {
+        r2 = requestAnimationFrame(() => setEntered(true));
+      });
+      return () => { cancelAnimationFrame(r1); cancelAnimationFrame(r2); };
+    }
+    // Closing (or no geometry yet): drop instantly so the existing staggered
+    // exit transition still fires, and the next open re-triggers the enter.
+    setEntered(false);
+  }, [open, positions.length]);
+
+  useEffect(() => {
+    if (!open) return;
+    const firstId = positions[0]?.id as MenuTarget | undefined;
+    if (firstId) itemRefs.current[firstId]?.focus();
+  }, [open, positions]);
+
   const focusByOffset = (fromId: MenuTarget, offset: number) => {
     const order = positions.map((p) => p.id as MenuTarget);
     const idx = order.indexOf(fromId);
@@ -115,7 +136,7 @@ export default function RadialMenu({ open, corner, pillGeometry, fanStyle, inbox
             type="button"
             role="menuitem"
             data-corner={corner}
-            className={`spoke${isHide ? " spoke-hide" : ""}${open ? " open" : ""}`}
+            className={`spoke${isHide ? " spoke-hide" : ""}${entered ? " open" : ""}`}
             style={
               {
                 "--tx": `${Math.round(pos.x)}px`,
@@ -126,7 +147,7 @@ export default function RadialMenu({ open, corner, pillGeometry, fanStyle, inbox
                 "--spoke-scale-closed": RADIAL_SCALE_CLOSED,
                 "--spoke-scale-hover": RADIAL_SCALE_HOVER,
                 "--spoke-scale-press": RADIAL_SCALE_PRESS,
-                transitionDelay: open ? `${i * RADIAL_STAGGER_MS}ms` : "0ms",
+                transitionDelay: `${i * RADIAL_STAGGER_MS}ms`,
               } as React.CSSProperties
             }
             tabIndex={open ? 0 : -1}
@@ -136,7 +157,11 @@ export default function RadialMenu({ open, corner, pillGeometry, fanStyle, inbox
             onKeyDown={(e) => handleKeyDown(e, id)}
           >
             <MenuIcon target={id} size={RADIAL_ICON_SIZE} />
-            {showBadge && <span className="spoke-badge" aria-hidden="true" />}
+            {showBadge && (
+              <span className="spoke-badge" aria-hidden="true">
+                {inboxCount > 9 ? "9+" : inboxCount}
+              </span>
+            )}
           </button>
         );
       })}

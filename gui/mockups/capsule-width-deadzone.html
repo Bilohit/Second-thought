@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Capsule width &amp; deadzone fix (for_sonnet.md §3.1/§3.2)</title>
+<style>
+  :root {
+    --space-2: 8px; --space-3: 12px;
+    --bg: #0a0a0a; --surface: #262626; --border: #383838; --text-1: #fafafa; --text-3: #737373;
+    --accent: #737373; --red: #ff6467;
+    --hover-bg: color-mix(in srgb, var(--accent) 5%, var(--surface));
+    --hover-ease: cubic-bezier(0.34, 1.3, 0.64, 1);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; min-height: 100vh; background: #050505; color: var(--text-1);
+    font-family: "Geist Mono", ui-monospace, "Segoe UI Mono", monospace;
+  }
+  body { padding: 32px; display: flex; flex-direction: column; gap: 32px; max-width: 720px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-3); margin: 0 0 10px; }
+  section { display: flex; flex-direction: column; gap: 10px; }
+  p.note { font-size: 11px; color: var(--text-3); margin: 0; }
+
+  /* ── §3.1: closed-width measurement ──────────────────────────────────── */
+  #measureSpan {
+    position: absolute; visibility: hidden; white-space: nowrap;
+    font-size: 12px; font-family: "Geist Mono", ui-monospace, monospace;
+  }
+  .label-list { display: flex; flex-direction: column; gap: 3px; font-size: 11px; }
+  .label-list .row { display: flex; justify-content: space-between; gap: 12px; padding: 2px 4px; }
+  .label-list .row.longest { color: var(--accent); font-weight: 600; }
+
+  .capsule-menu {
+    position: relative; height: 36px; display: flex; align-items: center;
+    padding: 0 var(--space-3); border: 1px solid var(--border); background: var(--surface);
+    color: var(--text-1); border-radius: 18px; overflow: hidden; cursor: pointer;
+    transition: width 220ms cubic-bezier(.16,1,.3,1);
+  }
+  .capsule-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #4ade80; }
+  .capsule-label { margin-left: var(--space-2); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #widthReadout { font-size: 20px; font-weight: 700; color: var(--accent); }
+
+  /* ── §3.2: deadzone fix demo (current gapped vs proposed edge-to-edge) ── */
+  .open-bar {
+    position: relative; height: 36px; display: flex; align-items: center;
+    border: 1px solid var(--border); background: var(--surface); border-radius: 18px;
+    padding: 0 8px; overflow: hidden;
+  }
+  .open-bar.current { gap: 8px; }
+  .open-bar.fixed { gap: 0; }
+
+  .item {
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-3); border-radius: 8px; cursor: pointer;
+    transition: background 200ms var(--hover-ease), color 200ms var(--hover-ease), transform 200ms var(--hover-ease);
+  }
+  .open-bar.current .item { width: 36px; height: 28px; }
+  .open-bar.fixed .item { width: 44px; height: 28px; } /* 36 + ~8px padding now inside the box */
+  .item:hover { background: var(--hover-bg); color: var(--text-1); transform: scale(1.06) translateY(-1px); }
+  .item.hide:hover { color: var(--red); }
+  .item svg { width: 16px; height: 16px; pointer-events: none; }
+
+  .cursor-track { position: relative; height: 14px; }
+  .cursor-track .ruler { position: absolute; top: 0; left: 0; height: 100%; background: var(--accent); opacity: 0.25; width: 1px; }
+  .legend { display: flex; gap: 16px; font-size: 10px; color: var(--text-3); }
+  .legend span.swatch { display: inline-block; width: 8px; height: 8px; background: var(--hover-bg); border: 1px solid var(--border); margin-right: 4px; vertical-align: middle; }
+</style>
+</head>
+<body>
+
+  <section>
+    <h2>§3.1 — Closed capsule width (measured live, Geist Mono 12px)</h2>
+    <p class="note">All strings that can appear in the closed label (useCapture.ts + PillOverlay.pillLabel), longest highlighted. Width = text + 8px dot + 8px gap + 12px pad ×2.</p>
+    <div class="label-list" id="labelList"></div>
+    <div style="display:flex; align-items:center; gap:20px; margin-top: 8px;">
+      <div class="capsule-menu" id="capsuleDemo">
+        <span class="capsule-dot"></span>
+        <span class="capsule-label" id="capsuleDemoLabel">Second Thought</span>
+      </div>
+      <div>computed width: <span id="widthReadout">—</span></div>
+    </div>
+    <div id="measureSpan"></div>
+  </section>
+
+  <section>
+    <h2>§3.2 — Deadzone fix: current (gapped, dead pixels) vs proposed (edge-to-edge)</h2>
+    <p class="note">Move your cursor across each bar — the tinted swatch below shows what's highlighted under the cursor at that x-position. Current: hovering the 8px gap between icons highlights nothing. Fixed: every x-position highlights exactly one item.</p>
+
+    <div>
+      <div style="font-size:10px; color:var(--text-3); margin-bottom:4px;">CURRENT — margin-left gap (dead space between hitboxes)</div>
+      <div class="open-bar current" id="barCurrent"></div>
+    </div>
+
+    <div>
+      <div style="font-size:10px; color:var(--text-3); margin-bottom:4px;">FIXED — spacing moved inside each item, hitboxes touch edge-to-edge</div>
+      <div class="open-bar fixed" id="barFixed"></div>
+    </div>
+
+    <div class="legend">
+      <div><span class="swatch"></span>hover tint</div>
+    </div>
+  </section>
+
+<script>
+// "Filed · <category>" is excluded from the width calc per user decision —
+// it's the rare long-category case allowed to ellipsize rather than driving
+// the whole bar's width.
+const LABELS = [
+  "Second Thought", "Intercepting", "Enriching content", "Deciding category",
+  "Writing to vault", "Detecting YouTube link", "Fetching metadata",
+  "Saving transcript", "Summarizing", "Combining sections", "Finalizing note",
+  "Working", "Error", "Done"
+];
+const EXCLUDED_LABEL = "Filed · Personal Finance & Budgeting";
+const DOT_W = 8, GAP = 8, PAD_X = 12;
+
+const measureSpan = document.getElementById("measureSpan");
+function textWidth(s) { measureSpan.textContent = s; return measureSpan.getBoundingClientRect().width; }
+
+let longest = "", longestW = -1;
+const rows = LABELS.map((s) => {
+  const tw = textWidth(s);
+  const total = Math.ceil(tw + DOT_W + GAP + PAD_X * 2);
+  if (total > longestW) { longestW = total; longest = s; }
+  return { s, tw, total };
+});
+// Shown for reference only — not part of the width calc (see decision above).
+const excludedW = Math.ceil(textWidth(EXCLUDED_LABEL) + DOT_W + GAP + PAD_X * 2);
+rows.push({ s: EXCLUDED_LABEL + "  (excluded — will ellipsize)", tw: 0, total: excludedW });
+
+const list = document.getElementById("labelList");
+rows.sort((a, b) => b.total - a.total).forEach((r) => {
+  const div = document.createElement("div");
+  div.className = "row" + (r.s === longest ? " longest" : "");
+  div.innerHTML = `<span>"${r.s}"</span><span>${r.total}px</span>`;
+  list.appendChild(div);
+});
+
+document.getElementById("capsuleDemoLabel").textContent = longest;
+document.getElementById("capsuleDemo").style.width = longestW + "px";
+document.getElementById("widthReadout").textContent = longestW + "px  (longest: \"" + longest + "\")";
+
+// ── deadzone bars ──
+const ICONS = {
+  search: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+  vault: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M2 12h2m16 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>',
+  inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  stats: '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>',
+  hide: '<path d="M12 4v9"/><path d="M8 10l4 4 4-4"/><path d="M4 18h16"/>'
+};
+
+function buildBar(el) {
+  Object.keys(ICONS).forEach((k) => {
+    const d = document.createElement("div");
+    d.className = "item" + (k === "hide" ? " hide" : "");
+    d.title = k;
+    d.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[k]}</svg>`;
+    el.appendChild(d);
+  });
+}
+buildBar(document.getElementById("barCurrent"));
+buildBar(document.getElementById("barFixed"));
+</script>
+</body>
+</html>

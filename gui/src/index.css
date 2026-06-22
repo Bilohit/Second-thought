@@ -50,6 +50,42 @@
   --radius:    0px;
   --radius-lg: 0px;
   --radius-xl: 0px;
+
+  /* Pill-menu open/close motion (capsule + radial) — plain ease-out, no
+     bounce (for_sonnet.md §2): the fan/morph travel itself should settle
+     cleanly. Bounce is reserved for hover-only feedback (--hover-ease,
+     applied separately on .spoke.open:hover) so it never fights the
+     open/close stagger. Mirrored into JS as RADIAL_ANIM_MS/RADIAL_STAGGER_MS
+     for the values the radial component needs in React. */
+  --menu-travel-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --menu-item-dur: 260ms;
+  --menu-stagger: 45ms;
+
+  /* Hover recipe (for_sonnet.md §1.1) — shared by every interactive surface.
+     Asymmetric easing: --hover-ease (overshoot) drives the :hover/enter
+     transition, --hover-ease-out (plain ease-out) drives the base/leave
+     transition. Applying the overshoot curve symmetrically to mouseleave
+     makes the transform bounce back past its rest state, which momentarily
+     renders text/icons at a non-integer scale and reads as a blur "stutter"
+     right before it settles — CSS resolves the active transition from the
+     *target* state's rule, so this split fixes it without extra JS.
+     --hover-shadow splits light/dark the same way --scrim already does (one
+     value per color-scheme, not per theme). */
+  --hover-dur: 260ms;
+  --hover-ease: cubic-bezier(0.34, 1.3, 0.64, 1);
+  --hover-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --hover-bg: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  --hover-border: color-mix(in srgb, var(--accent) 90%, var(--border));
+  --hover-lift: -2px;
+  --hover-scale: 1.03;
+  --hover-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="light"],
+[data-theme="sage"],
+[data-theme="sky"],
+[data-theme="bubba-pink"] {
+  --hover-shadow: 0 4px 12px rgba(0, 0, 0, 0.10);
 }
 
 /* ── Void (default dark, grayscale) ──────────────────────────────────────── */
@@ -83,12 +119,12 @@
   color-scheme: light;
   --bg:           #ffffff;
   --surface:      #f5f5f5;
-  --surface-2:    #e5e5e5;
-  --border:       #e5e5e5;
-  --border-2:     #f0f0f0;
+  --surface-2:    #cccccc;
+  --border:       #c7c7c7;
+  --border-2:     #d2d2d2;
   --text-1:       #0a0a0a;
-  --text-2:       #717171;
-  --text-3:       #a1a1a1;
+  --text-2:       #4f4f4f;
+  --text-3:       #636363;
   --accent:       #737373;
   --accent-d:     rgba(115, 115, 115, 0.10);
   --accent-glow:  rgba(115, 115, 115, 0.22);
@@ -97,7 +133,7 @@
   --yellow:       #92660a;
   --red:          #e7000b;
   --glass-bg:     #ffffff;
-  --glass-border: #e5e5e5;
+  --glass-border: #c7c7c7;
   --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
   --palette-bg:   #ffffff;
   --scrim:        rgba(0, 0, 0, 0.25);
@@ -113,7 +149,7 @@
   --border-2:     #e3ead7;
   --text-1:       #28331f;
   --text-2:       #5c6b4c;
-  --text-3:       #8a9678;
+  --text-3:       #59604d;
   --accent:       #7fa05f;
   --accent-d:     rgba(127, 160, 95, 0.12);
   --accent-glow:  rgba(127, 160, 95, 0.24);
@@ -138,14 +174,14 @@
   --border-2:     #cfe6f1;
   --text-1:       #122a36;
   --text-2:       #3c6b82;
-  --text-3:       #6c93a6;
-  --accent:       #1f7fb3;
+  --text-3:       #49626f;
+  --accent:       #6eb8dd;
   --accent-d:     rgba(31, 127, 179, 0.12);
   --accent-glow:  rgba(31, 127, 179, 0.24);
   --on-accent:    #f3fafd;
   --green:        #16a34a;
   --yellow:       #92660a;
-  --red:          #e7000b;
+  --red:          #ff000d;
   --glass-bg:     #ffffff;
   --glass-border: #a8cfe3;
   --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
@@ -474,6 +510,97 @@ html, body, #root {
   margin: 0;
 }
 
+/* ── Hover recipe utilities (for_sonnet.md §1.2) ─────────────────────────
+   .btn-hover: lift + scale + bg + border — buttons, segmented toggles,
+   theme swatches, anchor-grid cells.
+   .row-hover-lift: lift + bg + border, NO scale — actionable rows/cards
+   (inbox items) where a scaling pop would feel too aggressive.
+   .row-hover-flat: bg + border only, no lift — read-only rows inside scroll
+   areas, so the list doesn't jitter while scrolling.
+   Every rule below splits enter/leave easing: the base (leave) rule uses
+   --hover-ease-out (plain, no overshoot); the :hover (enter) rule
+   redeclares the whole transition with --hover-ease (overshoot). CSS
+   resolves the active transition from the *target* state's rule, so this
+   keeps the bounce on the way in without it bouncing back past rest on the
+   way out (see --hover-ease-out comment above for why that read as blur).
+   An always-on "active"/selected state (e.g. a selected segmented toggle)
+   must still win over these — give the active rule higher specificity or
+   apply it after the hover class so it isn't overridden mid-hover. */
+.btn-hover {
+  transition: background var(--hover-dur) var(--hover-ease-out),
+              border-color var(--hover-dur) var(--hover-ease-out),
+              color var(--hover-dur) var(--hover-ease-out),
+              box-shadow var(--hover-dur) var(--hover-ease-out),
+              transform var(--hover-dur) var(--hover-ease-out);
+}
+
+.btn-hover:hover {
+  transition: background var(--hover-dur) var(--hover-ease),
+              border-color var(--hover-dur) var(--hover-ease),
+              color var(--hover-dur) var(--hover-ease),
+              box-shadow var(--hover-dur) var(--hover-ease),
+              transform var(--hover-dur) var(--hover-ease);
+  transform: translateY(var(--hover-lift)) scale(var(--hover-scale));
+  background: var(--hover-bg);
+  border-color: var(--hover-border);
+  color: var(--text-1);
+  box-shadow: var(--hover-shadow);
+}
+
+.row-hover-lift {
+  transition: background var(--hover-dur) var(--hover-ease-out),
+              border-color var(--hover-dur) var(--hover-ease-out),
+              box-shadow var(--hover-dur) var(--hover-ease-out),
+              transform var(--hover-dur) var(--hover-ease-out);
+}
+
+.row-hover-lift:hover {
+  transition: background var(--hover-dur) var(--hover-ease),
+              border-color var(--hover-dur) var(--hover-ease),
+              box-shadow var(--hover-dur) var(--hover-ease),
+              transform var(--hover-dur) var(--hover-ease);
+  transform: translateY(var(--hover-lift));
+  background: var(--hover-bg);
+  border-color: var(--hover-border);
+  box-shadow: var(--hover-shadow);
+}
+
+.row-hover-flat {
+  transition: background var(--hover-dur) var(--hover-ease-out),
+              border-color var(--hover-dur) var(--hover-ease-out);
+}
+
+.row-hover-flat:hover {
+  transition: background var(--hover-dur) var(--hover-ease),
+              border-color var(--hover-dur) var(--hover-ease);
+  background: var(--hover-bg);
+  border-color: var(--hover-border);
+}
+
+/* Danger modifier — destructive actions (delete/hide) tint red instead of
+   the accent on hover; pair with .btn-hover or .row-hover-lift/-flat. */
+.hover-danger:hover {
+  color: var(--red);
+}
+
+/* Panel close (X) exception (for_sonnet.md §1.3) — color-only, no
+   lift/scale/motion. A close button sitting in a corner that pops on hover
+   reads as an accidental click target; it should just acknowledge focus. */
+.icon-close-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: var(--space-1);
+  color: var(--text-3);
+  display: flex;
+  transition: color 150ms ease;
+}
+
+.icon-close-btn:hover,
+.icon-close-btn:focus-visible {
+  color: var(--text-1);
+}
+
 /* Theme toggle visible label (screen-reader accessible) */
 .sr-only {
   position: absolute;
@@ -514,8 +641,8 @@ html, body, #root {
   pointer-events: none;
   opacity: 0;
   transform: translate(0, 0) scale(var(--spoke-scale-closed, 0.6));
-  transition: transform var(--spoke-anim-ms, 220ms) cubic-bezier(0.16, 1, 0.3, 1),
-              opacity var(--spoke-anim-ms, 220ms) cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform var(--spoke-anim-ms, 260ms) var(--menu-travel-ease),
+              opacity var(--spoke-anim-ms, 260ms) var(--menu-travel-ease);
   z-index: 20;
 }
 
@@ -530,6 +657,7 @@ html, body, #root {
 }
 
 .spoke.open:hover {
+  transition: transform var(--hover-dur) var(--hover-ease);
   transform: translate(var(--tx, 0), var(--ty, 0)) scale(var(--spoke-scale-hover, 1.06));
   border-color: var(--accent);
 }
@@ -559,6 +687,7 @@ html, body, #root {
 
 .spoke-hide.open:hover {
   opacity: 1;
+  color: var(--red);
   transform: translate(var(--tx, 0), var(--ty, 0)) scale(1);
   border-color: var(--border);
 }
@@ -567,10 +696,18 @@ html, body, #root {
   position: absolute;
   top: 2px;
   right: 2px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--yellow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 600;
+  color: #fff;
+  background: var(--red);
+  border-radius: 7px;
 }
 
 /* ── Capsule morph (capsule mode) ────────────────────────────────────────── */
@@ -578,7 +715,6 @@ html, body, #root {
   position: relative;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
   padding: 0 var(--space-3);
   border: 1px solid var(--border);
   background: var(--surface);
@@ -613,48 +749,78 @@ html, body, #root {
 .capsule-label {
   flex: 1 1 auto;
   min-width: 0;
+  margin-left: var(--space-2);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   font-size: 12px;
   opacity: 1;
-  transition: opacity 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 160ms cubic-bezier(0.16, 1, 0.3, 1),
+              margin-left 160ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .capsule-menu.open .capsule-dot,
 .capsule-menu.open .capsule-label {
   flex: 0 0 0;
   width: 0;
+  margin-left: 0;
   opacity: 0;
 }
 
-/* Open state (decision #5b): icons only, no labels, all 6 visible at once. */
+/* Open state (decision #5b): icons only, no labels, all 6 visible at once.
+   Width is 44px (36px visual hitbox + 8px spacing folded inside as padding,
+   not a flex `gap`) so hitboxes touch edge-to-edge with zero dead pixels
+   between them (for_sonnet.md §3.2) — no margin-left, no gap. */
 .capsule-item {
+  position: relative;
+  z-index: 1;
   flex: 0 0 auto;
+  align-self: stretch;
   display: flex;
   align-items: center;
   justify-content: center;
   width: 0;
   overflow: hidden;
   opacity: 0;
-  transform: scale(0.7);
-  border-radius: 8px;
+  transform: translateX(-10px) scale(0.7);
   color: var(--text-3);
-  transition: width 220ms cubic-bezier(0.16, 1, 0.3, 1),
-              opacity 200ms cubic-bezier(0.16, 1, 0.3, 1),
-              transform 200ms cubic-bezier(0.16, 1, 0.3, 1),
-              background 120ms ease, color 120ms ease;
+  transition: width var(--menu-item-dur, 260ms) var(--menu-travel-ease),
+              opacity var(--menu-item-dur, 260ms) var(--menu-travel-ease),
+              transform var(--menu-item-dur, 260ms) var(--menu-travel-ease),
+              color var(--hover-dur) var(--hover-ease-out);
 }
 
 .capsule-menu.open .capsule-item {
-  width: 36px;
+  width: 44px;
   opacity: 1;
-  transform: scale(1);
+  transform: translateX(0) scale(1);
 }
 
-.capsule-item:hover {
-  background: var(--bg);
+.capsule-menu.open .capsule-item:hover {
+  transition: color var(--hover-dur) var(--hover-ease),
+              transform var(--hover-dur) var(--hover-ease);
   color: var(--text-1);
+  transform: scale(1.06) translateY(-1px);
+}
+
+/* Shared sliding highlight (mockups/capsule-hover-slide.html, "smooth
+   glide"): one element repositioned via JS on item mouseenter, so the tint
+   glides from the previously hovered icon to the new one instead of each
+   icon's highlight independently fading in/out. Sits behind the icons
+   (z-index 0 vs .capsule-item's 1). */
+.capsule-slider {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  height: 36px;
+  width: 0;
+  background: var(--hover-bg);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1),
+              width 220ms cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 160ms ease-out;
 }
 
 .capsule-item:focus-visible {
@@ -664,6 +830,18 @@ html, body, #root {
 
 .capsule-item-hide {
   opacity: 0.7;
+  position: relative;
+}
+
+.capsule-item-hide::before {
+  content: "";
+  position: absolute;
+  left: 0;   /* items now touch edge-to-edge (no gap) — divider sits on the boundary */
+  top: 20%;
+  bottom: 20%;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
 }
 
 .capsule-menu.open .capsule-item-hide {
@@ -672,6 +850,7 @@ html, body, #root {
 
 .capsule-menu.open .capsule-item-hide:hover {
   opacity: 1;
+  color: var(--red);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -680,5 +859,9 @@ html, body, #root {
   .capsule-label,
   .capsule-item {
     transition-duration: 0.01ms !important;
+  }
+  .spoke,
+  .capsule-item {
+    transition-delay: 0ms !important;   /* cancel the staggered fan-in */
   }
 }
