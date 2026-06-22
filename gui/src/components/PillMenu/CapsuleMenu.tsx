@@ -7,15 +7,18 @@
  * 6 actions (~36px each, no text), all visible at once.
  *
  * Edge-awareness lives one level up: the OS window is what actually grows
- * (see App.tsx's openingMenu branch — decision #5c pins whichever edge is
- * nearer the screen edge and grows the other way), already repositioned so
- * the correct edge of the *window* stays anchored where the pill visually
- * was. This component only renders the morph at its natural width inside
- * that window — it never measures or anchors itself.
+ * (see App.tsx's openingMenu branch, `computeCapsuleMenuGeometry` —
+ * for_sonnet.md Problem 3 pins whichever edge is nearer the screen edge and
+ * grows the other way), already repositioned so the correct edge of the
+ * *window* stays anchored where the pill visually was. This component only
+ * renders the morph at its natural width inside that window — it never
+ * measures or anchors itself.
+ *
+ * Closed is draggable, open is not (for_sonnet.md Problem 2) — the
+ * `drag-region` class is only applied while closed.
  */
 import { useEffect, useRef } from "react";
 import type { PillCorner } from "../PillOverlay";
-import { useDragCloseOnMove } from "../../lib/useDragCloseOnMove";
 import { ALL_TARGETS, MENU_LABELS, MenuIcon, type MenuTarget } from "./icons";
 
 // 231px — measured (mockups/capsule-width-deadzone.html §3.1) against every
@@ -42,15 +45,11 @@ interface Props {
   isActive: boolean;
   inboxCount: number;
   onToggle: () => void;
-  /** Dragging the bar closes the menu instead of being locked while it's
-   *  open (for_sonnet.md "Problem 4" decision #4b). */
-  onDragClose: () => void;
   onSelect: (target: Exclude<MenuTarget, "hide">) => void;
   onHide: () => void;
 }
 
-export default function CapsuleMenu({ open, corner, label, dotColor, isActive, inboxCount, onToggle, onDragClose, onSelect, onHide }: Props) {
-  const dragHandlers = useDragCloseOnMove(open, onDragClose);
+export default function CapsuleMenu({ open, corner, label, dotColor, isActive, inboxCount, onToggle, onSelect, onHide }: Props) {
   const sliderRef = useRef<HTMLSpanElement>(null);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
 
@@ -72,7 +71,7 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, i
   return (
     <button
       type="button"
-      className={`capsule-menu drag-region${open ? " open" : ""}`}
+      className={`capsule-menu${open ? " open" : " drag-region"}`}
       data-corner={corner}
       aria-haspopup="menu"
       aria-label={`Second Thought — ${label}. Click to ${open ? "close" : "open"} the menu.`}
@@ -82,9 +81,6 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, i
         e.stopPropagation();
         onToggle();
       }}
-      onPointerDown={dragHandlers.onPointerDown}
-      onPointerMove={dragHandlers.onPointerMove}
-      onPointerUp={dragHandlers.onPointerUp}
       onMouseLeave={hideSlider}
     >
       {isActive && <span className="capsule-ring" aria-hidden="true" />}

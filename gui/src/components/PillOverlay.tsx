@@ -9,6 +9,11 @@
  * App.tsx's onSelect/onHide wiring). Re-clicking the pill while the menu is
  * open dismisses it without hiding the app (D1, for_sonnet.md §5.1/§10).
  *
+ * Closed pill is draggable; open pill is not (for_sonnet.md Problem 2) — the
+ * `drag-region` class is only applied while the menu is closed, so the OS
+ * can't move the window while it's open. Closing itself is click-off
+ * (App.tsx's outer wrapper onClick), not drag (for_sonnet.md Problem 3).
+ *
  * Corner style is a deliberate, narrow exception to the app's sharp-0px-
  * radius lock (see DESIGN.md / index.css): it only ever touches this one
  * component's shape (and the menu chips, which inherit it — D2), never any
@@ -19,7 +24,6 @@ import { deriveYoutubeSteps } from "../hooks/useCapture";
 import RadialMenu, { type PillGeometry } from "./PillMenu/RadialMenu";
 import CapsuleMenu from "./PillMenu/CapsuleMenu";
 import type { MenuTarget } from "./PillMenu/icons";
-import { useDragCloseOnMove } from "../lib/useDragCloseOnMove";
 
 export type PillMode = "capsule" | "minimal";
 export type PillCorner = "sharp" | "rounded";
@@ -31,9 +35,6 @@ interface Props {
   stepDefs: CaptureStep[];
   menuOpen: boolean;
   onToggleMenu: () => void;
-  /** Dragging the pill closes the menu instead of being locked while it's
-   *  open (for_sonnet.md "Problem 4" decision #4b). */
-  onMenuDragClose: () => void;
   pillGeometry?: PillGeometry | null;
   fanStyle?: "spread" | "capped";
   inboxCount: number;
@@ -63,7 +64,7 @@ export const PILL_DIMS: Record<PillMode, { w: number; h: number }> = {
 };
 
 export default function PillOverlay({
-  mode, corner, captureState, stepDefs, menuOpen, onToggleMenu, onMenuDragClose, pillGeometry, fanStyle, inboxCount, onSelect, onHide,
+  mode, corner, captureState, stepDefs, menuOpen, onToggleMenu, pillGeometry, fanStyle, inboxCount, onSelect, onHide,
 }: Props) {
   const isActive = captureState.phase === "capturing" || captureState.phase === "background";
   const isError  = captureState.phase === "error";
@@ -72,18 +73,13 @@ export default function PillOverlay({
 
   const dotColor = isError ? "var(--red)" : isDone ? "var(--green)" : isActive ? "var(--accent)" : "var(--text-3)";
 
-  const dragHandlers = useDragCloseOnMove(menuOpen, onMenuDragClose);
-
   if (mode === "minimal") {
     return (
       <div style={{ position: "relative", width: PILL_DIMS.minimal.w, height: PILL_DIMS.minimal.h }}>
         <button
           type="button"
-          className="drag-region"
+          className={menuOpen ? undefined : "drag-region"}
           onClick={(e) => { e.stopPropagation(); onToggleMenu(); }}
-          onPointerDown={dragHandlers.onPointerDown}
-          onPointerMove={dragHandlers.onPointerMove}
-          onPointerUp={dragHandlers.onPointerUp}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           aria-label={`Second Thought — ${label}. Click to ${menuOpen ? "close" : "open"} the menu.`}
@@ -95,7 +91,7 @@ export default function PillOverlay({
             background: "var(--surface)",
             border: "1px solid var(--border)",
             borderRadius: corner === "rounded" ? "50%" : "0px",
-            cursor: "pointer",
+            cursor: menuOpen ? "pointer" : "grab",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -139,7 +135,6 @@ export default function PillOverlay({
       isActive={isActive}
       inboxCount={inboxCount}
       onToggle={onToggleMenu}
-      onDragClose={onMenuDragClose}
       onSelect={onSelect}
       onHide={onHide}
     />

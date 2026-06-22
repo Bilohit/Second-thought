@@ -364,6 +364,11 @@ html, body, #root {
 .drag-region {
   -webkit-app-region: drag;
   app-region: drag;
+  cursor: grab;
+}
+
+.drag-region:active {
+  cursor: grabbing;
 }
 
 .no-drag {
@@ -723,6 +728,16 @@ html, body, #root {
   overflow: hidden;
   cursor: pointer;
   transition: width 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Closed = draggable surface, signal with grab; open = locked, pointer
+   (for_sonnet.md Problem 2, decision #3). */
+.capsule-menu.drag-region {
+  cursor: grab;
+}
+
+.capsule-menu.drag-region:active {
+  cursor: grabbing;
 }
 
 .capsule-menu[data-corner="sharp"] {

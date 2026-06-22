@@ -40,7 +40,8 @@ import SearchModal, { type SearchAction } from "./components/SearchModal";
 import { useCapture } from "./hooks/useCapture";
 import { getInbox } from "./lib/api";
 import { type PillAnchor, anchorPosition } from "./lib/pillAnchor";
-import { getActiveWorkArea } from "./lib/monitor";
+import { getActiveWorkArea, getActiveMonitorBounds } from "./lib/monitor";
+import { computeMenuGeometry, clampPillWindowToMonitor, computeCapsuleMenuGeometry } from "./lib/menuGeometry";
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 
@@ -256,6 +257,10 @@ export default function App() {
   // into the same unifiedFan geometry; see for_sonnet.md "Problem 2 + 3").
   // Computed fresh each time the menu opens (see the resize effect below).
   const [radialGeometry, setRadialGeometry] = useState<PillGeometry | null>(null);
+  // Capsule-only (for_sonnet.md Problem 3): which screen edge the pill is
+  // nearer to when the menu opens. The bar hugs this edge and the
+  // transparent click-to-close padding grows toward the screen center.
+  const [capsuleNearEdge, setCapsuleNearEdge] = useState<"left" | "right">("left");
 
   useEffect(() => { try { localStorage.setItem(DISPLAY_MODE_KEY, displayMode); } catch { /* ignore */ } }, [displayMode]);
   useEffect(() => { try { localStorage.setItem(PILL_CORNER_KEY, pillCorner); } catch { /* ignore */ } }, [pillCorner]);
@@ -273,6 +278,13 @@ export default function App() {
   useEffect(() => {
     holdOpenRef.current = pillPinned || expanded;
   }, [pillPinned, expanded]);
+
+  // Mirrors read by the window-focus-loss listener below (mounted once) so it
+  // always sees the latest values without re-subscribing every render.
+  const menuOpenRef = useRef(menuOpen);
+  useEffect(() => { menuOpenRef.current = menuOpen; }, [menuOpen]);
+  const pillPinnedRef = useRef(pillPinned);
+  useEffect(() => { pillPinnedRef.current = pillPinned; }, [pillPinned]);
 
   const { state: captureState, stepDefs } = useCapture(holdOpenRef);
 
@@ -373,6 +385,27 @@ export default function App() {
     return () => { unlistenSettings?.(); unlistenVault?.(); unlistenInbox?.(); unlistenStats?.(); };
   }, []);
 
+  // Click-away close (for_sonnet.md Bug 1): the OS window only grows to
+  // tightly wrap the open menu, so clicks on the desktop/another app/the
+  // other monitor land outside the window and never reach the in-window
+  // onClick handler below. Focus loss is the only signal that reaches us for
+  // those clicks. Pinned just closes the menu; unpinned also hides to tray,
+  // matching the dedicated Hide action.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        unlisten = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+          if (focused) return;
+          if (!menuOpenRef.current) return;
+          setMenuOpen(false);
+          if (!pillPinnedRef.current) getCurrentWindow().hide();
+        });
+      } catch { /* ignore */ }
+    })();
+    return () => { unlisten?.(); };
+  }, []);
+
   // ── Dynamic window sizing (B1: content-measured) ──────────────────────────
   // The window height tracks the *real* content height of whichever view is
   // active, measured live via ResizeObserver. This replaces the old fixed
@@ -451,7 +484,10 @@ export default function App() {
   // custom-position fan can open as a near-full wheel); capsule only grows
   // wider, same height.
   const RADIAL_MENU_BOX = Math.round((radialTuning.radius + radialTuning.chipMax / 2 + PILL_MARGIN) * 2);
-  const menuBoxW = displayMode === "minimal" ? RADIAL_MENU_BOX : CAPSULE_OPEN_W + PILL_MARGIN * 2;
+  // Capsule open width additionally reserves a transparent click-to-close
+  // padding strip on the inner side (for_sonnet.md Problem 3, Option A).
+  const CLOSE_PAD_W = 64;
+  const menuBoxW = displayMode === "minimal" ? RADIAL_MENU_BOX : CAPSULE_OPEN_W + PILL_MARGIN * 2 + CLOSE_PAD_W;
   const menuBoxH = displayMode === "minimal" ? RADIAL_MENU_BOX : PILL_DIMS.capsule.h + PILL_MARGIN * 2;
   const targetWinW = showPill && menuOpen ? menuBoxW : pillBoxW;
   const targetWinH = showPill && menuOpen ? menuBoxH : pillBoxH;
@@ -477,10 +513,16 @@ export default function App() {
 
   // Refs mirroring render-time values the onMoved listener (mounted once,
   // below) needs to read live without re-subscribing every render.
-  const snapStateRef = useRef({ anchor: pillAnchor, snapEnabled: pillSnapEnabled, showPill, menuOpen, w: pillBoxW, h: pillBoxH });
+  const snapStateRef = useRef({
+    anchor: pillAnchor, snapEnabled: pillSnapEnabled, showPill, menuOpen, w: pillBoxW, h: pillBoxH,
+    pillW: PILL_DIMS[displayMode as PillMode].w, pillH: PILL_DIMS[displayMode as PillMode].h,
+  });
   useEffect(() => {
-    snapStateRef.current = { anchor: pillAnchor, snapEnabled: pillSnapEnabled, showPill, menuOpen, w: pillBoxW, h: pillBoxH };
-  }, [pillAnchor, pillSnapEnabled, showPill, menuOpen, pillBoxW, pillBoxH]);
+    snapStateRef.current = {
+      anchor: pillAnchor, snapEnabled: pillSnapEnabled, showPill, menuOpen, w: pillBoxW, h: pillBoxH,
+      pillW: PILL_DIMS[displayMode as PillMode].w, pillH: PILL_DIMS[displayMode as PillMode].h,
+    };
+  }, [pillAnchor, pillSnapEnabled, showPill, menuOpen, pillBoxW, pillBoxH, displayMode]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -499,9 +541,41 @@ export default function App() {
         unlisten = await getCurrentWindow().onMoved(({ payload }) => {
           if (programmaticMove.current) return;
           clearTimeout(saveTimer);
-          saveTimer = setTimeout(() => {
+          let { x, y } = payload;
+          void (async () => {
+            // Hard containment clamp (for_sonnet.md Problem 1): runs
+            // immediately on every onMoved payload, not debounced, so the
+            // visible pill can never be dragged past the physical monitor
+            // edge even mid-drag. Only meaningful while the (closed,
+            // draggable) pill is showing — the menu-open window isn't
+            // draggable (Problem 2b) so this never fights that geometry.
+            const { showPill: pillShownNow, menuOpen: isMenuOpenNow, pillW, pillH } = snapStateRef.current;
+            if (pillShownNow && !isMenuOpenNow) {
+              try {
+                const win = getCurrentWindow();
+                const scale = await win.scaleFactor();
+                const topLeftLogical = { x: x / scale, y: y / scale };
+                const pillCenterPhysical = {
+                  x: x + ((pillW + PILL_MARGIN * 2) * scale) / 2,
+                  y: y + ((pillH + PILL_MARGIN * 2) * scale) / 2,
+                };
+                const bounds = await getActiveMonitorBounds(pillCenterPhysical);
+                const corrected = clampPillWindowToMonitor({
+                  windowTopLeftLogical: topLeftLogical,
+                  pillW, pillH, margin: PILL_MARGIN,
+                  monitorBounds: bounds,
+                });
+                if (corrected.x !== topLeftLogical.x || corrected.y !== topLeftLogical.y) {
+                  markProgrammaticMove();
+                  await win.setPosition(new LogicalPosition(corrected.x, corrected.y));
+                  x = Math.round(corrected.x * scale);
+                  y = Math.round(corrected.y * scale);
+                }
+              } catch { /* ignore */ }
+            }
+
+            saveTimer = setTimeout(() => {
             void (async () => {
-              let { x, y } = payload;
               const { anchor, snapEnabled, showPill: pillShown, menuOpen: isMenuOpen, w, h } = snapStateRef.current;
               // Snap-to-edge/corner magnet (for_sonnet.md "New Settings" §2):
               // only on Custom placement, only while the menu is closed (a
@@ -534,7 +608,8 @@ export default function App() {
                 localStorage.setItem(WINDOW_POS_KEY, JSON.stringify({ x, y }));
               } catch { /* ignore */ }
             })();
-          }, 300);
+            }, 300);
+          })();
         });
       } catch { /* ignore */ }
     })();
@@ -617,49 +692,74 @@ export default function App() {
         targetPos = { x: Math.round(area.x + (area.w - targetWinW) / 2), y: Math.round(area.y + (area.h - targetWinH) / 2) };
       } else if (openingMenu) {
         // Keep the pill's visual center fixed while the window grows around
-        // it — otherwise the fan/morph would grow from the window's current
-        // top-left instead of from the pill (for_sonnet.md §5.5).
+        // it (for_sonnet.md Bug 2). The idle top-left is read live here —
+        // that's safe, the window is settled and wholly on one monitor while
+        // idle — but everything downstream uses the known-constant idle box
+        // size (pillBoxW/H) instead of a live outerSize() re-read, and that
+        // same scale factor is never re-read after the window grows/straddles
+        // a monitor boundary, so the math can't get corrupted mid-grow.
         try {
-          const area = await getActiveWorkArea();
           const scale = await getCurrentWindow().scaleFactor();
           const pos = await getCurrentWindow().outerPosition();
-          const size = await getCurrentWindow().outerSize();
-          const curPos = { x: pos.x / scale, y: pos.y / scale };
-          const curSize = { w: size.width / scale, h: size.height / scale };
-          pillBoxBeforeMenuRef.current = curPos;
+          const idleTopLeftLogical = { x: pos.x / scale, y: pos.y / scale };
+          pillBoxBeforeMenuRef.current = idleTopLeftLogical;
+
+          const { windowTopLeftLogical, pillCenterLogical } = computeMenuGeometry({
+            idleTopLeftLogical,
+            idlePillBoxW: pillBoxW,
+            idlePillBoxH: pillBoxH,
+            targetWinW,
+            targetWinH,
+          });
+
+          // Resolve the monitor from the pill's own (stable) center, not the
+          // grown window's center — otherwise a pill near a shared edge can
+          // have its geometry flip to the neighbor monitor as the window
+          // grows past the boundary.
+          const pillCenterPhysical = { x: pillCenterLogical.x * scale, y: pillCenterLogical.y * scale };
+
           if (displayMode === "minimal") {
+            const area = await getActiveWorkArea(pillCenterPhysical);
             setRadialGeometry({
-              cx: curPos.x + curSize.w / 2,
-              cy: curPos.y + curSize.h / 2,
+              cx: pillCenterLogical.x,
+              cy: pillCenterLogical.y,
               sw: area.w,
               sh: area.h,
               originX: area.x,
               originY: area.y,
             });
+            targetPos = windowTopLeftLogical;
+          } else {
+            // Capsule edge-aware open (for_sonnet.md Problem 3): the bar
+            // hugs whichever screen edge the pill is nearer to, and the
+            // close-padding grows toward the screen center.
+            const monitorBounds = await getActiveMonitorBounds(pillCenterPhysical);
+            const monitorMidX = monitorBounds.x + monitorBounds.w / 2;
+            const nearEdge: "left" | "right" = pillCenterLogical.x > monitorMidX ? "right" : "left";
+            setCapsuleNearEdge(nearEdge);
+
+            const capsuleGeom = computeCapsuleMenuGeometry({
+              idleTopLeftLogical,
+              idlePillBoxW: pillBoxW,
+              idlePillBoxH: pillBoxH,
+              margin: PILL_MARGIN,
+              capsuleOpenW: CAPSULE_OPEN_W,
+              closePadW: CLOSE_PAD_W,
+              nearEdge,
+            });
+            targetPos = capsuleGeom.windowTopLeftLogical;
           }
-          const centerX = curPos.x + curSize.w / 2;
-          const centerY = curPos.y + curSize.h / 2;
-          const sw = area.w;
-          // Capsule grows toward the screen interior (for_sonnet.md "Problem
-          // 5" decision #5c): pin whichever edge is nearer the screen edge
-          // and grow the other way, instead of growing symmetrically from
-          // center (which would clip a right-anchored capsule). Radial mode
-          // needs room on every side for the fan, so it keeps the pill's true
-          // screen center fixed and grows unclamped — the fan geometry itself
-          // (fed the active monitor's work area above) is responsible for
-          // never drawing outside the visible bounds, so the window growing
-          // past the work-area edge here is invisible/harmless overhang
-          // rather than something that needs to shove the pill inward.
-          const growX = displayMode === "capsule"
-            ? (curPos.x + curSize.w / 2 > area.x + sw / 2 ? curPos.x + curSize.w - targetWinW : curPos.x)
-            : centerX - targetWinW / 2;
-          const clampedX = displayMode === "capsule"
-            ? Math.max(area.x, Math.min(area.x + sw - targetWinW, growX))
-            : growX;
-          targetPos = { x: Math.round(clampedX), y: Math.round(centerY - targetWinH / 2) };
         } catch { /* ignore */ }
       } else if (closingMenu && pillBoxBeforeMenuRef.current) {
-        targetPos = pillBoxBeforeMenuRef.current;
+        const idleTopLeftLogical = pillBoxBeforeMenuRef.current;
+        const { windowTopLeftLogical } = computeMenuGeometry({
+          idleTopLeftLogical,
+          idlePillBoxW: pillBoxW,
+          idlePillBoxH: pillBoxH,
+          targetWinW,
+          targetWinH,
+        });
+        targetPos = windowTopLeftLogical;
         pillBoxBeforeMenuRef.current = null;
         setRadialGeometry(null);
       }
@@ -715,6 +815,13 @@ export default function App() {
   }, []);
 
   if (renderPill) {
+    // Capsule open: push the bar to whichever edge it's pinned to, leaving
+    // the free space (the click-to-close padding) on the inner side
+    // (for_sonnet.md Problem 3b). Every other state centers as before.
+    const capsuleOpenJustify =
+      displayMode === "capsule" && menuOpen
+        ? (capsuleNearEdge === "right" ? "flex-end" : "flex-start")
+        : "center";
     return (
       <div
         onClick={() => { if (menuOpen) setMenuOpen(false); }}
@@ -723,7 +830,7 @@ export default function App() {
           height: "100vh",
           display: "flex",
           alignItems: "center",
-          justifyContent: "center",
+          justifyContent: capsuleOpenJustify,
           background: "transparent",
           overflow: "hidden",
         }}
@@ -735,7 +842,6 @@ export default function App() {
           stepDefs={stepDefs}
           menuOpen={menuOpen}
           onToggleMenu={() => setMenuOpen((o) => !o)}
-          onMenuDragClose={() => setMenuOpen(false)}
           pillGeometry={radialGeometry}
           fanStyle={pillFanStyle}
           inboxCount={inboxCount}
