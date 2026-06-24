@@ -27,10 +27,11 @@ import { LogicalSize, LogicalPosition, PhysicalPosition } from "@tauri-apps/api/
 import { listen } from "@tauri-apps/api/event";
 import CaptureOverlay from "./components/CaptureOverlay";
 import PillOverlay, { PILL_DIMS, type PillMode, type PillCorner } from "./components/PillOverlay";
-import { type PillGeometry } from "./components/PillMenu/RadialMenu";
-import { CAPSULE_OPEN_W } from "./components/PillMenu/CapsuleMenu";
+import { CAPSULE_OPEN_W, CAPSULE_EXIT_MS } from "./components/PillMenu/CapsuleMenu";
+import { RADIAL_ANIM_MS, RADIAL_STAGGER_MS, type PillGeometry } from "./components/PillMenu/RadialMenu";
+import { ALL_TARGETS, type MenuTarget } from "./components/PillMenu/icons";
+import { exitDurationMs } from "./lib/menuTiming";
 import DevTuner from "./components/PillMenu/DevTuner";
-import type { MenuTarget } from "./components/PillMenu/icons";
 import { useRadialTuning } from "./lib/devTuning";
 import SettingsPanel from "./components/SettingsPanel";
 import VaultManager from "./components/VaultManager";
@@ -38,10 +39,14 @@ import InboxPanel from "./components/InboxPanel";
 import StatsPanel from "./components/StatsPanel";
 import SearchModal, { type SearchAction } from "./components/SearchModal";
 import { useCapture } from "./hooks/useCapture";
+import { logger } from "./lib/logger";
 import { getInbox } from "./lib/api";
-import { type PillAnchor, anchorPosition } from "./lib/pillAnchor";
-import { getActiveWorkArea, getActiveMonitorBounds } from "./lib/monitor";
-import { computeMenuGeometry, clampPillWindowToMonitor, computeCapsuleMenuGeometry } from "./lib/menuGeometry";
+import { type PillAnchor, anchorPosition, isPillDraggable } from "./lib/pillAnchor";
+import { getActiveWorkArea, getActiveMonitorBounds, listMonitors, resolveTargetMonitor, type MonitorInfo } from "./lib/monitor";
+import { computeMenuGeometry, clampPillWindowToMonitor, computeCapsuleMenuGeometry, computeProportionalMonitorMove, computeMinimalMenuWindow } from "./lib/menuGeometry";
+import { nextWindowTopLeft, emaVelocity, zeroVelocityAtClamp, dragStartBaseline, type Point } from "./lib/dragMath";
+import { createSpring, stepSpring } from "./lib/spring";
+import { setWindowNoactivate, armMenuClickAway, disarmMenuClickAway } from "./lib/tauri";
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 
@@ -67,7 +72,7 @@ export const THEME_LABELS: Record<Theme, string> = {
 };
 const STORAGE_KEY = "omni-theme";
 
-function getInitialTheme(): Theme {
+export function getInitialTheme(): Theme {
   try {
     const saved = localStorage.getItem(STORAGE_KEY) as Theme | null;
     if (saved && (THEMES as string[]).includes(saved)) return saved;
@@ -92,6 +97,7 @@ const PILL_PINNED_KEY     = "omni-pill-pinned";
 const PILL_ANCHOR_KEY     = "omni-pill-anchor";
 const PILL_FAN_STYLE_KEY  = "omni-pill-fan-style";
 const PILL_SNAP_KEY       = "omni-pill-snap";
+const PILL_MONITOR_KEY    = "omni-pill-monitor";
 /** Custom-position drag release snaps to the nearest edge/corner within this
  *  many logical px (for_sonnet.md "New Settings" §2). */
 const SNAP_THRESHOLD_PX = 24;
@@ -130,6 +136,9 @@ function getInitialPillFanStyle(): "spread" | "capped" {
 function getInitialPillSnap(): boolean {
   try { return localStorage.getItem(PILL_SNAP_KEY) !== "0"; } catch { return true; }
 }
+function getInitialSelectedMonitorId(): string | null {
+  try { return localStorage.getItem(PILL_MONITOR_KEY); } catch { return null; }
+}
 
 // ── View ───────────────────────────────────────────────────────────────────
 
@@ -162,6 +171,13 @@ function cubicBezierEase(p1x: number, p1y: number, p2x: number, p2y: number) {
   };
 }
 const MOVE_EASE = cubicBezierEase(0.16, 1, 0.3, 1);
+
+// Radial fan exit timing (formerly MenuWindow.tsx's EXIT_DURATION_MS, now
+// owned here since the fan lives in this window) — the window must stay
+// full-size until the staggered spoke exit finishes, then shrink back to
+// the idle pill size (§3.2).
+const RADIAL_EXIT_BUFFER_MS = 80;
+const RADIAL_EXIT_DURATION_MS = exitDurationMs(ALL_TARGETS.length, RADIAL_ANIM_MS, RADIAL_STAGGER_MS, RADIAL_EXIT_BUFFER_MS);
 
 // Menu open/close (for_sonnet.md "Problem 4") gets a single atomic, instant
 // resize+reposition instead of the rAF tween above — the tween's per-frame
@@ -243,6 +259,34 @@ export default function App() {
   const [pillFanStyle, setPillFanStyle] = useState<"spread" | "capped">(getInitialPillFanStyle);
   const [pillSnapEnabled, setPillSnapEnabled] = useState<boolean>(getInitialPillSnap);
   const radialTuning = useRadialTuning();
+
+  // Breathing room around the pill so the rotating-ring overlay (inset -2px)
+  // never gets clipped by the OS window edge.
+  const PILL_MARGIN = 6;
+
+  // Minimal mode only (§3): the radial fan's screen-space geometry, computed
+  // once per open from the pill's own window position (no cross-window
+  // event needed now that the fan renders in-process). `minimalWrapperOffset`
+  // is where the pill+fan wrapper sits *within* the grown window — normally
+  // dead-center (matches the idle margin), but shifted off-center when the
+  // monitor clamp (§3.3) pushes the window without moving the pill itself.
+  const [radialPillGeometry, setRadialPillGeometry] = useState<PillGeometry | null>(null);
+  const [minimalWrapperOffset, setMinimalWrapperOffset] = useState<{ x: number; y: number }>({ x: PILL_MARGIN, y: PILL_MARGIN });
+  // True only once the window has actually grown to fit the radial fan —
+  // gates the fan's render so it can never paint into a still-pill-sized
+  // window mid-IPC-grow (pill-fan-clip fix). Pill chrome (glow/aria) keeps
+  // reacting to `menuOpen` instantly; only the fan waits on this.
+  const [fanReady, setFanReady] = useState(false);
+
+  // Display picker (for_sonnet.md §4) — enumerated once on mount and again
+  // whenever Settings is opened (cheap, covers hot-plug without polling).
+  // `selectedMonitorId` persists like every other client-only preference;
+  // resolveTargetMonitor() falls back to primary silently if it's unplugged,
+  // keeping the stored id so a reconnected monitor is picked back up.
+  const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
+  const [selectedMonitorId, setSelectedMonitorId] = useState<string | null>(getInitialSelectedMonitorId);
+  const refreshMonitors = useCallback(() => { listMonitors().then(setMonitors).catch(() => {}); }, []);
+  useEffect(() => { refreshMonitors(); }, [refreshMonitors]);
   // True once the user clicks the pill (or it's irrelevant because Display
   // Mode is Full) — shows the full overlay instead of the small pill. Never
   // toggled automatically by the capture lifecycle, only by explicit clicks.
@@ -252,11 +296,6 @@ export default function App() {
   // §5/§6/§8. Clicking the pill toggles this instead of `expanded` directly;
   // selecting a nav item closes the menu *and* sets `expanded`.
   const [menuOpen, setMenuOpen] = useState(false);
-  // Populated for displayMode === "minimal" any time the menu opens (every
-  // anchor, not just "custom" — a pinned anchor is just a known center fed
-  // into the same unifiedFan geometry; see for_sonnet.md "Problem 2 + 3").
-  // Computed fresh each time the menu opens (see the resize effect below).
-  const [radialGeometry, setRadialGeometry] = useState<PillGeometry | null>(null);
   // Capsule-only (for_sonnet.md Problem 3): which screen edge the pill is
   // nearer to when the menu opens. The bar hugs this edge and the
   // transparent click-to-close padding grows toward the screen center.
@@ -268,6 +307,15 @@ export default function App() {
   useEffect(() => { try { localStorage.setItem(PILL_ANCHOR_KEY, pillAnchor); } catch { /* ignore */ } }, [pillAnchor]);
   useEffect(() => { try { localStorage.setItem(PILL_FAN_STYLE_KEY, pillFanStyle); } catch { /* ignore */ } }, [pillFanStyle]);
   useEffect(() => { try { localStorage.setItem(PILL_SNAP_KEY, pillSnapEnabled ? "1" : "0"); } catch { /* ignore */ } }, [pillSnapEnabled]);
+  useEffect(() => {
+    try {
+      if (selectedMonitorId) localStorage.setItem(PILL_MONITOR_KEY, selectedMonitorId);
+      else localStorage.removeItem(PILL_MONITOR_KEY);
+    } catch { /* ignore */ }
+  }, [selectedMonitorId]);
+  // Re-enumerate on every Settings open so a hot-plugged/removed monitor
+  // shows up without restarting the app.
+  useEffect(() => { if (view === "settings") refreshMonitors(); }, [view, refreshMonitors]);
 
   // Read via a ref inside useCapture so its dismiss-timer closures always see
   // the latest pin state without re-subscribing every render. An explicit
@@ -299,7 +347,22 @@ export default function App() {
 
   // The menu only ever exists while the pill is showing; leaving pill mode
   // for any reason (expand, view switch, display-mode switch) always closes it.
-  useEffect(() => { if (!showPill) setMenuOpen(false); }, [showPill]);
+  useEffect(() => {
+    if (!showPill) {
+      setMenuOpen(false);
+      setFanReady(false);
+      setRadialPillGeometry(null);
+      setMinimalWrapperOffset({ x: PILL_MARGIN, y: PILL_MARGIN });
+    }
+  }, [showPill]);
+
+  // Drop the fan the instant a close begins (independent of the showPill
+  // reset above, which only fires when the pill leaves entirely) — this is
+  // what lets the staggered exit start immediately on a normal menu close,
+  // while the window itself stays full-size until RADIAL_EXIT_DURATION_MS.
+  useEffect(() => {
+    if (!menuOpen) setFanReady(false);
+  }, [menuOpen]);
 
   // `renderPill` is what actually picks the early-return branch below — it
   // deliberately *lags* `showPill` by one resize-animation's worth of time
@@ -313,16 +376,20 @@ export default function App() {
   // crossings; false (visible) the rest of the time.
   const [contentHidden, setContentHidden] = useState(false);
 
-  // Auto-hide when a panel closes while unpinned: if returning to capture
-  // view while not pinned and idle, hide immediately.
+  // Closing a tab opened from the pill (capsule/minimal) reverts to that
+  // exact pill immediately — pinned shows the pill, unpinned hides to tray
+  // (for_sonnet.md §7, D3). Reverts even mid-capture: the pill already shows
+  // live capture status (pillLabel), so there's nothing to protect by
+  // waiting for idle — the prior `captureState.phase === "idle"` gate just
+  // stranded the user on the full view while a capture was running.
   const prevViewRef = useRef(view);
   useEffect(() => {
-    if (prevViewRef.current !== "capture" && view === "capture" && !pillPinned && captureState.phase === "idle") {
-      if (displayMode !== "full") setExpanded(false); // return to the pill on next show
-      getCurrentWindow().hide();
+    if (prevViewRef.current !== "capture" && view === "capture" && displayMode !== "full") {
+      setExpanded(false);
+      if (!pillPinned) getCurrentWindow().hide();
     }
     prevViewRef.current = view;
-  }, [view, pillPinned, captureState.phase, displayMode]);
+  }, [view, pillPinned, displayMode]);
 
   // Poll the inbox count for the unread badge — best-effort, refreshed
   // whenever a capture completes and whenever the inbox view closes.
@@ -363,14 +430,17 @@ export default function App() {
         return;
       }
       if (e.key === "Escape") {
-        if (menuOpen)            { setMenuOpen(false); return; }
+        if (menuOpen) {
+          setMenuOpen(false);
+          return;
+        }
         if (search)             { setSearch(false); return; }
         if (view !== "capture"){ setView("capture"); return; }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [view, search, menuOpen]);
+  }, [view, search, menuOpen, displayMode]);
 
   // ── Tauri events ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -385,18 +455,20 @@ export default function App() {
     return () => { unlistenSettings?.(); unlistenVault?.(); unlistenInbox?.(); unlistenStats?.(); };
   }, []);
 
-  // Click-away close (for_sonnet.md Bug 1): the OS window only grows to
-  // tightly wrap the open menu, so clicks on the desktop/another app/the
-  // other monitor land outside the window and never reach the in-window
-  // onClick handler below. Focus loss is the only signal that reaches us for
-  // those clicks. Pinned just closes the menu; unpinned also hides to tray,
-  // matching the dedicated Hide action.
+  // Click-away close (for_sonnet.md "Pill Focus-Stealing Fix" Piece B/C): the
+  // pill window is non-activating (WS_EX_NOACTIVATE, see the noactivate
+  // effect below), so it never fires Tauri's focus-loss event — a global
+  // low-level mouse hook (armed only while a menu is open) emits
+  // "menu:dismiss" instead when a click lands outside the menu-bearing
+  // window. Pinned just closes the menu; unpinned also hides to tray,
+  // matching the dedicated Hide action. Now shared by capsule and minimal
+  // alike — both grow the same single window, so "outside the window's
+  // rect" is a meaningful hit-test for either.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     (async () => {
       try {
-        unlisten = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-          if (focused) return;
+        unlisten = await listen<void>("menu:dismiss", () => {
           if (!menuOpenRef.current) return;
           setMenuOpen(false);
           if (!pillPinnedRef.current) getCurrentWindow().hide();
@@ -405,6 +477,28 @@ export default function App() {
     })();
     return () => { unlisten?.(); };
   }, []);
+
+  // Arm/disarm the click-away hook exactly while a menu is open.
+  useEffect(() => {
+    if (!menuOpen) {
+      disarmMenuClickAway();
+      return;
+    }
+    armMenuClickAway("main");
+    return () => { disarmMenuClickAway(); };
+  }, [menuOpen]);
+
+  // Non-activating pill (for_sonnet.md Piece A): the pill and its menu must
+  // never steal foreground focus from whatever app was active. Toggled off
+  // only for the expanded full view, which needs real keyboard focus for
+  // search/settings inputs.
+  useEffect(() => {
+    if (showPill) {
+      setWindowNoactivate(true);
+    } else {
+      setWindowNoactivate(false).then(() => { getCurrentWindow().setFocus().catch(() => {}); });
+    }
+  }, [showPill]);
 
   // ── Dynamic window sizing (B1: content-measured) ──────────────────────────
   // The window height tracks the *real* content height of whichever view is
@@ -472,9 +566,6 @@ export default function App() {
   const displayH =
     view === "capture" ? Math.min(contentH, MAX_CONTENT_H) : SECONDARY_H;
 
-  // Breathing room around the pill so the rotating-ring overlay (inset -2px)
-  // never gets clipped by the OS window edge.
-  const PILL_MARGIN = 6;
   const pillBoxW = showPill ? PILL_DIMS[displayMode as PillMode].w + PILL_MARGIN * 2 : 480;
   const pillBoxH = showPill ? PILL_DIMS[displayMode as PillMode].h + PILL_MARGIN * 2 : displayH + V_MARGIN;
 
@@ -489,8 +580,9 @@ export default function App() {
   const CLOSE_PAD_W = 64;
   const menuBoxW = displayMode === "minimal" ? RADIAL_MENU_BOX : CAPSULE_OPEN_W + PILL_MARGIN * 2 + CLOSE_PAD_W;
   const menuBoxH = displayMode === "minimal" ? RADIAL_MENU_BOX : PILL_DIMS.capsule.h + PILL_MARGIN * 2;
-  const targetWinW = showPill && menuOpen ? menuBoxW : pillBoxW;
-  const targetWinH = showPill && menuOpen ? menuBoxH : pillBoxH;
+  const menuOpenGrowsPillWindow = showPill && menuOpen;
+  const targetWinW = menuOpenGrowsPillWindow ? menuBoxW : pillBoxW;
+  const targetWinH = menuOpenGrowsPillWindow ? menuBoxH : pillBoxH;
 
   // Remember window position across restarts. The window is created hidden
   // (tauri.conf.json `visible: false`) and only ever shown via the global
@@ -502,13 +594,24 @@ export default function App() {
   const WINDOW_POS_KEY = "omni-window-pos";
 
   // Guards every programmatic setPosition (pill-anchor snap, secondary-panel
-  // recenter, Custom-position restore) so the onMoved listener below never
-  // mistakes one of those for a real user drag and overwrites the saved
-  // Custom position with a centered/anchored coordinate.
-  const programmaticMove = useRef(false);
-  const markProgrammaticMove = () => {
-    programmaticMove.current = true;
-    setTimeout(() => { programmaticMove.current = false; }, 350);
+  // recenter, Custom-position restore, menu open/close) so the onMoved
+  // listener below never mistakes one of those for a real user drag and
+  // overwrites the saved Custom position with a centered/anchored coordinate.
+  //
+  // A depth counter, not a boolean (for_sonnet_pill_fix.md Phase 1): more
+  // than one programmatic move can briefly overlap (menu effect + a
+  // monitor-switch re-anchor), and a boolean lets one's expiry clear the
+  // other's guard. Each call brackets the *actual* setPosition/setSize only
+  // (begin right before, end right after) — never a fixed timeout guessed to
+  // outlast an animation, which is what raced the radial fan's longer exit
+  // and let onMoved treat the close move as a user drag (Bug A).
+  const programmaticMoveDepth = useRef(0);
+  const beginProgrammaticMove = () => { programmaticMoveDepth.current++; };
+  const endProgrammaticMove = () => {
+    // Defer: onMoved for the just-issued setPosition can fire a tick later.
+    setTimeout(() => {
+      programmaticMoveDepth.current = Math.max(0, programmaticMoveDepth.current - 1);
+    }, 120);
   };
 
   // Refs mirroring render-time values the onMoved listener (mounted once,
@@ -539,41 +642,16 @@ export default function App() {
       } catch { /* ignore */ }
       try {
         unlisten = await getCurrentWindow().onMoved(({ payload }) => {
-          if (programmaticMove.current) return;
+          if (programmaticMoveDepth.current > 0) return;
           clearTimeout(saveTimer);
           let { x, y } = payload;
           void (async () => {
-            // Hard containment clamp (for_sonnet.md Problem 1): runs
-            // immediately on every onMoved payload, not debounced, so the
-            // visible pill can never be dragged past the physical monitor
-            // edge even mid-drag. Only meaningful while the (closed,
-            // draggable) pill is showing — the menu-open window isn't
-            // draggable (Problem 2b) so this never fights that geometry.
-            const { showPill: pillShownNow, menuOpen: isMenuOpenNow, pillW, pillH } = snapStateRef.current;
-            if (pillShownNow && !isMenuOpenNow) {
-              try {
-                const win = getCurrentWindow();
-                const scale = await win.scaleFactor();
-                const topLeftLogical = { x: x / scale, y: y / scale };
-                const pillCenterPhysical = {
-                  x: x + ((pillW + PILL_MARGIN * 2) * scale) / 2,
-                  y: y + ((pillH + PILL_MARGIN * 2) * scale) / 2,
-                };
-                const bounds = await getActiveMonitorBounds(pillCenterPhysical);
-                const corrected = clampPillWindowToMonitor({
-                  windowTopLeftLogical: topLeftLogical,
-                  pillW, pillH, margin: PILL_MARGIN,
-                  monitorBounds: bounds,
-                });
-                if (corrected.x !== topLeftLogical.x || corrected.y !== topLeftLogical.y) {
-                  markProgrammaticMove();
-                  await win.setPosition(new LogicalPosition(corrected.x, corrected.y));
-                  x = Math.round(corrected.x * scale);
-                  y = Math.round(corrected.y * scale);
-                }
-              } catch { /* ignore */ }
-            }
-
+            // Hard containment now lives in tickDragFrame/runFling, which
+            // clamp every setPosition before it's issued (P0-2) — the pill
+            // can no longer leave the monitor in the first place, so the
+            // animated correction that used to live here only fought that
+            // loop and caused edge oscillation. Removed; save+snap below
+            // are unaffected.
             saveTimer = setTimeout(() => {
             void (async () => {
               const { anchor, snapEnabled, showPill: pillShown, menuOpen: isMenuOpen, w, h } = snapStateRef.current;
@@ -597,8 +675,12 @@ export default function App() {
                   const snappedX = nearLeft ? area.x + margin : nearRight ? area.x + area.w - w - margin : lx;
                   const snappedY = nearTop ? area.y + margin : nearBottom ? area.y + area.h - h - margin : ly;
                   if (snappedX !== lx || snappedY !== ly) {
-                    markProgrammaticMove();
-                    await win.setPosition(new LogicalPosition(snappedX, snappedY));
+                    beginProgrammaticMove();
+                    try {
+                      await win.setPosition(new LogicalPosition(snappedX, snappedY));
+                    } finally {
+                      endProgrammaticMove();
+                    }
                     x = Math.round(snappedX * scale);
                     y = Math.round(snappedY * scale);
                   }
@@ -616,6 +698,198 @@ export default function App() {
     return () => { clearTimeout(saveTimer); unlisten?.(); };
   }, []);
 
+  // ── §3 Custom pointer-driven pill drag (fling + clamp) ──────────────────
+  // Replaces -webkit-app-region: drag for the pill specifically — only a
+  // JS-owned gesture can decelerate via spring.ts on release. Live moves
+  // reuse the same hard-containment clamp the onMoved listener applies
+  // after an OS drag; every setPosition this gesture issues is already
+  // clamped, so onMoved's clamp recheck on these synthetic moves is a
+  // harmless no-op, and its existing 300ms-debounced save + edge-snap still
+  // fire naturally off our own moves — no need to duplicate that logic
+  // here (§3.2 "preserve the existing SNAP_THRESHOLD_PX... and snap-
+  // disabled setting").
+  const [pillGrabbed, setPillGrabbed] = useState(false);
+  const dragGestureRef = useRef<{
+    pointerId: number;
+    startTopLeftLogical: Point;
+    startCursorLogical: Point;
+    lastCursorLogical: Point;
+    velocity: Point;
+    lastSampleTime: number;
+    scale: number;
+    rafPending: boolean;
+    // ponytail: read once at gesture start, not re-read per frame — a drag
+    // gesture is single-monitor by design (see tickDragFrame), so caching
+    // removes a per-frame async Tauri call from the hot path (P1-2).
+    monitorBounds: { x: number; y: number; w: number; h: number };
+  } | null>(null);
+
+  const draggedRef = useRef(false);
+  const DRAG_CLICK_THRESHOLD_PX = 4; // logical px of movement before a release's synthetic click is swallowed
+
+  const FLING_DAMPING = 6;
+  const FLING_REST_VELOCITY = 30; // logical px/s
+  const FLING_MIN_SPEED = 80; // logical px/s — below this, release just settles in place
+
+  const tickDragFrame = useCallback(async () => {
+    const g = dragGestureRef.current;
+    if (!g) return;
+    g.rafPending = false;
+    const cur = g.lastCursorLogical;
+    // ponytail: fixed scale for the whole gesture (single-monitor-per-drag
+    // confirmed sufficient — drag-through across monitors isn't required).
+    const deltaLogical: Point = { x: cur.x - g.startCursorLogical.x, y: cur.y - g.startCursorLogical.y };
+    const next = nextWindowTopLeft(g.startTopLeftLogical, deltaLogical);
+    // Hard-stop at the monitor edge during the live gesture itself (P0-2):
+    // the drag is JS-pointer-driven and issues its own setPosition every
+    // frame, so the window must clamp here rather than relying on onMoved's
+    // (now-removed) post-hoc tween, which fought this loop and oscillated.
+    const { pillW, pillH } = snapStateRef.current;
+    const clamped = clampPillWindowToMonitor({ windowTopLeftLogical: next, pillW, pillH, margin: PILL_MARGIN, monitorBounds: g.monitorBounds });
+    try { await getCurrentWindow().setPosition(new LogicalPosition(clamped.x, clamped.y)); } catch { /* ignore */ }
+  }, []);
+
+  const runFling = useCallback((startLogical: Point, releaseVelocityLogical: Point, scale: number) => {
+    const win = getCurrentWindow();
+    let sx = createSpring(startLogical.x, startLogical.x, releaseVelocityLogical.x);
+    let sy = createSpring(startLogical.y, startLogical.y, releaseVelocityLogical.y);
+    let last = performance.now();
+    const { pillW, pillH } = snapStateRef.current;
+
+    const step = async () => {
+      const now = performance.now();
+      const dt = (now - last) / 1000;
+      last = now;
+      // Target tracks current position every tick, so stepSpring's restoring
+      // force is always ~0 and only damping decays velocity — plain momentum
+      // decay reusing the spring integrator's math, not a "pull back" spring.
+      sx = stepSpring({ ...sx, target: sx.pos }, dt, { stiffness: 0, damping: FLING_DAMPING, restVelocity: FLING_REST_VELOCITY });
+      sy = stepSpring({ ...sy, target: sy.pos }, dt, { stiffness: 0, damping: FLING_DAMPING, restVelocity: FLING_REST_VELOCITY });
+
+      const rawPos: Point = { x: sx.pos, y: sy.pos };
+      const pillCenterPhysical = { x: (rawPos.x + pillW / 2) * scale, y: (rawPos.y + pillH / 2) * scale };
+      let clamped = rawPos;
+      try {
+        const bounds = await getActiveMonitorBounds(pillCenterPhysical);
+        clamped = clampPillWindowToMonitor({ windowTopLeftLogical: rawPos, pillW, pillH, margin: PILL_MARGIN, monitorBounds: bounds });
+      } catch { /* ignore */ }
+      const zeroed = zeroVelocityAtClamp(rawPos, clamped, { x: sx.vel, y: sy.vel });
+      sx = { ...sx, pos: clamped.x, vel: zeroed.x };
+      sy = { ...sy, pos: clamped.y, vel: zeroed.y };
+
+      try { await win.setPosition(new LogicalPosition(clamped.x, clamped.y)); } catch { /* ignore */ }
+
+      const settled = Math.abs(sx.vel) < FLING_REST_VELOCITY && Math.abs(sy.vel) < FLING_REST_VELOCITY;
+      if (!settled) requestAnimationFrame(() => { void step(); });
+    };
+    void step();
+  }, []);
+
+  const handlePillDragPointerDown = useCallback(async (e: React.PointerEvent) => {
+    if (menuOpen) return;
+    e.preventDefault();
+    setPillGrabbed(true);
+    draggedRef.current = false;
+
+    const onMove = (ev: PointerEvent) => {
+      const g = dragGestureRef.current;
+      if (!g || ev.pointerId !== g.pointerId) return;
+      const now = performance.now();
+      const dt = (now - g.lastSampleTime) / 1000;
+      const deltaLogical: Point = { x: ev.screenX - g.lastCursorLogical.x, y: ev.screenY - g.lastCursorLogical.y };
+      g.velocity = emaVelocity(g.velocity, deltaLogical, dt);
+      g.lastCursorLogical = { x: ev.screenX, y: ev.screenY };
+      g.lastSampleTime = now;
+      // Bug 3: any real movement during this gesture means the upcoming
+      // synthetic `click` on pointerup is a drag artifact, not an intentional
+      // tap — swallow it once in the button's onClick.
+      if (Math.hypot(ev.screenX - g.startCursorLogical.x, ev.screenY - g.startCursorLogical.y) > DRAG_CLICK_THRESHOLD_PX) {
+        draggedRef.current = true;
+      }
+      if (!g.rafPending) {
+        g.rafPending = true;
+        requestAnimationFrame(() => { void tickDragFrame(); });
+      }
+    };
+
+    const onUp = async (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId) return;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      setPillGrabbed(false);
+
+      // Fast-release race: pointerup can fire before the awaited setup below
+      // populates dragGestureRef (e.g. a quick tap-and-release) — nothing to
+      // fling yet, the click-toggle path handles it instead.
+      const g = dragGestureRef.current;
+      dragGestureRef.current = null;
+      if (!g) return;
+
+      const speed = Math.hypot(g.velocity.x, g.velocity.y);
+      if (speed < FLING_MIN_SPEED) return;
+      try {
+        const win = getCurrentWindow();
+        const pos = await win.outerPosition();
+        runFling({ x: pos.x / g.scale, y: pos.y / g.scale }, g.velocity, g.scale);
+      } catch { /* ignore */ }
+    };
+
+    // Registered synchronously, before the awaits below populate gesture
+    // state, so a pointerup that fires mid-setup is still caught instead of
+    // leaving the pill stuck "grabbed".
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+
+    try {
+      const win = getCurrentWindow();
+
+      // for_sonnet.md (pill-drag-close-race): if a close is still settling
+      // (pillBoxBeforeMenuRef only ever non-null in that window, since the
+      // pill is draggable only while menuOpen is false), grabbing the pill
+      // finalizes the close immediately instead of racing it — cancel the
+      // in-flight reconcile, snap to the known settled geometry, then drag
+      // from there. The live outerPosition() read during that tail is the
+      // stale open-state window top-left, not where the pill visually is.
+      const settledIdleTopLeft = pillBoxBeforeMenuRef.current;
+      if (settledIdleTopLeft) {
+        ++reconcileToken.current;
+        beginProgrammaticMove();
+        try {
+          await setWindowGeometryInstant({ w: pillBoxW, h: pillBoxH }, settledIdleTopLeft);
+        } finally {
+          endProgrammaticMove();
+        }
+        setMinimalWrapperOffset({ x: PILL_MARGIN, y: PILL_MARGIN });
+        pillBoxBeforeMenuRef.current = null;
+      }
+
+      const [pos, scale] = await Promise.all([win.outerPosition(), win.scaleFactor()]);
+      const liveTopLeftLogical = { x: pos.x / scale, y: pos.y / scale };
+      const startTopLeftLogical = dragStartBaseline(settledIdleTopLeft, liveTopLeftLogical);
+      const { pillW, pillH } = snapStateRef.current;
+      const centerPhysical = { x: pos.x + (pillW * scale) / 2, y: pos.y + (pillH * scale) / 2 };
+      const monitorBounds = await getActiveMonitorBounds(centerPhysical);
+      dragGestureRef.current = {
+        pointerId: e.pointerId,
+        startTopLeftLogical,
+        startCursorLogical: { x: e.screenX, y: e.screenY },
+        lastCursorLogical: { x: e.screenX, y: e.screenY },
+        velocity: { x: 0, y: 0 },
+        lastSampleTime: performance.now(),
+        scale,
+        rafPending: false,
+        monitorBounds,
+      };
+    } catch {
+      setPillGrabbed(false);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    }
+  }, [menuOpen, runFling, tickDragFrame]);
+
   // Whenever the window resizes (pill <-> secondary panel <-> full capture,
   // or Display Mode itself changing), reassert Placement: any fixed anchor
   // (not "custom") always wins and snaps the window — pill-sized, secondary
@@ -629,6 +903,12 @@ export default function App() {
   // pill's corner position would otherwise hang off-screen.
   const prevShowPillRef = useRef(showPill);
   const prePanelPos = useRef<{ x: number; y: number } | null>(null);
+  // The monitor the pill was actually on when Settings opened (captured
+  // alongside prePanelPos, same moment) — for_sonnet.md §4: if the user
+  // picks a *different* monitor while in Settings, comparing this against
+  // the now-current selection on close is what tells the restore branch
+  // below "the monitor changed, don't just replay the old position."
+  const prePanelMonitorRef = useRef<MonitorInfo | null>(null);
   // Logical-px position of the tight pill box, captured the instant the menu
   // opens (custom anchor only — pinned anchors re-derive their position from
   // anchorPosition() on every size change, no memory needed). Restored
@@ -640,7 +920,14 @@ export default function App() {
   // 200ms cross-fade/collapse has finished, so the outgoing panel's still-
   // fading bottom is never sheared.
   const prevSize = useRef({ w: targetWinW, h: targetWinH });
+  // Cancellation token (for_sonnet_pill_fix.md Phase 3, D1): bumped at the
+  // top of every effect run. A newer toggle invalidates any in-flight
+  // `apply()` the moment it wakes from its next await — that run bails out
+  // without touching the window or committing prev-state refs, so a fast
+  // double-toggle interrupts and reverses instead of racing/glitching.
+  const reconcileToken = useRef(0);
   useEffect(() => {
+    const token = ++reconcileToken.current;
     const pillModeActive = displayMode !== "full";
     const prevShowPill = prevShowPillRef.current;
     const leavingPill = pillModeActive && prevShowPill && !showPill;   // pill -> full
@@ -648,6 +935,14 @@ export default function App() {
     const prevMenuOpen = prevMenuOpenRef.current;
     const openingMenu = pillModeActive && showPill && prevShowPill && menuOpen && !prevMenuOpen;
     const closingMenu = pillModeActive && showPill && prevShowPill && !menuOpen && prevMenuOpen;
+
+    // Edge detection for menu open/close is pure UI intent — advance the
+    // baseline the moment this effect observes a new menuOpen, not at the end
+    // of a possibly-deferred/superseded apply(). A fast re-open during the
+    // radial exit used to leave this ref stale-true (close's apply bailed at
+    // the token check / was cancelled before committing it), so the reopen
+    // failed the openingMenu edge and never set fanReady — fan never rendered.
+    prevMenuOpenRef.current = menuOpen;
 
     // Expanding out of the pill is always treated as "growing" (start the
     // grow immediately) even though prevSize/targetWinH comparisons alone
@@ -673,38 +968,145 @@ export default function App() {
         try {
           const pos = await getCurrentWindow().outerPosition();
           prePanelPos.current = { x: pos.x, y: pos.y };
+          prePanelMonitorRef.current = resolveTargetMonitor(monitors, selectedMonitorId);
         } catch { /* ignore */ }
       }
 
+      // for_sonnet.md §4: an explicit display-picker selection overrides
+      // "whichever monitor the window happens to be on" for every anchored
+      // placement — not just the one-off move-now click — so a pinned pill
+      // stays on the chosen monitor across mode/view switches too.
+      const pickedMonitor = resolveTargetMonitor(monitors, selectedMonitorId);
+
       let targetPos: { x: number; y: number } | null = null;
       if (pillAnchor !== "custom" && !openingMenu && !closingMenu) {
-        const area = await getActiveWorkArea();
+        const area = pickedMonitor?.workArea ?? await getActiveWorkArea();
         targetPos = anchorPosition(pillAnchor, targetWinW, targetWinH, area);
       } else if (enteringPill && prePanelPos.current) {
         const restore = prePanelPos.current;
+        const oldMonitor = prePanelMonitorRef.current;
         prePanelPos.current = null;
-        try {
-          const scale = await getCurrentWindow().scaleFactor();
-          targetPos = { x: restore.x / scale, y: restore.y / scale };
-        } catch { /* ignore */ }
+        prePanelMonitorRef.current = null;
+        const monitorChanged = oldMonitor && pickedMonitor && oldMonitor.id !== pickedMonitor.id;
+        if (monitorChanged && oldMonitor && pickedMonitor) {
+          // §4 user decision: land at the same proportional position
+          // relative to the new monitor's centre, not a flat re-centre and
+          // not a literal pixel-offset carry-over.
+          try {
+            const scale = await getCurrentWindow().scaleFactor();
+            const oldCenterLogical = {
+              x: restore.x / scale + targetWinW / 2,
+              y: restore.y / scale + targetWinH / 2,
+            };
+            targetPos = computeProportionalMonitorMove({
+              oldCenterLogical,
+              oldWorkArea: oldMonitor.workArea,
+              newWorkArea: pickedMonitor.workArea,
+              winW: targetWinW,
+              winH: targetWinH,
+            });
+          } catch { /* ignore */ }
+        } else {
+          try {
+            const scale = await getCurrentWindow().scaleFactor();
+            targetPos = { x: restore.x / scale, y: restore.y / scale };
+          } catch { /* ignore */ }
+        }
       } else if (leavingPill) {
-        const area = await getActiveWorkArea();
+        const area = pickedMonitor?.workArea ?? await getActiveWorkArea();
         targetPos = { x: Math.round(area.x + (area.w - targetWinW) / 2), y: Math.round(area.y + (area.h - targetWinH) / 2) };
+      } else if (openingMenu && displayMode === "minimal") {
+        // Single-window collapse (for_sonnet.md §3): the pill window itself
+        // grows to RADIAL_MENU_BOX, centred on the pill's stable visual
+        // center, exactly like capsule's grow below — RadialMenu now renders
+        // in-process (PillOverlay), so there is no overlay window to
+        // position/emit to anymore. Keep the pill's visual center fixed
+        // while the window grows around it, same discipline as capsule.
+        try {
+          // Reuse the stored idle top-left if a prior close was interrupted
+          // before it cleared it (fast re-open) — that ref is the pill's
+          // true idle position, a fresh live read mid-resize would not be.
+          let idleTopLeftLogical = pillBoxBeforeMenuRef.current;
+          const scale = await getCurrentWindow().scaleFactor();
+          if (!idleTopLeftLogical) {
+            const pos = await getCurrentWindow().outerPosition();
+            idleTopLeftLogical = { x: pos.x / scale, y: pos.y / scale };
+          }
+          pillBoxBeforeMenuRef.current = idleTopLeftLogical;
+          logger.info("menu", "menu opened", { displayMode, pos: idleTopLeftLogical });
+
+          const pillCenterLogical = {
+            x: idleTopLeftLogical.x + pillBoxW / 2,
+            y: idleTopLeftLogical.y + pillBoxH / 2,
+          };
+
+          // Resolve the monitor from the pill's own (stable) center, not the
+          // grown window's center — same convention as capsule below.
+          const pillCenterPhysical = { x: pillCenterLogical.x * scale, y: pillCenterLogical.y * scale };
+          const monitorBounds = await getActiveMonitorBounds(pillCenterPhysical);
+
+          // §3.3 user decision: the monitor the pill is assigned to is a
+          // hard boundary — the grown window must never overhang onto a
+          // neighbor monitor; that edge behaves exactly like any other
+          // screen edge. computeMinimalMenuWindow reuses the same clamp the
+          // live-drag gesture already applies to the idle pill, sized to
+          // the full grown window instead of the bare pill, and is the same
+          // pure function the close path below calls — open and close can
+          // no longer drift apart (Phase 2).
+          const { windowTopLeftLogical, wrapperOffset } = computeMinimalMenuWindow({
+            open: true,
+            idleTopLeftLogical,
+            idlePillBoxW: pillBoxW,
+            idlePillBoxH: pillBoxH,
+            pillW: PILL_DIMS.minimal.w,
+            pillH: PILL_DIMS.minimal.h,
+            menuBoxW: targetWinW,
+            menuBoxH: targetWinH,
+            margin: PILL_MARGIN,
+            monitorBounds,
+          });
+          targetPos = windowTopLeftLogical;
+
+          // for_sonnet.md (pill-fan-clip): a superseded reconcile must not
+          // write stale offset/geometry into state — the only check below
+          // (after preMoveDelayMs) runs too late to stop *this* write, since
+          // it already happened. Bail here, before either setState, the
+          // instant a newer reconcile has taken over.
+          if (token !== reconcileToken.current) return;
+
+          // The pill+fan wrapper's position *within* the window: normally
+          // dead-center (matches the idle margin), but shifted off-center
+          // exactly when the clamp above moved the window without moving
+          // the pill's own on-screen position.
+          setMinimalWrapperOffset(wrapperOffset);
+
+          // unifiedFan's screen-edge containment math needs the pill's
+          // absolute center plus the monitor work area it's on — independent
+          // of the window's own (possibly clamped) position.
+          const area = await getActiveWorkArea(pillCenterPhysical);
+          if (token !== reconcileToken.current) return;
+          setRadialPillGeometry({
+            cx: pillCenterLogical.x, cy: pillCenterLogical.y,
+            sw: area.w, sh: area.h, originX: area.x, originY: area.y,
+          });
+        } catch { /* ignore */ }
       } else if (openingMenu) {
-        // Keep the pill's visual center fixed while the window grows around
-        // it (for_sonnet.md Bug 2). The idle top-left is read live here —
-        // that's safe, the window is settled and wholly on one monitor while
-        // idle — but everything downstream uses the known-constant idle box
-        // size (pillBoxW/H) instead of a live outerSize() re-read, and that
-        // same scale factor is never re-read after the window grows/straddles
-        // a monitor boundary, so the math can't get corrupted mid-grow.
+        // Capsule (single-window edge-aware grow). Keep the pill's
+        // visual center fixed while the window grows around it (for_sonnet.md
+        // Bug 2). The idle top-left is read live here — that's safe, the
+        // window is settled and wholly on one monitor while idle — but
+        // everything downstream uses the known-constant idle box size
+        // (pillBoxW/H) instead of a live outerSize() re-read, and that same
+        // scale factor is never re-read after the window grows, so the math
+        // can't get corrupted mid-grow.
         try {
           const scale = await getCurrentWindow().scaleFactor();
           const pos = await getCurrentWindow().outerPosition();
           const idleTopLeftLogical = { x: pos.x / scale, y: pos.y / scale };
           pillBoxBeforeMenuRef.current = idleTopLeftLogical;
+          logger.info("menu", "menu opened", { displayMode, pos: idleTopLeftLogical });
 
-          const { windowTopLeftLogical, pillCenterLogical } = computeMenuGeometry({
+          const { pillCenterLogical } = computeMenuGeometry({
             idleTopLeftLogical,
             idlePillBoxW: pillBoxW,
             idlePillBoxH: pillBoxH,
@@ -718,58 +1120,83 @@ export default function App() {
           // grows past the boundary.
           const pillCenterPhysical = { x: pillCenterLogical.x * scale, y: pillCenterLogical.y * scale };
 
-          if (displayMode === "minimal") {
-            const area = await getActiveWorkArea(pillCenterPhysical);
-            setRadialGeometry({
-              cx: pillCenterLogical.x,
-              cy: pillCenterLogical.y,
-              sw: area.w,
-              sh: area.h,
-              originX: area.x,
-              originY: area.y,
-            });
-            targetPos = windowTopLeftLogical;
-          } else {
-            // Capsule edge-aware open (for_sonnet.md Problem 3): the bar
-            // hugs whichever screen edge the pill is nearer to, and the
-            // close-padding grows toward the screen center.
-            const monitorBounds = await getActiveMonitorBounds(pillCenterPhysical);
-            const monitorMidX = monitorBounds.x + monitorBounds.w / 2;
-            const nearEdge: "left" | "right" = pillCenterLogical.x > monitorMidX ? "right" : "left";
-            setCapsuleNearEdge(nearEdge);
+          // Capsule edge-aware open (for_sonnet.md Problem 3): the bar
+          // hugs whichever screen edge the pill is nearer to, and the
+          // close-padding grows toward the screen center.
+          const monitorBounds = await getActiveMonitorBounds(pillCenterPhysical);
+          const monitorMidX = monitorBounds.x + monitorBounds.w / 2;
+          const nearEdge: "left" | "right" = pillCenterLogical.x > monitorMidX ? "right" : "left";
+          setCapsuleNearEdge(nearEdge);
 
-            const capsuleGeom = computeCapsuleMenuGeometry({
-              idleTopLeftLogical,
-              idlePillBoxW: pillBoxW,
-              idlePillBoxH: pillBoxH,
-              margin: PILL_MARGIN,
-              capsuleOpenW: CAPSULE_OPEN_W,
-              closePadW: CLOSE_PAD_W,
-              nearEdge,
-            });
-            targetPos = capsuleGeom.windowTopLeftLogical;
-          }
+          const capsuleGeom = computeCapsuleMenuGeometry({
+            idleTopLeftLogical,
+            idlePillBoxW: pillBoxW,
+            idlePillBoxH: pillBoxH,
+            margin: PILL_MARGIN,
+            capsuleOpenW: CAPSULE_OPEN_W,
+            closePadW: CLOSE_PAD_W,
+            nearEdge,
+          });
+          targetPos = capsuleGeom.windowTopLeftLogical;
         } catch { /* ignore */ }
       } else if (closingMenu && pillBoxBeforeMenuRef.current) {
-        const idleTopLeftLogical = pillBoxBeforeMenuRef.current;
-        const { windowTopLeftLogical } = computeMenuGeometry({
-          idleTopLeftLogical,
-          idlePillBoxW: pillBoxW,
-          idlePillBoxH: pillBoxH,
-          targetWinW,
-          targetWinH,
-        });
-        targetPos = windowTopLeftLogical;
-        pillBoxBeforeMenuRef.current = null;
-        setRadialGeometry(null);
+        // for_sonnet_pill_fix.md §3: close must mirror open exactly, not
+        // re-center. For capsule, computeCapsuleMenuGeometry's pinned-edge
+        // formula evaluated at the closed (idle) width collapses to the
+        // literal idle top-left for either edge (see menuGeometry.test.ts).
+        // For minimal, computeMinimalMenuWindow's `open: false` case is
+        // exactly the idle top-left by construction (Phase 2) — close can
+        // no longer drift from open because it's the same pure function.
+        targetPos = pillBoxBeforeMenuRef.current;
+        logger.info("menu", "menu closed", { displayMode, pos: targetPos });
+        // NOTE: pillBoxBeforeMenuRef is deliberately NOT cleared here — it's
+        // cleared as a post-move side effect below, only once the close has
+        // actually completed and wasn't superseded by a fast re-open. The
+        // minimal wrapper offset is likewise NOT reset here: the pill must
+        // stay visually fixed for the whole close, and resetting it to the
+        // idle margin now (while the window is still full-size for the exit
+        // animation) would throw the pill to the window's corner until the
+        // shrink lands. Both resets happen with the shrink instead.
       }
 
-      if (targetPos) markProgrammaticMove();
-      // Menu open/close: single atomic instant step (no rAF tween) — see
-      // setWindowGeometryInstant above. Every other transition keeps the
-      // existing animated tween.
-      if (openingMenu || closingMenu) await setWindowGeometryInstant({ w: targetWinW, h: targetWinH }, targetPos);
-      else await animateWindowAndSizeTo({ w: targetWinW, h: targetWinH }, targetPos);
+      const preMoveDelayMs =
+        closingMenu && displayMode === "capsule" ? CAPSULE_EXIT_MS :
+        closingMenu && displayMode === "minimal" ? RADIAL_EXIT_DURATION_MS : 0;
+      const moveKind: "instant" | "animate" =
+        openingMenu && displayMode === "capsule" ? "animate" :
+        openingMenu || closingMenu ? "instant" : "animate";
+
+      // Capsule close must stay full-size while the DOM morph (icons
+      // collapsing) plays, and the radial fan's staggered exit needs the
+      // same — otherwise the window shrink clips the exit mid-animation
+      // (for_sonnet.md §4.3.2/§3.2). The delay lives outside the
+      // programmatic-move guard: the pill is draggable again the instant
+      // the menu closes, and a real user drag during the exit window must
+      // still be saved by onMoved.
+      if (preMoveDelayMs > 0) await new Promise((r) => setTimeout(r, preMoveDelayMs));
+      if (token !== reconcileToken.current) return; // superseded — bail without moving or committing
+
+      beginProgrammaticMove();
+      try {
+        if (moveKind === "animate") await animateWindowAndSizeTo({ w: targetWinW, h: targetWinH }, targetPos);
+        else await setWindowGeometryInstant({ w: targetWinW, h: targetWinH }, targetPos);
+      } finally {
+        endProgrammaticMove();
+      }
+
+      // Only now has the window actually finished growing to fit the fan —
+      // reveal it here, never earlier, so it can't paint into a still-pill-
+      // sized window mid-IPC-grow regardless of latency or fast re-open races.
+      if (openingMenu && displayMode === "minimal") setFanReady(true);
+
+      if (closingMenu && displayMode === "minimal") {
+        // Reset-after-shrink: there is never a frame pairing the full-size
+        // window with the idle offset (which is what made the pill jump to
+        // the corner). At worst leaves the pill clipped for under a frame,
+        // identical to open's path.
+        setMinimalWrapperOffset({ x: PILL_MARGIN, y: PILL_MARGIN });
+      }
+      if (closingMenu) pillBoxBeforeMenuRef.current = null;
 
       // Reveal only after the window has actually finished resizing/moving —
       // the whole point being the window never shows a clipped 440px card
@@ -779,7 +1206,6 @@ export default function App() {
 
       prevSize.current = { w: targetWinW, h: targetWinH };
       prevShowPillRef.current = showPill;
-      prevMenuOpenRef.current = menuOpen;
     };
     if (growing) {
       apply();
@@ -787,7 +1213,18 @@ export default function App() {
       const t = setTimeout(apply, 220);
       return () => clearTimeout(t);
     }
-  }, [targetWinW, targetWinH, showPill, pillAnchor, displayMode, menuOpen]);
+  }, [targetWinW, targetWinH, showPill, pillAnchor, displayMode, menuOpen, monitors, selectedMonitorId]);
+
+  // Display picker selection (for_sonnet.md §4). Single owner of the actual
+  // move: this only updates state — the resize effect above is the sole
+  // place that ever calls setSize/setPosition for a monitor switch (anchored
+  // re-derives via resolveTargetMonitor on its next run; custom is handled
+  // by the enteringPill branch's monitor-changed check when Settings
+  // closes). Driving the move from here too would race that effect's own
+  // animation, which was for_sonnet.md §2.3's root cause.
+  const handleSelectMonitor = useCallback((id: string) => {
+    setSelectedMonitorId(id);
+  }, []);
 
   // ── Search action handler ────────────────────────────────────────────────
   const handleSearchAction = useCallback((action: SearchAction) => {
@@ -817,37 +1254,62 @@ export default function App() {
   if (renderPill) {
     // Capsule open: push the bar to whichever edge it's pinned to, leaving
     // the free space (the click-to-close padding) on the inner side
-    // (for_sonnet.md Problem 3b). Every other state centers as before.
+    // (for_sonnet.md Problem 3b). Minimal mode is positioned explicitly via
+    // minimalWrapperOffset instead (it needs pixel-precise placement so a
+    // monitor-clamp shift of the window doesn't also shift the visible
+    // pill); every other state centers as before.
     const capsuleOpenJustify =
       displayMode === "capsule" && menuOpen
         ? (capsuleNearEdge === "right" ? "flex-end" : "flex-start")
         : "center";
+
+    const pillOverlay = (
+      <PillOverlay
+        mode={displayMode as PillMode}
+        corner={pillCorner}
+        captureState={captureState}
+        stepDefs={stepDefs}
+        menuOpen={menuOpen}
+        fanOpen={fanReady}
+        nearEdge={capsuleNearEdge}
+        draggable={isPillDraggable(pillAnchor, menuOpen)}
+        dragging={pillGrabbed}
+        onDragPointerDown={handlePillDragPointerDown}
+        onToggleMenu={() => {
+          // Bug 3: a drag's pointerup still fires a synthetic click on the
+          // same button — swallow exactly that one click here, the shared
+          // choke point both PillOverlay and CapsuleMenu route through.
+          if (draggedRef.current) { draggedRef.current = false; return; }
+          logger.debug("menu", "pill clicked", { wasOpen: menuOpen, displayMode });
+          setMenuOpen((o) => !o);
+        }}
+        inboxCount={inboxCount}
+        onSelect={handleMenuSelect}
+        onHide={handleMenuHide}
+        pillGeometry={radialPillGeometry}
+        fanStyle={pillFanStyle}
+      />
+    );
+
     return (
       <div
         onClick={() => { if (menuOpen) setMenuOpen(false); }}
         style={{
           width: "100vw",
           height: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: capsuleOpenJustify,
+          position: displayMode === "minimal" ? "relative" : undefined,
+          display: displayMode === "minimal" ? undefined : "flex",
+          alignItems: displayMode === "minimal" ? undefined : "center",
+          justifyContent: displayMode === "minimal" ? undefined : capsuleOpenJustify,
           background: "transparent",
           overflow: "hidden",
         }}
       >
-        <PillOverlay
-          mode={displayMode as PillMode}
-          corner={pillCorner}
-          captureState={captureState}
-          stepDefs={stepDefs}
-          menuOpen={menuOpen}
-          onToggleMenu={() => setMenuOpen((o) => !o)}
-          pillGeometry={radialGeometry}
-          fanStyle={pillFanStyle}
-          inboxCount={inboxCount}
-          onSelect={handleMenuSelect}
-          onHide={handleMenuHide}
-        />
+        {displayMode === "minimal" ? (
+          <div style={{ position: "absolute", left: minimalWrapperOffset.x, top: minimalWrapperOffset.y }}>
+            {pillOverlay}
+          </div>
+        ) : pillOverlay}
       </div>
     );
   }
@@ -913,6 +1375,9 @@ export default function App() {
           onSelectPillFanStyle={setPillFanStyle}
           pillSnapEnabled={pillSnapEnabled}
           onTogglePillSnap={setPillSnapEnabled}
+          monitors={monitors}
+          selectedMonitorId={selectedMonitorId}
+          onSelectMonitor={handleSelectMonitor}
         />
         <VaultManager
           measureRef={setMeasureEl("vault")}

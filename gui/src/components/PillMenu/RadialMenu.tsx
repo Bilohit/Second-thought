@@ -17,6 +17,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PillCorner } from "../PillOverlay";
 import { unifiedFan, type FanResult } from "../../lib/fanLayout";
+import { rankByY } from "../../lib/menuTiming";
 import { useRadialTuning } from "../../lib/devTuning";
 import { ALL_TARGETS, MENU_LABELS, MenuIcon, type MenuTarget } from "./icons";
 
@@ -85,6 +86,10 @@ export default function RadialMenu({ open, corner, pillGeometry, fanStyle, inbox
   }, [pillGeometry?.cx, pillGeometry?.cy, pillGeometry?.sw, pillGeometry?.sh, pillGeometry?.originX, pillGeometry?.originY, effectiveFanStyle, tuning]);
   const positions = fan.items;
   const chip = fan.chip;
+  // Stagger must follow on-screen top-to-bottom order, not array order —
+  // unifiedFan's reading-order array diverges from spatial Y for many arc
+  // placements (for_sonnet.md §5).
+  const staggerRank = useMemo(() => rankByY(positions, (p) => p.y), [positions]);
 
   const itemRefs = useRef<Partial<Record<MenuTarget, HTMLButtonElement | null>>>({});
 
@@ -147,7 +152,7 @@ export default function RadialMenu({ open, corner, pillGeometry, fanStyle, inbox
                 "--spoke-scale-closed": RADIAL_SCALE_CLOSED,
                 "--spoke-scale-hover": RADIAL_SCALE_HOVER,
                 "--spoke-scale-press": RADIAL_SCALE_PRESS,
-                transitionDelay: `${i * RADIAL_STAGGER_MS}ms`,
+                transitionDelay: `${staggerRank[i] * RADIAL_STAGGER_MS}ms`,
               } as React.CSSProperties
             }
             tabIndex={open ? 0 : -1}

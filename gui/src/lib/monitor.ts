@@ -1,4 +1,4 @@
-import { getCurrentWindow, monitorFromPoint, currentMonitor } from "@tauri-apps/api/window";
+import { getCurrentWindow, monitorFromPoint, currentMonitor, availableMonitors, primaryMonitor, type Monitor } from "@tauri-apps/api/window";
 
 export interface WorkArea {
   /** logical-px top-left of the monitor's work area */
@@ -85,4 +85,59 @@ export async function getActiveMonitorBounds(atPoint?: { x: number; y: number })
     }
   } catch { /* fall through */ }
   return { x: 0, y: 0, w: window.screen.width, h: window.screen.height, scale: 1 };
+}
+
+export interface MonitorInfo {
+  /** Stable id for `omni-pill-monitor` — the monitor's name when the OS
+   *  reports one, else its index in `availableMonitors()` (best-effort: a
+   *  name-less monitor losing its index slot on reconnect just falls back
+   *  to primary like an unplugged one would). */
+  id: string;
+  /** "<name> WxH (primary)" for the Settings list. */
+  label: string;
+  isPrimary: boolean;
+  /** Logical-px work area (taskbar excluded), same convention as
+   *  `getActiveWorkArea`. */
+  workArea: WorkArea;
+}
+
+/** Pure mapping (physical->logical, primary detection) — the part of
+ *  `listMonitors` worth a unit check; everything else is a direct Tauri call. */
+export function monitorToInfo(m: Monitor, index: number, primary: Monitor | null): MonitorInfo {
+  const s = m.scaleFactor;
+  const isPrimary = !!primary && primary.position.x === m.position.x && primary.position.y === m.position.y;
+  const wLogical = Math.round(m.size.width / s);
+  const hLogical = Math.round(m.size.height / s);
+  return {
+    id: m.name ?? `monitor-${index}`,
+    label: `${m.name ?? `Monitor ${index + 1}`} ${wLogical}x${hLogical}${isPrimary ? " (primary)" : ""}`,
+    isPrimary,
+    workArea: {
+      x: m.workArea.position.x / s,
+      y: m.workArea.position.y / s,
+      w: m.workArea.size.width / s,
+      h: m.workArea.size.height / s,
+      scale: s,
+    },
+  };
+}
+
+/** Enumerates every connected monitor for the Settings display picker
+ *  (for_sonnet.md §4). Logical units throughout, same discipline as
+ *  `getActiveWorkArea`/`getActiveMonitorBounds`. */
+export async function listMonitors(): Promise<MonitorInfo[]> {
+  const [monitors, primary] = await Promise.all([availableMonitors(), primaryMonitor()]);
+  return monitors.map((m, i) => monitorToInfo(m, i, primary));
+}
+
+/** Resolves which monitor the display picker's selection actually targets
+ *  (for_sonnet.md §4 unplug decision): the selected id if it's still
+ *  present, else primary — silently, without clearing the stored id, so a
+ *  reconnected monitor is picked back up automatically. `null` only when
+ *  `monitors` itself hasn't loaded yet (caller should fall back to
+ *  `getActiveWorkArea()`). */
+export function resolveTargetMonitor(monitors: MonitorInfo[], selectedId: string | null): MonitorInfo | null {
+  if (monitors.length === 0) return null;
+  const chosen = selectedId ? monitors.find((m) => m.id === selectedId) : undefined;
+  return chosen ?? monitors.find((m) => m.isPrimary) ?? monitors[0];
 }

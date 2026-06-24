@@ -21,8 +21,8 @@
  */
 import type { CaptureState, CaptureStep } from "../hooks/useCapture";
 import { deriveYoutubeSteps } from "../hooks/useCapture";
-import RadialMenu, { type PillGeometry } from "./PillMenu/RadialMenu";
 import CapsuleMenu from "./PillMenu/CapsuleMenu";
+import RadialMenu, { type PillGeometry } from "./PillMenu/RadialMenu";
 import type { MenuTarget } from "./PillMenu/icons";
 
 export type PillMode = "capsule" | "minimal";
@@ -34,12 +34,31 @@ interface Props {
   captureState: CaptureState;
   stepDefs: CaptureStep[];
   menuOpen: boolean;
+  /** Minimal mode only: gates the radial fan's render separately from
+   *  `menuOpen` so it can never paint before the pill window has actually
+   *  grown to fit it (pill-fan-clip fix). Falls back to `menuOpen` when
+   *  omitted. Unused in capsule mode. */
+  fanOpen?: boolean;
+  /** Only "custom" anchor with the menu closed is draggable (for_sonnet.md
+   *  Problem 2) — an anchored pill snaps back via Settings' anchor grid and
+   *  must never be ungrabbable-dragged away from it. */
+  draggable: boolean;
+  /** True while a custom JS pointer-drag gesture has this pill grabbed —
+   *  drives the press-state scale affordance (§8.5, user-confirmed). */
+  dragging: boolean;
+  onDragPointerDown: (e: React.PointerEvent) => void;
+  /** Which screen edge the capsule bar is pinned to — icons stagger in from
+   *  this edge (§4.3.3). Unused in minimal mode. */
+  nearEdge: "left" | "right";
   onToggleMenu: () => void;
-  pillGeometry?: PillGeometry | null;
-  fanStyle?: "spread" | "capped";
   inboxCount: number;
   onSelect: (target: Exclude<MenuTarget, "hide">) => void;
   onHide: () => void;
+  /** Minimal mode only: the radial fan's screen-space geometry (App.tsx
+   *  computes this on open from the pill's own window position), and which
+   *  fan style Settings has picked. Unused in capsule mode. */
+  pillGeometry?: PillGeometry | null;
+  fanStyle?: "spread" | "capped";
 }
 
 function pillLabel(state: CaptureState, stepDefs: CaptureStep[]): string {
@@ -52,6 +71,7 @@ function pillLabel(state: CaptureState, stepDefs: CaptureStep[]): string {
     return ytDefs.find((d) => steps[d.id] === "active")?.label ?? "Working";
   }
   if (state.phase === "capturing") {
+    if (state.starting) return "Starting up";
     const active = stepDefs.find((d) => state.steps[d.id as keyof CaptureState["steps"]] === "active");
     return active?.label ?? "Working";
   }
@@ -64,7 +84,8 @@ export const PILL_DIMS: Record<PillMode, { w: number; h: number }> = {
 };
 
 export default function PillOverlay({
-  mode, corner, captureState, stepDefs, menuOpen, onToggleMenu, pillGeometry, fanStyle, inboxCount, onSelect, onHide,
+  mode, corner, captureState, stepDefs, menuOpen, fanOpen, draggable, dragging, onDragPointerDown, nearEdge, onToggleMenu, inboxCount, onSelect, onHide,
+  pillGeometry, fanStyle,
 }: Props) {
   const isActive = captureState.phase === "capturing" || captureState.phase === "background";
   const isError  = captureState.phase === "error";
@@ -78,7 +99,8 @@ export default function PillOverlay({
       <div style={{ position: "relative", width: PILL_DIMS.minimal.w, height: PILL_DIMS.minimal.h }}>
         <button
           type="button"
-          className={menuOpen ? undefined : "drag-region"}
+          className={`${draggable ? "pill-drag-handle" : ""}${dragging ? " pill-grabbed" : ""}`}
+          onPointerDown={draggable ? onDragPointerDown : undefined}
           onClick={(e) => { e.stopPropagation(); onToggleMenu(); }}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
@@ -91,7 +113,7 @@ export default function PillOverlay({
             background: "var(--surface)",
             border: "1px solid var(--border)",
             borderRadius: corner === "rounded" ? "50%" : "0px",
-            cursor: menuOpen ? "pointer" : "grab",
+            cursor: draggable ? "grab" : "pointer",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -114,10 +136,10 @@ export default function PillOverlay({
           />
         </button>
         <RadialMenu
-          open={menuOpen}
+          open={fanOpen ?? menuOpen}
           corner={corner}
-          pillGeometry={pillGeometry}
           fanStyle={fanStyle}
+          pillGeometry={pillGeometry}
           inboxCount={inboxCount}
           onSelect={onSelect}
           onHide={onHide}
@@ -134,6 +156,10 @@ export default function PillOverlay({
       dotColor={dotColor}
       isActive={isActive}
       inboxCount={inboxCount}
+      draggable={draggable}
+      dragging={dragging}
+      onDragPointerDown={onDragPointerDown}
+      nearEdge={nearEdge}
       onToggle={onToggleMenu}
       onSelect={onSelect}
       onHide={onHide}

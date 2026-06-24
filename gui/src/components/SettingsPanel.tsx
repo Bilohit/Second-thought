@@ -20,6 +20,7 @@ import { THEMES, THEME_LABELS, type Theme } from "../App";
 import type { PillMode, PillCorner } from "./PillOverlay";
 import type { PillAnchor } from "../lib/pillAnchor";
 import { ANCHOR_ORDER } from "../lib/pillAnchor";
+import type { MonitorInfo } from "../lib/monitor";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
   INPUT_STYLE, BTN_SECONDARY, BTN_PRIMARY,
@@ -48,6 +49,13 @@ interface Props {
   onSelectPillFanStyle?: (style: "spread" | "capped") => void;
   pillSnapEnabled?:  boolean;
   onTogglePillSnap?: (enabled: boolean) => void;
+
+  // Display picker (for_sonnet.md §4) — which monitor the pill/window lives
+  // on. App.tsx owns the monitor list (refreshed on open) and the move-now
+  // logic; this panel only renders the list and reports a selection.
+  monitors?:          MonitorInfo[];
+  selectedMonitorId?: string | null;
+  onSelectMonitor?:   (id: string) => void;
 }
 
 // ── Theme swatch picker ──────────────────────────────────────────────────────
@@ -291,6 +299,7 @@ export default function SettingsPanel({
   pillAnchor, onSelectPillAnchor,
   pillFanStyle, onSelectPillFanStyle,
   pillSnapEnabled, onTogglePillSnap,
+  monitors, selectedMonitorId, onSelectMonitor,
 }: Props) {
   const [vaultRoot, setVaultRoot] = useState("");
   const [model, setModel] = useState("llama3.2");
@@ -611,6 +620,38 @@ export default function SettingsPanel({
                 </span>
                 <span style={{ fontSize: 10, color: "var(--text-3)" }}>
                   Center ("Custom") keeps the pill wherever you drag it.
+                </span>
+              </Field>
+            )}
+
+            {onSelectMonitor && monitors && monitors.length > 1 && (
+              <Field label="Display">
+                <div role="radiogroup" aria-label="Display" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {monitors.map((m) => {
+                    const active = m.id === selectedMonitorId;
+                    return (
+                      <button
+                        key={m.id}
+                        role="radio"
+                        aria-checked={active}
+                        onClick={() => onSelectMonitor(m.id)}
+                        className="btn-hover"
+                        style={{
+                          ...BTN_SECONDARY,
+                          textAlign: "left",
+                          background: active ? "var(--accent)" : (BTN_SECONDARY.background as string),
+                          color: active ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
+                          borderColor: active ? "var(--accent)" : "var(--border)",
+                        }}
+                        aria-pressed={active}
+                      >
+                        {m.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <span style={{ fontSize: 10, color: "var(--text-3)" }}>
+                  Moves the pill there immediately and remembers the choice.
                 </span>
               </Field>
             )}

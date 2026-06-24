@@ -7,6 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { readText, readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { streamCapture, getJobStatus, HttpError, type StepName, type StepStatus, type ContentType } from "../lib/api";
 import { logger, setRunId } from "../lib/logger";
+import { isConnectionFailure, nextRetryDelayMs } from "../lib/captureRetry";
 
 /** Short, log-friendly correlation ID — not a security token, just unique enough
  *  to join frontend/backend lines for one capture run in the merged log file. */
@@ -57,6 +58,10 @@ export interface CaptureState {
   errorMsg: string | null;
   thinking: ThinkingState | null;
   backgroundJob: BackgroundJobState | null;
+  /** True while retrying a capture that hit the server before it finished
+   *  binding its port (P1-1) — phase stays "capturing" so existing pill
+   *  rendering applies, this only swaps the label to "Starting up". */
+  starting: boolean;
 }
 
 const STEP_DEFS: CaptureStep[] = [
@@ -196,6 +201,7 @@ const BLANK_STATE: CaptureState = {
   errorMsg: null,
   thinking: null,
   backgroundJob: null,
+  starting: false,
 };
 
 const JOB_POLL_MS = 1500;
@@ -335,61 +341,77 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
 
       logger.debug("capture", "clipboard read", { contentType, preview: preview.type });
 
-      for await (const event of streamCapture(contentType, content, controller.signal, runId)) {
-        logger.trace("capture", "stream event", { kind: event.kind });
-        if (event.kind === "step") {
-          setStep(event.step, event.status);
-        } else if (event.kind === "thinking") {
-          setState((prev) => ({
-            ...prev,
-            thinking: {
-              rationale: event.rationale,
-              key_signals: event.key_signals,
-              confidence: event.confidence,
-              category: event.category,
-            },
-          }));
-        } else if (event.kind === "done") {
-          logger.info("capture", "capture done", { category: event.category, path: event.path });
-          stopRun();
-          setState((prev) => ({
-            ...prev,
-            phase: "done",
-            result: { path: event.path, category: event.category },
-          }));
-          scheduleDismiss(AUTO_DISMISS_DONE_MS);
-          return;
-        } else if (event.kind === "error") {
-          throw new Error(event.message);
-        } else if (event.kind === "duplicate") {
-          // Repeat-fired hotkey (AHK/Hammerspoon double-fire): absorb silently,
-          // snap back to idle rather than getting stuck in "capturing".
-          logger.debug("capture", "duplicate event absorbed");
-          stopRun();
-          if (!holdOpenRef?.current) await getCurrentWindow().hide();
-          setState(BLANK_STATE);
-          return;
-        } else if (event.kind === "job") {
-          logger.info("capture", "background job handed off", { jobId: event.job_id, status: event.status });
-          stopRun();
-          setState((prev) => ({
-            ...prev,
-            phase: "background",
-            backgroundJob: { id: event.job_id, kind: event.jobKind, status: event.status, lastActiveStatus: event.status },
-          }));
-          pollJob(event.job_id);
-          return;
+      // Retry loop for P1-1: a capture fired right after app restart can hit
+      // the server before uvicorn finishes binding its port (connection
+      // refused). Retry with bounded backoff instead of failing hard; any
+      // other error (a real pipeline failure) is not retried.
+      let attempt = 0;
+      for (;;) {
+        try {
+          for await (const event of streamCapture(contentType, content, controller.signal, runId)) {
+            logger.trace("capture", "stream event", { kind: event.kind });
+            if (event.kind === "step") {
+              if (attempt > 0) setState((prev) => ({ ...prev, starting: false }));
+              setStep(event.step, event.status);
+            } else if (event.kind === "thinking") {
+              setState((prev) => ({
+                ...prev,
+                thinking: {
+                  rationale: event.rationale,
+                  key_signals: event.key_signals,
+                  confidence: event.confidence,
+                  category: event.category,
+                },
+              }));
+            } else if (event.kind === "done") {
+              logger.info("capture", "capture done", { category: event.category, path: event.path });
+              stopRun();
+              setState((prev) => ({
+                ...prev,
+                phase: "done",
+                result: { path: event.path, category: event.category },
+              }));
+              scheduleDismiss(AUTO_DISMISS_DONE_MS);
+              return;
+            } else if (event.kind === "error") {
+              throw new Error(event.message);
+            } else if (event.kind === "duplicate") {
+              // Repeat-fired hotkey (AHK/Hammerspoon double-fire): absorb silently,
+              // snap back to idle rather than getting stuck in "capturing".
+              logger.debug("capture", "duplicate event absorbed");
+              stopRun();
+              if (!holdOpenRef?.current) await getCurrentWindow().hide();
+              setState(BLANK_STATE);
+              return;
+            } else if (event.kind === "job") {
+              logger.info("capture", "background job handed off", { jobId: event.job_id, status: event.status });
+              stopRun();
+              setState((prev) => ({
+                ...prev,
+                phase: "background",
+                backgroundJob: { id: event.job_id, kind: event.jobKind, status: event.status, lastActiveStatus: event.status },
+              }));
+              pollJob(event.job_id);
+              return;
+            }
+          }
+          break;
+        } catch (streamErr) {
+          if ((streamErr as Error).name === "AbortError") throw streamErr;
+          const delay = isConnectionFailure(streamErr) ? nextRetryDelayMs(attempt) : null;
+          if (delay === null) throw streamErr;
+          attempt++;
+          logger.debug("capture", "retrying after connection failure", { attempt, delay });
+          setState((prev) => ({ ...prev, starting: true }));
+          await new Promise((r) => setTimeout(r, delay));
         }
       }
     } catch (err) {
       if ((err as Error).name === "AbortError") { logger.debug("capture", "capture aborted"); return; }
       // A bare fetch connection failure (server down / not yet up) surfaces as a
-      // TypeError "Failed to fetch". Translate it to the actionable message that
-      // the removed /health preflight used to produce.
-      const isConnFailure =
-        err instanceof TypeError ||
-        /failed to fetch|networkerror|load failed/i.test((err as Error)?.message ?? "");
-      if (isConnFailure) {
+      // TypeError "Failed to fetch". Retries (above) are exhausted by the time
+      // this is reached, so translate it to an actionable message.
+      if (isConnectionFailure(err)) {
         err = new Error("Python server is not running.\nRestart the Second Thought app (the server is launched and authenticated automatically; a manually-started uvicorn process won't have the GUI's secret).");
       }
       const msg = err instanceof Error ? err.message : String(err);
@@ -399,6 +421,7 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
         ...prev,
         phase: "error",
         errorMsg: msg,
+        starting: false,
         steps: {
           ...prev.steps,
           ...Object.fromEntries(

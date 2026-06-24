@@ -419,6 +419,189 @@ fn parse_shortcut(hotkey: &str) -> Option<Shortcut> {
     key_code.map(|code| Shortcut::new(Some(modifiers), code))
 }
 
+// ── Non-activating pill window + click-away hook (for_sonnet.md) ───────────
+//
+// Windows activates a window's HWND on click, which deactivates whatever app
+// was previously foreground — the pill must never do that. There's no Tauri
+// API for "non-activating window"; WS_EX_NOACTIVATE is the only real fix, so
+// it's toggled directly on the HWND. A non-activating window also never
+// fires Tauri's focus-loss event, so click-away dismissal is replaced by a
+// WH_MOUSE_LL low-level hook, armed only while a menu is open.
+#[cfg(windows)]
+mod noactivate {
+    use std::sync::{Mutex, OnceLock};
+    use tauri::{AppHandle, Emitter, Manager};
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW, SetWindowPos,
+        SetWindowsHookExW, UnhookWindowsHookEx, GWL_EXSTYLE, HHOOK, MSLLHOOKSTRUCT, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WH_MOUSE_LL, WM_LBUTTONDOWN,
+        WM_RBUTTONDOWN, WS_EX_NOACTIVATE,
+    };
+
+    /// Inclusive on the top/left edges, exclusive on bottom/right — matches
+    /// Win32's RECT convention (`right`/`bottom` are one past the last pixel).
+    fn point_in_rect(rect: &RECT, x: i32, y: i32) -> bool {
+        x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
+    }
+
+    // HWND/HHOOK are opaque Win32 handle values (never dereferenced as
+    // pointers here, only passed back into Win32 calls), so it's safe to
+    // move them across threads despite the raw-pointer-shaped type.
+    struct SendHwnd(HWND);
+    unsafe impl Send for SendHwnd {}
+    struct SendHook(HHOOK);
+    unsafe impl Send for SendHook {}
+
+    struct ArmedState {
+        hwnd: SendHwnd,
+        app: AppHandle,
+    }
+    impl Clone for ArmedState {
+        fn clone(&self) -> Self {
+            Self { hwnd: SendHwnd(self.hwnd.0), app: self.app.clone() }
+        }
+    }
+
+    static ARMED: OnceLock<Mutex<Option<ArmedState>>> = OnceLock::new();
+    static HOOK: OnceLock<Mutex<Option<SendHook>>> = OnceLock::new();
+
+    fn armed_slot() -> &'static Mutex<Option<ArmedState>> {
+        ARMED.get_or_init(|| Mutex::new(None))
+    }
+    fn hook_slot() -> &'static Mutex<Option<SendHook>> {
+        HOOK.get_or_init(|| Mutex::new(None))
+    }
+
+    unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if code >= 0 && (wparam as u32 == WM_LBUTTONDOWN || wparam as u32 == WM_RBUTTONDOWN) {
+            let info = &*(lparam as *const MSLLHOOKSTRUCT);
+            let pt: POINT = info.pt;
+            if let Ok(guard) = armed_slot().lock() {
+                if let Some(state) = guard.as_ref() {
+                    let mut rect: RECT = std::mem::zeroed();
+                    if GetWindowRect(state.hwnd.0, &mut rect) != 0 && !point_in_rect(&rect, pt.x, pt.y) {
+                        let _ = state.app.emit("menu:dismiss", ());
+                    }
+                }
+            }
+        }
+        CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
+    }
+
+    fn hwnd_for(app: &AppHandle, label: &str) -> Result<HWND, String> {
+        let window = app
+            .get_webview_window(label)
+            .ok_or_else(|| format!("window '{label}' not found"))?;
+        let raw = window.hwnd().map_err(|e| e.to_string())?;
+        Ok(raw.0 as HWND)
+    }
+
+    /// Toggle WS_EX_NOACTIVATE on `window`'s HWND. The pill (and its menu
+    /// overlay) stay non-activating; only the expanded full view turns it
+    /// off so search/settings inputs can receive keyboard focus.
+    #[tauri::command]
+    pub fn set_window_noactivate(window: tauri::Window, enabled: bool) -> Result<(), String> {
+        let raw = window.hwnd().map_err(|e| e.to_string())?;
+        let hwnd = raw.0 as HWND;
+        unsafe {
+            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            let next = if enabled {
+                ex | WS_EX_NOACTIVATE as isize
+            } else {
+                ex & !(WS_EX_NOACTIVATE as isize)
+            };
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
+            // GWL_EXSTYLE changes don't take effect on an already-created
+            // window until the frame is flushed via SetWindowPos.
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+        }
+        Ok(())
+    }
+
+    /// Install the low-level mouse hook and point it at `window_label`'s
+    /// HWND for hit-testing. Only ever one hook installed at a time — a
+    /// second `arm` while already armed just re-targets it.
+    #[tauri::command]
+    pub fn arm_menu_click_away(app: AppHandle, window_label: String) -> Result<(), String> {
+        let hwnd = hwnd_for(&app, &window_label)?;
+        *armed_slot().lock().map_err(|_| "lock poisoned".to_string())? =
+            Some(ArmedState { hwnd: SendHwnd(hwnd), app: app.clone() });
+
+        let already_installed = hook_slot().lock().map_err(|_| "lock poisoned".to_string())?.is_some();
+        if already_installed {
+            return Ok(()); // already installed — just re-targeted above
+        }
+        // SetWindowsHookExW must be called on a thread with a running
+        // message loop; queue it onto the main thread rather than requiring
+        // every caller to already be there.
+        app.run_on_main_thread(move || unsafe {
+            let h = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), std::ptr::null_mut(), 0);
+            if let Ok(mut g) = hook_slot().lock() {
+                *g = if h.is_null() { None } else { Some(SendHook(h)) };
+            }
+        })
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Remove the click-away hook. Idempotent — safe to call even if nothing
+    /// is currently armed (every menu-close path calls this unconditionally).
+    #[tauri::command]
+    pub fn disarm_menu_click_away(app: AppHandle) -> Result<(), String> {
+        *armed_slot().lock().map_err(|_| "lock poisoned".to_string())? = None;
+        app.run_on_main_thread(|| unsafe {
+            if let Ok(mut g) = hook_slot().lock() {
+                if let Some(h) = g.take() {
+                    UnhookWindowsHookEx(h.0);
+                }
+            }
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn rect() -> RECT {
+            RECT { left: 10, top: 10, right: 20, bottom: 20 }
+        }
+
+        #[test]
+        fn inside_is_true() {
+            assert!(point_in_rect(&rect(), 15, 15));
+        }
+
+        #[test]
+        fn left_top_edges_are_inside() {
+            assert!(point_in_rect(&rect(), 10, 10));
+        }
+
+        #[test]
+        fn right_bottom_edges_are_outside() {
+            assert!(!point_in_rect(&rect(), 20, 15));
+            assert!(!point_in_rect(&rect(), 15, 20));
+        }
+
+        #[test]
+        fn outside_each_side_is_false() {
+            assert!(!point_in_rect(&rect(), 5, 15));   // left
+            assert!(!point_in_rect(&rect(), 25, 15));  // right
+            assert!(!point_in_rect(&rect(), 15, 5));   // top
+            assert!(!point_in_rect(&rect(), 15, 25));  // bottom
+        }
+    }
+}
+
 // ── Tray icon setup ─────────────────────────────────────────────────────────
 
 fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
@@ -485,6 +668,10 @@ fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 // ── Utility: show window and emit an event to the frontend ──────────────────
 
 fn show_window_emit<R: Runtime>(app: &AppHandle<R>, event: &str) {
+    // trigger-capture only shows the non-activating pill — the app must
+    // never steal foreground focus from whatever the user was in. The
+    // open-* events expand to the full view, which does need focus.
+    let take_focus = event != "trigger-capture";
     let Some(window) = app.get_webview_window("main") else {
         log_line(LVL_ERROR, "ERROR", "tray", &format!("main window not found for event '{event}'"));
         return;
@@ -492,8 +679,10 @@ fn show_window_emit<R: Runtime>(app: &AppHandle<R>, event: &str) {
     if let Err(e) = window.show() {
         log_line(LVL_WARN, "WARN", "tray", &format!("show() failed for event '{event}': {e}"));
     }
-    if let Err(e) = window.set_focus() {
-        log_line(LVL_WARN, "WARN", "tray", &format!("set_focus() failed for event '{event}': {e}"));
+    if take_focus {
+        if let Err(e) = window.set_focus() {
+            log_line(LVL_WARN, "WARN", "tray", &format!("set_focus() failed for event '{event}': {e}"));
+        }
     }
     if let Err(e) = app.emit(event, ()) {
         log_line(LVL_ERROR, "ERROR", "tray", &format!("emit('{event}') failed: {e}"));
@@ -543,7 +732,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState { python_child, gui_secret, active_shortcut: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![
-            get_gui_secret, set_hotkey, append_log, log_file_path, get_log_level, set_log_level
+            get_gui_secret, set_hotkey, append_log, log_file_path, get_log_level, set_log_level,
+            noactivate::set_window_noactivate, noactivate::arm_menu_click_away, noactivate::disarm_menu_click_away
         ])
         .setup(move |app| {
             // ── 1. Spawn Python FastAPI server ─────────────────────────────

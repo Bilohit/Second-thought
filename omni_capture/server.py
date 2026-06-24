@@ -100,12 +100,18 @@ _executor = ThreadPoolExecutor(max_workers=2)
 _bg_executor = ThreadPoolExecutor(max_workers=2)
 CONFIG_PATH = Path(__file__).parent / "config.toml"
 
+# Set True once warmup finishes (success or skip) — a skipped warmup
+# shouldn't pin /health at "never ready" forever, it just means the first
+# real capture pays the cold-model cost instead of a synthetic one.
+_MODEL_READY = False
+
 
 @app.on_event("startup")
 def _warm_model() -> None:
     """Fire a tiny throwaway generation in the background so the first real
     capture doesn't pay Ollama's cold model-load (~40s observed in logs)."""
     def _warm():
+        global _MODEL_READY
         try:
             from config import reload_config
             cfg = reload_config()
@@ -123,6 +129,8 @@ def _warm_model() -> None:
             print("[Warmup] model preloaded", flush=True)
         except Exception as exc:
             print(f"[Warmup] skipped: {exc}", flush=True)
+        finally:
+            _MODEL_READY = True
     _bg_executor.submit(_warm)
 
 
@@ -682,8 +690,8 @@ async def _stream_capture(content_type: str, content: str, run_id: Optional[str]
 @app.get("/health")
 async def health():
     # Unauthenticated liveness probe: used by launch.ps1 to detect readiness.
-    # Returns only a boolean, so it leaks nothing sensitive even with a secret set.
-    return {"ok": True}
+    # Returns only booleans, so it leaks nothing sensitive even with a secret set.
+    return {"ok": True, "ready": _MODEL_READY}
 
 @app.post("/capture")
 async def capture(

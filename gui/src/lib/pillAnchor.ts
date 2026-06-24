@@ -33,3 +33,11 @@ export function anchorPosition(anchor: PillAnchor, w: number, h: number, area: W
 
   return { x: Math.round(x), y: Math.round(y) };
 }
+
+/** Pill movability matrix (for_sonnet.md Problem 2): only the "custom"
+ *  anchor is ever draggable, and only while the menu is closed — an anchored
+ *  pill snaps back via `anchorPosition` anyway, and a dragging gesture while
+ *  the menu is open would fight the open-menu window geometry. */
+export function isPillDraggable(anchor: PillAnchor, menuOpen: boolean): boolean {
+  return anchor === "custom" && !menuOpen;
+}

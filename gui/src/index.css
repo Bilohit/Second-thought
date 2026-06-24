@@ -60,6 +60,9 @@
   --menu-travel-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --menu-item-dur: 260ms;
   --menu-stagger: 45ms;
+  /* Soft overshoot, settles to 1 — transform-only so it never displaces
+     neighbors or grows the capsule bar (for_sonnet.md Problem 4). */
+  --menu-overshoot-ease: cubic-bezier(0.34, 1.35, 0.5, 1);
 
   /* Hover recipe (for_sonnet.md §1.1) — shared by every interactive surface.
      Asymmetric easing: --hover-ease (overshoot) drives the :hover/enter
@@ -376,6 +379,22 @@ html, body, #root {
   app-region: no-drag;
 }
 
+/* Pill-only drag handle (for_sonnet.md §3): cursor affordance for the
+   custom pointer-driven gesture in App.tsx. Deliberately NOT `.drag-region`
+   — the pill needs JS-driven inertia/fling/clamp, which the OS's
+   app-region drag can't provide, so it owns its own move loop instead of
+   the OS. Press-state scale affordance (§8.5, user-confirmed) is the
+   `.pill-grabbed` class, toggled only on pointerdown/up (not per-frame). */
+.pill-drag-handle {
+  cursor: grab;
+}
+.pill-drag-handle:active {
+  cursor: grabbing;
+}
+.pill-grabbed {
+  transform: scale(0.96) !important;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    FOCUS RING — keyboard nav
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -646,7 +665,7 @@ html, body, #root {
   pointer-events: none;
   opacity: 0;
   transform: translate(0, 0) scale(var(--spoke-scale-closed, 0.6));
-  transition: transform var(--spoke-anim-ms, 260ms) var(--menu-travel-ease),
+  transition: transform var(--spoke-anim-ms, 260ms) var(--menu-overshoot-ease),
               opacity var(--spoke-anim-ms, 260ms) var(--menu-travel-ease);
   z-index: 20;
 }
@@ -727,21 +746,35 @@ html, body, #root {
   border-radius: 18px;
   overflow: hidden;
   cursor: pointer;
-  transition: width 220ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-/* Closed = draggable surface, signal with grab; open = locked, pointer
-   (for_sonnet.md Problem 2, decision #3). */
-.capsule-menu.drag-region {
-  cursor: grab;
-}
-
-.capsule-menu.drag-region:active {
-  cursor: grabbing;
+  /* Must equal CAPSULE_ANIM_MS in CapsuleMenu.tsx — bar width and icon
+     stagger share one timeline (for_sonnet.md §4). */
+  transition: width 260ms cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.12s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .capsule-menu[data-corner="sharp"] {
   border-radius: 0;
+}
+
+/* Reset to a plain inline flex region — visuals are entirely the dot/label
+   children's, this just hosts them as a real focusable toggle (see
+   CapsuleMenu.tsx's nested-button-in-button a11y fix). */
+.capsule-toggle {
+  display: flex;
+  align-items: center;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  pointer-events: none; /* clicks pass through to .capsule-menu's onToggle */
+}
+
+/* Doesn't participate in layout — items stay direct flex children of
+   .capsule-menu visually, this only groups them for role="menu" semantics. */
+.capsule-items {
+  display: contents;
 }
 
 .capsule-ring {
@@ -799,9 +832,16 @@ html, body, #root {
   opacity: 0;
   transform: translateX(-10px) scale(0.7);
   color: var(--text-3);
-  transition: width var(--menu-item-dur, 260ms) var(--menu-travel-ease),
-              opacity var(--menu-item-dur, 260ms) var(--menu-travel-ease),
-              transform var(--menu-item-dur, 260ms) var(--menu-travel-ease),
+  /* Button reset — .capsule-item is now a real <button> (a11y fix), not a div. */
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+  /* Must equal CAPSULE_ITEM_PLAY_MS in CapsuleMenu.tsx. */
+  transition: width 180ms var(--menu-travel-ease),
+              opacity 180ms var(--menu-travel-ease),
+              transform 180ms var(--menu-overshoot-ease),
               color var(--hover-dur) var(--hover-ease-out);
 }
 
@@ -838,7 +878,8 @@ html, body, #root {
               opacity 160ms ease-out;
 }
 
-.capsule-item:focus-visible {
+.capsule-item:focus-visible,
+.capsule-toggle:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }

@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>P1-3 motion mock — radial fan + capsule morph, current vs tightened</title>
+<style>
+  :root {
+    --bg: #0b0b0c;
+    --surface: #181819;
+    --border: #2c2c2e;
+    --text-1: #eaeaea;
+    --text-3: #6b6b6e;
+    --accent: #5b8cff;
+    --red: #e5484d;
+    --menu-travel-ease: cubic-bezier(0.22, 1, 0.36, 1);
+    --menu-overshoot-ease: cubic-bezier(0.34, 1.35, 0.5, 1);
+  }
+  body { background: var(--bg); color: var(--text-1); font-family: system-ui, sans-serif; padding: 40px; }
+  h1 { font-size: 16px; font-weight: 600; }
+  p.note { color: var(--text-3); font-size: 13px; max-width: 640px; }
+  .row { display: flex; gap: 80px; margin-top: 40px; }
+  .col { text-align: center; }
+  .col h2 { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .col .meta { font-size: 11px; color: var(--text-3); margin-bottom: 24px; }
+  .stage { position: relative; width: 260px; height: 260px; margin: 0 auto; }
+  .pill {
+    position: absolute; top: 50%; left: 50%; width: 36px; height: 36px; margin: -18px;
+    border-radius: 50%; background: var(--surface); border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 30;
+    font-size: 16px;
+  }
+  .spoke {
+    position: absolute; top: 50%; left: 50%; width: 33px; height: 33px; margin: -16.5px;
+    border-radius: 50%; background: var(--surface); border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center; font-size: 14px;
+    opacity: 0; transform: translate(0,0) scale(0.6); pointer-events: none; z-index: 20;
+  }
+  .spoke.open { opacity: 1; pointer-events: auto; }
+
+  /* current */
+  .current .spoke { transition: transform 260ms var(--menu-overshoot-ease), opacity 260ms var(--menu-travel-ease); }
+  /* tightened */
+  .tightened .spoke { transition: transform 190ms var(--menu-overshoot-ease), opacity 190ms var(--menu-travel-ease); }
+
+  .capsule-stage { width: 260px; height: 80px; display: flex; align-items: center; justify-content: center; }
+  .capsule {
+    position: relative; display: flex; align-items: center; overflow: hidden;
+    height: 36px; border-radius: 18px; background: var(--surface); border: 1px solid var(--border);
+    cursor: pointer; padding: 0 12px;
+  }
+  .current .capsule { width: 168px; transition: width 260ms cubic-bezier(0.16,1,0.3,1); }
+  .current .capsule.open { width: 280px; }
+  .tightened .capsule { width: 168px; transition: width 190ms cubic-bezier(0.16,1,0.3,1); }
+  .tightened .capsule.open { width: 280px; }
+
+  .capsule-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; opacity: 1; }
+  .current .capsule-dot { transition: opacity 160ms cubic-bezier(0.16,1,0.3,1); }
+  .tightened .capsule-dot { transition: opacity 120ms cubic-bezier(0.16,1,0.3,1); }
+  .capsule.open .capsule-dot { opacity: 0; width: 0; }
+
+  .capsule-label { margin-left: 8px; font-size: 12px; opacity: 1; white-space: nowrap; }
+  .current .capsule-label { transition: opacity 160ms cubic-bezier(0.16,1,0.3,1); }
+  .tightened .capsule-label { transition: opacity 120ms cubic-bezier(0.16,1,0.3,1); }
+  .capsule.open .capsule-label { opacity: 0; width: 0; margin-left: 0; }
+
+  .capsule-item {
+    flex: 0 0 auto; width: 0; opacity: 0; transform: translateX(-10px) scale(0.7);
+    display: flex; align-items: center; justify-content: center; overflow: hidden; font-size: 14px;
+  }
+  .current .capsule-item { transition: width 180ms var(--menu-travel-ease), opacity 180ms var(--menu-travel-ease), transform 180ms var(--menu-overshoot-ease); }
+  .tightened .capsule-item { transition: width 130ms var(--menu-travel-ease), opacity 130ms var(--menu-travel-ease), transform 130ms var(--menu-overshoot-ease); }
+  .capsule.open .capsule-item { width: 36px; opacity: 1; transform: translateX(0) scale(1); }
+
+  button.replay {
+    margin-top: 40px; background: var(--surface); border: 1px solid var(--border); color: var(--text-1);
+    padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px;
+  }
+  button.replay:hover { border-color: var(--accent); }
+</style>
+</head>
+<body>
+  <h1>P1-3 motion mock — radial fan + capsule morph</h1>
+  <p class="note">
+    Left = current production timing (RADIAL_ANIM_MS 260ms / RADIAL_STAGGER_MS 45ms, capsule width 260ms).
+    Right = tightened proposal (~190ms travel, ~30ms stagger, capsule width 190ms) — same easing curves and
+    interaction, only the durations move. Click each pill to open/close; "Replay" resets both columns.
+  </p>
+
+  <div class="row">
+    <div class="col current">
+      <h2>Current</h2>
+      <div class="meta">260ms travel · 45ms stagger</div>
+      <div class="stage" id="stage-current">
+        <div class="pill" data-toggle="current">●</div>
+      </div>
+    </div>
+    <div class="col tightened">
+      <h2>Tightened</h2>
+      <div class="meta">190ms travel · 30ms stagger</div>
+      <div class="stage" id="stage-tightened">
+        <div class="pill" data-toggle="tightened">●</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="col current">
+      <div class="capsule-stage">
+        <div class="capsule" id="capsule-current" data-toggle-capsule="current">
+          <span class="capsule-dot"></span>
+          <span class="capsule-label">Second Thought</span>
+          <span class="capsule-item">⚙</span>
+          <span class="capsule-item">🗂</span>
+          <span class="capsule-item">📥</span>
+          <span class="capsule-item">📊</span>
+          <span class="capsule-item">🔍</span>
+          <span class="capsule-item">✕</span>
+        </div>
+      </div>
+    </div>
+    <div class="col tightened">
+      <div class="capsule-stage">
+        <div class="capsule" id="capsule-tightened" data-toggle-capsule="tightened">
+          <span class="capsule-dot"></span>
+          <span class="capsule-label">Second Thought</span>
+          <span class="capsule-item">⚙</span>
+          <span class="capsule-item">🗂</span>
+          <span class="capsule-item">📥</span>
+          <span class="capsule-item">📊</span>
+          <span class="capsule-item">🔍</span>
+          <span class="capsule-item">✕</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <button class="replay" id="replay">Replay both</button>
+
+  <script>
+    const ICONS = ["⚙", "🗂", "📥", "📊", "🔍", "✕"];
+    const RADIUS = 95;
+
+    function buildSpokes(stageId, staggerMs) {
+      const stage = document.getElementById(stageId);
+      const spokes = [];
+      ICONS.forEach((icon, i) => {
+        const angle = (-90 + i * (180 / (ICONS.length - 1))) * (Math.PI / 180);
+        const x = Math.round(Math.cos(angle) * RADIUS);
+        const y = Math.round(Math.sin(angle) * RADIUS);
+        const el = document.createElement("div");
+        el.className = "spoke";
+        el.style.transitionDelay = `${i * staggerMs}ms`;
+        el.textContent = icon;
+        el.dataset.tx = x; el.dataset.ty = y;
+        stage.appendChild(el);
+        spokes.push(el);
+      });
+      return spokes;
+    }
+
+    const currentSpokes = buildSpokes("stage-current", 45);
+    const tightenedSpokes = buildSpokes("stage-tightened", 30);
+
+    function toggleFan(spokes, open) {
+      spokes.forEach((el) => {
+        if (open) {
+          el.style.transform = `translate(${el.dataset.tx}px, ${el.dataset.ty}px) scale(1)`;
+          el.classList.add("open");
+        } else {
+          el.style.transform = `translate(0,0) scale(0.6)`;
+          el.classList.remove("open");
+        }
+      });
+    }
+
+    let currentOpen = false, tightenedOpen = false;
+    document.querySelector('[data-toggle="current"]').addEventListener("click", () => {
+      currentOpen = !currentOpen; toggleFan(currentSpokes, currentOpen);
+    });
+    document.querySelector('[data-toggle="tightened"]').addEventListener("click", () => {
+      tightenedOpen = !tightenedOpen; toggleFan(tightenedSpokes, tightenedOpen);
+    });
+
+    document.getElementById("capsule-current").addEventListener("click", (e) => {
+      e.currentTarget.classList.toggle("open");
+    });
+    document.getElementById("capsule-tightened").addEventListener("click", (e) => {
+      e.currentTarget.classList.toggle("open");
+    });
+
+    document.getElementById("replay").addEventListener("click", () => {
+      currentOpen = tightenedOpen = false;
+      toggleFan(currentSpokes, false);
+      toggleFan(tightenedSpokes, false);
+      document.getElementById("capsule-current").classList.remove("open");
+      document.getElementById("capsule-tightened").classList.remove("open");
+    });
+  </script>
+</body>
+</html>

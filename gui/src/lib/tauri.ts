@@ -50,3 +50,33 @@ export async function setLogLevel(level: LogLevel): Promise<void> {
     logger.warn("tauri", "set_log_level (rust) failed — frontend level still applied", err);
   }
 }
+
+/** Toggle WS_EX_NOACTIVATE on the *calling* window's HWND (Tauri resolves
+ *  the `window` command argument from whichever webview invoked it) so
+ *  clicking it never steals foreground focus from another app
+ *  (for_sonnet.md). Best-effort: no-op outside Tauri (browser dev). */
+export async function setWindowNoactivate(enabled: boolean): Promise<void> {
+  try {
+    await invoke("set_window_noactivate", { enabled });
+  } catch (err) {
+    logger.warn("tauri", "set_window_noactivate failed", err);
+  }
+}
+
+/** Arm the global click-away mouse hook, hit-testing against `windowLabel`'s
+ *  HWND. Call only while a menu is open — disarm on every close path. */
+export async function armMenuClickAway(windowLabel: string): Promise<void> {
+  try {
+    await invoke("arm_menu_click_away", { windowLabel });
+  } catch (err) {
+    logger.warn("tauri", "arm_menu_click_away failed", err);
+  }
+}
+
+export async function disarmMenuClickAway(): Promise<void> {
+  try {
+    await invoke("disarm_menu_click_away");
+  } catch (err) {
+    logger.warn("tauri", "disarm_menu_click_away failed", err);
+  }
+}

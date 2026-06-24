@@ -25,6 +25,15 @@ serde_json  = "1"
 rand        = "0.8"
 chrono      = { version = "0.4", default-features = false, features = ["clock"] }
 
+[target.'cfg(windows)'.dependencies]
+# Raw Win32 FFI for WS_EX_NOACTIVATE + a low-level mouse hook (click-away
+# detection for a non-activating window) — no stdlib/Tauri API exposes either,
+# so this is a justified dependency, not a hand-roll-vs-crate tradeoff.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [features]
 # This feature is used for production builds or when `devtools` feature is not enabled.
 custom-protocol = ["tauri/custom-protocol"]

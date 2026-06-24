@@ -105,6 +105,119 @@ export function clampPillWindowToMonitor(input: ClampPillInput): Point {
   };
 }
 
+/**
+ * for_sonnet.md §4 (monitor-switch, custom anchor): when the user picks a
+ * different monitor while the pill is on a custom (manually-dragged)
+ * position, it lands at the same proportional offset from the new
+ * monitor's centre as it had from the old monitor's centre — not a flat
+ * re-centre, not a literal pixel-offset carry-over. The result is clamped
+ * fully inside the new monitor's work area (assigned monitor is a hard
+ * boundary, same rule as `clampPillWindowToMonitor`).
+ */
+export interface ProportionalMonitorMoveInput {
+  /** Logical-px centre of the window on the OLD monitor. */
+  oldCenterLogical: Point;
+  oldWorkArea: MonitorBounds;
+  newWorkArea: MonitorBounds;
+  winW: number;
+  winH: number;
+}
+
+export function computeProportionalMonitorMove(input: ProportionalMonitorMoveInput): Point {
+  const { oldCenterLogical, oldWorkArea, newWorkArea, winW, winH } = input;
+
+  const oldMonitorCenter: Point = {
+    x: oldWorkArea.x + oldWorkArea.w / 2,
+    y: oldWorkArea.y + oldWorkArea.h / 2,
+  };
+  const propX = (oldCenterLogical.x - oldMonitorCenter.x) / (oldWorkArea.w / 2);
+  const propY = (oldCenterLogical.y - oldMonitorCenter.y) / (oldWorkArea.h / 2);
+
+  const newMonitorCenter: Point = {
+    x: newWorkArea.x + newWorkArea.w / 2,
+    y: newWorkArea.y + newWorkArea.h / 2,
+  };
+  const targetCenter: Point = {
+    x: newMonitorCenter.x + propX * (newWorkArea.w / 2),
+    y: newMonitorCenter.y + propY * (newWorkArea.h / 2),
+  };
+
+  const clampedCenter: Point = {
+    x: Math.min(Math.max(targetCenter.x, newWorkArea.x + winW / 2), newWorkArea.x + newWorkArea.w - winW / 2),
+    y: Math.min(Math.max(targetCenter.y, newWorkArea.y + winH / 2), newWorkArea.y + newWorkArea.h - winH / 2),
+  };
+
+  return {
+    x: Math.round(clampedCenter.x - winW / 2),
+    y: Math.round(clampedCenter.y - winH / 2),
+  };
+}
+
+export interface MinimalMenuWindowInput {
+  /** Whether the menu is open (true) or closed (false) — closed is the
+   *  identity case: the window sits exactly back at the idle top-left. */
+  open: boolean;
+  /** Logical-px top-left of the idle (closed) pill window, captured once on
+   *  the closed→open edge. */
+  idleTopLeftLogical: Point;
+  idlePillBoxW: number;
+  idlePillBoxH: number;
+  pillW: number;
+  pillH: number;
+  menuBoxW: number;
+  menuBoxH: number;
+  margin: number;
+  monitorBounds: MonitorBounds;
+}
+
+export interface MinimalMenuWindowResult {
+  windowTopLeftLogical: Point;
+  /** Pill position within the window. */
+  wrapperOffset: Point;
+}
+
+/**
+ * Single pure function for the minimal pill's open *and* close window
+ * geometry (for_sonnet_pill_fix.md Phase 2). `open: false` is the identity
+ * case — same idle top-left, same margin-only wrapper offset — so close can
+ * never drift from open: it's the same function, not a separately replayed
+ * path.
+ */
+export function computeMinimalMenuWindow(input: MinimalMenuWindowInput): MinimalMenuWindowResult {
+  const { open, idleTopLeftLogical, idlePillBoxW, idlePillBoxH, pillW, pillH, menuBoxW, menuBoxH, margin, monitorBounds } = input;
+
+  if (!open) {
+    return {
+      windowTopLeftLogical: idleTopLeftLogical,
+      wrapperOffset: { x: margin, y: margin },
+    };
+  }
+
+  const pillCenterLogical: Point = {
+    x: idleTopLeftLogical.x + idlePillBoxW / 2,
+    y: idleTopLeftLogical.y + idlePillBoxH / 2,
+  };
+  const windowTopLeftLogical: Point = {
+    x: Math.round(pillCenterLogical.x - menuBoxW / 2),
+    y: Math.round(pillCenterLogical.y - menuBoxH / 2),
+  };
+  const clamped = clampPillWindowToMonitor({
+    windowTopLeftLogical,
+    pillW: menuBoxW,
+    pillH: menuBoxH,
+    margin: 0,
+    monitorBounds,
+  });
+
+  return {
+    windowTopLeftLogical: clamped,
+    wrapperOffset: {
+      x: pillCenterLogical.x - clamped.x - pillW / 2,
+      y: pillCenterLogical.y - clamped.y - pillH / 2,
+    },
+  };
+}
+
 export interface CapsuleMenuGeometryInput {
   /** Logical-px top-left of the idle (closed) capsule window. */
   idleTopLeftLogical: Point;

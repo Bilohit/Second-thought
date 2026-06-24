@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeMenuGeometry, clampPillWindowToMonitor, computeCapsuleMenuGeometry } from "./menuGeometry";
+import { computeMenuGeometry, clampPillWindowToMonitor, computeCapsuleMenuGeometry, computeProportionalMonitorMove, computeMinimalMenuWindow } from "./menuGeometry";
 
 describe("computeMenuGeometry", () => {
   it("single-monitor: pill center is the idle box's geometric center", () => {
@@ -156,6 +156,101 @@ describe("clampPillWindowToMonitor", () => {
   });
 });
 
+describe("computeProportionalMonitorMove", () => {
+  const winW = 48, winH = 48;
+
+  it("centre stays at the new monitor's centre when the old position was dead-center", () => {
+    const oldWorkArea = { x: 0, y: 0, w: 1920, h: 1080 };
+    const newWorkArea = { x: 2000, y: 0, w: 1280, h: 720 };
+    const oldCenterLogical = { x: 960, y: 540 }; // exact center of oldWorkArea
+    const result = computeProportionalMonitorMove({ oldCenterLogical, oldWorkArea, newWorkArea, winW, winH });
+    // new center = (2000+640, 360) = (2640, 360); window top-left = center - win/2
+    expect(result).toEqual({ x: 2640 - winW / 2, y: 360 - winH / 2 });
+  });
+
+  it("preserves a corner-ish proportional offset across differently-sized monitors", () => {
+    const oldWorkArea = { x: 0, y: 0, w: 1920, h: 1080 };
+    const newWorkArea = { x: 2000, y: 100, w: 960, h: 540 };
+    // 25% of the way from center to the right/bottom edge on the old monitor
+    const oldCenterLogical = { x: 960 + 0.25 * 960, y: 540 + 0.25 * 540 };
+    const result = computeProportionalMonitorMove({ oldCenterLogical, oldWorkArea, newWorkArea, winW, winH });
+    const newCenterX = 2000 + 480, newCenterY = 100 + 270;
+    const expectedCenterX = newCenterX + 0.25 * 480;
+    const expectedCenterY = newCenterY + 0.25 * 270;
+    expect(result.x).toBe(Math.round(expectedCenterX - winW / 2));
+    expect(result.y).toBe(Math.round(expectedCenterY - winH / 2));
+  });
+
+  it("clamps fully inside the new monitor when the new monitor is too small for the proportional offset", () => {
+    const oldWorkArea = { x: 0, y: 0, w: 1920, h: 1080 };
+    const newWorkArea = { x: 0, y: 0, w: 200, h: 200 };
+    // far toward the old monitor's right/bottom edge
+    const oldCenterLogical = { x: 1900, y: 1060 };
+    const result = computeProportionalMonitorMove({ oldCenterLogical, oldWorkArea, newWorkArea, winW, winH });
+    // window must stay fully inside [0, 200]
+    expect(result.x).toBeLessThanOrEqual(200 - winW);
+    expect(result.y).toBeLessThanOrEqual(200 - winH);
+    expect(result.x).toBeGreaterThanOrEqual(0);
+    expect(result.y).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("computeMinimalMenuWindow", () => {
+  const monitorBounds = { x: 0, y: 0, w: 1920, h: 1080 };
+  const base = {
+    idlePillBoxW: 48,
+    idlePillBoxH: 48,
+    pillW: 36,
+    pillH: 36,
+    menuBoxW: 260,
+    menuBoxH: 260,
+    margin: 6,
+    monitorBounds,
+  };
+
+  it("closed: window sits exactly at idle top-left, wrapper offset is the margin", () => {
+    const idleTopLeftLogical = { x: 500, y: 400 };
+    const { windowTopLeftLogical, wrapperOffset } = computeMinimalMenuWindow({
+      open: false, idleTopLeftLogical, ...base,
+    });
+    expect(windowTopLeftLogical).toEqual(idleTopLeftLogical);
+    expect(wrapperOffset).toEqual({ x: 6, y: 6 });
+  });
+
+  it("open away from any edge: pill center stays fixed, wrapper offset centers it", () => {
+    const idleTopLeftLogical = { x: 500, y: 400 };
+    const { windowTopLeftLogical, wrapperOffset } = computeMinimalMenuWindow({
+      open: true, idleTopLeftLogical, ...base,
+    });
+    // pillCenter = (524, 424); window centered on it = (524-130, 424-130)
+    expect(windowTopLeftLogical).toEqual({ x: 394, y: 294 });
+    const pillCenter = { x: windowTopLeftLogical.x + wrapperOffset.x + base.pillW / 2, y: windowTopLeftLogical.y + wrapperOffset.y + base.pillH / 2 };
+    expect(pillCenter.x).toBeCloseTo(524, 5);
+    expect(pillCenter.y).toBeCloseTo(424, 5);
+  });
+
+  it("open near a corner: window clamps but wrapper offset keeps the pill center unchanged", () => {
+    const idleTopLeftLogical = { x: 2, y: 2 };
+    const { windowTopLeftLogical, wrapperOffset } = computeMinimalMenuWindow({
+      open: true, idleTopLeftLogical, ...base,
+    });
+    expect(windowTopLeftLogical.x).toBeGreaterThanOrEqual(0);
+    expect(windowTopLeftLogical.y).toBeGreaterThanOrEqual(0);
+    const pillCenter = { x: windowTopLeftLogical.x + wrapperOffset.x + base.pillW / 2, y: windowTopLeftLogical.y + wrapperOffset.y + base.pillH / 2 };
+    expect(pillCenter.x).toBeCloseTo(2 + base.idlePillBoxW / 2, 5);
+    expect(pillCenter.y).toBeCloseTo(2 + base.idlePillBoxH / 2, 5);
+  });
+
+  it("round-trips: open then closed returns the exact original idle top-left, including at edges", () => {
+    for (const idleTopLeftLogical of [{ x: 500, y: 400 }, { x: 0, y: 0 }, { x: 1900, y: 1050 }, { x: -5, y: -5 }]) {
+      const opened = computeMinimalMenuWindow({ open: true, idleTopLeftLogical, ...base });
+      const closed = computeMinimalMenuWindow({ open: false, idleTopLeftLogical, ...base });
+      expect(closed.windowTopLeftLogical).toEqual(idleTopLeftLogical);
+      expect(opened).toBeTruthy();
+    }
+  });
+});
+
 describe("computeCapsuleMenuGeometry", () => {
   const base = {
     idleTopLeftLogical: { x: 1700, y: 400 },
@@ -190,4 +285,21 @@ describe("computeCapsuleMenuGeometry", () => {
     const { windowW } = computeCapsuleMenuGeometry({ ...base, nearEdge: "left" });
     expect(windowW).toBe(base.capsuleOpenW + base.margin * 2 + base.closePadW);
   });
+
+  // for_sonnet.md §3 acceptance: App.tsx's closingMenu/capsule branch uses
+  // the stored idle top-left directly as its close target (not
+  // computeMenuGeometry's re-center math) — so open and close share the
+  // exact same pinned-edge x for either nearEdge, with no jump between them.
+  it.each(["left", "right"] as const)(
+    "open-top-left and close-top-left (the idle top-left) share the pinned edge x (nearEdge=%s)",
+    (nearEdge) => {
+      const open = computeCapsuleMenuGeometry({ ...base, nearEdge });
+      const closeTarget = base.idleTopLeftLogical; // App.tsx's actual close target
+      if (nearEdge === "left") {
+        expect(open.windowTopLeftLogical.x).toBe(closeTarget.x);
+      } else {
+        expect(open.windowTopLeftLogical.x + open.windowW).toBe(closeTarget.x + base.idlePillBoxW);
+      }
+    },
+  );
 });
