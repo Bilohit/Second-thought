@@ -29,7 +29,7 @@ export enum LogLevel {
   INFO = 30,
   WARN = 40,
   ERROR = 50,
-  SILENT = 100,
+  OFF = 100,
 }
 
 const LEVEL_NAME: Record<number, string> = {
@@ -38,6 +38,7 @@ const LEVEL_NAME: Record<number, string> = {
   [LogLevel.INFO]: "INFO",
   [LogLevel.WARN]: "WARN",
   [LogLevel.ERROR]: "ERROR",
+  [LogLevel.OFF]: "OFF",
 };
 
 /** Operations slower than this (ms) are logged as performance bottlenecks. */

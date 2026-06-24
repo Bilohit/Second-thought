@@ -21,7 +21,7 @@
  */
 import type { CaptureState, CaptureStep } from "../hooks/useCapture";
 import { deriveYoutubeSteps } from "../hooks/useCapture";
-import CapsuleMenu from "./PillMenu/CapsuleMenu";
+import CapsuleMenu, { CAPSULE_CLOSED_W, CAPSULE_H } from "./PillMenu/CapsuleMenu";
 import RadialMenu, { type PillGeometry } from "./PillMenu/RadialMenu";
 import type { MenuTarget } from "./PillMenu/icons";
 
@@ -79,7 +79,7 @@ function pillLabel(state: CaptureState, stepDefs: CaptureStep[]): string {
 }
 
 export const PILL_DIMS: Record<PillMode, { w: number; h: number }> = {
-  capsule: { w: 168, h: 36 },
+  capsule: { w: CAPSULE_CLOSED_W, h: CAPSULE_H },
   minimal: { w: 36, h: 36 },
 };
 

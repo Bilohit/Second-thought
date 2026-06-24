@@ -1,7 +1,8 @@
 /**
  * CapsuleMenu.tsx
  * ---------------
- * Capsule-mode (136×36 bar) on-click pill menu (for_sonnet.md "Problem 5").
+ * Capsule-mode (231×36 closed bar, see CAPSULE_CLOSED_W) on-click pill menu
+ * (for_sonnet.md "Problem 5").
  * Closed: status dot + label, the whole bar is one drag+click region — no
  * sub-section click targets. Open: morphs to an icons-only bar showing all
  * 6 actions (~36px each, no text), all visible at once.

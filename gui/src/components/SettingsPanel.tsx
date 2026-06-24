@@ -16,6 +16,7 @@ import { getConfig, patchConfig, formatHotkey, DEFAULT_HOTKEY } from "../lib/con
 import { setHotkey as setHotkeyRust, setLogLevel } from "../lib/tauri";
 import { getVaultCategories } from "../lib/api";
 import { logger, LogLevel } from "../lib/logger";
+import { isGeoDebugEnabled, setGeoDebugEnabled } from "../lib/geoLog";
 import { THEMES, THEME_LABELS, type Theme } from "../App";
 import type { PillMode, PillCorner } from "./PillOverlay";
 import type { PillAnchor } from "../lib/pillAnchor";
@@ -308,6 +309,7 @@ export default function SettingsPanel({
   const [saved, setSaved] = useState(false);
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   const [logLevel, setLogLevelState] = useState<LogLevel>(logger.getLevel());
+  const [geoDebug, setGeoDebugState] = useState<boolean>(isGeoDebugEnabled());
   const [confidence, setConfidence] = useState(0.6);
   const [scrutiny, setScrutiny] = useState<"relaxed" | "balanced" | "strict">("balanced");
   const [autoDescribe, setAutoDescribe] = useState(false);
@@ -875,10 +877,41 @@ export default function SettingsPanel({
                 }}
                 style={{ ...INPUT_STYLE, cursor: "pointer" }}
               >
-                {(["TRACE", "DEBUG", "INFO", "WARN", "ERROR"] as const).map((name) => (
+                {(["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "OFF"] as const).map((name) => (
                   <option key={name} value={name}>{name}</option>
                 ))}
               </select>
+            </Field>
+
+            {/* Geometry debug logging — on by default; logs window/monitor/
+                scale geometry to the same log file via geoLog (scope "geo"),
+                for diagnosing pill drag/clamp boundary issues. */}
+            <Field label="Geometry Debug Logging">
+              <div style={{ display: "flex", gap: 4 }}>
+                {([{ v: true, label: "On" }, { v: false, label: "Off" }] as const).map(({ v, label }) => {
+                  const active = geoDebug === v;
+                  return (
+                    <button
+                      key={label}
+                      onClick={() => { setGeoDebugState(v); setGeoDebugEnabled(v); }}
+                      className="btn-hover"
+                      style={{
+                        ...BTN_SECONDARY,
+                        flex: 1,
+                        background: active ? "var(--accent)" : (BTN_SECONDARY.background as string),
+                        color: active ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
+                        borderColor: active ? "var(--accent)" : "var(--border)",
+                      }}
+                      aria-pressed={active}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              <span style={{ fontSize: 10, color: "var(--text-3)" }}>
+                Logs pill window/monitor geometry (scope "geo") to the log file for diagnosing drag/boundary bugs.
+              </span>
             </Field>
           </>
         )}

@@ -47,6 +47,7 @@ import { computeMenuGeometry, clampPillWindowToMonitor, computeCapsuleMenuGeomet
 import { nextWindowTopLeft, emaVelocity, zeroVelocityAtClamp, dragStartBaseline, type Point } from "./lib/dragMath";
 import { createSpring, stepSpring } from "./lib/spring";
 import { setWindowNoactivate, armMenuClickAway, disarmMenuClickAway } from "./lib/tauri";
+import { geoSnapshot, geoClamp } from "./lib/geoLog";
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 
@@ -206,6 +207,7 @@ async function setWindowGeometryInstant(
 async function animateWindowAndSizeTo(
   targetSize: { w: number; h: number },
   targetPos: { x: number; y: number } | null,
+  cancelled?: () => boolean,
 ) {
   const win = getCurrentWindow();
   let startLogical: { x: number; y: number };
@@ -231,6 +233,11 @@ async function animateWindowAndSizeTo(
   const startTime = performance.now();
   await new Promise<void>((resolve) => {
     const frame = (now: number) => {
+      // A superseded reconcile must not keep driving the window — bail the
+      // instant a newer toggle invalidates this run, so a stale grow can't
+      // finish after the shrink and leave the window panel-sized under the
+      // idle pill (boundary_bug-solution.md Fix B).
+      if (cancelled?.()) { resolve(); return; }
       const t = Math.min(1, (now - startTime) / MOVE_DURATION_MS);
       const e = MOVE_EASE(t);
       win.setSize(new LogicalSize(startSize.w + dw * e, startSize.h + dh * e)).catch(() => {});
@@ -722,6 +729,8 @@ export default function App() {
     // gesture is single-monitor by design (see tickDragFrame), so caching
     // removes a per-frame async Tauri call from the hot path (P1-2).
     monitorBounds: { x: number; y: number; w: number; h: number };
+    winLogicalW: number;
+    winLogicalH: number;
   } | null>(null);
 
   const draggedRef = useRef(false);
@@ -744,17 +753,22 @@ export default function App() {
     // the drag is JS-pointer-driven and issues its own setPosition every
     // frame, so the window must clamp here rather than relying on onMoved's
     // (now-removed) post-hoc tween, which fought this loop and oscillated.
-    const { pillW, pillH } = snapStateRef.current;
-    const clamped = clampPillWindowToMonitor({ windowTopLeftLogical: next, pillW, pillH, margin: PILL_MARGIN, monitorBounds: g.monitorBounds });
+    const margin = PILL_MARGIN;
+    const pillW = g.winLogicalW - margin * 2;
+    const pillH = g.winLogicalH - margin * 2;
+    const clamped = clampPillWindowToMonitor({ windowTopLeftLogical: next, pillW, pillH, margin, monitorBounds: g.monitorBounds });
+    geoClamp("drag.tick", { windowTopLeftLogical: next, monitorBounds: g.monitorBounds, pillW, pillH, margin, result: clamped });
     try { await getCurrentWindow().setPosition(new LogicalPosition(clamped.x, clamped.y)); } catch { /* ignore */ }
   }, []);
 
-  const runFling = useCallback((startLogical: Point, releaseVelocityLogical: Point, scale: number) => {
+  const runFling = useCallback((startLogical: Point, releaseVelocityLogical: Point, monitorBounds: { x: number; y: number; w: number; h: number }, winLogical: { w: number; h: number }) => {
     const win = getCurrentWindow();
     let sx = createSpring(startLogical.x, startLogical.x, releaseVelocityLogical.x);
     let sy = createSpring(startLogical.y, startLogical.y, releaseVelocityLogical.y);
     let last = performance.now();
-    const { pillW, pillH } = snapStateRef.current;
+    const margin = PILL_MARGIN;
+    const pillW = winLogical.w - margin * 2;
+    const pillH = winLogical.h - margin * 2;
 
     const step = async () => {
       const now = performance.now();
@@ -767,12 +781,11 @@ export default function App() {
       sy = stepSpring({ ...sy, target: sy.pos }, dt, { stiffness: 0, damping: FLING_DAMPING, restVelocity: FLING_REST_VELOCITY });
 
       const rawPos: Point = { x: sx.pos, y: sy.pos };
-      const pillCenterPhysical = { x: (rawPos.x + pillW / 2) * scale, y: (rawPos.y + pillH / 2) * scale };
-      let clamped = rawPos;
-      try {
-        const bounds = await getActiveMonitorBounds(pillCenterPhysical);
-        clamped = clampPillWindowToMonitor({ windowTopLeftLogical: rawPos, pillW, pillH, margin: PILL_MARGIN, monitorBounds: bounds });
-      } catch { /* ignore */ }
+      // monitorBounds fixed for the whole fling (captured at release) — the
+      // window must never cross onto a different display mid-flight, same
+      // lock tickDragFrame already applies during the live drag itself.
+      const clamped = clampPillWindowToMonitor({ windowTopLeftLogical: rawPos, pillW, pillH, margin: PILL_MARGIN, monitorBounds });
+      geoClamp("fling.step", { windowTopLeftLogical: rawPos, monitorBounds, pillW, pillH, margin: PILL_MARGIN, result: clamped });
       const zeroed = zeroVelocityAtClamp(rawPos, clamped, { x: sx.vel, y: sy.vel });
       sx = { ...sx, pos: clamped.x, vel: zeroed.x };
       sy = { ...sy, pos: clamped.y, vel: zeroed.y };
@@ -831,7 +844,7 @@ export default function App() {
       try {
         const win = getCurrentWindow();
         const pos = await win.outerPosition();
-        runFling({ x: pos.x / g.scale, y: pos.y / g.scale }, g.velocity, g.scale);
+        runFling({ x: pos.x / g.scale, y: pos.y / g.scale }, g.velocity, g.monitorBounds, { w: g.winLogicalW, h: g.winLogicalH });
       } catch { /* ignore */ }
     };
 
@@ -865,12 +878,31 @@ export default function App() {
         pillBoxBeforeMenuRef.current = null;
       }
 
-      const [pos, scale] = await Promise.all([win.outerPosition(), win.scaleFactor()]);
+      const [pos, size, scale] = await Promise.all([win.outerPosition(), win.outerSize(), win.scaleFactor()]);
       const liveTopLeftLogical = { x: pos.x / scale, y: pos.y / scale };
+      // The pill is only draggable while showPill && !menuOpen (isPillDraggable),
+      // so the intended window footprint is deterministically the idle pill box
+      // (snapStateRef.w/h = pillBoxW/H). A live outerSize() read can momentarily
+      // report the full-panel size (480×544) right after returning from a tab —
+      // an uncancelled grow rAF finishing after the shrink — which clamps the
+      // drag to a phantom boundary short by exactly the panel-minus-pill delta
+      // (boundary_bug-solution.md; supersedes the live-footprint approach in
+      // for_sonnet_boundary_calibration.md §1). Trust the known box.
+      const winLogicalW = snapStateRef.current.w;
+      const winLogicalH = snapStateRef.current.h;
+      // Belt-and-suspenders: heal the size desync at the source — if the OS
+      // window is still panel-sized, snap it back to the pill box before the
+      // drag so the transparent window isn't oversized under the visible pill.
+      if (Math.abs(size.width / scale - winLogicalW) > 1 || Math.abs(size.height / scale - winLogicalH) > 1) {
+        beginProgrammaticMove();
+        try { await win.setSize(new LogicalSize(winLogicalW, winLogicalH)); } catch { /* ignore */ }
+        finally { endProgrammaticMove(); }
+      }
       const startTopLeftLogical = dragStartBaseline(settledIdleTopLeft, liveTopLeftLogical);
       const { pillW, pillH } = snapStateRef.current;
       const centerPhysical = { x: pos.x + (pillW * scale) / 2, y: pos.y + (pillH * scale) / 2 };
       const monitorBounds = await getActiveMonitorBounds(centerPhysical);
+      await geoSnapshot("drag.pointerdown", { centerPhysical, monitorBounds, pillW, pillH, scale });
       dragGestureRef.current = {
         pointerId: e.pointerId,
         startTopLeftLogical,
@@ -881,6 +913,8 @@ export default function App() {
         scale,
         rafPending: false,
         monitorBounds,
+        winLogicalW,
+        winLogicalH,
       };
     } catch {
       setPillGrabbed(false);
@@ -966,10 +1000,25 @@ export default function App() {
     const apply = async () => {
       if (pillAnchor === "custom" && leavingPill) {
         try {
-          const pos = await getCurrentWindow().outerPosition();
-          prePanelPos.current = { x: pos.x, y: pos.y };
+          // Store the pill's LOGICAL top-left. Logical is the only persisted
+          // coordinate convention (CLAUDE.md hard rule); round-tripping through
+          // physical and dividing by a scale re-read on a *different* monitor
+          // (Settings centers on primary) mis-scales the restore on mixed-DPI
+          // multi-monitor setups (for_sonnet_boundary_calibration.md §1).
+          if (prevMenuOpen && pillBoxBeforeMenuRef.current) {
+            // Already logical — store as-is, no scale conversion.
+            prePanelPos.current = {
+              x: pillBoxBeforeMenuRef.current.x,
+              y: pillBoxBeforeMenuRef.current.y,
+            };
+          } else {
+            const scale = await getCurrentWindow().scaleFactor(); // pill's own monitor, settled
+            const pos = await getCurrentWindow().outerPosition();
+            prePanelPos.current = { x: pos.x / scale, y: pos.y / scale };
+          }
           prePanelMonitorRef.current = resolveTargetMonitor(monitors, selectedMonitorId);
         } catch { /* ignore */ }
+        await geoSnapshot("leavePill.save");
       }
 
       // for_sonnet.md §4: an explicit display-picker selection overrides
@@ -993,10 +1042,9 @@ export default function App() {
           // relative to the new monitor's centre, not a flat re-centre and
           // not a literal pixel-offset carry-over.
           try {
-            const scale = await getCurrentWindow().scaleFactor();
             const oldCenterLogical = {
-              x: restore.x / scale + targetWinW / 2,
-              y: restore.y / scale + targetWinH / 2,
+              x: restore.x + targetWinW / 2,   // restore is LOGICAL now
+              y: restore.y + targetWinH / 2,
             };
             targetPos = computeProportionalMonitorMove({
               oldCenterLogical,
@@ -1008,8 +1056,26 @@ export default function App() {
           } catch { /* ignore */ }
         } else {
           try {
-            const scale = await getCurrentWindow().scaleFactor();
-            targetPos = { x: restore.x / scale, y: restore.y / scale };
+            const restoreLogical = { x: restore.x, y: restore.y }; // already logical
+            // Resolve the clamp monitor from the pill's OWN monitor scale (saved
+            // at leave time), never the post-Settings window scale.
+            const s = oldMonitor?.workArea.scale ?? await getCurrentWindow().scaleFactor();
+            // Belt-and-suspenders: a bad/stale saved position must never push the
+            // pill off the monitor (for_sonnet_capsule_offscreen.md §2). Same hard
+            // clamp the live-drag gesture uses.
+            const pillCenterPhysical = {
+              x: (restoreLogical.x + targetWinW / 2) * s,
+              y: (restoreLogical.y + targetWinH / 2) * s,
+            };
+            const bounds = await getActiveMonitorBounds(pillCenterPhysical);
+            targetPos = clampPillWindowToMonitor({
+              windowTopLeftLogical: restoreLogical,
+              pillW: PILL_DIMS[displayMode as PillMode].w,
+              pillH: PILL_DIMS[displayMode as PillMode].h,
+              margin: PILL_MARGIN,
+              monitorBounds: bounds,
+            });
+            geoClamp("restore", { windowTopLeftLogical: restoreLogical, monitorBounds: bounds, pillW: PILL_DIMS[displayMode as PillMode].w, pillH: PILL_DIMS[displayMode as PillMode].h, margin: PILL_MARGIN, result: targetPos });
           } catch { /* ignore */ }
         }
       } else if (leavingPill) {
@@ -1157,6 +1223,40 @@ export default function App() {
         // idle margin now (while the window is still full-size for the exit
         // animation) would throw the pill to the window's corner until the
         // shrink lands. Both resets happen with the shrink instead.
+      } else if (
+        pillAnchor === "custom" && showPill && prevShowPill &&
+        !openingMenu && !closingMenu && !enteringPill && !leavingPill &&
+        (targetWinW !== prevSize.current.w || targetWinH !== prevSize.current.h)
+      ) {
+        // Plain pill resize within pill mode (e.g. minimal -> capsule). Keep
+        // the pill's visual CENTER fixed instead of its top-left, so the bar
+        // doesn't lurch sideways when the window width changes (root cause A).
+        // Then clamp to the pill's own monitor so the wider capsule can't land
+        // straddling a multi-monitor boundary (root cause C).
+        try {
+          const scale = await getCurrentWindow().scaleFactor();
+          const pos = await getCurrentWindow().outerPosition();
+          const idleTopLeftLogical = { x: pos.x / scale, y: pos.y / scale };
+          const { windowTopLeftLogical } = computeMenuGeometry({
+            idleTopLeftLogical,
+            idlePillBoxW: prevSize.current.w,
+            idlePillBoxH: prevSize.current.h,
+            targetWinW,
+            targetWinH,
+          });
+          const pillCenterPhysical = {
+            x: (windowTopLeftLogical.x + targetWinW / 2) * scale,
+            y: (windowTopLeftLogical.y + targetWinH / 2) * scale,
+          };
+          const bounds = await getActiveMonitorBounds(pillCenterPhysical);
+          targetPos = clampPillWindowToMonitor({
+            windowTopLeftLogical,
+            pillW: PILL_DIMS[displayMode as PillMode].w,
+            pillH: PILL_DIMS[displayMode as PillMode].h,
+            margin: PILL_MARGIN,
+            monitorBounds: bounds,
+          });
+        } catch { /* ignore */ }
       }
 
       const preMoveDelayMs =
@@ -1178,11 +1278,12 @@ export default function App() {
 
       beginProgrammaticMove();
       try {
-        if (moveKind === "animate") await animateWindowAndSizeTo({ w: targetWinW, h: targetWinH }, targetPos);
+        if (moveKind === "animate") await animateWindowAndSizeTo({ w: targetWinW, h: targetWinH }, targetPos, () => token !== reconcileToken.current);
         else await setWindowGeometryInstant({ w: targetWinW, h: targetWinH }, targetPos);
       } finally {
         endProgrammaticMove();
       }
+      await geoSnapshot("apply.afterMove", { showPill, menuOpen, targetWinW, targetWinH });
 
       // Only now has the window actually finished growing to fit the fan —
       // reveal it here, never earlier, so it can't paint into a still-pill-

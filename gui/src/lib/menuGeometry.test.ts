@@ -1,5 +1,36 @@
 import { describe, expect, it } from "vitest";
 import { computeMenuGeometry, clampPillWindowToMonitor, computeCapsuleMenuGeometry, computeProportionalMonitorMove, computeMinimalMenuWindow } from "./menuGeometry";
+import { CAPSULE_CLOSED_W } from "../components/PillMenu/CapsuleMenu";
+
+// Regression (for_sonnet_capsule_offscreen.md): a right-edge capsule grows its
+// open window toward screen center, so the grown window's top-left is shifted
+// LEFT of the idle pill. Saving that shifted top-left as the pill's restore
+// position (instead of the idle top-left) marches the capsule off-screen across
+// select->return cycles. This locks the shift so the bug is documented: the save
+// path must use the idle top-left, never the open-window top-left.
+it("right-edge capsule open window is shifted left of idle - must not be saved as pill pos", () => {
+  const idleTopLeftLogical = { x: 1000, y: 100 };
+  const idlePillBoxW = 231 + 6 * 2; // CAPSULE_CLOSED_W + PILL_MARGIN*2
+  const idlePillBoxH = 36 + 6 * 2;
+  const geom = computeCapsuleMenuGeometry({
+    idleTopLeftLogical,
+    idlePillBoxW,
+    idlePillBoxH,
+    margin: 6,
+    capsuleOpenW: 288, // CAPSULE_OPEN_W
+    closePadW: 64,     // CLOSE_PAD_W
+    nearEdge: "right",
+  });
+  // grown window top-left is left of idle by exactly windowW - idlePillBoxW = 121
+  expect(geom.windowTopLeftLogical.x).toBe(idleTopLeftLogical.x - 121);
+  expect(geom.windowTopLeftLogical.x).toBeLessThan(idleTopLeftLogical.x);
+  // left-edge case is the control: no shift, which is why the bug is edge-dependent
+  const left = computeCapsuleMenuGeometry({
+    idleTopLeftLogical, idlePillBoxW, idlePillBoxH, margin: 6,
+    capsuleOpenW: 288, closePadW: 64, nearEdge: "left",
+  });
+  expect(left.windowTopLeftLogical.x).toBe(idleTopLeftLogical.x);
+});
 
 describe("computeMenuGeometry", () => {
   it("single-monitor: pill center is the idle box's geometric center", () => {
@@ -154,6 +185,23 @@ describe("clampPillWindowToMonitor", () => {
     });
     expect(result).toEqual({ x: -6, y: -6 });
   });
+
+  it("a window larger than the pill is kept fully on-screen when fed its real footprint", () => {
+    // 480px-wide overlay window on a 2560px monitor, margin 6 → footprint 468.
+    const big = { pillW: 480 - 6 * 2, pillH: 48 - 6 * 2 };
+    const monitor = { x: 0, y: 0, w: 2560, h: 1440 };
+    // drag far right
+    const r = clampPillWindowToMonitor({ windowTopLeftLogical: { x: 5000, y: 100 }, ...big, margin: 6, monitorBounds: monitor });
+    // window right edge (= left + 480) must not exceed the monitor (margin overhang only)
+    expect(r.x + 480).toBeLessThanOrEqual(2560 + 6);
+  });
+
+  it("REGRESSION: feeding the static pill size to a 480px window lets it overflow (the bug)", () => {
+    const monitor = { x: 0, y: 0, w: 2560, h: 1440 };
+    // old buggy call: pillW=231 while the window is really 480 wide
+    const r = clampPillWindowToMonitor({ windowTopLeftLogical: { x: 5000, y: 100 }, pillW: 231, pillH: 36, margin: 6, monitorBounds: monitor });
+    expect(r.x + 480).toBeGreaterThan(2560 + 6); // window right runs off-screen
+  });
 });
 
 describe("computeProportionalMonitorMove", () => {
@@ -254,7 +302,7 @@ describe("computeMinimalMenuWindow", () => {
 describe("computeCapsuleMenuGeometry", () => {
   const base = {
     idleTopLeftLogical: { x: 1700, y: 400 },
-    idlePillBoxW: 180, // PILL_DIMS.capsule.w(168) + margin*2
+    idlePillBoxW: CAPSULE_CLOSED_W + 12, // PILL_DIMS.capsule.w(231) + margin*2
     idlePillBoxH: 48,  // PILL_DIMS.capsule.h(36) + margin*2
     margin: 6,
     capsuleOpenW: 300,
@@ -302,4 +350,50 @@ describe("computeCapsuleMenuGeometry", () => {
       }
     },
   );
+});
+
+describe("computeMenuGeometry — mode-switch keeps pill center fixed", () => {
+  it("centers the new (wider) window on the old pill center, not the old top-left", () => {
+    // minimal idle box 48x48 at (1000, 200) on a secondary monitor
+    const idleTopLeftLogical = { x: 1000, y: 200 };
+    const oldBox = 48;
+    const oldCenter = { x: idleTopLeftLogical.x + oldBox / 2, y: idleTopLeftLogical.y + oldBox / 2 };
+
+    // grow to capsule box 243x48 (231 + margin*2)
+    const { windowTopLeftLogical } = computeMenuGeometry({
+      idleTopLeftLogical,
+      idlePillBoxW: oldBox,
+      idlePillBoxH: oldBox,
+      targetWinW: 243,
+      targetWinH: 48,
+    });
+
+    const newCenter = { x: windowTopLeftLogical.x + 243 / 2, y: windowTopLeftLogical.y + 48 / 2 };
+    // windowTopLeftLogical is Math.round'd to whole pixels, so the recovered
+    // center can be off by up to 0.5px — that's pixel-grid rounding, not drift.
+    expect(Math.abs(newCenter.x - oldCenter.x)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(newCenter.y - oldCenter.y)).toBeLessThanOrEqual(0.5);
+  });
+});
+
+// Regression (boundary_bug-solution.md): the idle-pill drag clamp must be fed
+// the idle pill box, never a stale full-panel footprint. The idle capsule pill
+// reaches the true screen edges; the panel box derives a boundary short by
+// exactly the panel-minus-pill delta. This locks WHICH footprint the drag
+// handler must use (snapStateRef pill box, not a live outerSize that can read
+// 480x544 right after closing a tab).
+it("idle pill clamp reaches screen edges; panel footprint would not", () => {
+  const bounds = { x: 0, y: 0, w: 2560, h: 1440 };
+  const far = { x: 9999, y: 9999 };
+  // idle capsule pill: 231x36 bare pill, margin 6
+  const pill = clampPillWindowToMonitor({ windowTopLeftLogical: far, pillW: 231, pillH: 36, margin: 6, monitorBounds: bounds });
+  expect(pill.x).toBe(2560 - 231 - 6); // 2323
+  expect(pill.y).toBe(1440 - 36 - 6);  // 1398
+  // full-panel footprint (480x544 window -> 468x532 inner) clamps short — the
+  // phantom boundary from the bug. Deltas equal panel-minus-pill sizes.
+  const panel = clampPillWindowToMonitor({ windowTopLeftLogical: far, pillW: 468, pillH: 532, margin: 6, monitorBounds: bounds });
+  expect(panel.x).toBe(2086);
+  expect(panel.y).toBe(902);
+  expect(pill.x - panel.x).toBe(237);
+  expect(pill.y - panel.y).toBe(496);
 });
