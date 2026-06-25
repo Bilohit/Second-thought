@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Second Thought — Visual Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #000000;
+    --surface: #0a0a0a;
+    --surface-2: #111111;
+    --text: #ededed;
+    --text-dim: #888888;
+    --border: #222222;
+    --glow-color: rgba(255,255,255,0.08);
+    --accent: #7dd3fc;
+    --radius: 14px;
+    --maxw: 820px;
+  }
+  html[data-theme="light"] {
+    --bg: #ffffff;
+    --surface: #fafafa;
+    --surface-2: #f2f2f2;
+    --text: #171717;
+    --text-dim: #6b6b6b;
+    --border: #e5e5e5;
+    --glow-color: rgba(0,0,0,0.06);
+    --accent: #0369a1;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    transition: background .4s ease, color .4s ease;
+  }
+  code, pre, .mono { font-family: 'JetBrains Mono', monospace; }
+
+  main { max-width: var(--maxw); margin: 0 auto; padding: 5rem 1.5rem 8rem; }
+
+  /* ---------- Theme toggle ---------- */
+  .theme-toggle {
+    position: fixed; top: 1.25rem; right: 1.25rem; z-index: 50;
+    width: 44px; height: 44px; border-radius: 50%;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); cursor: pointer; font-size: 1.1rem;
+    display: grid; place-items: center;
+    transition: transform .25s ease, box-shadow .25s ease, border-color .25s ease;
+  }
+  .theme-toggle:hover {
+    transform: translateY(-2px);
+    border-color: var(--accent);
+    box-shadow: 0 0 24px var(--glow-color);
+  }
+  .theme-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+  /* ---------- Header ---------- */
+  header { text-align: center; margin-bottom: 5rem; }
+  .eyebrow {
+    font-family: 'JetBrains Mono', monospace; font-size: .72rem;
+    letter-spacing: .28em; text-transform: uppercase; color: var(--text-dim);
+    margin-bottom: 1.4rem;
+  }
+  h1 {
+    font-size: clamp(2.6rem, 7vw, 4.6rem); font-weight: 800;
+    letter-spacing: -.03em; line-height: 1.02; margin: 0 0 1.2rem;
+  }
+  .lede { font-size: 1.2rem; color: var(--text-dim); max-width: 560px; margin: 0 auto 2rem; }
+
+  /* ---------- Badges ---------- */
+  .badge-row { display: flex; flex-wrap: wrap; gap: .55rem; justify-content: center; }
+  .badge {
+    font-family: 'JetBrains Mono', monospace; font-size: .72rem;
+    padding: .4rem .8rem; border: 1px solid var(--border); border-radius: 999px;
+    color: var(--text-dim); background: var(--surface);
+    transition: border-color .25s, color .25s, box-shadow .25s;
+  }
+  .badge:hover { border-color: var(--accent); color: var(--text); box-shadow: 0 0 18px var(--glow-color); }
+
+  /* ---------- Sections ---------- */
+  section { margin-top: 5.5rem; }
+  .section-num {
+    font-family: 'JetBrains Mono', monospace; font-size: .75rem;
+    color: var(--accent); letter-spacing: .2em; margin-bottom: .6rem;
+  }
+  h2 { font-size: clamp(1.7rem, 4vw, 2.4rem); font-weight: 700; letter-spacing: -.02em; margin: 0 0 1rem; }
+  h3 { font-size: 1.15rem; font-weight: 600; margin: 2rem 0 .6rem; }
+  p { color: var(--text); }
+  .dim { color: var(--text-dim); }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 1.75rem;
+    transition: transform .3s ease, box-shadow .3s ease, border-color .3s ease;
+  }
+  .card:hover { transform: translateY(-3px); box-shadow: 0 14px 50px var(--glow-color); border-color: #333; }
+  html[data-theme="light"] .card:hover { border-color: #d4d4d4; }
+
+  .grid { display: grid; gap: 1rem; }
+  .grid-2 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 680px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+  .feature-icon {
+    width: 38px; height: 38px; border-radius: 10px; margin-bottom: .9rem;
+    display: grid; place-items: center; background: var(--surface-2);
+    border: 1px solid var(--border); color: var(--accent);
+  }
+  .feature-title { font-weight: 600; margin: 0 0 .35rem; }
+  .feature-desc { font-size: .92rem; color: var(--text-dim); margin: 0; }
+
+  /* ---------- Code block ---------- */
+  .code-block-wrapper {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden; margin: 1.25rem 0;
+  }
+  .code-block-head {
+    display: flex; align-items: center; gap: .5rem;
+    padding: .7rem 1rem; border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--border); }
+  .code-block-title {
+    margin-left: .6rem; font-family: 'JetBrains Mono', monospace;
+    font-size: .72rem; color: var(--text-dim);
+  }
+  pre { margin: 0; padding: 1.1rem 1.25rem; overflow-x: auto; font-size: .85rem; line-height: 1.7; }
+  pre .cmt { color: var(--text-dim); }
+  pre .acc { color: var(--accent); }
+
+  /* ---------- Pro tip ---------- */
+  .protip {
+    position: relative; border-radius: var(--radius); padding: 1.25rem 1.4rem;
+    margin: 1.5rem 0; background: var(--surface);
+    border: 1px solid var(--accent);
+    animation: pulse 4s ease-in-out infinite;
+  }
+  .protip strong { color: var(--accent); }
+  .protip .label {
+    font-family: 'JetBrains Mono', monospace; font-size: .68rem;
+    letter-spacing: .2em; text-transform: uppercase; color: var(--accent);
+    display: block; margin-bottom: .4rem;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 var(--glow-color); }
+    50% { box-shadow: 0 0 26px 2px var(--glow-color); }
+  }
+
+  /* ---------- Tables ---------- */
+  table { width: 100%; border-collapse: collapse; margin: 1.25rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .7rem .8rem; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-dim); font-weight: 600; font-size: .78rem; letter-spacing: .04em; text-transform: uppercase; }
+  td.mono { font-family: 'JetBrains Mono', monospace; font-size: .82rem; color: var(--accent); }
+
+  /* ---------- Mockups ---------- */
+  .stage { position: relative; }
+  .annot {
+    position: absolute; font-family: 'JetBrains Mono', monospace; font-size: .68rem;
+    background: var(--bg); color: var(--accent); border: 1px solid var(--accent);
+    padding: .25rem .5rem; border-radius: 6px; white-space: nowrap;
+    box-shadow: 0 0 16px var(--glow-color);
+  }
+
+  /* ---------- Pipeline ---------- */
+  .pipeline { display: flex; flex-direction: column; gap: .6rem; }
+  .pstep {
+    display: flex; align-items: center; gap: 1rem;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1rem 1.2rem;
+    transition: border-color .3s, box-shadow .3s, transform .3s;
+  }
+  .pstep:hover { border-color: var(--accent); box-shadow: 0 0 22px var(--glow-color); transform: translateX(4px); }
+  .pstep .n {
+    flex: none; width: 34px; height: 34px; border-radius: 9px;
+    display: grid; place-items: center; font-family: 'JetBrains Mono', monospace;
+    font-weight: 600; color: var(--accent); background: var(--surface-2);
+    border: 1px solid var(--border);
+  }
+  .pstep .t { font-weight: 600; }
+  .pstep .d { font-size: .85rem; color: var(--text-dim); }
+  .parrow { text-align: center; color: var(--border); font-size: 1.1rem; line-height: .5; }
+
+  /* ---------- CTA ---------- */
+  .cta {
+    margin-top: 6rem; text-align: center; padding: 3rem 2rem;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface);
+    transition: box-shadow .4s, border-color .4s, transform .4s;
+  }
+  .cta:hover { box-shadow: 0 0 60px var(--glow-color); border-color: var(--accent); transform: translateY(-3px); }
+  .cta-btn {
+    display: inline-block; margin-top: 1.4rem; padding: .8rem 1.8rem;
+    font-family: 'JetBrains Mono', monospace; font-size: .85rem;
+    border: 1px solid var(--accent); border-radius: 999px; color: var(--accent);
+    text-decoration: none; transition: background .25s, color .25s, box-shadow .25s;
+  }
+  .cta-btn:hover { background: var(--accent); color: var(--bg); box-shadow: 0 0 30px var(--glow-color); }
+
+  footer { text-align: center; margin-top: 4rem; color: var(--text-dim); font-size: .8rem; }
+
+  /* ---------- Scroll reveal ---------- */
+  .anim-fade-up, .anim-scale-in { opacity: 0; transition: opacity .7s ease, transform .7s ease; }
+  .anim-fade-up { transform: translateY(28px); }
+  .anim-scale-in { transform: scale(.96); }
+  .anim-fade-up.in, .anim-scale-in.in { opacity: 1; transform: none; }
+  .delay-1 { transition-delay: .08s; } .delay-2 { transition-delay: .16s; }
+  .delay-3 { transition-delay: .24s; } .delay-4 { transition-delay: .32s; }
+  .delay-5 { transition-delay: .40s; } .delay-6 { transition-delay: .48s; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .anim-fade-up, .anim-scale-in { opacity: 1 !important; transform: none !important; }
+    html { scroll-behavior: auto; }
+  }
+</style>
+</head>
+<body>
+
+<button class="theme-toggle" id="themeToggle" aria-label="Toggle light/dark theme" title="Toggle theme">◐</button>
+
+<main>
+
+  <!-- ============ HERO ============ -->
+  <header>
+    <div class="eyebrow anim-fade-up">Local-first · AI-organized · Yours</div>
+    <h1 class="anim-fade-up delay-1">Second&nbsp;Thought</h1>
+    <p class="lede anim-fade-up delay-2">
+      Leave a document, a thought, an idea — and let it become a literal
+      <em>second thought</em>. Drop it and move on; a local AI files it for you,
+      waiting whenever you come back.
+    </p>
+    <div class="badge-row anim-fade-up delay-3">
+      <span class="badge">100% local</span>
+      <span class="badge">No cloud</span>
+      <span class="badge">No accounts</span>
+      <span class="badge">Obsidian-compatible</span>
+      <span class="badge">Ollama-powered</span>
+    </div>
+  </header>
+
+  <!-- ============ 0. THE NAME ============ -->
+  <section>
+    <div class="section-num anim-fade-up">00 — THE NAME</div>
+    <h2 class="anim-fade-up delay-1">Why "Second Thought"?</h2>
+    <p class="dim anim-fade-up delay-2">
+      Most tools make you stop and decide — <em>where does this go, what do I call it,
+      how do I file it</em> — the moment something arrives. Second Thought removes that.
+      You leave a document, a thought, an idea, and it becomes a literal
+      <strong style="color:var(--text)">second thought</strong>: something you don't have
+      to think about now. The deciding, organizing, and recall happen later, automatically,
+      without your attention. Drop it and move on.
+    </p>
+    <div class="protip anim-fade-up delay-3">
+      <span class="label">The whole idea</span>
+      Your first thought is the idea itself. The <strong>second thought</strong> —
+      where it belongs, what it links to, how you'll find it again — is the one
+      you never have to have.
+    </div>
+  </section>
+
+  <!-- ============ 1. THE PILL ============ -->
+  <section>
+    <div class="section-num anim-fade-up">01 — THE SURFACE</div>
+    <h2 class="anim-fade-up delay-1">One pill. That's the whole interface.</h2>
+    <p class="dim anim-fade-up delay-2">
+      A small, always-on-top window that follows you across apps. Click it to
+      capture from your clipboard. Hold it to fan out the radial menu.
+      It snaps to edges and remembers where you left it.
+    </p>
+
+    <div class="card anim-scale-in delay-3" style="margin-top:1.5rem">
+      <div class="stage" style="display:grid;place-items:center;padding:2.5rem 0;background:var(--surface-2);border-radius:12px;position:relative">
+        <!-- Pill mockup -->
+        <svg width="220" height="64" viewBox="0 0 220 64" role="img" aria-label="The Second Thought pill: a rounded capsule with a glowing capture dot">
+          <defs>
+            <linearGradient id="pillg" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="var(--surface)"/>
+              <stop offset="1" stop-color="var(--surface-2)"/>
+            </linearGradient>
+            <filter id="glow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          </defs>
+          <rect x="2" y="2" width="216" height="60" rx="30" fill="url(#pillg)" stroke="var(--border)"/>
+          <circle cx="38" cy="32" r="11" fill="none" stroke="var(--accent)" stroke-width="2.5" filter="url(#glow)"/>
+          <circle cx="38" cy="32" r="3.5" fill="var(--accent)"/>
+          <rect x="62" y="24" width="120" height="6" rx="3" fill="var(--border)"/>
+          <rect x="62" y="36" width="78" height="6" rx="3" fill="var(--border)" opacity=".6"/>
+        </svg>
+        <div class="annot" style="top:18px;right:8%">always-on-top</div>
+        <div class="annot" style="bottom:20px;left:8%">click = capture</div>
+      </div>
+    </div>
+
+    <div class="protip anim-fade-up delay-4">
+      <span class="label">Pro tip</span>
+      <strong>Drag it anywhere.</strong> The pill clamps to visible bounds — even
+      across monitors with different DPI it can never strand itself off-screen.
+    </div>
+  </section>
+
+  <!-- ============ 2. RADIAL MENU ============ -->
+  <section>
+    <div class="section-num anim-fade-up">02 — WHERE IS EVERYTHING?</div>
+    <h2 class="anim-fade-up delay-1">The radial menu fans inward.</h2>
+    <p class="dim anim-fade-up delay-2">
+      Hold the pill and five actions arc out toward the screen interior. It's a
+      separate overlay window, so opening it never triggers a cross-monitor jump.
+    </p>
+
+    <div class="card anim-scale-in delay-3" style="margin-top:1.5rem">
+      <div class="stage" style="display:grid;place-items:center;padding:1rem 0;background:var(--surface-2);border-radius:12px">
+        <svg width="320" height="280" viewBox="0 0 320 280" role="img" aria-label="Radial menu: a central pill with five labelled actions fanned around it — Search, Inbox, Vault, Stats, Settings">
+          <!-- spokes -->
+          <g stroke="var(--border)" stroke-width="1.5">
+            <line x1="160" y1="140" x2="70"  y2="80"/>
+            <line x1="160" y1="140" x2="250" y2="80"/>
+            <line x1="160" y1="140" x2="50"  y2="170"/>
+            <line x1="160" y1="140" x2="270" y2="170"/>
+            <line x1="160" y1="140" x2="160" y2="240"/>
+          </g>
+          <!-- nodes -->
+          <g font-family="JetBrains Mono, monospace" font-size="11" fill="var(--text-dim)" text-anchor="middle">
+            <g><circle cx="70"  cy="80"  r="26" fill="var(--surface)" stroke="var(--accent)"/><text x="70"  y="84">Search</text></g>
+            <g><circle cx="250" cy="80"  r="26" fill="var(--surface)" stroke="var(--border)"/><text x="250" y="84">Inbox</text></g>
+            <g><circle cx="50"  cy="170" r="26" fill="var(--surface)" stroke="var(--border)"/><text x="50"  y="174">Vault</text></g>
+            <g><circle cx="270" cy="170" r="26" fill="var(--surface)" stroke="var(--border)"/><text x="270" y="174">Stats</text></g>
+            <g><circle cx="160" cy="240" r="26" fill="var(--surface)" stroke="var(--border)"/><text x="160" y="244">Settings</text></g>
+          </g>
+          <!-- center pill -->
+          <circle cx="160" cy="140" r="30" fill="var(--surface)" stroke="var(--accent)" stroke-width="2"/>
+          <circle cx="160" cy="140" r="6" fill="var(--accent)"/>
+        </svg>
+      </div>
+    </div>
+
+    <div class="grid grid-3" style="margin-top:1.5rem">
+      <div class="card anim-fade-up delay-1"><div class="feature-icon">🔍</div><p class="feature-title">Search</p><p class="feature-desc">Keyword + semantic search across your vault.</p></div>
+      <div class="card anim-fade-up delay-2"><div class="feature-icon">📥</div><p class="feature-title">Inbox</p><p class="feature-desc">Review recent captures; triage the scratchpad.</p></div>
+      <div class="card anim-fade-up delay-3"><div class="feature-icon">🗂️</div><p class="feature-title">Vault</p><p class="feature-desc">Browse your folders and notes.</p></div>
+      <div class="card anim-fade-up delay-4"><div class="feature-icon">📊</div><p class="feature-title">Stats</p><p class="feature-desc">Counts, categories, activity over time.</p></div>
+      <div class="card anim-fade-up delay-5"><div class="feature-icon">⚙️</div><p class="feature-title">Settings</p><p class="feature-desc">Vault path, Ollama, capture behavior.</p></div>
+      <div class="card anim-fade-up delay-6"><div class="feature-icon">▣</div><p class="feature-title">Tray</p><p class="feature-desc">Show/hide the pill, or quit.</p></div>
+    </div>
+  </section>
+
+  <!-- ============ 3. PIPELINE ============ -->
+  <section>
+    <div class="section-num anim-fade-up">03 — WHAT HAPPENS ON CAPTURE</div>
+    <h2 class="anim-fade-up delay-1">Four stages, streamed live.</h2>
+    <p class="dim anim-fade-up delay-2">
+      No opaque spinner. The capture overlay shows each stage as it runs —
+      sequence communicates progress, and progress earns trust.
+    </p>
+
+    <div class="pipeline" style="margin-top:1.75rem">
+      <div class="pstep anim-fade-up delay-1"><span class="n">1</span><div><div class="t">Intercept</div><div class="d">Normalize clipboard / CLI input into one payload.</div></div></div>
+      <div class="parrow anim-fade-up delay-1">↓</div>
+      <div class="pstep anim-fade-up delay-2"><span class="n">2</span><div><div class="t">Pre-resolve</div><div class="d">Detect shape — text, URL, GitHub, YouTube, image — and a category hint.</div></div></div>
+      <div class="parrow anim-fade-up delay-2">↓</div>
+      <div class="pstep anim-fade-up delay-3"><span class="n">3</span><div><div class="t">Enrich</div><div class="d">Fetch article text, transcript, Whisper audio, or vision — per content type.</div></div></div>
+      <div class="parrow anim-fade-up delay-3">↓</div>
+      <div class="pstep anim-fade-up delay-4"><span class="n">4</span><div><div class="t">Structure + Store</div><div class="d">AI structures the note (two-pass retry), then dedup → merge or write → index.</div></div></div>
+    </div>
+
+    <div class="protip anim-fade-up delay-5">
+      <span class="label">Why it matters</span>
+      <strong>Categories are never hardcoded.</strong> The list of folders the AI
+      can choose from is rebuilt from your vault on <em>every</em> capture. Add a
+      folder, and the next capture can already use it.
+    </div>
+  </section>
+
+  <!-- ============ 4. CONTENT TYPES ============ -->
+  <section>
+    <div class="section-num anim-fade-up">04 — WHAT YOU CAN CAPTURE</div>
+    <h2 class="anim-fade-up delay-1">Copy it. It figures out the rest.</h2>
+
+    <table class="anim-fade-up delay-2">
+      <thead><tr><th>You capture</th><th>Second Thought does</th></tr></thead>
+      <tbody>
+        <tr><td>Plain text</td><td>Tags it, picks a folder, files a clean note.</td></tr>
+        <tr><td>A web link</td><td>Fetches readable article text, summarizes, files a reference note.</td></tr>
+        <tr><td>A YouTube link</td><td>Saves transcript immediately, summarizes in the background.</td></tr>
+        <tr><td>An image</td><td>Local vision model describes it; optional OCR pulls text.</td></tr>
+        <tr><td>Audio (CLI)</td><td>Whisper transcribes it offline, files the transcript.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="protip anim-fade-up delay-3">
+      <span class="label">Never lost</span>
+      <strong>Write-before-summarize.</strong> A YouTube transcript is saved the
+      moment it's fetched. If summarization later fails, you still keep the transcript.
+    </div>
+  </section>
+
+  <!-- ============ 5. SCRATCHPAD ============ -->
+  <section>
+    <div class="section-num anim-fade-up">05 — WHEN IN DOUBT, RECEDE</div>
+    <h2 class="anim-fade-up delay-1">The scratchpad never guesses wrong.</h2>
+    <div class="grid grid-2" style="margin-top:1.5rem">
+      <div class="card anim-fade-up delay-1">
+        <p class="feature-title">Low confidence → scratchpad</p>
+        <p class="feature-desc">If the AI isn't sure where something belongs, it goes to a catch-all folder instead of being confidently mis-filed. You triage it later from the Inbox.</p>
+      </div>
+      <div class="card anim-fade-up delay-2">
+        <p class="feature-title">Dedup → merge</p>
+        <p class="feature-desc">Capture something you already have, and it merges into the existing note — based on what's actually in your files, never a hidden database.</p>
+      </div>
+    </div>
+    <div class="card anim-fade-up delay-3" style="margin-top:1rem">
+      <p class="feature-title">Vision is fail-fast; everything else is fail-soft</p>
+      <p class="feature-desc">Web / YouTube / audio failures file a placeholder so nothing is lost. But if a required image analysis fails, the capture routes straight to the scratchpad rather than letting the AI reason from nothing.</p>
+    </div>
+  </section>
+
+  <!-- ============ 6. CLI ============ -->
+  <section>
+    <div class="section-num anim-fade-up">06 — FOR THE TERMINAL</div>
+    <h2 class="anim-fade-up delay-1">Everything is scriptable.</h2>
+    <p class="dim anim-fade-up delay-2">The GUI is a convenience over a pipeline that runs just as well from the command line.</p>
+
+    <div class="code-block-wrapper anim-scale-in delay-3">
+      <div class="code-block-head">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="code-block-title">main.py</span>
+      </div>
+<pre><span class="acc">python</span> main.py                       <span class="cmt"># capture from clipboard</span>
+<span class="acc">python</span> main.py --text <span class="acc">"..."</span>          <span class="cmt"># inject text, skip clipboard</span>
+<span class="acc">python</span> main.py --url  <span class="acc">"https://..."</span>  <span class="cmt"># inject a URL directly</span>
+<span class="acc">python</span> main.py --audio path.mp3      <span class="cmt"># transcribe via local Whisper</span>
+<span class="acc">python</span> main.py --dry-run             <span class="cmt"># print LLM output, no vault write</span>
+<span class="acc">python</span> main.py --verbose             <span class="cmt"># print every pipeline stage</span>
+<span class="acc">python</span> main.py --self-check          <span class="cmt"># verify Ollama/vault/whisper/index</span>
+<span class="acc">python</span> main.py --log --stats         <span class="cmt"># summarize the capture audit log</span></pre>
+    </div>
+
+    <div class="protip anim-fade-up delay-4">
+      <span class="label">Gotcha</span>
+      Keep the Ollama URL <strong>bare</strong> — <code>http://localhost:11434</code>,
+      never <code>/v1</code>-suffixed. A <code>/v1</code> in config breaks image captures with 404s.
+    </div>
+  </section>
+
+  <!-- ============ CTA ============ -->
+  <div class="cta anim-scale-in">
+    <h2 style="margin-top:0">Stop deciding where things go.</h2>
+    <p class="dim" style="max-width:480px;margin:.6rem auto 0">
+      Copy something. Click the pill. Let it file itself. Your notes stay plain
+      markdown, portable forever, and never leave your machine.
+    </p>
+    <a class="cta-btn" href="#" onclick="window.scrollTo({top:0,behavior:'smooth'});return false;">↑ Back to top</a>
+  </div>
+
+  <footer>Second Thought — local-first capture pipeline. Files are the source of truth.</footer>
+
+</main>
+
+<script>
+  // Theme toggle (persisted)
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById('themeToggle');
+    var saved = null;
+    try { saved = localStorage.getItem('oc-theme'); } catch (e) {}
+    if (saved) root.setAttribute('data-theme', saved);
+    btn.addEventListener('click', function () {
+      var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem('oc-theme', next); } catch (e) {}
+    });
+  })();
+
+  // Scroll reveals — fire once, then get out of the way
+  (function () {
+    var els = document.querySelectorAll('.anim-fade-up, .anim-scale-in');
+    if (!('IntersectionObserver' in window)) {
+      els.forEach(function (el) { el.classList.add('in'); });
+      return;
+    }
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+      });
+    }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
+    els.forEach(function (el) { io.observe(el); });
+  })();
+</script>
+</body>
+</html>
+</content>
