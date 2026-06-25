@@ -1,6 +1,6 @@
 # Second Thought
 
-*Offloaded to offline, snap-to-store pipeline. So keep thinking, we'll handle the rest.*
+*Snap-to-store pipeline, offloaded to offline. So keep thinking, we'll handle the rest.*
 
 
 ## What is it ?
