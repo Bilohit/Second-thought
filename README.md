@@ -1,41 +1,71 @@
-# Second Thought Browser Extension
+# Omni Capture
 
-A Manifest V3 Chrome extension that sends the current tab's URL and any selected text directly to your local Second Thought `/share` endpoint — no clipboard involved.
+Local-first clipboard/URL/audio capture pipeline that enriches input via Ollama and files it into an Obsidian-style markdown vault. Frontended by a Tauri pill-and-radial-menu GUI.
 
-## Install (developer mode)
+**Architecture:** Python backend (FastAPI + Ollama enrichment) + TypeScript/React frontend (Tauri window + TailwindCSS) + Manifest V3 browser extension.
 
-1. Open `chrome://extensions`
-2. Enable **Developer mode** (top-right toggle)
-3. Click **Load unpacked** → select the `browser_extension/` folder
-4. The Second Thought icon appears in the toolbar
+## Quick start
 
-## First-time setup
+**Requirements:** Python 3.10+, Node 18+, Rust (for GUI build), Ollama running locally.
 
-1. Click the extension icon → **Settings**
-2. Set **Server URL** to `http://localhost:7070` (or your custom port)
-3. Set **X-Omni-Secret** if you configured `OMNI_GUI_SECRET` on the server
-4. Click **Save** — the dot turns green when the server is reachable
+```bash
+# Backend
+cd omni_capture
+pip install -r requirements.txt
+python main.py --self-check                    # verify Ollama/vault/whisper/index
 
-## Usage
+# GUI (Tauri + Vite)
+cd gui
+npm install
+npm run dev                                    # Tauri dev: Vite + Rust + Python together
 
-### Popup
-- Click the toolbar icon to open the popup
-- The current page URL is pre-filled; any highlighted text is pre-loaded into the selection box
-- Click **Capture** — pipeline steps animate as the note is written
-
-### Right-click menu
-- Select text on any page → right-click → **Send selection to Second Thought**
-- On any page or link → right-click → **Send page to Second Thought**
-- A ✓ or ✗ badge briefly appears on the extension icon
-
-## How it works
-
-```
-Browser Extension
-  → POST /share  {url, title, selection}
-      → server.py
-          → Enrichment Router (URL path if no selection, text path if selection present)
-              → LLM Engine → Storage Engine → vault write
+# Or via whole-app launcher (Windows)
+.\launch.ps1                                   # builds if stale, runs release binary
 ```
 
-No clipboard is read or written at any point.
+## Commands
+
+From `omni_capture/`:
+```bash
+python main.py                                 # capture from clipboard
+python main.py --text "..."                    # inject text, skip clipboard
+python main.py --url "https://..."             # inject a URL directly
+python main.py --audio path.mp3                # transcribe via Whisper
+python main.py --dry-run                       # print LLM output, no vault write
+python main.py --verbose                       # print every pipeline stage
+python main.py --log [--stats]                 # tail/summarize capture audit log
+pytest                                         # run test suite
+```
+
+GUI dev (`gui/`):
+```bash
+npm run dev                                    # Tauri dev
+npm run dev:vite                               # Vite only (no shell)
+npm run build                                  # typecheck + build
+npm test                                       # vitest
+```
+
+## Browser extension
+
+Manifest V3 Chrome extension that sends tab URL + selection directly to `/share` endpoint (no clipboard).
+
+**Install:** Open `chrome://extensions` → **Developer mode** → **Load unpacked** → `browser_extension/` folder
+
+**Setup:** Extension icon → **Settings** → Set **Server URL** to `http://localhost:7070`
+
+## Architecture
+
+- **`omni_capture/`** — Python pipeline: clipboard/URL/audio input → enrichment router → LLM (Ollama) → vault storage
+- **`gui/`** — React/Tauri: pill window (always-on-top trigger) + radial/capsule menu overlay
+- **`browser_extension/`** — Manifest V3 vanilla JS, mirrors GUI API protocol via SSE
+- **Vault** — Obsidian-style markdown files (source of truth, not a database)
+
+## Key constraints
+
+- `ollama.base_url` must be bare (`http://localhost:11434`), never `/v1`-suffixed
+- Vault categories derive live from folder names, never hardcoded
+- Vision failure is fail-fast; other enrichment paths fail gracefully
+- Files are source of truth, DBs are derived indexes only
+- Tauri geometry uses only `LogicalPosition`/`LogicalSize` (DPI-safe)
+
+See `CLAUDE.md` for full developer guidance.
