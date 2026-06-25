@@ -1,8 +1,15 @@
 # Second Thought
 
-Local-first AI capture for text, URLs, audio, images, and technical notes. Second Thought, powered by the Omni Capture pipeline, turns fleeting inputs into structured Markdown files inside an Obsidian-compatible vault.
+*Offloaded to offline, snap-to-store pipeline. So keep thinking, we'll handle the rest.*
 
-The app is built around a simple idea: capture first, organize later. Copy text, save a URL, record a voice memo, or send the current browser selection. The local pipeline enriches it with Ollama, routes it into the right vault folder, links it to existing notes, and keeps every durable artifact as plain Markdown.
+
+## What is it ?
+
+Most tools force you to categorize the moment inspiration strikes. Second Thought removes the cognitive load of filing by automating the decision, organizing, and linking processes via a local reasoning pipeline. Instead of breaking your flow with folder navigation, tags, or naming conventions, it lets you capture raw input — text, voice, or images — and intelligently files it into your knowledge base. Think of it as a personal librarian that never interrupts you.
+
+The system runs entirely on your machine. The only network calls are to your local Ollama instance and optional outbound fetches for URLs you explicitly capture. There is no cloud, no account, no telemetry, and no lock-in. Your vault is a portable folder of plain `.md` files — fully compatible with Obsidian, Logseq, or any text editor.
+
+TL;DR -  Capture anything, instantly. A local LLM structures, tags, and routes it directly to your Markdown vault. No cloud, no context switching, zero friction. Local-first · AI-organized · Yours
 
 ## Highlights
 
@@ -334,4 +341,9 @@ Use Second Thought for:
 - Searchable technical notes.
 
 The result is a growing Markdown knowledge base that can be browsed, searched, linked, synced, backed up, or edited with normal tools.
+
+
+**Stop deciding where things go.**
+
+Copy data. Click capture. Let the pipeline file it. 
 
