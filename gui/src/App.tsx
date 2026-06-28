@@ -37,7 +37,7 @@ import SettingsPanel from "./components/SettingsPanel";
 import VaultManager from "./components/VaultManager";
 import InboxPanel from "./components/InboxPanel";
 import StatsPanel from "./components/StatsPanel";
-import SearchModal, { type SearchAction } from "./components/SearchModal";
+import LookPanel from "./components/LookPanel";
 import { useCapture } from "./hooks/useCapture";
 import { logger } from "./lib/logger";
 import { getInbox } from "./lib/api";
@@ -72,6 +72,12 @@ export const THEME_LABELS: Record<Theme, string> = {
   "wine":       "Wine",
 };
 const STORAGE_KEY = "omni-theme";
+
+const LOOK_MODE_KEY = "omni-look-mode";
+export function getInitialLookMode(): "search" | "chat" {
+  try { const s = localStorage.getItem(LOOK_MODE_KEY); if (s === "search" || s === "chat") return s; } catch { /* ignore */ }
+  return "search";
+}
 
 export function getInitialTheme(): Theme {
   try {
@@ -143,7 +149,7 @@ function getInitialSelectedMonitorId(): string | null {
 
 // ── View ───────────────────────────────────────────────────────────────────
 
-type View = "capture" | "settings" | "vault" | "inbox" | "stats";
+type View = "capture" | "settings" | "vault" | "inbox" | "stats" | "look";
 
 // ── Animated window movement ────────────────────────────────────────────────
 // Tauri's setPosition is an instant OS-level jump; everything else in this app
@@ -253,9 +259,8 @@ async function animateWindowAndSizeTo(
 
 export default function App() {
   const [view, setView]             = useState<View>("capture");
-  const [search, setSearch]         = useState(false);
+  const [lookMode, setLookMode]     = useState<"search" | "chat">(getInitialLookMode);
   const [theme, setTheme]           = useState<Theme>(getInitialTheme);
-  const [openResult, setOpenResult] = useState<{ category: string; path: string } | null>(null);
   const [inboxCount, setInboxCount] = useState(0);
 
   // Display Mode (Item 2) state — persisted like theme, applied immediately.
@@ -345,6 +350,7 @@ export default function App() {
 
   // Apply theme on mount and whenever it changes
   useEffect(() => { applyTheme(theme); }, [theme]);
+  useEffect(() => { try { localStorage.setItem(LOOK_MODE_KEY, lookMode); } catch { /* ignore */ } }, [lookMode]);
 
   const selectTheme = useCallback((t: Theme) => setTheme(t), []);
 
@@ -415,24 +421,21 @@ export default function App() {
 
       if (mod && e.key === "k") {
         e.preventDefault();
-        setSearch((o) => !o);
+        setView((v) => (v === "look" ? "capture" : "look"));
         return;
       }
       if (mod && e.key === ",") {
         e.preventDefault();
-        setSearch(false);
         setView((v) => (v === "settings" ? "capture" : "settings"));
         return;
       }
       if (mod && e.key === "\\") {
         e.preventDefault();
-        setSearch(false);
         setView((v) => (v === "vault" ? "capture" : "vault"));
         return;
       }
       if (mod && e.key === "i") {
         e.preventDefault();
-        setSearch(false);
         setView((v) => (v === "inbox" ? "capture" : "inbox"));
         return;
       }
@@ -441,13 +444,13 @@ export default function App() {
           setMenuOpen(false);
           return;
         }
-        if (search)             { setSearch(false); return; }
+        if (view === "look")    { setView("capture"); return; }
         if (view !== "capture"){ setView("capture"); return; }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [view, search, menuOpen, displayMode]);
+  }, [view, menuOpen, displayMode]);
 
   // ── Tauri events ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1367,22 +1370,13 @@ export default function App() {
     setSelectedMonitorId(id);
   }, []);
 
-  // ── Search action handler ────────────────────────────────────────────────
-  const handleSearchAction = useCallback((action: SearchAction) => {
-    if (action.kind === "openResult") {
-      setOpenResult({ category: action.category, path: action.path });
-      setView("vault");
-    }
-  }, []);
-
   // ── Pill menu routing (for_sonnet.md §5.1/§8.5) ─────────────────────────
   // Selecting a nav item closes the menu and expands to the full window on
-  // that view; "search" opens the search modal instead of switching views.
+  // that view; "search" routes to the look view instead of a modal.
   const handleMenuSelect = useCallback((target: Exclude<MenuTarget, "hide">) => {
     setMenuOpen(false);
     setExpanded(true);
-    if (target === "search") { setSearch(true); return; }
-    setView(target);
+    setView(target === "search" ? "look" : target);
   }, []);
 
   // D1: a dedicated Hide item sends the app to the tray even when pinned,
@@ -1491,7 +1485,7 @@ export default function App() {
           onOpenSettings={() => setView("settings")}
           onOpenVault={() => setView("vault")}
           onOpenInbox={() => setView("inbox")}
-          onOpenSearch={() => setSearch(true)}
+          onOpenSearch={() => setView("look")}
           onOpenStats={() => setView("stats")}
           visible={view === "capture"}
           inboxCount={inboxCount}
@@ -1524,8 +1518,6 @@ export default function App() {
           measureRef={setMeasureEl("vault")}
           visible={view === "vault"}
           onClose={() => setView("capture")}
-          openResult={openResult}
-          onConsumeOpenResult={() => setOpenResult(null)}
         />
         <InboxPanel
           measureRef={setMeasureEl("inbox")}
@@ -1538,14 +1530,14 @@ export default function App() {
           visible={view === "stats"}
           onClose={() => setView("capture")}
         />
+        <LookPanel
+          measureRef={setMeasureEl("look")}
+          visible={view === "look"}
+          mode={lookMode}
+          onSelectMode={setLookMode}
+          onClose={() => setView("capture")}
+        />
       </div>
-
-      {/* Search modal — sits above everything */}
-      <SearchModal
-        open={search}
-        onClose={() => setSearch(false)}
-        onAction={handleSearchAction}
-      />
 
       {/* Hidden dev-only troubleshooting tuner (Ctrl+Shift+Alt+G) */}
       <DevTuner />
