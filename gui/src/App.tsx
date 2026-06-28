@@ -37,11 +37,11 @@ import SettingsPanel from "./components/SettingsPanel";
 import VaultManager from "./components/VaultManager";
 import InboxPanel from "./components/InboxPanel";
 import StatsPanel from "./components/StatsPanel";
-import SearchModal, { type SearchAction } from "./components/SearchModal";
+import LookPanel from "./components/LookPanel";
 import { useCapture } from "./hooks/useCapture";
 import { logger } from "./lib/logger";
 import { getInbox } from "./lib/api";
-import { type PillAnchor, anchorPosition, isPillDraggable } from "./lib/pillAnchor";
+import { type PillAnchor, anchorPosition, anchoredMenuPosition, isPillDraggable } from "./lib/pillAnchor";
 import { getActiveWorkArea, getActiveMonitorBounds, listMonitors, resolveTargetMonitor, type MonitorInfo } from "./lib/monitor";
 import { computeMenuGeometry, clampPillWindowToMonitor, computeCapsuleMenuGeometry, computeProportionalMonitorMove, computeMinimalMenuWindow } from "./lib/menuGeometry";
 import { nextWindowTopLeft, emaVelocity, zeroVelocityAtClamp, dragStartBaseline, type Point } from "./lib/dragMath";
@@ -72,6 +72,12 @@ export const THEME_LABELS: Record<Theme, string> = {
   "wine":       "Wine",
 };
 const STORAGE_KEY = "omni-theme";
+
+const LOOK_MODE_KEY = "omni-look-mode";
+export function getInitialLookMode(): "search" | "chat" {
+  try { const s = localStorage.getItem(LOOK_MODE_KEY); if (s === "search" || s === "chat") return s; } catch { /* ignore */ }
+  return "search";
+}
 
 export function getInitialTheme(): Theme {
   try {
@@ -143,7 +149,7 @@ function getInitialSelectedMonitorId(): string | null {
 
 // ── View ───────────────────────────────────────────────────────────────────
 
-type View = "capture" | "settings" | "vault" | "inbox" | "stats";
+type View = "capture" | "settings" | "vault" | "inbox" | "stats" | "look";
 
 // ── Animated window movement ────────────────────────────────────────────────
 // Tauri's setPosition is an instant OS-level jump; everything else in this app
@@ -253,9 +259,8 @@ async function animateWindowAndSizeTo(
 
 export default function App() {
   const [view, setView]             = useState<View>("capture");
-  const [search, setSearch]         = useState(false);
+  const [lookMode, setLookMode]     = useState<"search" | "chat">(getInitialLookMode);
   const [theme, setTheme]           = useState<Theme>(getInitialTheme);
-  const [openResult, setOpenResult] = useState<{ category: string; path: string } | null>(null);
   const [inboxCount, setInboxCount] = useState(0);
 
   // Display Mode (Item 2) state — persisted like theme, applied immediately.
@@ -345,6 +350,7 @@ export default function App() {
 
   // Apply theme on mount and whenever it changes
   useEffect(() => { applyTheme(theme); }, [theme]);
+  useEffect(() => { try { localStorage.setItem(LOOK_MODE_KEY, lookMode); } catch { /* ignore */ } }, [lookMode]);
 
   const selectTheme = useCallback((t: Theme) => setTheme(t), []);
 
@@ -415,24 +421,21 @@ export default function App() {
 
       if (mod && e.key === "k") {
         e.preventDefault();
-        setSearch((o) => !o);
+        setView((v) => (v === "look" ? "capture" : "look"));
         return;
       }
       if (mod && e.key === ",") {
         e.preventDefault();
-        setSearch(false);
         setView((v) => (v === "settings" ? "capture" : "settings"));
         return;
       }
       if (mod && e.key === "\\") {
         e.preventDefault();
-        setSearch(false);
         setView((v) => (v === "vault" ? "capture" : "vault"));
         return;
       }
       if (mod && e.key === "i") {
         e.preventDefault();
-        setSearch(false);
         setView((v) => (v === "inbox" ? "capture" : "inbox"));
         return;
       }
@@ -441,13 +444,13 @@ export default function App() {
           setMenuOpen(false);
           return;
         }
-        if (search)             { setSearch(false); return; }
+        if (view === "look")    { setView("capture"); return; }
         if (view !== "capture"){ setView("capture"); return; }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [view, search, menuOpen, displayMode]);
+  }, [view, menuOpen, displayMode]);
 
   // ── Tauri events ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1088,74 +1091,93 @@ export default function App() {
         // in-process (PillOverlay), so there is no overlay window to
         // position/emit to anymore. Keep the pill's visual center fixed
         // while the window grows around it, same discipline as capsule.
-        try {
-          // Reuse the stored idle top-left if a prior close was interrupted
-          // before it cleared it (fast re-open) — that ref is the pill's
-          // true idle position, a fresh live read mid-resize would not be.
-          let idleTopLeftLogical = pillBoxBeforeMenuRef.current;
-          const scale = await getCurrentWindow().scaleFactor();
-          if (!idleTopLeftLogical) {
-            const pos = await getCurrentWindow().outerPosition();
-            idleTopLeftLogical = { x: pos.x / scale, y: pos.y / scale };
-          }
-          pillBoxBeforeMenuRef.current = idleTopLeftLogical;
-          logger.info("menu", "menu opened", { displayMode, pos: idleTopLeftLogical });
+        if (pillAnchor !== "custom") {
+          // Fixed anchor: derive position deterministically — no live read,
+          // no drift. The grown window is anchored to the same corner as the
+          // idle pill; fan geometry uses the window center as pill center
+          // (wrapper offset stays at PILL_MARGIN, i.e. the pill sits inside
+          // the top-left of the grown window at its own corner).
+          try {
+            const area = pickedMonitor?.workArea ?? await getActiveWorkArea();
+            targetPos = anchoredMenuPosition(pillAnchor, targetWinW, targetWinH, area);
+            if (token !== reconcileToken.current) return;
+            if (targetPos) {
+              setMinimalWrapperOffset({ x: PILL_MARGIN, y: PILL_MARGIN });
+              const cx = targetPos.x + targetWinW / 2, cy = targetPos.y + targetWinH / 2;
+              if (token !== reconcileToken.current) return;
+              setRadialPillGeometry({ cx, cy, sw: area.w, sh: area.h, originX: area.x, originY: area.y });
+            }
+          } catch { /* ignore */ }
+        } else {
+          try {
+            // Reuse the stored idle top-left if a prior close was interrupted
+            // before it cleared it (fast re-open) — that ref is the pill's
+            // true idle position, a fresh live read mid-resize would not be.
+            let idleTopLeftLogical = pillBoxBeforeMenuRef.current;
+            const scale = await getCurrentWindow().scaleFactor();
+            if (!idleTopLeftLogical) {
+              const pos = await getCurrentWindow().outerPosition();
+              idleTopLeftLogical = { x: pos.x / scale, y: pos.y / scale };
+            }
+            pillBoxBeforeMenuRef.current = idleTopLeftLogical;
+            logger.info("menu", "menu opened", { displayMode, pos: idleTopLeftLogical });
 
-          const pillCenterLogical = {
-            x: idleTopLeftLogical.x + pillBoxW / 2,
-            y: idleTopLeftLogical.y + pillBoxH / 2,
-          };
+            const pillCenterLogical = {
+              x: idleTopLeftLogical.x + pillBoxW / 2,
+              y: idleTopLeftLogical.y + pillBoxH / 2,
+            };
 
-          // Resolve the monitor from the pill's own (stable) center, not the
-          // grown window's center — same convention as capsule below.
-          const pillCenterPhysical = { x: pillCenterLogical.x * scale, y: pillCenterLogical.y * scale };
-          const monitorBounds = await getActiveMonitorBounds(pillCenterPhysical);
+            // Resolve the monitor from the pill's own (stable) center, not the
+            // grown window's center — same convention as capsule below.
+            const pillCenterPhysical = { x: pillCenterLogical.x * scale, y: pillCenterLogical.y * scale };
+            const monitorBounds = await getActiveMonitorBounds(pillCenterPhysical);
 
-          // §3.3 user decision: the monitor the pill is assigned to is a
-          // hard boundary — the grown window must never overhang onto a
-          // neighbor monitor; that edge behaves exactly like any other
-          // screen edge. computeMinimalMenuWindow reuses the same clamp the
-          // live-drag gesture already applies to the idle pill, sized to
-          // the full grown window instead of the bare pill, and is the same
-          // pure function the close path below calls — open and close can
-          // no longer drift apart (Phase 2).
-          const { windowTopLeftLogical, wrapperOffset } = computeMinimalMenuWindow({
-            open: true,
-            idleTopLeftLogical,
-            idlePillBoxW: pillBoxW,
-            idlePillBoxH: pillBoxH,
-            pillW: PILL_DIMS.minimal.w,
-            pillH: PILL_DIMS.minimal.h,
-            menuBoxW: targetWinW,
-            menuBoxH: targetWinH,
-            margin: PILL_MARGIN,
-            monitorBounds,
-          });
-          targetPos = windowTopLeftLogical;
+            // §3.3 user decision: the monitor the pill is assigned to is a
+            // hard boundary — the grown window must never overhang onto a
+            // neighbor monitor; that edge behaves exactly like any other
+            // screen edge. computeMinimalMenuWindow reuses the same clamp the
+            // live-drag gesture already applies to the idle pill, sized to
+            // the full grown window instead of the bare pill, and is the same
+            // pure function the close path below calls — open and close can
+            // no longer drift apart (Phase 2).
+            const { windowTopLeftLogical, wrapperOffset } = computeMinimalMenuWindow({
+              open: true,
+              idleTopLeftLogical,
+              idlePillBoxW: pillBoxW,
+              idlePillBoxH: pillBoxH,
+              pillW: PILL_DIMS.minimal.w,
+              pillH: PILL_DIMS.minimal.h,
+              menuBoxW: targetWinW,
+              menuBoxH: targetWinH,
+              margin: PILL_MARGIN,
+              monitorBounds,
+            });
+            targetPos = windowTopLeftLogical;
 
-          // for_sonnet.md (pill-fan-clip): a superseded reconcile must not
-          // write stale offset/geometry into state — the only check below
-          // (after preMoveDelayMs) runs too late to stop *this* write, since
-          // it already happened. Bail here, before either setState, the
-          // instant a newer reconcile has taken over.
-          if (token !== reconcileToken.current) return;
+            // for_sonnet.md (pill-fan-clip): a superseded reconcile must not
+            // write stale offset/geometry into state — the only check below
+            // (after preMoveDelayMs) runs too late to stop *this* write, since
+            // it already happened. Bail here, before either setState, the
+            // instant a newer reconcile has taken over.
+            if (token !== reconcileToken.current) return;
 
-          // The pill+fan wrapper's position *within* the window: normally
-          // dead-center (matches the idle margin), but shifted off-center
-          // exactly when the clamp above moved the window without moving
-          // the pill's own on-screen position.
-          setMinimalWrapperOffset(wrapperOffset);
+            // The pill+fan wrapper's position *within* the window: normally
+            // dead-center (matches the idle margin), but shifted off-center
+            // exactly when the clamp above moved the window without moving
+            // the pill's own on-screen position.
+            setMinimalWrapperOffset(wrapperOffset);
 
-          // unifiedFan's screen-edge containment math needs the pill's
-          // absolute center plus the monitor work area it's on — independent
-          // of the window's own (possibly clamped) position.
-          const area = await getActiveWorkArea(pillCenterPhysical);
-          if (token !== reconcileToken.current) return;
-          setRadialPillGeometry({
-            cx: pillCenterLogical.x, cy: pillCenterLogical.y,
-            sw: area.w, sh: area.h, originX: area.x, originY: area.y,
-          });
-        } catch { /* ignore */ }
+            // unifiedFan's screen-edge containment math needs the pill's
+            // absolute center plus the monitor work area it's on — independent
+            // of the window's own (possibly clamped) position.
+            const area = await getActiveWorkArea(pillCenterPhysical);
+            if (token !== reconcileToken.current) return;
+            setRadialPillGeometry({
+              cx: pillCenterLogical.x, cy: pillCenterLogical.y,
+              sw: area.w, sh: area.h, originX: area.x, originY: area.y,
+            });
+          } catch { /* ignore */ }
+        }
       } else if (openingMenu) {
         // Capsule (single-window edge-aware grow). Keep the pill's
         // visual center fixed while the window grows around it (for_sonnet.md
@@ -1165,64 +1187,85 @@ export default function App() {
         // (pillBoxW/H) instead of a live outerSize() re-read, and that same
         // scale factor is never re-read after the window grows, so the math
         // can't get corrupted mid-grow.
-        try {
-          const scale = await getCurrentWindow().scaleFactor();
-          const pos = await getCurrentWindow().outerPosition();
-          const idleTopLeftLogical = { x: pos.x / scale, y: pos.y / scale };
-          pillBoxBeforeMenuRef.current = idleTopLeftLogical;
-          logger.info("menu", "menu opened", { displayMode, pos: idleTopLeftLogical });
+        if (pillAnchor !== "custom") {
+          // Fixed anchor: anchor the grown capsule window deterministically,
+          // derive nearEdge from the anchor itself (no live read needed).
+          try {
+            const area = pickedMonitor?.workArea ?? await getActiveWorkArea();
+            targetPos = anchoredMenuPosition(pillAnchor, targetWinW, targetWinH, area);
+            const nearEdge: "left" | "right" =
+              (pillAnchor === "tr" || pillAnchor === "rc" || pillAnchor === "br") ? "right" : "left";
+            setCapsuleNearEdge(nearEdge);
+          } catch { /* ignore */ }
+        } else {
+          try {
+            const scale = await getCurrentWindow().scaleFactor();
+            const pos = await getCurrentWindow().outerPosition();
+            const idleTopLeftLogical = { x: pos.x / scale, y: pos.y / scale };
+            pillBoxBeforeMenuRef.current = idleTopLeftLogical;
+            logger.info("menu", "menu opened", { displayMode, pos: idleTopLeftLogical });
 
-          const { pillCenterLogical } = computeMenuGeometry({
-            idleTopLeftLogical,
-            idlePillBoxW: pillBoxW,
-            idlePillBoxH: pillBoxH,
-            targetWinW,
-            targetWinH,
-          });
+            const { pillCenterLogical } = computeMenuGeometry({
+              idleTopLeftLogical,
+              idlePillBoxW: pillBoxW,
+              idlePillBoxH: pillBoxH,
+              targetWinW,
+              targetWinH,
+            });
 
-          // Resolve the monitor from the pill's own (stable) center, not the
-          // grown window's center — otherwise a pill near a shared edge can
-          // have its geometry flip to the neighbor monitor as the window
-          // grows past the boundary.
-          const pillCenterPhysical = { x: pillCenterLogical.x * scale, y: pillCenterLogical.y * scale };
+            // Resolve the monitor from the pill's own (stable) center, not the
+            // grown window's center — otherwise a pill near a shared edge can
+            // have its geometry flip to the neighbor monitor as the window
+            // grows past the boundary.
+            const pillCenterPhysical = { x: pillCenterLogical.x * scale, y: pillCenterLogical.y * scale };
 
-          // Capsule edge-aware open (for_sonnet.md Problem 3): the bar
-          // hugs whichever screen edge the pill is nearer to, and the
-          // close-padding grows toward the screen center.
-          const monitorBounds = await getActiveMonitorBounds(pillCenterPhysical);
-          const monitorMidX = monitorBounds.x + monitorBounds.w / 2;
-          const nearEdge: "left" | "right" = pillCenterLogical.x > monitorMidX ? "right" : "left";
-          setCapsuleNearEdge(nearEdge);
+            // Capsule edge-aware open (for_sonnet.md Problem 3): the bar
+            // hugs whichever screen edge the pill is nearer to, and the
+            // close-padding grows toward the screen center.
+            const monitorBounds = await getActiveMonitorBounds(pillCenterPhysical);
+            const monitorMidX = monitorBounds.x + monitorBounds.w / 2;
+            const nearEdge: "left" | "right" = pillCenterLogical.x > monitorMidX ? "right" : "left";
+            setCapsuleNearEdge(nearEdge);
 
-          const capsuleGeom = computeCapsuleMenuGeometry({
-            idleTopLeftLogical,
-            idlePillBoxW: pillBoxW,
-            idlePillBoxH: pillBoxH,
-            margin: PILL_MARGIN,
-            capsuleOpenW: CAPSULE_OPEN_W,
-            closePadW: CLOSE_PAD_W,
-            nearEdge,
-          });
-          targetPos = capsuleGeom.windowTopLeftLogical;
-        } catch { /* ignore */ }
-      } else if (closingMenu && pillBoxBeforeMenuRef.current) {
-        // for_sonnet_pill_fix.md §3: close must mirror open exactly, not
-        // re-center. For capsule, computeCapsuleMenuGeometry's pinned-edge
-        // formula evaluated at the closed (idle) width collapses to the
-        // literal idle top-left for either edge (see menuGeometry.test.ts).
-        // For minimal, computeMinimalMenuWindow's `open: false` case is
-        // exactly the idle top-left by construction (Phase 2) — close can
-        // no longer drift from open because it's the same pure function.
-        targetPos = pillBoxBeforeMenuRef.current;
-        logger.info("menu", "menu closed", { displayMode, pos: targetPos });
-        // NOTE: pillBoxBeforeMenuRef is deliberately NOT cleared here — it's
-        // cleared as a post-move side effect below, only once the close has
-        // actually completed and wasn't superseded by a fast re-open. The
-        // minimal wrapper offset is likewise NOT reset here: the pill must
-        // stay visually fixed for the whole close, and resetting it to the
-        // idle margin now (while the window is still full-size for the exit
-        // animation) would throw the pill to the window's corner until the
-        // shrink lands. Both resets happen with the shrink instead.
+            const capsuleGeom = computeCapsuleMenuGeometry({
+              idleTopLeftLogical,
+              idlePillBoxW: pillBoxW,
+              idlePillBoxH: pillBoxH,
+              margin: PILL_MARGIN,
+              capsuleOpenW: CAPSULE_OPEN_W,
+              closePadW: CLOSE_PAD_W,
+              nearEdge,
+            });
+            targetPos = capsuleGeom.windowTopLeftLogical;
+          } catch { /* ignore */ }
+        }
+      } else if (closingMenu) {
+        if (pillAnchor !== "custom") {
+          // Fixed anchor: restore to the anchored idle position deterministically
+          // — same pure math as open, no stale live-read ref needed.
+          try {
+            const area = pickedMonitor?.workArea ?? await getActiveWorkArea();
+            targetPos = anchoredMenuPosition(pillAnchor, pillBoxW, pillBoxH, area);
+          } catch { /* ignore */ }
+        } else if (pillBoxBeforeMenuRef.current) {
+          // for_sonnet_pill_fix.md §3: close must mirror open exactly, not
+          // re-center. For capsule, computeCapsuleMenuGeometry's pinned-edge
+          // formula evaluated at the closed (idle) width collapses to the
+          // literal idle top-left for either edge (see menuGeometry.test.ts).
+          // For minimal, computeMinimalMenuWindow's `open: false` case is
+          // exactly the idle top-left by construction (Phase 2) — close can
+          // no longer drift from open because it's the same pure function.
+          targetPos = pillBoxBeforeMenuRef.current;
+          logger.info("menu", "menu closed", { displayMode, pos: targetPos });
+          // NOTE: pillBoxBeforeMenuRef is deliberately NOT cleared here — it's
+          // cleared as a post-move side effect below, only once the close has
+          // actually completed and wasn't superseded by a fast re-open. The
+          // minimal wrapper offset is likewise NOT reset here: the pill must
+          // stay visually fixed for the whole close, and resetting it to the
+          // idle margin now (while the window is still full-size for the exit
+          // animation) would throw the pill to the window's corner until the
+          // shrink lands. Both resets happen with the shrink instead.
+        }
       } else if (
         pillAnchor === "custom" && showPill && prevShowPill &&
         !openingMenu && !closingMenu && !enteringPill && !leavingPill &&
@@ -1327,22 +1370,13 @@ export default function App() {
     setSelectedMonitorId(id);
   }, []);
 
-  // ── Search action handler ────────────────────────────────────────────────
-  const handleSearchAction = useCallback((action: SearchAction) => {
-    if (action.kind === "openResult") {
-      setOpenResult({ category: action.category, path: action.path });
-      setView("vault");
-    }
-  }, []);
-
   // ── Pill menu routing (for_sonnet.md §5.1/§8.5) ─────────────────────────
   // Selecting a nav item closes the menu and expands to the full window on
-  // that view; "search" opens the search modal instead of switching views.
+  // that view; "search" routes to the look view instead of a modal.
   const handleMenuSelect = useCallback((target: Exclude<MenuTarget, "hide">) => {
     setMenuOpen(false);
     setExpanded(true);
-    if (target === "search") { setSearch(true); return; }
-    setView(target);
+    setView(target === "search" ? "look" : target);
   }, []);
 
   // D1: a dedicated Hide item sends the app to the tray even when pinned,
@@ -1451,7 +1485,7 @@ export default function App() {
           onOpenSettings={() => setView("settings")}
           onOpenVault={() => setView("vault")}
           onOpenInbox={() => setView("inbox")}
-          onOpenSearch={() => setSearch(true)}
+          onOpenSearch={() => setView("look")}
           onOpenStats={() => setView("stats")}
           visible={view === "capture"}
           inboxCount={inboxCount}
@@ -1484,8 +1518,6 @@ export default function App() {
           measureRef={setMeasureEl("vault")}
           visible={view === "vault"}
           onClose={() => setView("capture")}
-          openResult={openResult}
-          onConsumeOpenResult={() => setOpenResult(null)}
         />
         <InboxPanel
           measureRef={setMeasureEl("inbox")}
@@ -1498,14 +1530,14 @@ export default function App() {
           visible={view === "stats"}
           onClose={() => setView("capture")}
         />
+        <LookPanel
+          measureRef={setMeasureEl("look")}
+          visible={view === "look"}
+          mode={lookMode}
+          onSelectMode={setLookMode}
+          onClose={() => setView("capture")}
+        />
       </div>
-
-      {/* Search modal — sits above everything */}
-      <SearchModal
-        open={search}
-        onClose={() => setSearch(false)}
-        onAction={handleSearchAction}
-      />
 
       {/* Hidden dev-only troubleshooting tuner (Ctrl+Shift+Alt+G) */}
       <DevTuner />
