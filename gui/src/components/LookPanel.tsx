@@ -2,26 +2,29 @@
  * LookPanel.tsx
  * -------------
  * Dual-mode panel: "Search" (FTS keyword) and "Chat" (local RAG).
- * Mode is persisted in localStorage by App; the panel receives it as a prop
- * and calls onSelectMode — same pattern as displayMode in SettingsPanel.
- *
- * Search mode: lifts the FTS input + result list from SearchModal verbatim,
- *   but rendered inline (no modal backdrop). Result click → openFilePath + onClose.
- * Chat mode: scrollable transcript with citation chips via parseCitations,
- *   fixed-bottom composer.
- *
- * Frame is fixed-height (PANEL_FRAME fills height:100% from App). Both modes
- * share the same outer frame — toggling never resizes the window.
+ * useLookChat is lifted to App.tsx and passed as `lookChat` prop so messages
+ * survive panel close/reopen within the same session.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { searchCaptures, openFilePath, type SearchResult } from "../lib/api";
+import { searchCaptures, openFilePath, syncVaultIndex, type SearchResult } from "../lib/api";
 import { parseCitations } from "../lib/citations";
-import { useLookChat } from "../hooks/useLookChat";
+import type { ChatMessage } from "../hooks/useLookChat";
+import type { LookChatPersist } from "../App";
+import { logger } from "../lib/logger";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
-  BTN_GHOST,
+  BTN_GHOST, BTN_SECONDARY,
 } from "./ui/styles";
+
+interface LookChatHook {
+  messages: ChatMessage[];
+  streaming: boolean;
+  ask: (q: string) => void;
+  reset: () => void;
+  ignoreHistory: boolean;
+  setIgnoreHistory: (enabled: boolean) => void;
+}
 
 interface Props {
   mode: "search" | "chat";
@@ -29,13 +32,29 @@ interface Props {
   visible: boolean;
   onClose: () => void;
   measureRef?: (el: HTMLDivElement | null) => void;
+  lookChat: LookChatHook;
+  lookChatPersist: LookChatPersist;
 }
 
 function resultSnippet(r: SearchResult): string {
   return r.filename || r.source_url || r.path.split(/[\\/]/).pop() || r.path;
 }
 
-export default function LookPanel({ mode, onSelectMode, visible, onClose, measureRef }: Props) {
+function tierColor(tier: string | undefined): string {
+  if (tier === "high")   return "var(--green, #4ade80)";
+  if (tier === "medium") return "var(--yellow, #facc15)";
+  if (tier === "general") return "var(--text-3)";
+  return "var(--red, #f87171)";
+}
+
+function tierLabel(tier: string | undefined): string {
+  if (tier === "high")   return "Grounded";
+  if (tier === "medium") return "Partial match";
+  if (tier === "general") return "General knowledge";
+  return "Low confidence — verify sources";
+}
+
+export default function LookPanel({ mode, onSelectMode, visible, onClose, measureRef, lookChat, lookChatPersist }: Props) {
   const [mounted, setMounted] = useState(visible);
 
   // Search state
@@ -48,15 +67,21 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
   const listRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Chat state
-  const { messages, streaming, ask, reset } = useLookChat();
+  // Chat state (lifted — only composer is local)
+  const { messages, streaming, ask, reset, ignoreHistory, setIgnoreHistory } = lookChat;
   const [composer, setComposer] = useState("");
   const transcriptRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLInputElement>(null);
 
+  // Vault sync state
+  const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string | null>(null);
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     if (visible) {
       setMounted(true);
+      logger.info("look", "panel opened", { mode });
       if (mode === "search") {
         setQuery("");
         setResults([]);
@@ -67,9 +92,10 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
         requestAnimationFrame(() => composerInputRef.current?.focus());
       }
     } else {
-      reset();
+      logger.debug("look", "panel closed");
+      if (lookChatPersist === "clear") reset();
     }
-  }, [visible, mode, reset]);
+  }, [visible, mode, reset, lookChatPersist]);
 
   const handleTransitionEnd = () => {
     if (!visible) setMounted(false);
@@ -121,6 +147,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
   }, [messages, mode]);
 
   const openResult = useCallback((r: SearchResult) => {
+    logger.debug("look", "open search result", { path: r.path, category: r.category });
     openFilePath(r.path);
     onClose();
   }, [onClose]);
@@ -156,7 +183,33 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
     }
   }, [handleSend]);
 
+  const handleRefresh = useCallback(async () => {
+    if (syncing) return;
+    setSyncing(true);
+    setSyncStatus(null);
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    try {
+      const result = await syncVaultIndex();
+      const total = result.added + result.removed + result.updated;
+      setSyncStatus(
+        total === 0
+          ? `Index up to date — ${result.skipped} unchanged`
+          : `Index updated: +${result.added} new, −${result.removed} removed, ${result.updated} changed, ${result.skipped} unchanged`
+      );
+    } catch (err) {
+      setSyncStatus(`Sync failed — ${err instanceof Error ? err.message : "unknown error"}`);
+    } finally {
+      setSyncing(false);
+      syncTimerRef.current = setTimeout(() => setSyncStatus(null), 4000);
+    }
+  }, [syncing]);
+
+  // cleanup sync timer on unmount
+  useEffect(() => () => { if (syncTimerRef.current) clearTimeout(syncTimerRef.current); }, []);
+
   if (!mounted) return null;
+
+  const syncFailed = syncStatus?.startsWith("Sync failed");
 
   return (
     <div
@@ -185,7 +238,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                 key={m}
                 role="tab"
                 aria-selected={mode === m}
-                onClick={() => onSelectMode(m)}
+                onClick={() => { logger.debug("look", "mode changed", { mode: m }); onSelectMode(m); }}
                 style={{
                   fontSize: 11,
                   padding: "4px 10px",
@@ -201,6 +254,38 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
               </button>
             ))}
           </div>
+          {/* Refresh button */}
+          <button
+            className="no-drag"
+            onClick={handleRefresh}
+            disabled={syncing}
+            title="Sync vault index"
+            aria-label="Sync vault index"
+            style={{ ...BTN_GHOST, display: "flex", alignItems: "center", justifyContent: "center", opacity: syncing ? 0.5 : 1 }}
+          >
+            <svg
+              width="14" height="14" viewBox="0 0 24 24"
+              fill="none" stroke="currentColor" strokeWidth="2"
+              strokeLinecap="round" strokeLinejoin="round"
+              style={{ transition: "transform 0.6s linear", transform: syncing ? "rotate(360deg)" : "none" }}
+            >
+              <polyline points="23 4 23 10 17 10" />
+              <polyline points="1 20 1 14 7 14" />
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+            </svg>
+          </button>
+          {/* Clear chat (chat mode only) */}
+          {mode === "chat" && (
+            <button
+              className="no-drag"
+              onClick={reset}
+              title="Clear chat"
+              aria-label="Clear chat"
+              style={{ ...BTN_GHOST, fontSize: 10, color: "var(--text-3)" }}
+            >
+              Clear
+            </button>
+          )}
           <button className="no-drag icon-close-btn" onClick={onClose} title="Close" style={BTN_GHOST}>
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="2" y1="2" x2="12" y2="12" />
@@ -210,8 +295,28 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
         </div>
       </div>
 
+      {/* Sync banner */}
+      {syncing && (
+        <div style={{ fontSize: 12, color: "var(--text-3)", borderBottom: "1px solid var(--border)", textAlign: "center", padding: "6px 14px" }}>
+          Syncing vault index…
+        </div>
+      )}
+      {!syncing && syncStatus && (
+        <div style={{ fontSize: 12, color: syncFailed ? "var(--red)" : "var(--text-3)", borderBottom: "1px solid var(--border)", textAlign: "center", padding: "6px 14px" }}>
+          {syncStatus}
+        </div>
+      )}
+
       {/* Body */}
-      <div className="no-drag" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <div
+        className="no-drag"
+        style={{
+          flex: 1, minHeight: 0, display: "flex", flexDirection: "column",
+          opacity: syncing ? 0.45 : 1,
+          pointerEvents: syncing ? "none" : undefined,
+          transition: "opacity 0.15s",
+        }}
+      >
         {mode === "search" ? (
           <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
             {/* Search input row */}
@@ -358,6 +463,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
               {messages.map((msg, i) => {
                 const isUser = msg.role === "user";
                 const isTyping = !isUser && streaming && msg.content === "" && i === messages.length - 1;
+                const isSearching = !isUser && msg.searching && i === messages.length - 1;
                 return (
                   <div
                     key={i}
@@ -379,7 +485,9 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                         lineHeight: 1.5,
                       }}
                     >
-                      {isTyping ? (
+                      {isSearching ? (
+                        <span style={{ color: "var(--text-3)", fontSize: 13 }}>Searching vault…</span>
+                      ) : isTyping ? (
                         <span style={{ color: "var(--text-3)", fontSize: 16, letterSpacing: 2 }}>…</span>
                       ) : isUser ? (
                         msg.content
@@ -410,8 +518,22 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                         })
                       )}
                     </div>
+                    {/* Confidence badge for assistant messages */}
+                    {!isUser && !isSearching && msg.tier && msg.tier !== "none" && !isTyping && (
+                      <div style={{
+                        fontSize: 9,
+                        fontWeight: 600,
+                        letterSpacing: "0.04em",
+                        color: tierColor(msg.tier),
+                        paddingLeft: 2,
+                      }}>
+                        {msg.tier === "general"
+                          ? tierLabel(msg.tier)
+                          : `${tierLabel(msg.tier)} · ${Math.round((msg.confidence ?? 0) * 100)}%`}
+                      </div>
+                    )}
                     {/* Citation source chips for assistant messages */}
-                    {!isUser && msg.sources && msg.sources.length > 0 && !isTyping && (
+                    {!isUser && msg.sources && msg.sources.length > 0 && !isTyping && !isSearching && (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 4, paddingLeft: 2 }}>
                         {msg.sources.map((src) => (
                           <button
@@ -447,11 +569,35 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                 padding: "10px 14px",
                 borderTop: "1px solid var(--border)",
                 display: "flex",
+                flexDirection: "column",
                 gap: 8,
-                alignItems: "center",
                 flexShrink: 0,
               }}
             >
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => setIgnoreHistory(!ignoreHistory)}
+                  aria-pressed={ignoreHistory}
+                  title="When on, each message is sent without prior conversation context"
+                  style={{
+                    ...BTN_SECONDARY,
+                    fontSize: 10,
+                    padding: "3px 8px",
+                    flexShrink: 0,
+                    background: ignoreHistory ? "var(--accent)" : (BTN_SECONDARY.background as string),
+                    color: ignoreHistory ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
+                    border: ignoreHistory ? "1px solid var(--accent)" : (BTN_SECONDARY.border as string),
+                    fontWeight: ignoreHistory ? 600 : 400,
+                  }}
+                >
+                  Ignore history
+                </button>
+                <span style={{ fontSize: 10, color: "var(--text-3)", flex: 1 }}>
+                  {ignoreHistory ? "Standalone query — prior turns skipped" : "Follow-ups use recent chat context"}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <input
                 ref={composerInputRef}
                 type="text"
@@ -459,7 +605,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                 value={composer}
                 onChange={(e) => setComposer(e.target.value)}
                 onKeyDown={handleComposerKey}
-                placeholder="Ask your vault…"
+                placeholder="Ask your vault… (prefix /strict for vault-only)"
                 disabled={streaming}
                 style={{
                   flex: 1,
@@ -494,6 +640,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
               >
                 Send
               </button>
+              </div>
             </div>
           </div>
         )}

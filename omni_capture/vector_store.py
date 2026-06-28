@@ -290,6 +290,21 @@ def index_note(
               file=sys.stderr, flush=True)
 
 
+def remove_from_index(vault_root: Path, note_path: Path) -> None:
+    """Delete a note's embedding row by vault-relative path. Fails silently."""
+    try:
+        try:
+            rel = str(note_path.relative_to(vault_root)).replace("\\", "/")
+        except ValueError:
+            rel = str(note_path).replace("\\", "/")
+        with _connect(vault_root) as conn:
+            conn.execute("DELETE FROM embeddings WHERE id = ?", (rel,))
+        print(f"[VectorStore] removed: {rel}", flush=True)
+    except Exception as exc:
+        print(f"[{_ist_now()}] [VectorStore] remove_from_index error: {exc}",
+              file=sys.stderr, flush=True)
+
+
 def retrieve_related(
     vault_root: Path,
     query_text: str,

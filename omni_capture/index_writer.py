@@ -24,6 +24,7 @@ captures
 captures_fts   (FTS5 virtual table)
   rowid -> captures.id
   body  -> category || ' ' || filename || ' ' || source_url || ' ' || tags || ' ' || body_excerpt
+  (stored internally — not content=captures, which requires a captures.body column)
 
 Public API
 ----------
@@ -45,7 +46,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-_BODY_EXCERPT_MAX_CHARS = 4000
+# ponytail: 64k cap; raise or chunk FTS if vault notes routinely exceed this
+_BODY_EXCERPT_MAX_CHARS = 65536
+_BODY_INDEX_META_KEY = f"body_indexed_v{_BODY_EXCERPT_MAX_CHARS}"
 
 
 # ── Path helpers ──────────────────────────────────────────────────────────────
@@ -76,9 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_captures_timestamp ON captures(timestamp);
 CREATE INDEX IF NOT EXISTS idx_captures_category  ON captures(category);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS captures_fts USING fts5(
-    body,
-    content=captures,
-    content_rowid=id
+    body
 );
 
 CREATE TABLE IF NOT EXISTS _meta (
@@ -88,10 +89,11 @@ CREATE TABLE IF NOT EXISTS _meta (
 """
 
 # Trigger bodies must stay in sync with the captures_fts concatenation used
-# by _row_fts_body() below. Defined as a template (rather than baked into
-# _DDL with CREATE TRIGGER IF NOT EXISTS) because existing databases already
-# have the pre-body_excerpt triggers installed under those names — bumping
-# the concat expression requires DROP + re-CREATE, not IF NOT EXISTS.
+# by _row_fts_body() below. captures_fts is a standard (internal-storage)
+# FTS5 table, so row removal uses a plain DELETE -- NOT the external-content
+# 'delete' command, which raises "SQL logic error" on an internal table.
+# Re-CREATE'd unconditionally (not IF NOT EXISTS) because existing databases
+# already have older trigger versions installed under these names.
 _TRIGGERS_DDL = """
 DROP TRIGGER IF EXISTS captures_ai;
 DROP TRIGGER IF EXISTS captures_ad;
@@ -110,25 +112,11 @@ CREATE TRIGGER captures_ai AFTER INSERT ON captures BEGIN
 END;
 
 CREATE TRIGGER captures_ad AFTER DELETE ON captures BEGIN
-    INSERT INTO captures_fts(captures_fts, rowid, body)
-    VALUES ('delete', old.id,
-        COALESCE(old.category,'') || ' ' ||
-        COALESCE(old.filename,'') || ' ' ||
-        COALESCE(old.source_url,'') || ' ' ||
-        COALESCE(old.tags,'') || ' ' ||
-        COALESCE(old.body_excerpt,'')
-    );
+    DELETE FROM captures_fts WHERE rowid = old.id;
 END;
 
 CREATE TRIGGER captures_au AFTER UPDATE ON captures BEGIN
-    INSERT INTO captures_fts(captures_fts, rowid, body)
-    VALUES ('delete', old.id,
-        COALESCE(old.category,'') || ' ' ||
-        COALESCE(old.filename,'') || ' ' ||
-        COALESCE(old.source_url,'') || ' ' ||
-        COALESCE(old.tags,'') || ' ' ||
-        COALESCE(old.body_excerpt,'')
-    );
+    DELETE FROM captures_fts WHERE rowid = old.id;
     INSERT INTO captures_fts(rowid, body)
     VALUES (
         new.id,
@@ -142,6 +130,104 @@ END;
 """
 
 
+def _row_fts_body(
+    category: str | None,
+    filename: str | None,
+    source_url: str | None,
+    tags: str | None,
+    body_excerpt: str | None,
+) -> str:
+    return (
+        f"{category or ''} "
+        f"{filename or ''} "
+        f"{source_url or ''} "
+        f"{tags or ''} "
+        f"{body_excerpt or ''}"
+    )
+
+
+def _migrate_fts_internal(conn: sqlite3.Connection) -> None:
+    """Rebuild FTS without external content= — old schema pointed at captures.body which does not exist."""
+    flag = conn.execute(
+        "SELECT value FROM _meta WHERE key = 'fts_internal_storage'"
+    ).fetchone()
+    if flag and flag[0] == "1":
+        return
+
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='captures_fts'"
+    ).fetchone()
+    if not row or not row[0] or "content=" not in row[0].lower():
+        conn.execute(
+            "INSERT INTO _meta (key, value) VALUES ('fts_internal_storage', '1') "
+            "ON CONFLICT(key) DO UPDATE SET value = '1'"
+        )
+        return
+
+    rows = conn.execute(
+        "SELECT id, category, filename, source_url, tags, body_excerpt FROM captures"
+    ).fetchall()
+
+    conn.executescript(
+        """
+        DROP TRIGGER IF EXISTS captures_ai;
+        DROP TRIGGER IF EXISTS captures_ad;
+        DROP TRIGGER IF EXISTS captures_au;
+        DROP TABLE IF EXISTS captures_fts;
+        CREATE VIRTUAL TABLE captures_fts USING fts5(body);
+        """
+    )
+
+    for r in rows:
+        body = _row_fts_body(
+            r["category"], r["filename"], r["source_url"], r["tags"], r["body_excerpt"],
+        )
+        conn.execute(
+            "INSERT INTO captures_fts(rowid, body) VALUES (?, ?)",
+            (r["id"], body),
+        )
+
+    conn.execute(
+        "INSERT INTO _meta (key, value) VALUES ('fts_internal_storage', '1') "
+        "ON CONFLICT(key) DO UPDATE SET value = '1'"
+    )
+    print("[IndexWriter] migrated captures_fts to internal storage", flush=True)
+
+
+def _rebuild_fts_once(conn: sqlite3.Connection) -> None:
+    """Heal existing FTS rows that went stale while the AFTER UPDATE/DELETE
+    triggers were broken (see H7). Runs exactly once per vault, gated by a
+    _meta flag. Safe to call on every init.
+
+    ponytail: full DELETE + re-INSERT of every row. Fine for the small vaults
+    this app targets; if a vault ever holds 100k+ notes, switch to a
+    diff-based rebuild keyed on captures.hash.
+    """
+    flag = conn.execute(
+        "SELECT value FROM _meta WHERE key = 'fts_rebuilt_trigger_fix_v1'"
+    ).fetchone()
+    if flag and flag[0] == "1":
+        return
+
+    rows = conn.execute(
+        "SELECT id, category, filename, source_url, tags, body_excerpt FROM captures"
+    ).fetchall()
+    conn.execute("DELETE FROM captures_fts")
+    for r in rows:
+        body = _row_fts_body(
+            r["category"], r["filename"], r["source_url"], r["tags"], r["body_excerpt"],
+        )
+        conn.execute(
+            "INSERT INTO captures_fts(rowid, body) VALUES (?, ?)",
+            (r["id"], body),
+        )
+    conn.execute(
+        "INSERT INTO _meta (key, value) VALUES ('fts_rebuilt_trigger_fix_v1', '1') "
+        "ON CONFLICT(key) DO UPDATE SET value = '1'"
+    )
+    print(f"[IndexWriter] rebuilt captures_fts ({len(rows)} rows) after trigger fix", flush=True)
+
+
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     """
     Idempotent schema upgrade for databases created before body_excerpt
@@ -152,7 +238,12 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("PRAGMA table_info(captures)").fetchall()}
     if "body_excerpt" not in cols:
         conn.execute("ALTER TABLE captures ADD COLUMN body_excerpt TEXT")
+    _migrate_fts_internal(conn)
+    conn.commit()
     conn.executescript(_TRIGGERS_DDL)
+    conn.commit()
+    _rebuild_fts_once(conn)
+    conn.commit()
 
 
 def init_db(vault_root: Path) -> sqlite3.Connection:
@@ -268,7 +359,7 @@ def reindex_bodies(vault_root: Path) -> int:
         cursor = conn.cursor()
 
         flag = cursor.execute(
-            "SELECT value FROM _meta WHERE key = 'body_indexed'"
+            "SELECT value FROM _meta WHERE key = ?", (_BODY_INDEX_META_KEY,)
         ).fetchone()
         if flag and flag[0] == "1":
             conn.close()
@@ -285,8 +376,9 @@ def reindex_bodies(vault_root: Path) -> int:
             updated += 1
 
         cursor.execute(
-            "INSERT INTO _meta (key, value) VALUES ('body_indexed', '1') "
-            "ON CONFLICT(key) DO UPDATE SET value = '1'"
+            "INSERT INTO _meta (key, value) VALUES (?, '1') "
+            "ON CONFLICT(key) DO UPDATE SET value = '1'",
+            (_BODY_INDEX_META_KEY,),
         )
         conn.commit()
         conn.close()
@@ -364,6 +456,49 @@ def migrate_jsonl(jsonl_path: Path, vault_root: Path) -> int:
     return inserted
 
 
+# ── Remove / upsert helpers ───────────────────────────────────────────────────
+
+def remove_capture_by_path(vault_root: Path, abs_path: Path) -> None:
+    """Delete a captures row (and FTS shadow via trigger) by absolute path. Fails silently."""
+    try:
+        conn = init_db(vault_root)
+        conn.execute("DELETE FROM captures WHERE path = ?", (str(abs_path),))
+        conn.commit()
+        conn.close()
+        print(f"[IndexWriter] removed: {abs_path}", flush=True)
+    except Exception as exc:
+        print(f"[IndexWriter] remove_capture_by_path error: {exc}", file=sys.stderr)
+
+
+def upsert_capture_from_file(vault_root: Path, abs_path: Path) -> None:
+    """Insert or update a captures row from the file on disk. Fails silently."""
+    try:
+        p = abs_path
+        if not p.exists():
+            return
+        category   = p.parent.name
+        body       = _read_body_excerpt(str(p))
+        h          = _file_hash(str(p))
+        timestamp  = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        conn = init_db(vault_root)
+        conn.execute(
+            """
+            INSERT INTO captures (timestamp, category, path, hash, filename, body_excerpt)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                hash         = excluded.hash,
+                body_excerpt = excluded.body_excerpt,
+                timestamp    = excluded.timestamp
+            """,
+            (timestamp, category, str(p), h, p.name, body),
+        )
+        conn.commit()
+        conn.close()
+        print(f"[IndexWriter] upserted: {p}", flush=True)
+    except Exception as exc:
+        print(f"[IndexWriter] upsert_capture_from_file error: {exc}", file=sys.stderr)
+
+
 # ── Search ────────────────────────────────────────────────────────────────────
 
 def search(
@@ -424,13 +559,19 @@ def search(
 def _sanitize_fts_query(query: str) -> str:
     """
     Turn free-text user input into a safe FTS5 query: each whitespace-separated
-    token is wrapped in double quotes (embedded quotes doubled) so that FTS5
-    metacharacters (``"`` ``*`` ``:`` ``(`` ``)`` ``AND``/``OR``/``NOT``, ``c++``,
-    etc.) are treated as literal text rather than query syntax. Implicit AND
-    joins the tokens.
+    token uses prefix matching (``token*``) so singular queries match plurals
+    (e.g. ``dinosaur`` → ``dinosaurs``). Tokens with FTS metacharacters are
+    wrapped in double quotes (embedded quotes doubled) instead.
     """
     tokens = query.split()
-    return " ".join('"' + t.replace('"', '""') + '"' for t in tokens)
+    parts: list[str] = []
+    for t in tokens:
+        escaped = t.replace('"', '""')
+        if re.fullmatch(r"[\w\-]+", t, flags=re.ASCII):
+            parts.append(f"{escaped}*")
+        else:
+            parts.append(f'"{escaped}"')
+    return " ".join(parts)
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────

@@ -76,6 +76,16 @@ enabled = false
 # Whether to keep the full raw transcript section in the note (always written in v1).
 write_raw_transcript = true
 
+[look]
+chat_min_similarity_high   = 0.45
+chat_min_similarity_medium = 0.35
+chat_min_similarity_floor  = 0.32
+chat_top_k                 = 8
+chat_temperature           = 0.2
+chat_general_temperature   = 0.7
+# Leave blank to use the built-in default chat system prompt.
+chat_system_prompt         = ""
+
 [vector]
 enabled = true
 # Embedding model used for semantic retrieval/merge. Must be an embedding model

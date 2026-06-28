@@ -17,7 +17,7 @@ import { setHotkey as setHotkeyRust, setLogLevel } from "../lib/tauri";
 import { getVaultCategories } from "../lib/api";
 import { logger, LogLevel } from "../lib/logger";
 import { isGeoDebugEnabled, setGeoDebugEnabled } from "../lib/geoLog";
-import { THEMES, THEME_LABELS, type Theme } from "../App";
+import { THEMES, THEME_LABELS, type Theme, type LookChatPersist } from "../App";
 import type { PillMode, PillCorner } from "./PillOverlay";
 import type { PillAnchor } from "../lib/pillAnchor";
 import { ANCHOR_ORDER } from "../lib/pillAnchor";
@@ -57,6 +57,9 @@ interface Props {
   monitors?:          MonitorInfo[];
   selectedMonitorId?: string | null;
   onSelectMonitor?:   (id: string) => void;
+
+  lookChatPersist?:          LookChatPersist;
+  onSelectLookChatPersist?:  (v: LookChatPersist) => void;
 }
 
 // ── Theme swatch picker ──────────────────────────────────────────────────────
@@ -301,6 +304,7 @@ export default function SettingsPanel({
   pillFanStyle, onSelectPillFanStyle,
   pillSnapEnabled, onTogglePillSnap,
   monitors, selectedMonitorId, onSelectMonitor,
+  lookChatPersist, onSelectLookChatPersist,
 }: Props) {
   const [vaultRoot, setVaultRoot] = useState("");
   const [model, setModel] = useState("llama3.2");
@@ -313,6 +317,7 @@ export default function SettingsPanel({
   const [confidence, setConfidence] = useState(0.6);
   const [scrutiny, setScrutiny] = useState<"relaxed" | "balanced" | "strict">("balanced");
   const [autoDescribe, setAutoDescribe] = useState(false);
+  const [chatSystemPrompt, setChatSystemPrompt] = useState("");
 
   // Form (look/placement) vs Function (behavior) tabs. Always reopens on
   // Form so returning to Settings doesn't strand the user on Function.
@@ -345,9 +350,11 @@ export default function SettingsPanel({
   const lastGoodRef = useRef<{
     vaultRoot: string; model: string; hotkey: string;
     confidence: number; scrutiny: "relaxed" | "balanced" | "strict"; autoDescribe: boolean;
+    chatSystemPrompt: string;
   }>({
     vaultRoot: "", model: "llama3.2", hotkey: DEFAULT_HOTKEY,
     confidence: 0.6, scrutiny: "balanced", autoDescribe: false,
+    chatSystemPrompt: "",
   });
 
   // Load config when panel opens. Retries with backoff: right after launch
@@ -384,6 +391,7 @@ export default function SettingsPanel({
           confidence: cfg.capture?.confidence_threshold ?? 0.6,
           scrutiny: cfg.capture?.llm_scrutiny ?? "balanced",
           autoDescribe: cfg.capture?.auto_describe_new_folders ?? false,
+          chatSystemPrompt: cfg.look?.chat_system_prompt ?? "",
         };
         setVaultRoot(loaded.vaultRoot);
         setModel(loaded.model);
@@ -391,6 +399,7 @@ export default function SettingsPanel({
         setConfidence(loaded.confidence);
         setScrutiny(loaded.scrutiny);
         setAutoDescribe(loaded.autoDescribe);
+        setChatSystemPrompt(loaded.chatSystemPrompt);
         lastGoodRef.current = loaded;
         setDirty(false);
         loadedRef.current = true;
@@ -427,9 +436,10 @@ export default function SettingsPanel({
         confidence_threshold: confidence,
         llm_scrutiny: scrutiny,
         auto_describe_new_folders: autoDescribe,
+        chat_system_prompt: chatSystemPrompt,
       });
       await setHotkeyRust(hotkey);
-      lastGoodRef.current = { vaultRoot, model, hotkey, confidence, scrutiny, autoDescribe };
+      lastGoodRef.current = { vaultRoot, model, hotkey, confidence, scrutiny, autoDescribe, chatSystemPrompt };
       setDirty(false);
       if (!opts.silent) {
         setSaved(true);
@@ -446,11 +456,12 @@ export default function SettingsPanel({
       setConfidence(g.confidence);
       setScrutiny(g.scrutiny);
       setAutoDescribe(g.autoDescribe);
+      setChatSystemPrompt(g.chatSystemPrompt);
       setDirty(false);
     } finally {
       if (!opts.silent) setSaving(false);
     }
-  }, [vaultRoot, model, hotkey, confidence, scrutiny, autoDescribe]);
+  }, [vaultRoot, model, hotkey, confidence, scrutiny, autoDescribe, chatSystemPrompt]);
 
   const handleSave = () => { void flush({ silent: false }); };
 
@@ -911,6 +922,59 @@ export default function SettingsPanel({
               </div>
               <span style={{ fontSize: 10, color: "var(--text-3)" }}>
                 Logs pill window/monitor geometry (scope "geo") to the log file for diagnosing drag/boundary bugs.
+              </span>
+            </Field>
+
+            {onSelectLookChatPersist && lookChatPersist && (
+              <Field label="Look chat history">
+                <div style={{ display: "flex", gap: 4 }}>
+                  {([
+                    { v: "preserve" as const, label: "Preserve" },
+                    { v: "clear" as const,    label: "Clear on close" },
+                  ]).map(({ v, label }) => {
+                    const active = lookChatPersist === v;
+                    return (
+                      <button
+                        key={v}
+                        onClick={() => onSelectLookChatPersist(v)}
+                        className="btn-hover"
+                        style={{
+                          ...BTN_SECONDARY,
+                          flex: 1,
+                          background: active ? "var(--accent)" : (BTN_SECONDARY.background as string),
+                          color: active ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
+                          borderColor: active ? "var(--accent)" : "var(--border)",
+                        }}
+                        aria-pressed={active}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <span style={{ fontSize: 10, color: "var(--text-3)" }}>
+                  Preserve keeps your chat when you close the Look panel. Clear on close starts fresh each time.
+                </span>
+              </Field>
+            )}
+
+            <Field label="Look chat system prompt">
+              <textarea
+                value={chatSystemPrompt}
+                onChange={(e) => { setChatSystemPrompt(e.target.value); markDirty(); }}
+                rows={5}
+                placeholder="Leave blank to use the built-in default prompt…"
+                spellCheck={false}
+                style={{
+                  ...INPUT_STYLE,
+                  resize: "vertical",
+                  minHeight: 96,
+                  lineHeight: 1.45,
+                  fontFamily: "inherit",
+                }}
+              />
+              <span style={{ fontSize: 10, color: "var(--text-3)" }}>
+                Custom instructions for Look chat. When empty, a robust default is used. Vault context is appended automatically when relevant notes are found.
               </span>
             </Field>
           </>

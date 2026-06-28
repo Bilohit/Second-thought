@@ -39,6 +39,7 @@ import InboxPanel from "./components/InboxPanel";
 import StatsPanel from "./components/StatsPanel";
 import LookPanel from "./components/LookPanel";
 import { useCapture } from "./hooks/useCapture";
+import { useLookChat } from "./hooks/useLookChat";
 import { logger } from "./lib/logger";
 import { getInbox } from "./lib/api";
 import { type PillAnchor, anchorPosition, anchoredMenuPosition, isPillDraggable } from "./lib/pillAnchor";
@@ -77,6 +78,13 @@ const LOOK_MODE_KEY = "omni-look-mode";
 export function getInitialLookMode(): "search" | "chat" {
   try { const s = localStorage.getItem(LOOK_MODE_KEY); if (s === "search" || s === "chat") return s; } catch { /* ignore */ }
   return "search";
+}
+
+const LOOK_CHAT_PERSIST_KEY = "omni-look-chat-persist";
+export type LookChatPersist = "preserve" | "clear";
+export function getInitialLookChatPersist(): LookChatPersist {
+  try { const s = localStorage.getItem(LOOK_CHAT_PERSIST_KEY); if (s === "preserve" || s === "clear") return s; } catch { /* ignore */ }
+  return "preserve";
 }
 
 export function getInitialTheme(): Theme {
@@ -258,10 +266,12 @@ async function animateWindowAndSizeTo(
 // ── Component ──────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [view, setView]             = useState<View>("capture");
-  const [lookMode, setLookMode]     = useState<"search" | "chat">(getInitialLookMode);
-  const [theme, setTheme]           = useState<Theme>(getInitialTheme);
-  const [inboxCount, setInboxCount] = useState(0);
+  const [view, setView]                   = useState<View>("capture");
+  const [lookMode, setLookMode]           = useState<"search" | "chat">(getInitialLookMode);
+  const [lookChatPersist, setLookChatPersist] = useState<LookChatPersist>(getInitialLookChatPersist);
+  const [theme, setTheme]                 = useState<Theme>(getInitialTheme);
+  const [inboxCount, setInboxCount]       = useState(0);
+  const lookChat = useLookChat();
 
   // Display Mode (Item 2) state — persisted like theme, applied immediately.
   const [displayMode, setDisplayMode] = useState<DisplayMode>(getInitialDisplayMode);
@@ -351,6 +361,7 @@ export default function App() {
   // Apply theme on mount and whenever it changes
   useEffect(() => { applyTheme(theme); }, [theme]);
   useEffect(() => { try { localStorage.setItem(LOOK_MODE_KEY, lookMode); } catch { /* ignore */ } }, [lookMode]);
+  useEffect(() => { try { localStorage.setItem(LOOK_CHAT_PERSIST_KEY, lookChatPersist); } catch { /* ignore */ } }, [lookChatPersist]);
 
   const selectTheme = useCallback((t: Theme) => setTheme(t), []);
 
@@ -1513,6 +1524,8 @@ export default function App() {
           monitors={monitors}
           selectedMonitorId={selectedMonitorId}
           onSelectMonitor={handleSelectMonitor}
+          lookChatPersist={lookChatPersist}
+          onSelectLookChatPersist={setLookChatPersist}
         />
         <VaultManager
           measureRef={setMeasureEl("vault")}
@@ -1536,6 +1549,8 @@ export default function App() {
           mode={lookMode}
           onSelectMode={setLookMode}
           onClose={() => setView("capture")}
+          lookChat={lookChat}
+          lookChatPersist={lookChatPersist}
         />
       </div>
 

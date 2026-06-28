@@ -121,6 +121,17 @@ class OCRConfig:
 
 
 @dataclass
+class LookConfig:
+    chat_min_similarity_high: float   = 0.45
+    chat_min_similarity_medium: float = 0.35
+    chat_min_similarity_floor: float  = 0.32
+    chat_top_k: int                   = 8
+    chat_temperature: float           = 0.2
+    chat_general_temperature: float   = 0.7
+    chat_system_prompt: str           = ""
+
+
+@dataclass
 class Config:
     vault: VaultConfig                = field(default_factory=VaultConfig)
     ollama: OllamaConfig              = field(default_factory=OllamaConfig)
@@ -131,6 +142,7 @@ class Config:
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     vector: VectorConfig              = field(default_factory=VectorConfig)
     youtube: YouTubeConfig            = field(default_factory=YouTubeConfig)
+    look: LookConfig                  = field(default_factory=LookConfig)
 
 
 def _resolve_path(raw: str) -> Path | None:
@@ -247,6 +259,15 @@ def load_config(config_path: Path | None = None) -> Config:
 
     ocr_raw = raw.get("ocr", {})
     cfg.ocr.enabled = bool(ocr_raw.get("enabled", False))
+
+    look_raw = raw.get("look", {})
+    cfg.look.chat_min_similarity_high   = float(look_raw.get("chat_min_similarity_high", 0.45))
+    cfg.look.chat_min_similarity_medium = float(look_raw.get("chat_min_similarity_medium", 0.35))
+    cfg.look.chat_min_similarity_floor  = float(look_raw.get("chat_min_similarity_floor", 0.32))
+    cfg.look.chat_top_k                 = int(look_raw.get("chat_top_k", 8))
+    cfg.look.chat_temperature           = float(look_raw.get("chat_temperature", 0.2))
+    cfg.look.chat_general_temperature   = float(look_raw.get("chat_general_temperature", 0.7))
+    cfg.look.chat_system_prompt         = str(look_raw.get("chat_system_prompt", "") or "")
 
     return cfg
 

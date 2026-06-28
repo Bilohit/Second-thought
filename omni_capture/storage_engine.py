@@ -806,6 +806,16 @@ def approve_scratchpad_item(
     dest_path.write_text(updated, encoding="utf-8")
     item.unlink()
     print(f"[StorageEngine] scratchpad approved {note_id} -> {dest_path}")
+
+    # Remove old scratchpad index entries; caller re-indexes the dest path.
+    try:
+        from vector_store import remove_from_index
+        from index_writer import remove_capture_by_path
+        remove_from_index(vault_root, item)
+        remove_capture_by_path(vault_root, item)
+    except Exception as exc:
+        print(f"[StorageEngine] index cleanup on approve error: {exc}", file=sys.stderr)
+
     return dest_path
 
 
@@ -833,6 +843,14 @@ def discard_scratchpad_item(
         raise FileNotFoundError(f"Scratchpad item {note_id!r} not found.")
     item.unlink()
     print(f"[StorageEngine] scratchpad discarded {note_id}")
+
+    try:
+        from vector_store import remove_from_index
+        from index_writer import remove_capture_by_path
+        remove_from_index(vault_root, item)
+        remove_capture_by_path(vault_root, item)
+    except Exception as exc:
+        print(f"[StorageEngine] index cleanup on discard error: {exc}", file=sys.stderr)
 
 
 def _find_scratchpad_item(

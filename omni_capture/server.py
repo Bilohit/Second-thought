@@ -19,12 +19,15 @@ Endpoints
   DELETE /inbox/{note_id}
   GET  /jobs/{job_id}                       background job status (e.g. YouTube)
   POST /look/chat                           streaming RAG chat (SSE)
+  POST /vault/sync-index                    vault diff-sync (add/remove/update index rows)
 
 SSE events emitted by /look/chat:
+  meta     {"confidence": 0.34, "tier": "medium"|"general", "answerable": true}
   sources  {"sources": [...]}
   token    {"text": "..."}  (repeated)
   done     {}
   error    {"message": "..."}
+  tier "general" = no vault match; LLM answers from baseline knowledge (no REFUSAL).
 
 SSE events emitted by /capture and /share:
   step     {"step": "intercept|enrich|decide|write", "status": "active|done|error"}
@@ -156,6 +159,20 @@ def _reindex_bodies() -> None:
             print(f"[Reindex] skipped: {exc}", flush=True)
     _bg_executor.submit(_run)
 
+
+@app.on_event("startup")
+def _purge_orphan_index_entries() -> None:
+    """Best-effort startup orphan purge — removes index rows for deleted files."""
+    def _run():
+        try:
+            from vault_sync import purge_orphan_index_entries
+            n = purge_orphan_index_entries(_get_vault_root())
+            if n:
+                print(f"[VaultSync] startup purge removed {n} orphan rows", flush=True)
+        except Exception as exc:
+            print(f"[VaultSync] startup purge skipped: {exc}", flush=True)
+    _bg_executor.submit(_run)
+
 # ---------------------------------------------------------------------------
 # Background job registry (in-process; the server is a single long-lived
 # process spawned by Rust, so a dict is sufficient -- no DB needed).
@@ -246,6 +263,7 @@ def _require_secret(x_omni_secret: Optional[str] = Header(default=None)) -> None
 class LookChatRequest(BaseModel):
     question: str
     history: Optional[list[dict]] = None   # [{"role":"user"|"assistant","content":str}], last turns only
+    ignore_history: bool = False           # when true, treat question as standalone (no prior turns)
 
 class CaptureRequest(BaseModel):
     content_type: str   # text | url | image_b64 | audio_b64
@@ -267,6 +285,7 @@ class ConfigPatch(BaseModel):
     ocr_fast_path_enabled: Optional[bool] = None
     ocr_text_min_chars: Optional[int] = None
     auto_describe_new_folders: Optional[bool] = None
+    chat_system_prompt: Optional[str] = None
 
 class CategoryCreate(BaseModel):
     name: str
@@ -813,6 +832,8 @@ async def patch_config(patch: ConfigPatch, _: None = Depends(_require_secret)):
         _set("capture", "ocr_text_min_chars", min_chars)
     if patch.auto_describe_new_folders is not None:
         _set("capture", "auto_describe_new_folders", bool(patch.auto_describe_new_folders))
+    if patch.chat_system_prompt is not None:
+        _set("look", "chat_system_prompt", patch.chat_system_prompt)
 
     CONFIG_PATH.write_text(tomlkit.dumps(doc), encoding="utf-8")
 
@@ -941,11 +962,16 @@ async def search_captures(
     since: Optional[str] = None,
     limit: int = 25,
     _: None = Depends(_require_secret),
+    x_log_level: Optional[str] = Header(None, alias="X-Log-Level"),
 ):
     """Full-text search over captured notes via the SQLite FTS5 index."""
     from index_writer import search as idx_search
+    from look_log import debug_logging_from_level, set_look_verbose, look_debug, look_info
+    set_look_verbose(debug_logging_from_level(x_log_level))
     limit = min(max(1, limit), 200)
+    look_debug(f"GET /search q={q!r} category={category} since={since} limit={limit}")
     results = idx_search(q, _get_vault_root(), category=category, since=since, limit=limit)
+    look_info(f"GET /search returned {len(results)} result(s) for q={q!r}")
     return {"results": results, "count": len(results), "query": q}
 
 
@@ -959,18 +985,24 @@ async def capture_stats(_: None = Depends(_require_secret)):
 # -- Look / RAG chat endpoint -------------------------------------------------
 
 @app.post("/look/chat")
-async def look_chat(req: LookChatRequest, _: None = Depends(_require_secret)):
+async def look_chat(
+    req: LookChatRequest,
+    _: None = Depends(_require_secret),
+    x_log_level: Optional[str] = Header(None, alias="X-Log-Level"),
+):
+    from look_log import debug_logging_from_level
+    verbose = debug_logging_from_level(x_log_level)
     return StreamingResponse(
-        _stream_look_chat(req.question, req.history or []),
+        _stream_look_chat(req.question, req.history or [], req.ignore_history, verbose),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
 
 
-async def _stream_look_chat(question: str, history: list[dict]) -> AsyncIterator[str]:
+async def _stream_look_chat(question: str, history: list[dict], ignore_history: bool, verbose: bool) -> AsyncIterator[str]:
     loop = asyncio.get_running_loop()
     q: asyncio.Queue[Optional[dict]] = asyncio.Queue()
-    loop.run_in_executor(_executor, _run_look_chat_blocking, question, history, q, loop)
+    loop.run_in_executor(_executor, _run_look_chat_blocking, question, history, ignore_history, q, loop, verbose)
     while True:
         item = await q.get()
         if item is None:
@@ -979,41 +1011,92 @@ async def _stream_look_chat(question: str, history: list[dict]) -> AsyncIterator
         yield _sse(event, **item)
 
 
-def _run_look_chat_blocking(question, history, q, loop):
+def _run_look_chat_blocking(question, history, ignore_history, q, loop, verbose=False):
     def emit(event, **kw):
         loop.call_soon_threadsafe(q.put_nowait, {"event": event, **kw})
+    from look_log import set_look_verbose, look_debug, look_info, look_error
+    set_look_verbose(verbose)
     try:
         from config import reload_config
-        from rag_engine import hybrid_retrieve, build_system_prompt, REFUSAL
-        cfg = reload_config()
-        sources, answerable = hybrid_retrieve(
-            cfg.vault.root, question, cfg.ollama.base_url, cfg.vector.embed_model,
-            top_k=5, min_similarity=cfg.vector.min_similarity,
+        from rag_engine import hybrid_retrieve, build_system_prompt, parse_strict_prefix, REFUSAL
+        effective_history = [] if ignore_history else history
+        question, strict = parse_strict_prefix(question)
+        if not question:
+            emit("error", message="Question is empty after /strict prefix")
+            return
+        look_info(
+            f"POST /look/chat question={question!r} history_turns={len(effective_history)} "
+            f"ignore_history={ignore_history} strict={strict}"
         )
-        emit("sources", sources=sources)
-        if not answerable:
+        cfg = reload_config()
+        custom_prompt = cfg.look.chat_system_prompt or None
+        sources, confidence, tier = hybrid_retrieve(
+            cfg.vault.root, question, cfg.ollama.base_url, cfg.vector.embed_model,
+            top_k=cfg.look.chat_top_k,
+            min_similarity_high=cfg.look.chat_min_similarity_high,
+            min_similarity_medium=cfg.look.chat_min_similarity_medium,
+            min_similarity_floor=cfg.look.chat_min_similarity_floor,
+            history=effective_history or None,
+        )
+        if tier == "none" and strict:
+            emit("meta", confidence=round(confidence, 4), tier="none", answerable=False)
+            emit("sources", sources=[])
             emit("token", text=REFUSAL)
+            look_info("POST /look/chat strict refusal — no vault match")
             emit("done")
             return
+        if tier == "none":
+            tier = "general"
+            sources = []
+        answerable = True
+        emit("meta", confidence=round(confidence, 4), tier=tier, answerable=answerable)
+        emit("sources", sources=sources)
         from openai import OpenAI
         from llm_engine import _normalize_base_url, OLLAMA_API_KEY
         client = OpenAI(base_url=_normalize_base_url(cfg.ollama.base_url), api_key=OLLAMA_API_KEY)
-        messages = [{"role": "system", "content": build_system_prompt(sources)}]
-        messages += [m for m in history if m.get("role") in ("user", "assistant")][-6:]
+        messages = [{"role": "system", "content": build_system_prompt(sources, tier, custom_prompt)}]
+        messages += [m for m in effective_history if m.get("role") in ("user", "assistant")][-6:]
         messages.append({"role": "user", "content": question})
+        temperature = (
+            cfg.look.chat_general_temperature if tier == "general"
+            else cfg.look.chat_temperature
+        )
+        look_debug(
+            f"streaming LLM answer model={cfg.ollama.model} tier={tier} "
+            f"sources={len(sources)} temp={temperature}"
+        )
         stream = client.chat.completions.create(
-            model=cfg.ollama.model, messages=messages, temperature=0.0, stream=True,
+            model=cfg.ollama.model, messages=messages,
+            temperature=temperature, stream=True,
             extra_body={"keep_alive": cfg.ollama.keep_alive},
         )
+        token_count = 0
         for chunk in stream:
             delta = chunk.choices[0].delta.content if chunk.choices else None
             if delta:
+                token_count += 1
                 emit("token", text=delta)
+        look_info(f"POST /look/chat done tokens={token_count}")
         emit("done")
     except Exception as exc:
+        look_error(f"POST /look/chat failed: {exc}")
         emit("error", message=str(exc))
     finally:
         loop.call_soon_threadsafe(q.put_nowait, None)
+
+
+# -- Vault index sync endpoint ------------------------------------------------
+
+@app.post("/vault/sync-index")
+async def vault_sync_index(_: None = Depends(_require_secret)):
+    """Full vault diff-sync: remove orphan rows, add/update changed .md files."""
+    from config import reload_config
+    from vault_sync import sync_vault_indexes
+    cfg = reload_config()
+    result = await anyio.to_thread.run_sync(
+        lambda: sync_vault_indexes(cfg.vault.root, cfg.ollama.base_url, cfg.vector.embed_model)
+    )
+    return result
 
 
 # -- Inbox endpoints ----------------------------------------------------------

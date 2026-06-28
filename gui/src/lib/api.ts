@@ -16,7 +16,11 @@ const BASE = "http://localhost:7070";
 /** Headers carrying the shared secret. Every route except /health requires this. */
 async function authHeaders(extra?: Record<string, string>): Promise<Record<string, string>> {
   const secret = await getGuiSecret();
-  return secret ? { "X-Omni-Secret": secret, ...extra } : { ...extra };
+  return {
+    "X-Log-Level": String(logger.getLevel()),
+    ...(secret ? { "X-Omni-Secret": secret } : {}),
+    ...extra,
+  };
 }
 
 export type ContentType = "text" | "url" | "image_b64";
@@ -98,6 +102,9 @@ export interface Config {
     ocr_fast_path_enabled?: boolean;
     ocr_text_min_chars?: number;
     auto_describe_new_folders?: boolean;
+  };
+  look?: {
+    chat_system_prompt?: string;
   };
 }
 
@@ -251,6 +258,7 @@ export async function patchConfig(patch: {
   ocr_fast_path_enabled?: boolean;
   ocr_text_min_chars?: number;
   auto_describe_new_folders?: boolean;
+  chat_system_prompt?: string;
 }): Promise<void> {
   const r = await fetch(`${BASE}/config`, {
     method: "PATCH",
@@ -333,13 +341,28 @@ export async function searchCaptures(
   q: string,
   opts?: { category?: string; since?: string; limit?: number },
 ): Promise<{ results: SearchResult[]; count: number; query: string }> {
+  const stop = logger.time("look", "GET /search");
+  logger.debug("look", "search query", { q, ...opts });
   const params = new URLSearchParams({ q });
   if (opts?.category) params.set("category", opts.category);
   if (opts?.since) params.set("since", opts.since);
   if (opts?.limit) params.set("limit", String(opts.limit));
-  const r = await fetch(`${BASE}/search?${params.toString()}`, { headers: await authHeaders() });
-  if (!r.ok) throw new Error("Search failed");
-  return r.json();
+  try {
+    const r = await fetch(`${BASE}/search?${params.toString()}`, { headers: await authHeaders() });
+    if (!r.ok) {
+      stop({ status: r.status });
+      logger.error("look", "search request failed", { status: r.status, q });
+      throw new Error("Search failed");
+    }
+    const data = await r.json();
+    stop({ count: data.count });
+    logger.debug("look", "search results", { count: data.count, query: data.query });
+    return data;
+  } catch (err) {
+    stop({ failed: true });
+    logger.error("look", "search failed", err);
+    throw err;
+  }
 }
 
 export async function getStats(): Promise<Stats> {
@@ -390,33 +413,61 @@ export async function discardInboxItem(noteId: string): Promise<void> {
 }
 
 export interface LookSource { n: number; path: string; category: string; filename: string; snippet: string; }
+export type LookTier = "high" | "medium" | "low" | "none" | "general";
 export type LookChatEvent =
+  | { kind: "meta"; confidence: number; tier: LookTier; answerable: boolean }
   | { kind: "sources"; sources: LookSource[] }
   | { kind: "token"; text: string }
   | { kind: "done" }
   | { kind: "error"; message: string };
 
+export interface VaultSyncResult { added: number; removed: number; updated: number; skipped: number; }
+
+export async function syncVaultIndex(): Promise<VaultSyncResult> {
+  const res = await fetch(`${BASE}/vault/sync-index`, {
+    method: "POST",
+    headers: await authHeaders(),
+  });
+  if (!res.ok) throw new Error(`sync-index ${res.status}`);
+  return res.json();
+}
+
 export async function* streamLookChat(
   question: string,
   history: { role: string; content: string }[],
   signal?: AbortSignal,
+  ignoreHistory = false,
 ): AsyncGenerator<LookChatEvent> {
+  const stop = logger.time("look", "POST /look/chat stream");
+  logger.info("look", "chat started", {
+    questionLen: question.length,
+    historyTurns: ignoreHistory ? 0 : history.length,
+    ignoreHistory,
+  });
   const response = await fetch(`${BASE}/look/chat`, {
     method: "POST",
     headers: await authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ question, history }),
+    body: JSON.stringify({ question, history: ignoreHistory ? [] : history, ignore_history: ignoreHistory }),
     signal,
   });
   if (!response.ok || !response.body) {
     const text = await response.text().catch(() => "unknown error");
+    stop({ status: response.status });
+    logger.error("look", "chat request failed", { status: response.status, body: text });
     throw new Error(`Server returned ${response.status}: ${text}`);
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let tokenCount = 0;
+  let sourceCount = 0;
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      stop({ tokenCount, sourceCount });
+      logger.debug("look", "chat stream finished", { tokenCount, sourceCount });
+      break;
+    }
     buffer += decoder.decode(value, { stream: true });
     const frames = buffer.split("\n\n");
     buffer = frames.pop() ?? "";
@@ -430,10 +481,26 @@ export async function* streamLookChat(
       if (!data) continue;
       try {
         const p = JSON.parse(data);
-        if (ev === "sources") yield { kind: "sources", sources: p.sources ?? [] };
-        else if (ev === "token") yield { kind: "token", text: p.text ?? "" };
-        else if (ev === "done") yield { kind: "done" };
-        else if (ev === "error") yield { kind: "error", message: p.message ?? "error" };
+        if (ev === "meta") {
+          logger.debug("look", "chat meta", { confidence: p.confidence, tier: p.tier });
+          yield { kind: "meta", confidence: p.confidence ?? 0, tier: p.tier ?? "none", answerable: p.answerable ?? false };
+        } else if (ev === "sources") {
+          sourceCount = (p.sources ?? []).length;
+          logger.debug("look", "chat sources", {
+            count: sourceCount,
+            paths: (p.sources ?? []).map((s: LookSource) => s.path),
+          });
+          yield { kind: "sources", sources: p.sources ?? [] };
+        } else if (ev === "token") {
+          tokenCount++;
+          yield { kind: "token", text: p.text ?? "" };
+        } else if (ev === "done") {
+          logger.debug("look", "chat done event");
+          yield { kind: "done" };
+        } else if (ev === "error") {
+          logger.error("look", "chat stream error", { message: p.message ?? "error" });
+          yield { kind: "error", message: p.message ?? "error" };
+        }
       } catch { /* skip malformed */ }
     }
   }
