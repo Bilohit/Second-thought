@@ -1,13 +1,14 @@
 /**
  * StatsPanel.tsx
  * --------------
- * Read-only capture statistics: total count, per-category breakdown as
- * width-animated bars, and a short recent-activity list. All numbers come
- * directly from the /stats endpoint — no client-side aggregation.
+ * History tab: recent activity, live category counts, daily sparkline, total.
+ * Category counts come from getVaultCategories() (live vault folder listing)
+ * rather than the /stats SQLite snapshot — files are source of truth.
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { getStats, type Stats } from "../lib/api";
+import { getStats, getVaultCategories, openFilePath, type Stats, type VaultCategory } from "../lib/api";
+import { liveCategoryCounts } from "../lib/historyOrder";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
   BTN_GHOST, ROW_CARD,
@@ -102,6 +103,7 @@ function DaySparkline({ days }: { days: { date: string; count: number }[] }) {
 export default function StatsPanel({ visible, onClose, measureRef }: Props) {
   const [mounted, setMounted] = useState(visible);
   const [stats, setStats] = useState<Stats | null>(null);
+  const [cats, setCats] = useState<VaultCategory[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -109,7 +111,9 @@ export default function StatsPanel({ visible, onClose, measureRef }: Props) {
     setLoading(true);
     setError(null);
     try {
-      setStats(await getStats());
+      const [s, c] = await Promise.all([getStats(), getVaultCategories()]);
+      setStats(s);
+      setCats(c.categories);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load stats");
     } finally {
@@ -127,7 +131,8 @@ export default function StatsPanel({ visible, onClose, measureRef }: Props) {
 
   if (!mounted) return null;
 
-  const maxByCategory = stats?.by_category.slice().sort((a, b) => b.count - a.count) ?? [];
+  const liveCats = liveCategoryCounts(cats);
+  const liveCatTotal = liveCats.reduce((sum, c) => sum + c.count, 0);
 
   return (
     <div
@@ -140,7 +145,7 @@ export default function StatsPanel({ visible, onClose, measureRef }: Props) {
       onTransitionEnd={handleTransitionEnd}
     >
       <div className="drag-region" style={PANEL_HEADER}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>Statistics</span>
+        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>History</span>
         <div className="no-drag" style={{ display: "flex", gap: 4 }}>
           <button className="btn-hover" style={BTN_GHOST} title="Refresh" onClick={load}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -168,36 +173,24 @@ export default function StatsPanel({ visible, onClose, measureRef }: Props) {
         )}
 
         {stats && !loading && !error && (() => {
-          const hasCats   = maxByCategory.length > 0;
           const hasRecent = stats.recent.length > 0;
+          const hasCats   = liveCats.length > 0;
           return (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <Tile index={0} style={{ padding: "16px 16px", background: "var(--surface)" }}>
-                <div style={{ fontSize: 30, fontWeight: 600, color: "var(--text-1)", lineHeight: 1 }}>{stats.total}</div>
-                <div style={{ ...TILE_LABEL, marginTop: 4 }}>Total captures</div>
-              </Tile>
-
-              {hasCats && (
-                <Tile index={1} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <span style={TILE_LABEL}>By category</span>
-                  {maxByCategory.map((c) => (
-                    <CategoryBar key={c.category} category={c.category} count={c.count} pct={c.pct} />
-                  ))}
-                </Tile>
-              )}
-
-              {stats.by_day.length > 0 && (
-                <Tile index={2} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <span style={TILE_LABEL}>Daily activity (30 days)</span>
-                  <DaySparkline days={stats.by_day} />
-                </Tile>
-              )}
-
+              {/* index 0: Recent Activity */}
               {hasRecent && (
-                <Tile index={3} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <Tile index={0} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   <span style={TILE_LABEL}>Recent activity</span>
                   {stats.recent.slice(0, 10).map((r) => (
-                    <div key={r.id} className="row-hover-flat" style={{ display: "flex", flexDirection: "column", gap: 2, padding: "4px 0", borderBottom: "1px solid var(--border-2)" }}>
+                    <div
+                      key={r.id}
+                      role="button"
+                      tabIndex={0}
+                      className="row-hover-flat"
+                      style={{ display: "flex", flexDirection: "column", gap: 2, padding: "4px 0", borderBottom: "1px solid var(--border-2)", cursor: "pointer" }}
+                      onClick={() => openFilePath(r.path)}
+                      onKeyDown={(e) => { if (e.key === "Enter") openFilePath(r.path); }}
+                    >
                       <span style={{
                         fontSize: 9, fontWeight: 600, color: "var(--text-3)",
                         background: "var(--surface-2)", border: "1px solid var(--border)",
@@ -212,6 +205,35 @@ export default function StatsPanel({ visible, onClose, measureRef }: Props) {
                   ))}
                 </Tile>
               )}
+
+              {/* index 1: By Category (live vault folder counts) */}
+              {hasCats && (
+                <Tile index={1} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <span style={TILE_LABEL}>By category</span>
+                  {liveCats.map((c) => (
+                    <CategoryBar
+                      key={c.category}
+                      category={c.category}
+                      count={c.count}
+                      pct={liveCatTotal ? (c.count / liveCatTotal) * 100 : 0}
+                    />
+                  ))}
+                </Tile>
+              )}
+
+              {/* index 2: Daily Activity */}
+              {stats.by_day.length > 0 && (
+                <Tile index={2} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <span style={TILE_LABEL}>Daily activity (30 days)</span>
+                  <DaySparkline days={stats.by_day} />
+                </Tile>
+              )}
+
+              {/* index 3: Total Captures */}
+              <Tile index={3} style={{ padding: "16px 16px", background: "var(--surface)" }}>
+                <div style={{ fontSize: 30, fontWeight: 600, color: "var(--text-1)", lineHeight: 1 }}>{stats.total}</div>
+                <div style={{ ...TILE_LABEL, marginTop: 4 }}>Total captures</div>
+              </Tile>
             </div>
           );
         })()}

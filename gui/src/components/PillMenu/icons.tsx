@@ -15,7 +15,7 @@ export const MENU_LABELS: Record<MenuTarget, string> = {
   vault: "Vault",
   settings: "Settings",
   inbox: "Inbox",
-  stats: "Stats",
+  stats: "History",
   hide: "Hide",
 };
 
