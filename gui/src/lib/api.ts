@@ -388,3 +388,53 @@ export async function discardInboxItem(noteId: string): Promise<void> {
     throw new Error(body.detail ?? "Failed to discard item");
   }
 }
+
+export interface LookSource { n: number; path: string; category: string; filename: string; snippet: string; }
+export type LookChatEvent =
+  | { kind: "sources"; sources: LookSource[] }
+  | { kind: "token"; text: string }
+  | { kind: "done" }
+  | { kind: "error"; message: string };
+
+export async function* streamLookChat(
+  question: string,
+  history: { role: string; content: string }[],
+  signal?: AbortSignal,
+): AsyncGenerator<LookChatEvent> {
+  const response = await fetch(`${BASE}/look/chat`, {
+    method: "POST",
+    headers: await authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ question, history }),
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    const text = await response.text().catch(() => "unknown error");
+    throw new Error(`Server returned ${response.status}: ${text}`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      if (!frame.trim()) continue;
+      let ev = "message", data = "";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event: ")) ev = line.slice(7).trim();
+        if (line.startsWith("data: ")) data = line.slice(6).trim();
+      }
+      if (!data) continue;
+      try {
+        const p = JSON.parse(data);
+        if (ev === "sources") yield { kind: "sources", sources: p.sources ?? [] };
+        else if (ev === "token") yield { kind: "token", text: p.text ?? "" };
+        else if (ev === "done") yield { kind: "done" };
+        else if (ev === "error") yield { kind: "error", message: p.message ?? "error" };
+      } catch { /* skip malformed */ }
+    }
+  }
+}
