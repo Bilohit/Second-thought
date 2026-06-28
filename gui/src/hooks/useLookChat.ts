@@ -59,6 +59,8 @@ export function useLookChat() {
     setStreaming(true);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    const updateLast = (patch: Partial<ChatMessage>) =>
+      setMessages((prev) => { const n = [...prev]; n[n.length - 1] = { ...n[n.length - 1], ...patch }; return n; });
     (async () => {
       try {
         for await (const ev of streamLookChat(
@@ -68,17 +70,9 @@ export function useLookChat() {
           ignoreHistory,
         )) {
           if (ev.kind === "meta") {
-            setMessages((prev) => {
-              const n = [...prev];
-              n[n.length - 1] = { ...n[n.length - 1], confidence: ev.confidence, tier: ev.tier, searching: false };
-              return n;
-            });
+            updateLast({ confidence: ev.confidence, tier: ev.tier, searching: false });
           } else if (ev.kind === "sources") {
-            setMessages((prev) => {
-              const n = [...prev];
-              n[n.length - 1] = { ...n[n.length - 1], sources: ev.sources, searching: false };
-              return n;
-            });
+            updateLast({ sources: ev.sources, searching: false });
           } else if (ev.kind === "token") {
             setMessages((prev) => {
               const n = [...prev];
@@ -88,11 +82,7 @@ export function useLookChat() {
             });
           } else if (ev.kind === "error") {
             logger.warn("look", "chat assistant error shown to user", { message: ev.message });
-            setMessages((prev) => {
-              const n = [...prev];
-              n[n.length - 1] = { ...n[n.length - 1], content: `⚠ ${ev.message}`, searching: false };
-              return n;
-            });
+            updateLast({ content: `⚠ ${ev.message}`, searching: false });
           }
         }
       } catch (err) {

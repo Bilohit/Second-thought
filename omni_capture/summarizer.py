@@ -32,6 +32,7 @@ from typing import Callable, List, Optional
 # probing after the first failure for the rest of the process.
 _tokenize_available: dict[str, bool] = {}
 # Cache of computed counts, keyed on a hash of (base_url, model, text).
+# ponytail: unbounded; cap to N entries if a server runs for days summarizing many large transcripts.
 _count_cache: dict[str, int] = {}
 
 

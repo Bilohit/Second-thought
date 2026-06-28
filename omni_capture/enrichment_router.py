@@ -19,8 +19,10 @@ Supported routes
 from __future__ import annotations
 
 import html
+import ipaddress
 import json
 import re
+import socket
 import threading
 import urllib.parse
 import urllib.request
@@ -51,6 +53,37 @@ _TRACKING_PARAMS = {
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _assert_public_host(url: str) -> None:
+    """Raise ValueError if the URL resolves to a private/loopback/reserved IP.
+
+    Prevents SSRF via /share or clipboard URL captures reaching localhost,
+    cloud metadata endpoints (169.254.169.254), or internal LAN services.
+    Set [capture] allow_private_hosts = true in config.toml to opt out (e.g.
+    for users who capture from a private wiki).
+    """
+    try:
+        from config import get_config
+        if get_config().capture.allow_private_hosts:
+            return
+    except Exception:
+        pass
+
+    host = urllib.parse.urlparse(url).hostname or ""
+    if not host:
+        raise ValueError(f"Could not parse host from URL: {url!r}")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise ValueError(f"Could not resolve host {host!r}: {exc}") from exc
+    for _fam, _type, _proto, _canon, sa in infos:
+        ip = ipaddress.ip_address(sa[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise ValueError(
+                f"Refusing to fetch non-public host {host!r} ({ip}). "
+                "Set [capture] allow_private_hosts = true to allow intranet URLs."
+            )
+
 
 def _strip_tracking_params(url: str) -> str:
     """Remove known tracking query parameters from a URL."""
@@ -102,6 +135,7 @@ def _enrich_web_url(url: str) -> EnrichedPayload:
         from readability import Document
 
         clean_url = _strip_tracking_params(url)
+        _assert_public_host(clean_url)
         req = urllib.request.Request(
             clean_url,
             headers={"User-Agent": "Mozilla/5.0 (SecondThought/1.0)"},

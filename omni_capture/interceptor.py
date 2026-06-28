@@ -80,16 +80,7 @@ def _try_read_image_from_clipboard() -> Optional[bytes]:
         import platform
         os_name = platform.system()
 
-        if os_name == "Windows":
-            from PIL import ImageGrab
-            import io
-            img = ImageGrab.grabclipboard()
-            if img is not None:
-                buf = io.BytesIO()
-                img.save(buf, format="PNG")
-                return buf.getvalue()
-
-        elif os_name == "Darwin":
+        if os_name in ("Windows", "Darwin"):
             from PIL import ImageGrab
             import io
             img = ImageGrab.grabclipboard()

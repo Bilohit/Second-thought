@@ -13,6 +13,12 @@ export async function openVaultPath(path: string): Promise<void> { await openPat
 
 const BASE = "http://localhost:7070";
 
+async function assertOk(r: Response, fallback: string): Promise<Response> {
+  if (r.ok) return r;
+  const body = await r.json().catch(() => ({} as { detail?: string }));
+  throw new Error(body.detail ?? fallback);
+}
+
 /** Headers carrying the shared secret. Every route except /health requires this. */
 async function authHeaders(extra?: Record<string, string>): Promise<Record<string, string>> {
   const secret = await getGuiSecret();
@@ -280,10 +286,7 @@ export async function createVaultCategory(name: string): Promise<void> {
     headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ name }),
   });
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    throw new Error(body.detail ?? "Failed to create category");
-  }
+  await assertOk(r, "Failed to create category");
 }
 
 export async function renameVaultCategory(oldName: string, newName: string): Promise<void> {
@@ -292,10 +295,7 @@ export async function renameVaultCategory(oldName: string, newName: string): Pro
     headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ new_name: newName }),
   });
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    throw new Error(body.detail ?? "Failed to rename category");
-  }
+  await assertOk(r, "Failed to rename category");
 }
 
 export async function updateCategoryDescription(
@@ -310,10 +310,7 @@ export async function updateCategoryDescription(
       body: JSON.stringify({ description }),
     },
   );
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    throw new Error(body.detail ?? "Failed to update description");
-  }
+  await assertOk(r, "Failed to update description");
 }
 
 export async function deleteVaultCategory(name: string, force = false): Promise<void> {
@@ -321,10 +318,7 @@ export async function deleteVaultCategory(name: string, force = false): Promise<
     `${BASE}/vault/categories/${encodeURIComponent(name)}?force=${force}`,
     { method: "DELETE", headers: await authHeaders() },
   );
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    throw new Error(body.detail ?? "Failed to delete category");
-  }
+  await assertOk(r, "Failed to delete category");
 }
 
 export async function getVaultCategoryFiles(
@@ -383,10 +377,7 @@ export async function approveInboxItem(noteId: string, targetCategory?: string):
     headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ target_category: targetCategory ?? null }),
   });
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    throw new Error(body.detail ?? "Failed to approve item");
-  }
+  await assertOk(r, "Failed to approve item");
   return r.json();
 }
 
@@ -394,10 +385,7 @@ export async function suggestCategories(noteId: string): Promise<{ suggestions: 
   const r = await fetch(`${BASE}/inbox/${encodeURIComponent(noteId)}/suggest-categories`, {
     headers: await authHeaders(),
   });
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    throw new Error(body.detail ?? "Failed to suggest categories");
-  }
+  await assertOk(r, "Failed to suggest categories");
   return r.json();
 }
 
@@ -406,10 +394,7 @@ export async function discardInboxItem(noteId: string): Promise<void> {
     method: "DELETE",
     headers: await authHeaders(),
   });
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    throw new Error(body.detail ?? "Failed to discard item");
-  }
+  await assertOk(r, "Failed to discard item");
 }
 
 export interface LookSource { n: number; path: string; category: string; filename: string; snippet: string; }

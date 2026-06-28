@@ -52,7 +52,7 @@ Security
              If OMNI_GUI_SECRET is unset the check is skipped with a startup warning.
 """
 from __future__ import annotations
-import asyncio, base64, hashlib, json, os, shutil, sys, threading, time, uuid
+import asyncio, base64, hashlib, hmac, json, os, shutil, sys, threading, time, uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import AsyncIterator, List, Optional
@@ -108,6 +108,11 @@ _executor = ThreadPoolExecutor(max_workers=2)
 # Separate pool for long-running background jobs (e.g. YouTube transcript
 # fetch + summarisation) so they cannot starve normal /capture requests.
 _bg_executor = ThreadPoolExecutor(max_workers=2)
+
+# Max base64-encoded payload size (64 MB encoded ≈ 48 MB decoded).
+# A 4K PNG screenshot is ~20-30 MB; this cap blocks accidental or deliberate
+# memory/disk exhaustion without affecting any real capture.
+_MAX_B64_LEN = 64 * 1024 * 1024
 CONFIG_PATH = Path(__file__).parent / "config.toml"
 
 # Set True once warmup finishes (success or skip) — a skipped warmup
@@ -125,11 +130,9 @@ def _warm_model() -> None:
         try:
             from config import reload_config
             cfg = reload_config()
-            base = cfg.ollama.base_url.rstrip("/")
-            if not base.endswith("/v1"):
-                base += "/v1"
+            from llm_engine import _normalize_base_url, OLLAMA_API_KEY
             from openai import OpenAI
-            client = OpenAI(base_url=base, api_key="ollama")
+            client = OpenAI(base_url=_normalize_base_url(cfg.ollama.base_url), api_key=OLLAMA_API_KEY)
             client.chat.completions.create(
                 model=cfg.ollama.model,
                 messages=[{"role": "user", "content": "ok"}],
@@ -145,32 +148,25 @@ def _warm_model() -> None:
 
 
 @app.on_event("startup")
-def _reindex_bodies() -> None:
-    """Best-effort, run-once backfill of captures.body_excerpt for rows
-    written before full-text body indexing existed. Gated by a _meta flag
-    inside reindex_bodies itself, so this is cheap on every later startup."""
+def _startup_db_tasks() -> None:
+    """Best-effort startup DB maintenance: orphan purge then body-excerpt backfill.
+    Run sequentially in one task so they share one DB open and don't race."""
     def _run():
-        try:
-            from index_writer import reindex_bodies
-            n = reindex_bodies(_get_vault_root())
-            if n:
-                print(f"[Reindex] body_excerpt backfilled for {n} rows", flush=True)
-        except Exception as exc:
-            print(f"[Reindex] skipped: {exc}", flush=True)
-    _bg_executor.submit(_run)
-
-
-@app.on_event("startup")
-def _purge_orphan_index_entries() -> None:
-    """Best-effort startup orphan purge — removes index rows for deleted files."""
-    def _run():
+        root = _get_vault_root()
         try:
             from vault_sync import purge_orphan_index_entries
-            n = purge_orphan_index_entries(_get_vault_root())
+            n = purge_orphan_index_entries(root)
             if n:
                 print(f"[VaultSync] startup purge removed {n} orphan rows", flush=True)
         except Exception as exc:
             print(f"[VaultSync] startup purge skipped: {exc}", flush=True)
+        try:
+            from index_writer import reindex_bodies
+            n = reindex_bodies(root)
+            if n:
+                print(f"[Reindex] body_excerpt backfilled for {n} rows", flush=True)
+        except Exception as exc:
+            print(f"[Reindex] skipped: {exc}", flush=True)
     _bg_executor.submit(_run)
 
 # ---------------------------------------------------------------------------
@@ -254,7 +250,7 @@ def _require_secret(x_omni_secret: Optional[str] = Header(default=None)) -> None
     """
     if not _GUI_SECRET:
         return
-    if x_omni_secret != _GUI_SECRET:
+    if not hmac.compare_digest(x_omni_secret or "", _GUI_SECRET):
         raise HTTPException(status_code=403, detail="Invalid or missing X-Omni-Secret.")
 
 
@@ -320,7 +316,9 @@ def _safe_category_dir(root: Path, name: str) -> Path:
 
     Raises HTTPException(400) on any invalid / unsafe name.
     """
+    import re as _re
     cleaned = _safe_name(name)
+    cleaned = _re.sub(r"[. ]+$", "", cleaned)  # Windows silently strips trailing dots/spaces
     if not cleaned or cleaned in (".", ".."):
         raise HTTPException(status_code=400, detail="Invalid category name.")
 
@@ -383,6 +381,12 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
             _bg_executor.submit(_run_youtube_job, job_id, content, cfg)
             emit("job", job_id=job_id, kind="youtube", status="queued")
             return
+
+        if content_type in ("image_b64", "audio_b64") and len(content) > _MAX_B64_LEN:
+            raise ValueError(
+                f"Payload too large ({len(content):,} bytes encoded, max {_MAX_B64_LEN:,}). "
+                "Reduce image/audio size before capturing."
+            )
 
         if content_type == "image_b64":
             # Decoded bytes -> InputPayload with image_bytes;
@@ -1124,6 +1128,9 @@ async def approve_inbox(
     root = _get_vault_root()
     cfg = get_config()
 
+    if body.target_category:
+        _safe_category_dir(root, body.target_category)  # raises HTTP 400 on traversal
+
     is_new = bool(body.target_category) and not (root / body.target_category).exists()
     sample_text = get_scratchpad_item_text(note_id, root, cfg.vault.scratchpad_folder) if is_new else None
 
@@ -1131,6 +1138,16 @@ async def approve_inbox(
         dest = approve_scratchpad_item(note_id, root, cfg.vault.scratchpad_folder, target_category=body.target_category)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+    try:
+        from index_writer import upsert_capture_from_file
+        from vector_store import index_note
+        upsert_capture_from_file(root, dest)
+        if cfg.vector.enabled:
+            note_text = dest.read_text(encoding="utf-8", errors="ignore")
+            index_note(root, dest, note_text, cfg.ollama.base_url, cfg.vector.embed_model)
+    except Exception as _exc:
+        print(f"[server] approve re-index failed (non-fatal): {_exc}", flush=True)
 
     if is_new and cfg.capture.auto_describe_new_folders:
         from storage_engine import generate_category_description, write_category_description

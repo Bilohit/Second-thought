@@ -74,6 +74,10 @@ class CaptureConfig:
     # When a folder is created through the app (inbox approve or Vault Manager
     # "+"), auto-generate an LLM routing description for it. Opt-in.
     auto_describe_new_folders: bool = False
+    # Allow fetching private/loopback/intranet URLs (SSRF guard opt-out).
+    # Default false; set to true only when capturing from a private wiki or
+    # localhost service you control.
+    allow_private_hosts: bool = False
     # Map-Reduce token budgeting for the async YouTube summarizer.
     # max_chunk_tokens = summary_model_context_tokens - summary_safety_buffer_tokens - summary_reserved_output_tokens
     summary_model_context_tokens: int   = 8192
@@ -202,6 +206,7 @@ def load_config(config_path: Path | None = None) -> Config:
     cfg.capture.ocr_fast_path_enabled = bool(cap_raw.get("ocr_fast_path_enabled", True))
     cfg.capture.ocr_text_min_chars    = int(cap_raw.get("ocr_text_min_chars", 10))
     cfg.capture.auto_describe_new_folders = bool(cap_raw.get("auto_describe_new_folders", False))
+    cfg.capture.allow_private_hosts       = bool(cap_raw.get("allow_private_hosts", False))
 
     cfg.capture.summary_model_context_tokens   = int(cap_raw.get("summary_model_context_tokens", 8192))
     cfg.capture.summary_safety_buffer_tokens   = int(cap_raw.get("summary_safety_buffer_tokens", 256))

@@ -25,6 +25,7 @@ import type { MonitorInfo } from "../lib/monitor";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
   INPUT_STYLE, BTN_SECONDARY, BTN_PRIMARY,
+  focusRing, blurRing,
 } from "./ui/styles";
 import { Tabs } from "./ui/Tabs";
 
@@ -751,14 +752,8 @@ export default function SettingsPanel({
                   onChange={(e) => { setVaultRoot(e.target.value); markDirty(); }}
                   placeholder="~/Documents/Obsidian Vault"
                   style={{ ...INPUT_STYLE, flex: 1 }}
-                  onFocus={(e) => {
-                    (e.target as HTMLInputElement).style.borderColor = "color-mix(in srgb, var(--accent) 50%, transparent)";
-                    (e.target as HTMLInputElement).style.boxShadow = "0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent)";
-                  }}
-                  onBlur={(e) => {
-                    (e.target as HTMLInputElement).style.borderColor = "var(--border)";
-                    (e.target as HTMLInputElement).style.boxShadow = "none";
-                  }}
+                  onFocus={focusRing}
+                  onBlur={blurRing}
                 />
                 <button
                   className="btn-hover"
@@ -785,14 +780,8 @@ export default function SettingsPanel({
                 onChange={(e) => { setModel(e.target.value); markDirty(); }}
                 placeholder="llama3.2"
                 style={INPUT_STYLE}
-                onFocus={(e) => {
-                  (e.target as HTMLInputElement).style.borderColor = "color-mix(in srgb, var(--accent) 50%, transparent)";
-                  (e.target as HTMLInputElement).style.boxShadow = "0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent)";
-                }}
-                onBlur={(e) => {
-                  (e.target as HTMLInputElement).style.borderColor = "var(--border)";
-                  (e.target as HTMLInputElement).style.boxShadow = "none";
-                }}
+                onFocus={focusRing}
+                onBlur={blurRing}
               />
             </Field>
 

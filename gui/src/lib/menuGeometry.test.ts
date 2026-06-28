@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { computeMenuGeometry, clampPillWindowToMonitor, computeCapsuleMenuGeometry, computeProportionalMonitorMove, computeMinimalMenuWindow } from "./menuGeometry";
 import { CAPSULE_CLOSED_W } from "../components/PillMenu/CapsuleMenu";
+import { anchorPosition, type PillAnchor } from "./pillAnchor";
 
 // Regression (for_sonnet_capsule_offscreen.md): a right-edge capsule grows its
 // open window toward screen center, so the grown window's top-left is shifted
@@ -297,6 +298,48 @@ describe("computeMinimalMenuWindow", () => {
       expect(opened).toBeTruthy();
     }
   });
+});
+
+// Regression (radial-pinned-jump): opening the radial menu on a corner/edge
+// PINNED pill used to centre the fan on the grown window and park the pill in
+// the window's top-left corner, so the pill jumped ~200px inward and the fan
+// was clipped. The fix feeds the anchored idle top-left through the SAME
+// computeMinimalMenuWindow the custom path uses; this locks the invariant that
+// the visible pill's on-screen centre is identical before and after open for
+// every fixed anchor.
+describe("pinned radial open keeps the anchored pill centre fixed", () => {
+  const area = { x: 0, y: 0, w: 1920, h: 1080, scale: 1 };
+  const PILL_BOX = 48; // PILL_DIMS.minimal (36) + PILL_MARGIN*2 (12)
+  const MENU_BOX = 260;
+  const MARGIN = 6;
+  const anchors: PillAnchor[] = ["tl", "tc", "tr", "lc", "rc", "bl", "bc", "br"];
+
+  for (const anchor of anchors) {
+    it(`anchor ${anchor}: pill centre unchanged on open`, () => {
+      const idleTopLeftLogical = anchorPosition(anchor, PILL_BOX, PILL_BOX, area)!;
+      const idleCenter = { x: idleTopLeftLogical.x + PILL_BOX / 2, y: idleTopLeftLogical.y + PILL_BOX / 2 };
+
+      const { windowTopLeftLogical, wrapperOffset } = computeMinimalMenuWindow({
+        open: true,
+        idleTopLeftLogical,
+        idlePillBoxW: PILL_BOX,
+        idlePillBoxH: PILL_BOX,
+        pillW: 36,
+        pillH: 36,
+        menuBoxW: MENU_BOX,
+        menuBoxH: MENU_BOX,
+        margin: MARGIN,
+        monitorBounds: area,
+      });
+
+      const pillCenter = {
+        x: windowTopLeftLogical.x + wrapperOffset.x + 36 / 2,
+        y: windowTopLeftLogical.y + wrapperOffset.y + 36 / 2,
+      };
+      expect(pillCenter.x).toBeCloseTo(idleCenter.x, 5);
+      expect(pillCenter.y).toBeCloseTo(idleCenter.y, 5);
+    });
+  }
 });
 
 describe("computeCapsuleMenuGeometry", () => {

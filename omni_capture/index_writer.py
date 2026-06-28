@@ -46,6 +46,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from frontmatter import strip_frontmatter
+
 # ponytail: 64k cap; raise or chunk FTS if vault notes routinely exceed this
 _BODY_EXCERPT_MAX_CHARS = 65536
 _BODY_INDEX_META_KEY = f"body_indexed_v{_BODY_EXCERPT_MAX_CHARS}"
@@ -288,8 +290,7 @@ def _read_body_excerpt(path: str) -> Optional[str]:
         text = Path(path).read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return None
-    text = re.sub(r"^---\n.*?\n---\n", "", text, count=1, flags=re.DOTALL)
-    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", strip_frontmatter(text)).strip()
     return text[:_BODY_EXCERPT_MAX_CHARS] if text else None
 
 

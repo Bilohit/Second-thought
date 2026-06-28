@@ -974,6 +974,12 @@ export default function App() {
   // without touching the window or committing prev-state refs, so a fast
   // double-toggle interrupts and reverses instead of racing/glitching.
   const reconcileToken = useRef(0);
+  // Boot visibility (persistence): the OS window starts hidden (tauri.conf
+  // visible:false) and is normally shown only by the hotkey/tray. But if the
+  // last session left Stay Pinned on, the pill should reappear on launch at its
+  // persisted position/mode — shown here, after the first reconcile has put the
+  // window at the right place, so it never flashes at the default coordinate.
+  const bootShownRef = useRef(false);
   useEffect(() => {
     const token = ++reconcileToken.current;
     const pillModeActive = displayMode !== "full";
@@ -1103,20 +1109,48 @@ export default function App() {
         // position/emit to anymore. Keep the pill's visual center fixed
         // while the window grows around it, same discipline as capsule.
         if (pillAnchor !== "custom") {
-          // Fixed anchor: derive position deterministically — no live read,
-          // no drift. The grown window is anchored to the same corner as the
-          // idle pill; fan geometry uses the window center as pill center
-          // (wrapper offset stays at PILL_MARGIN, i.e. the pill sits inside
-          // the top-left of the grown window at its own corner).
+          // Fixed anchor: derive the idle pill's anchored top-left
+          // deterministically (no live read, no drift), then run the SAME
+          // geometry as the custom branch below. The old code centred the fan
+          // on the grown window and parked the pill in the window's top-left
+          // corner — for a corner/edge anchor the grown window is anchored to
+          // that corner, so the pill jumped ~200px inward on open and the fan
+          // (centred on the window, not the visible pill) was partially clipped.
           try {
             const area = pickedMonitor?.workArea ?? await getActiveWorkArea();
-            targetPos = anchoredMenuPosition(pillAnchor, targetWinW, targetWinH, area);
+            const idleTopLeftLogical = anchorPosition(pillAnchor, pillBoxW, pillBoxH, area);
             if (token !== reconcileToken.current) return;
-            if (targetPos) {
-              setMinimalWrapperOffset({ x: PILL_MARGIN, y: PILL_MARGIN });
-              const cx = targetPos.x + targetWinW / 2, cy = targetPos.y + targetWinH / 2;
-              if (token !== reconcileToken.current) return;
-              setRadialPillGeometry({ cx, cy, sw: area.w, sh: area.h, originX: area.x, originY: area.y });
+            if (idleTopLeftLogical) {
+              logger.info("menu", "menu opened", { displayMode, pos: idleTopLeftLogical });
+              const pillCenterLogical = {
+                x: idleTopLeftLogical.x + pillBoxW / 2,
+                y: idleTopLeftLogical.y + pillBoxH / 2,
+              };
+              // Same pure function the custom branch and the close path call —
+              // keeps the pill's visual centre fixed under the monitor clamp,
+              // and the wrapper offset shifts only when the clamp moves the
+              // window without moving the pill. monitorBounds = work area is a
+              // hard boundary (anchored idle pill already sits inside it).
+              const { windowTopLeftLogical, wrapperOffset } = computeMinimalMenuWindow({
+                open: true,
+                idleTopLeftLogical,
+                idlePillBoxW: pillBoxW,
+                idlePillBoxH: pillBoxH,
+                pillW: PILL_DIMS.minimal.w,
+                pillH: PILL_DIMS.minimal.h,
+                menuBoxW: targetWinW,
+                menuBoxH: targetWinH,
+                margin: PILL_MARGIN,
+                monitorBounds: area,
+              });
+              targetPos = windowTopLeftLogical;
+              setMinimalWrapperOffset(wrapperOffset);
+              // Fan anchored to the real pill centre (not the window centre);
+              // unifiedFan's edge-aware arc keeps it on-screen.
+              setRadialPillGeometry({
+                cx: pillCenterLogical.x, cy: pillCenterLogical.y,
+                sw: area.w, sh: area.h, originX: area.x, originY: area.y,
+              });
             }
           } catch { /* ignore */ }
         } else {
@@ -1338,6 +1372,16 @@ export default function App() {
         endProgrammaticMove();
       }
       await geoSnapshot("apply.afterMove", { showPill, menuOpen, targetWinW, targetWinH });
+
+      // Boot: reveal the pill once, after it's correctly positioned, only if
+      // the last session left Stay Pinned on. Otherwise the window stays hidden
+      // until a hotkey/tray trigger (unchanged behavior).
+      if (!bootShownRef.current) {
+        bootShownRef.current = true;
+        if (pillPinned && showPill) {
+          try { await getCurrentWindow().show(); } catch { /* ignore */ }
+        }
+      }
 
       // Only now has the window actually finished growing to fit the fan —
       // reveal it here, never earlier, so it can't paint into a still-pill-

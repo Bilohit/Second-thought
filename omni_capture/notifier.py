@@ -43,39 +43,32 @@ def _notify_macos(title: str, message: str, subtitle: str = "") -> None:
     subprocess.run(["osascript", "-e", script], check=False, capture_output=True)
 
 
-def _notify_windows(title: str, message: str, subtitle: str = "") -> None:
-    full_title = f"{title} — {subtitle}" if subtitle else title
+def _plyer_notify(full_title: str, message: str) -> None:
+    try:
+        from plyer import notification  # type: ignore
+        notification.notify(title=full_title, message=message, timeout=5)
+    except Exception:
+        pass
+
+
+def _notify_windows(full_title: str, message: str) -> None:
     try:
         from win10toast import ToastNotifier  # type: ignore
         ToastNotifier().show_toast(full_title, message, duration=5, threaded=True)
         return
     except ImportError:
         pass
-
-    # Fallback: plyer
-    try:
-        from plyer import notification  # type: ignore
-        notification.notify(title=full_title, message=message, timeout=5)
-    except Exception:
-        pass
+    _plyer_notify(full_title, message)
 
 
-def _notify_linux(title: str, message: str, subtitle: str = "") -> None:
-    full_title = f"{title} — {subtitle}" if subtitle else title
-    # Try notify-send first (requires libnotify)
+def _notify_linux(full_title: str, message: str) -> None:
     result = subprocess.run(
         ["notify-send", full_title, message],
         check=False, capture_output=True,
     )
     if result.returncode == 0:
         return
-
-    # Fallback: plyer
-    try:
-        from plyer import notification  # type: ignore
-        notification.notify(title=full_title, message=message, timeout=5)
-    except Exception:
-        pass
+    _plyer_notify(full_title, message)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -95,12 +88,13 @@ def send_notification(
         subtitle: Optional subtitle shown on macOS (e.g. "CRM").
     """
     try:
+        full_title = f"{title} — {subtitle}" if subtitle else title
         if _OS == "Darwin":
             _notify_macos(title, message, subtitle)
         elif _OS == "Windows":
-            _notify_windows(title, message, subtitle)
+            _notify_windows(full_title, message)
         else:
-            _notify_linux(title, message, subtitle)
+            _notify_linux(full_title, message)
     except Exception as exc:
         # Notification failure must never surface to the user as a crash
         print(f"[Notifier] Non-fatal: {exc}", file=sys.stderr)

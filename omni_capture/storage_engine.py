@@ -35,6 +35,7 @@ from typing import Dict, List, Optional
 
 from models import CaptureOutput
 from config import DEFAULT_VAULT_ROOT
+from frontmatter import strip_frontmatter
 
 logger = logging.getLogger(__name__)
 
@@ -829,7 +830,7 @@ def get_scratchpad_item_text(
     if item is None:
         return None
     text = item.read_text(encoding="utf-8", errors="ignore")
-    return re.sub(r"^---\n.*?\n---\n", "", text, count=1, flags=re.DOTALL).strip()
+    return strip_frontmatter(text).strip()
 
 
 def discard_scratchpad_item(
@@ -873,8 +874,9 @@ def _find_scratchpad_item(
 
 
 def _extract_frontmatter_field(text: str, field: str) -> Optional[str]:
-    pattern = r"^" + re.escape(field) + r":\s*(.+)$"
-    m = re.search(pattern, text, re.MULTILINE)
+    fm_match = re.match(r"\A---\n(.*?)\n---\n", text, re.DOTALL)
+    block = fm_match.group(1) if fm_match else ""
+    m = re.search(r"^" + re.escape(field) + r":\s*(.+)$", block, re.MULTILINE)
     if m:
         return m.group(1).strip().strip('"').strip("'")
     return None

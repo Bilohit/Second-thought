@@ -316,12 +316,7 @@ fn set_hotkey(app: AppHandle, state: tauri::State<AppState>, hotkey: String) -> 
         let _ = app.global_shortcut().unregister(prev);
     }
 
-    let app_for_handler = app.clone();
-    let register_result = app.global_shortcut().on_shortcut(new_shortcut, move |_app, _sc, event| {
-        if event.state == ShortcutState::Pressed {
-            show_window_emit_debounced(&app_for_handler, "trigger-capture");
-        }
-    });
+    let register_result = app.global_shortcut().on_shortcut(new_shortcut, capture_shortcut_handler(app.clone()));
 
     match register_result {
         Ok(()) => {
@@ -330,12 +325,7 @@ fn set_hotkey(app: AppHandle, state: tauri::State<AppState>, hotkey: String) -> 
         }
         Err(e) => {
             if let Some(prev) = previous {
-                let app_for_rollback = app.clone();
-                let _ = app.global_shortcut().on_shortcut(prev, move |_app, _sc, event| {
-                    if event.state == ShortcutState::Pressed {
-                        show_window_emit_debounced(&app_for_rollback, "trigger-capture");
-                    }
-                });
+                let _ = app.global_shortcut().on_shortcut(prev, capture_shortcut_handler(app.clone()));
             }
             Err(format!("Failed to register hotkey '{hotkey}': {e}"))
         }
@@ -698,6 +688,18 @@ const HOTKEY_DEBOUNCE_MS: u64 = 350;
 
 static LAST_HOTKEY_FIRE_MS: AtomicU64 = AtomicU64::new(0);
 
+/// Build the `on_shortcut` closure used for every capture hotkey registration.
+/// All three sites (setup, set_hotkey register, set_hotkey rollback) share one body.
+fn capture_shortcut_handler<R: Runtime>(
+    app: AppHandle<R>,
+) -> impl Fn(&AppHandle<R>, &tauri_plugin_global_shortcut::Shortcut, tauri_plugin_global_shortcut::ShortcutEvent) + Send + Sync + 'static {
+    move |_app, _sc, event| {
+        if event.state == ShortcutState::Pressed {
+            show_window_emit_debounced(&app, "trigger-capture");
+        }
+    }
+}
+
 /// Debounced version of `show_window_emit` for hotkey press handlers — every
 /// `on_shortcut` callback (primary, rollback, and the one installed by
 /// `set_hotkey`) should route through this instead of calling
@@ -811,12 +813,7 @@ pub fn run() {
                 .unwrap_or_else(|| "ctrl+shift+space".to_string());
 
             if let Some(shortcut) = parse_shortcut(&hotkey_str) {
-                let app_handle = app.handle().clone();
-                app.global_shortcut().on_shortcut(shortcut, move |_app, _sc, event| {
-                    if event.state == ShortcutState::Pressed {
-                        show_window_emit_debounced(&app_handle, "trigger-capture");
-                    }
-                })?;
+                app.global_shortcut().on_shortcut(shortcut, capture_shortcut_handler(app.handle().clone()))?;
                 if let Some(state) = app.try_state::<AppState>() {
                     if let Ok(mut guard) = state.active_shortcut.lock() {
                         *guard = Some(shortcut);

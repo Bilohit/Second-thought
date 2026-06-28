@@ -16,6 +16,7 @@ import numpy as np
 from vector_store import _embed, _connect, _MAX_SNIPPET_CHARS  # reuse Ollama embed + DB
 from index_writer import search as fts_search
 from look_log import look_debug, look_warn
+from frontmatter import strip_frontmatter
 
 REFUSAL = "Information not found in vault"
 _RRF_K = 60
@@ -97,8 +98,7 @@ def _read_snippet(p: Path, query: str = "") -> str:
         text = p.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return ""
-    text = re.sub(r"^---\r?\n.*?\r?\n---\r?\n", "", text, count=1, flags=re.DOTALL)
-    text = " ".join(text.split())
+    text = " ".join(strip_frontmatter(text).split())
     if not text:
         return ""
     q = (query or "").strip()
