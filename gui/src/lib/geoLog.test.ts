@@ -14,19 +14,19 @@ beforeEach(() => {
 });
 
 describe("geo debug toggle", () => {
-  it("defaults to enabled with no localStorage key set", () => {
-    expect(isGeoDebugEnabled()).toBe(true);
-  });
-
-  it("setGeoDebugEnabled(false) persists and disables", () => {
-    setGeoDebugEnabled(false);
+  it("defaults to disabled with no localStorage key set", () => {
     expect(isGeoDebugEnabled()).toBe(false);
   });
 
-  it("setGeoDebugEnabled(true) re-enables explicitly", () => {
-    setGeoDebugEnabled(false);
+  it("setGeoDebugEnabled(true) enables", () => {
     setGeoDebugEnabled(true);
     expect(isGeoDebugEnabled()).toBe(true);
+  });
+
+  it("setGeoDebugEnabled(false) disables", () => {
+    setGeoDebugEnabled(true);
+    setGeoDebugEnabled(false);
+    expect(isGeoDebugEnabled()).toBe(false);
   });
 });
 
@@ -41,6 +41,7 @@ describe("geoClamp throttling for hot tags", () => {
   };
 
   it("drops back-to-back drag.tick calls within the throttle window", () => {
+    setGeoDebugEnabled(true);
     const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
     geoClamp("drag.tick", clampArgs);
     geoClamp("drag.tick", clampArgs);
@@ -49,6 +50,7 @@ describe("geoClamp throttling for hot tags", () => {
   });
 
   it("does not throttle a non-hot tag like restore", () => {
+    setGeoDebugEnabled(true);
     const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
     geoClamp("restore", clampArgs);
     geoClamp("restore", clampArgs);

@@ -2,7 +2,7 @@
 rag_engine.py — strict local RAG for the Look panel's Chat mode.
 
 Hybrid retrieval (semantic cosine + FTS5 lexical, fused with Reciprocal Rank
-Fusion) over the existing derived indexes, plus a tier-aware system prompt.
+Fusion) over the existing derived indexes, plus vault/talk system prompts.
 Kept separate from the capture pipeline (main.py/server.py) by design.
 """
 from __future__ import annotations
@@ -11,9 +11,7 @@ import re
 from pathlib import Path
 from typing import TypedDict
 
-import numpy as np
-
-from vector_store import _embed, _connect, _MAX_SNIPPET_CHARS  # reuse Ollama embed + DB
+from vector_store import _embed, _connect, _MAX_SNIPPET_CHARS, _cosine_all  # reuse Ollama embed + DB
 from index_writer import search as fts_search
 from look_log import look_debug, look_warn
 from frontmatter import strip_frontmatter
@@ -28,16 +26,16 @@ DEFAULT_CHAT_SYSTEM_PROMPT = (
     "use your general knowledge. Do not invent facts about the user's personal notes."
 )
 
-STRICT_PREFIX = "/strict"
+TALK_PREFIX = "/talk"
 
 
-def parse_strict_prefix(question: str) -> tuple[str, bool]:
-    """Return (question without /strict prefix, strict_flag). Prefix is case-insensitive."""
+def parse_chat_mode(question: str) -> tuple[str, str]:
+    """Return (question, mode). Default vault (strict RAG); /talk = general knowledge."""
     q = (question or "").strip()
-    if not q.lower().startswith(STRICT_PREFIX):
-        return q, False
-    rest = q[len(STRICT_PREFIX):].lstrip()
-    return rest, True
+    if not q.lower().startswith(TALK_PREFIX):
+        return q, "vault"
+    rest = q[len(TALK_PREFIX):].lstrip()
+    return rest, "talk"
 
 
 # Topic-question prefixes whose boilerplate is stripped before retrieval.
@@ -70,23 +68,12 @@ def _semantic_ranked(vault_root: Path, query: str, base_url: str, embed_model: s
         if not rows:
             return [], 0.0, {}
         q = _embed(query, base_url, embed_model)
-        qv = np.asarray(q, dtype=np.float32)
-        qn = np.linalg.norm(qv) or 1.0
-        qv = qv / qn
-        scored: list[tuple[float, str]] = []
-        sim_by_rel: dict[str, float] = {}
-        for rel, blob, _doc, _cat in rows:
-            emb = np.frombuffer(blob, dtype=np.float32)
-            n = np.linalg.norm(emb)
-            if n == 0:
-                continue
-            sim = float(np.dot(qv, emb / n))
-            sim_by_rel[rel] = sim
-            scored.append((sim, rel))
-        scored.sort(key=lambda t: t[0], reverse=True)
-        best = scored[0][0] if scored else 0.0
-        paths = [rel for _s, rel in scored[:limit]]
-        sim_by_abs = {str(vault_root / rel): sim for rel, sim in sim_by_rel.items()}
+        results = _cosine_all(q, rows)
+        if not results:
+            return [], 0.0, {}
+        best = results[0][0]
+        paths = [rel for _s, rel, _doc in results[:limit]]
+        sim_by_abs = {str(vault_root / rel): sim for sim, rel, _doc in results}
         return paths, best, sim_by_abs
     except Exception as exc:
         look_warn(f"semantic retrieval failed: {exc}")
@@ -133,31 +120,19 @@ def _expand_query(question: str, history: list[dict] | None) -> str:
     return remainder or question.strip()
 
 
-def _classify_tier(confidence: float, has_sources: bool,
-                   min_similarity_high: float, min_similarity_medium: float) -> str:
-    if not has_sources:
-        return "none"
-    if confidence >= min_similarity_high:
-        return "high"
-    if confidence >= min_similarity_medium:
-        return "medium"
-    return "low"
-
-
 def hybrid_retrieve(
     vault_root: Path,
     question: str,
     base_url: str,
     embed_model: str,
     top_k: int = 8,
-    min_similarity_high: float = 0.45,
-    min_similarity_medium: float = 0.35,
     min_similarity_floor: float = 0.32,
     history: list[dict] | None = None,
+    **_ignored: object,
 ) -> tuple[list[Source], float, str]:
     """
     Return (sources, confidence, tier).
-    tier: "high" | "medium" | "low" | "none"
+    tier: "high" when sources found, else "none".
     Sources below min_similarity_floor are dropped — FTS-only noise never injected.
     """
     question = (question or "").strip()
@@ -207,50 +182,37 @@ def hybrid_retrieve(
         return [], best_sim, "none"
 
     confidence = best_sim
-    if any(ap in fts_paths for ap in ranked):
-        confidence = max(confidence, min_similarity_medium)
-    tier = _classify_tier(confidence, True, min_similarity_high, min_similarity_medium)
 
     look_debug(
         f"hybrid_retrieve q={question!r} expand={retrieval_query!r} "
         f"sem={len(sem_paths)} fts={len(fts_rows)} sources={len(sources)} "
-        f"best_sim={best_sim:.3f} floor={min_similarity_floor} tier={tier}"
+        f"best_sim={best_sim:.3f} floor={min_similarity_floor} tier=high"
     )
-    return sources, confidence, tier
+    return sources, confidence, "high"
 
 
 def build_system_prompt(
     sources: list[Source],
-    tier: str,
+    mode: str,
     custom_prompt: str | None = None,
 ) -> str:
-    """Build the system message. tier='general' → no vault context injected."""
+    """Build the system message. mode='talk' → general knowledge; vault → CONTEXT-only RAG."""
     base = (custom_prompt or "").strip() or DEFAULT_CHAT_SYSTEM_PROMPT
-    if tier == "general" or not sources:
+    if mode == "talk" or not sources:
         return base
 
     numbered = "\n\n".join(
         f"[{s['n']}] ({s['category']}/{s['filename']})\n{s['snippet']}" for s in sources
     )
-    if tier == "high":
-        rules = (
-            "Rules:\n"
-            "1. Use only facts stated in the CONTEXT. Do not use outside knowledge.\n"
-            "2. After every sentence that uses a source, cite it inline as [n]. Cite multiple as [1][3].\n"
-            "3. If the CONTEXT does not contain enough information, reply EXACTLY: " + REFUSAL + "\n"
-            "4. Do not apologize, speculate, or describe what the vault might contain.\n"
-            "5. Be concise. Prefer the user's own wording from the notes."
-        )
-    else:
-        rules = (
-            "Rules:\n"
-            "1. Use only facts and content stated in the CONTEXT — the user's personal vault notes.\n"
-            "2. Synthesize everything relevant about the topic from all provided sources.\n"
-            "3. After every sentence that uses a source, cite it inline as [n]. Cite multiple as [1][3].\n"
-            "4. If coverage is partial, briefly note what is and isn't covered — do not invent gaps.\n"
-            "5. Do not use outside knowledge. Do not apologize or speculate beyond the notes.\n"
-            "6. Be thorough but concise."
-        )
+    rules = (
+        "Rules:\n"
+        "1. Use only facts stated in the CONTEXT. Do not use outside knowledge.\n"
+        "2. Synthesize everything in CONTEXT that answers the user's question; "
+        "broad questions warrant a broad summary from the notes.\n"
+        "3. After every sentence that uses a source, cite it inline as [n]. Cite multiple as [1][3].\n"
+        "4. Do not apologize, speculate, or describe what the vault might contain.\n"
+        "5. Be concise. Prefer the user's own wording from the notes."
+    )
     return (
         f"{base}\n\n"
         "You are answering from the user's vault. Answer ONLY from the CONTEXT below.\n"
@@ -261,22 +223,16 @@ def build_system_prompt(
 
 
 if __name__ == "__main__":
-    cases = [
-        (0.5, True,  0.45, 0.35, "high"),
-        (0.4, True,  0.45, 0.35, "medium"),
-        (0.33, True, 0.45, 0.35, "low"),
-        (0.1, False, 0.45, 0.35, "none"),
-    ]
-    for sim, has_sources, hi, med, expected in cases:
-        t = _classify_tier(sim, has_sources, hi, med)
-        assert t == expected, f"{sim=} {has_sources=} → {t!r} != {expected!r}"
-    assert DEFAULT_CHAT_SYSTEM_PROMPT in build_system_prompt([], "general")
-    assert REFUSAL in build_system_prompt(
-        [{"n": 1, "path": "/v/a.md", "category": "T", "filename": "a.md", "snippet": "x"}],
-        "high",
+    assert DEFAULT_CHAT_SYSTEM_PROMPT in build_system_prompt([], "talk")
+    vault_prompt = build_system_prompt(
+        [{"n": 1, "path": "/v/a.md", "category": "T", "filename": "a.md", "snippet": "dinosaur facts"}],
+        "vault",
     )
-    assert parse_strict_prefix("/strict what is rust") == ("what is rust", True)
-    assert parse_strict_prefix("/STRICT  notes") == ("notes", True)
-    assert parse_strict_prefix("what is rust") == ("what is rust", False)
-    assert parse_strict_prefix("/strict") == ("", True)
+    assert "[1] (T/a.md)" in vault_prompt
+    assert "dinosaur facts" in vault_prompt
+    assert REFUSAL not in vault_prompt
+    assert parse_chat_mode("/talk what is rust") == ("what is rust", "talk")
+    assert parse_chat_mode("/TALK  notes") == ("notes", "talk")
+    assert parse_chat_mode("what is rust") == ("what is rust", "vault")
+    assert parse_chat_mode("/talk") == ("", "talk")
     print("rag_engine smoke: OK")

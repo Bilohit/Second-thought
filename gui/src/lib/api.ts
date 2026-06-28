@@ -13,6 +13,15 @@ export async function openVaultPath(path: string): Promise<void> { await openPat
 
 const BASE = "http://localhost:7070";
 
+function parseSseFrame(frame: string): { ev: string; data: string } | null {
+  let ev = "message", data = "";
+  for (const line of frame.split("\n")) {
+    if (line.startsWith("event: ")) ev = line.slice(7).trim();
+    if (line.startsWith("data: ")) data = line.slice(6).trim();
+  }
+  return data ? { ev, data } : null;
+}
+
 async function assertOk(r: Response, fallback: string): Promise<Response> {
   if (r.ok) return r;
   const body = await r.json().catch(() => ({} as { detail?: string }));
@@ -195,13 +204,9 @@ export async function* streamCapture(
 
     for (const frame of frames) {
       if (!frame.trim()) continue;
-      let eventType = "message";
-      let dataLine = "";
-      for (const line of frame.split("\n")) {
-        if (line.startsWith("event: ")) eventType = line.slice(7).trim();
-        if (line.startsWith("data: ")) dataLine = line.slice(6).trim();
-      }
-      if (!dataLine) continue;
+      const f = parseSseFrame(frame);
+      if (!f) continue;
+      const { ev: eventType, data: dataLine } = f;
       try {
         const parsed = JSON.parse(dataLine);
         if (eventType === "step") {
@@ -398,7 +403,7 @@ export async function discardInboxItem(noteId: string): Promise<void> {
 }
 
 export interface LookSource { n: number; path: string; category: string; filename: string; snippet: string; }
-export type LookTier = "high" | "medium" | "low" | "none" | "general";
+export type LookTier = "high" | "none" | "talk";
 export type LookChatEvent =
   | { kind: "meta"; confidence: number; tier: LookTier; answerable: boolean }
   | { kind: "sources"; sources: LookSource[] }
@@ -458,14 +463,11 @@ export async function* streamLookChat(
     buffer = frames.pop() ?? "";
     for (const frame of frames) {
       if (!frame.trim()) continue;
-      let ev = "message", data = "";
-      for (const line of frame.split("\n")) {
-        if (line.startsWith("event: ")) ev = line.slice(7).trim();
-        if (line.startsWith("data: ")) data = line.slice(6).trim();
-      }
-      if (!data) continue;
+      const f = parseSseFrame(frame);
+      if (!f) continue;
       try {
-        const p = JSON.parse(data);
+        const p = JSON.parse(f.data);
+        const ev = f.ev;
         if (ev === "meta") {
           logger.debug("look", "chat meta", { confidence: p.confidence, tier: p.tier });
           yield { kind: "meta", confidence: p.confidence ?? 0, tier: p.tier ?? "none", answerable: p.answerable ?? false };

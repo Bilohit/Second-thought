@@ -14,8 +14,9 @@ import type { LookChatPersist } from "../App";
 import { logger } from "../lib/logger";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
-  BTN_GHOST, BTN_SECONDARY,
+  BTN_GHOST, BTN_SECONDARY, INPUT_STYLE,
 } from "./ui/styles";
+import { MenuIcon } from "./PillMenu/icons";
 
 interface LookChatHook {
   messages: ChatMessage[];
@@ -41,17 +42,15 @@ function resultSnippet(r: SearchResult): string {
 }
 
 function tierColor(tier: string | undefined): string {
-  if (tier === "high")   return "var(--green, #4ade80)";
-  if (tier === "medium") return "var(--yellow, #facc15)";
-  if (tier === "general") return "var(--text-3)";
+  if (tier === "high") return "var(--green, #4ade80)";
+  if (tier === "talk") return "var(--text-3)";
   return "var(--red, #f87171)";
 }
 
 function tierLabel(tier: string | undefined): string {
-  if (tier === "high")   return "Grounded";
-  if (tier === "medium") return "Partial match";
-  if (tier === "general") return "General knowledge";
-  return "Low confidence — verify sources";
+  if (tier === "high") return "Vault";
+  if (tier === "talk") return "General knowledge";
+  return "No vault match";
 }
 
 export default function LookPanel({ mode, onSelectMode, visible, onClose, measureRef, lookChat, lookChatPersist }: Props) {
@@ -225,8 +224,15 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
     >
       {/* Header */}
       <div className="drag-region" style={PANEL_HEADER}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>Look</span>
-        <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
+            <MenuIcon target="search" size={14} />
+          </span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
+            Look
+          </span>
+        </div>
+        <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 4 }}>
           {/* Mode toggle */}
           <div
             role="tablist"
@@ -256,22 +262,20 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
           </div>
           {/* Refresh button */}
           <button
-            className="no-drag"
+            className="btn-hover no-drag"
             onClick={handleRefresh}
             disabled={syncing}
             title="Sync vault index"
             aria-label="Sync vault index"
-            style={{ ...BTN_GHOST, display: "flex", alignItems: "center", justifyContent: "center", opacity: syncing ? 0.5 : 1 }}
+            style={{ ...BTN_GHOST, opacity: syncing ? 0.5 : 1 }}
           >
             <svg
-              width="14" height="14" viewBox="0 0 24 24"
+              width="13" height="13" viewBox="0 0 24 24"
               fill="none" stroke="currentColor" strokeWidth="2"
               strokeLinecap="round" strokeLinejoin="round"
-              style={{ transition: "transform 0.6s linear", transform: syncing ? "rotate(360deg)" : "none" }}
             >
               <polyline points="23 4 23 10 17 10" />
-              <polyline points="1 20 1 14 7 14" />
-              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
             </svg>
           </button>
           {/* Clear chat (chat mode only) */}
@@ -286,7 +290,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
               Clear
             </button>
           )}
-          <button className="no-drag icon-close-btn" onClick={onClose} title="Close" style={BTN_GHOST}>
+          <button className="no-drag icon-close-btn" onClick={onClose} title="Close">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="2" y1="2" x2="12" y2="12" />
               <line x1="12" y1="2" x2="2" y2="12" />
@@ -347,7 +351,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                   border: "none",
                   outline: "none",
                   color: "var(--text-1)",
-                  fontSize: 14,
+                  fontSize: INPUT_STYLE.fontSize,
                   fontFamily: "inherit",
                   caretColor: "var(--accent)",
                 }}
@@ -457,11 +461,12 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
             >
               {messages.length === 0 && (
                 <div style={{ textAlign: "center", fontSize: 13, color: "var(--text-3)", marginTop: 20 }}>
-                  Ask anything about your vault
+                  Prefix <code style={{ fontSize: 11 }}>/talk</code> for general knowledge
                 </div>
               )}
               {messages.map((msg, i) => {
                 const isUser = msg.role === "user";
+                const isTalk = msg.chatMode === "talk";
                 const isTyping = !isUser && streaming && msg.content === "" && i === messages.length - 1;
                 const isSearching = !isUser && msg.searching && i === messages.length - 1;
                 return (
@@ -474,13 +479,23 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                       gap: 4,
                     }}
                   >
+                    {isUser && isTalk && (
+                      <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-3)", paddingRight: 2 }}>
+                        GENERAL
+                      </span>
+                    )}
                     <div
                       style={{
                         maxWidth: "88%",
                         padding: "8px 12px",
                         borderRadius: "var(--radius-xl)",
-                        background: isUser ? "var(--accent)" : "var(--surface)",
-                        color: isUser ? "var(--on-accent)" : "var(--text-1)",
+                        background: isUser
+                          ? (isTalk ? "var(--surface)" : "var(--accent)")
+                          : "var(--surface)",
+                        color: isUser
+                          ? (isTalk ? "var(--text-1)" : "var(--on-accent)")
+                          : "var(--text-1)",
+                        border: isUser && isTalk ? "1px dashed var(--border)" : "none",
                         fontSize: 13,
                         lineHeight: 1.5,
                       }}
@@ -527,13 +542,13 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                         color: tierColor(msg.tier),
                         paddingLeft: 2,
                       }}>
-                        {msg.tier === "general"
+                        {msg.tier === "talk"
                           ? tierLabel(msg.tier)
                           : `${tierLabel(msg.tier)} · ${Math.round((msg.confidence ?? 0) * 100)}%`}
                       </div>
                     )}
-                    {/* Citation source chips for assistant messages */}
-                    {!isUser && msg.sources && msg.sources.length > 0 && !isTyping && !isSearching && (
+                    {/* Citation source chips — vault answers only */}
+                    {!isUser && !isTalk && msg.sources && msg.sources.length > 0 && !isTyping && !isSearching && (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 4, paddingLeft: 2 }}>
                         {msg.sources.map((src) => (
                           <button
@@ -605,7 +620,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                 value={composer}
                 onChange={(e) => setComposer(e.target.value)}
                 onKeyDown={handleComposerKey}
-                placeholder="Ask your vault… (prefix /strict for vault-only)"
+                placeholder="Ask your vault"
                 disabled={streaming}
                 style={{
                   flex: 1,

@@ -13,6 +13,7 @@ import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
   BTN_GHOST, ROW_CARD,
 } from "./ui/styles";
+import { MenuIcon } from "./PillMenu/icons";
 
 interface Props {
   visible: boolean;
@@ -145,7 +146,12 @@ export default function StatsPanel({ visible, onClose, measureRef }: Props) {
       onTransitionEnd={handleTransitionEnd}
     >
       <div className="drag-region" style={PANEL_HEADER}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>History</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
+            <MenuIcon target="stats" size={14} />
+          </span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>History</span>
+        </div>
         <div className="no-drag" style={{ display: "flex", gap: 4 }}>
           <button className="btn-hover" style={BTN_GHOST} title="Refresh" onClick={load}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

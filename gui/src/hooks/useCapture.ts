@@ -20,6 +20,9 @@ export type StepState = "pending" | "active" | "done" | "error";
 export interface CaptureStep {
   id: string;
   label: string;
+  /** Shorter label for the capsule pill — must fit the "Second Thought" text
+   *  budget (Geist Mono 12px, see CAPSULE_CLOSED_W). Full overlay keeps `label`. */
+  pillLabel?: string;
   detail?: string;
 }
 
@@ -60,15 +63,15 @@ export interface CaptureState {
   backgroundJob: BackgroundJobState | null;
   /** True while retrying a capture that hit the server before it finished
    *  binding its port (P1-1) — phase stays "capturing" so existing pill
-   *  rendering applies, this only swaps the label to "Starting up". */
+   *  rendering applies, this only swaps the pill label to "Starting". */
   starting: boolean;
 }
 
 const STEP_DEFS: CaptureStep[] = [
   { id: "intercept", label: "Intercepting" },
-  { id: "enrich",    label: "Enriching content"      },
-  { id: "decide",    label: "Deciding category"       },
-  { id: "write",     label: "Writing to vault"        },
+  { id: "enrich",    label: "Enriching content", pillLabel: "Enriching" },
+  { id: "decide",    label: "Deciding category", pillLabel: "Deciding" },
+  { id: "write",     label: "Writing to vault",  pillLabel: "Writing" },
 ];
 
 const INITIAL_STEPS: Record<StepName, StepState> = {
@@ -88,12 +91,12 @@ const AUTO_DISMISS_ERROR_MS = 2200;
 // Ordered, real backend stages (no illustrative/fake stages) -- see
 // _run_youtube_job in server.py for the statuses this mirrors.
 const YT_STAGE_DEFS: CaptureStep[] = [
-  { id: "detect",             label: "Detecting YouTube link" },
-  { id: "fetching",           label: "Fetching metadata" },
-  { id: "writing_transcript", label: "Saving transcript" },
+  { id: "detect",             label: "Detecting YouTube link", pillLabel: "YouTube" },
+  { id: "fetching",           label: "Fetching metadata",      pillLabel: "Fetching" },
+  { id: "writing_transcript", label: "Saving transcript",      pillLabel: "Transcript" },
   { id: "summarizing",        label: "Summarizing" },
-  { id: "combining",          label: "Combining sections" },
-  { id: "finalizing",         label: "Finalizing note" },
+  { id: "combining",          label: "Combining sections",     pillLabel: "Combining" },
+  { id: "finalizing",         label: "Finalizing note",        pillLabel: "Finalizing" },
 ];
 
 // Position of each backend status in the pipeline, *excluding* the synthetic

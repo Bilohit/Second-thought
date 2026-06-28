@@ -33,6 +33,7 @@ import {
   INPUT_STYLE, BTN_GHOST, ROW_CARD, ROW_DIVIDER,
   focusRing, blurRing,
 } from "./ui/styles";
+import { MenuIcon } from "./PillMenu/icons";
 
 interface Props {
   visible: boolean;
@@ -566,10 +567,11 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
                 <polyline points="15 18 9 12 15 6" />
               </svg>
             </button>
-          ) : null}
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-          </svg>
+          ) : (
+            <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
+              <MenuIcon target="vault" size={14} />
+            </span>
+          )}
           <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
             {drillCat ? drillCat : "Vault"}
           </span>

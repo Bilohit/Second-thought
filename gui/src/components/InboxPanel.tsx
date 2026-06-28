@@ -20,6 +20,7 @@ import {
   BTN_GHOST, BTN_PRIMARY, ROW_CARD, INPUT_STYLE,
   focusRing, blurRing,
 } from "./ui/styles";
+import { MenuIcon } from "./PillMenu/icons";
 
 const NEW_FOLDER_SENTINEL = "__new_folder__";
 
@@ -293,9 +294,14 @@ export default function InboxPanel({ visible, onClose, onCountChange, measureRef
       onTransitionEnd={handleTransitionEnd}
     >
       <div className="drag-region" style={PANEL_HEADER}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
-          Inbox {items.length > 0 && <span style={{ color: "var(--text-3)", fontWeight: 400 }}>({items.length})</span>}
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
+            <MenuIcon target="inbox" size={14} />
+          </span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
+            Inbox {items.length > 0 && <span style={{ color: "var(--text-3)", fontWeight: 400 }}>({items.length})</span>}
+          </span>
+        </div>
         <div className="no-drag" style={{ display: "flex", gap: 4 }}>
           <button
             className="btn-hover"

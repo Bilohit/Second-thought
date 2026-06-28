@@ -47,7 +47,6 @@ def _ist_now() -> str:
     """Current time formatted in IST for log timestamps."""
     return datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S %Z")
 
-COLLECTION_NAME      = "omni_capture_notes"
 _EMBED_TIMEOUT_S     = 30
 _MAX_EMBED_CHARS     = 4_000
 _MAX_SNIPPET_CHARS   = 500
@@ -220,12 +219,11 @@ def _embed(text: str, base_url: str,
 
 # ── numpy cosine similarity ───────────────────────────────────────────────────
 
-def _cosine_top_k(
+def _cosine_all(
     query_vec: list[float],
-    rows: list[tuple],     # (id, embedding_blob, document, category)
-    top_k: int,
+    rows: list[tuple],  # (id, embedding_blob, document, category)
 ) -> list[tuple[float, str, str]]:
-    """Return [(similarity, doc_id, document), ...] sorted desc."""
+    """Batch cosine similarity. Return [(sim, doc_id, document), ...] sorted desc."""
     if not rows:
         return []
     q = np.array(query_vec, dtype=np.float32)
@@ -234,17 +232,23 @@ def _cosine_top_k(
         return []
     q = q / q_norm
 
-    results = []
-    for doc_id, emb_blob, document, _ in rows:
-        emb = np.frombuffer(emb_blob, dtype=np.float32)
-        norm = np.linalg.norm(emb)
-        if norm == 0:
-            continue
-        sim = float(np.dot(q, emb / norm))
-        results.append((sim, doc_id, document))
+    ids   = [r[0] for r in rows]
+    docs  = [r[2] for r in rows]
+    mat   = np.stack([np.frombuffer(r[1], dtype=np.float32) for r in rows])
+    norms = np.linalg.norm(mat, axis=1)
+    mask  = norms != 0
+    sims  = np.where(mask, mat @ q / np.where(mask, norms, 1.0), 0.0)
+    order = np.argsort(sims)[::-1]
+    return [(float(sims[i]), ids[i], docs[i]) for i in order if mask[i]]
 
-    results.sort(key=lambda x: x[0], reverse=True)
-    return results[:top_k]
+
+def _cosine_top_k(
+    query_vec: list[float],
+    rows: list[tuple],
+    top_k: int,
+) -> list[tuple[float, str, str]]:
+    """Return top-k [(similarity, doc_id, document), ...] sorted desc."""
+    return _cosine_all(query_vec, rows)[:top_k]
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

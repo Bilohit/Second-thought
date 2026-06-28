@@ -1,7 +1,7 @@
 /**
  * CapsuleMenu.tsx
  * ---------------
- * Capsule-mode (231×36 closed bar, see CAPSULE_CLOSED_W) on-click pill menu
+ * Capsule-mode (154×36 closed bar, see CAPSULE_CLOSED_W) on-click pill menu
  * (for_sonnet.md "Problem 5").
  * Closed: status dot + label, the whole bar is one drag+click region — no
  * sub-section click targets. Open: morphs to an icons-only bar showing all
@@ -23,14 +23,18 @@ import type { PillCorner } from "../PillOverlay";
 import { ALL_TARGETS, MENU_LABELS, MenuIcon, type MenuTarget } from "./icons";
 import { staggerDelays } from "../../lib/menuTiming";
 
-// 231px — measured (mockups/capsule-width-deadzone.html §3.1) against every
-// string that can appear in the closed label (useCapture.ts + PillOverlay's
-// pillLabel), Geist Mono 12px. Longest is "Detecting YouTube link"; the rare
-// long-category "Filed · <category>" case is excluded by design and ellipsizes
-// instead of driving the whole bar's width — confirmed/signed off.
-export const CAPSULE_CLOSED_W = 231;
-export const CAPSULE_ICON_W = 44; // 36px hitbox + 8px spacing folded inside as padding (no gap deadzone)
+// 154px — "Second Thought" (Geist Mono 12px, 98px text) with symmetric side
+// insets: 28px left (12px pad + 8px dot + 8px gap) = 28px right (12px pad +
+// 16px label slack). pillLabel strings in useCapture.ts stay within the text
+// budget; long vault category names on done ellipsize instead of widening.
 export const CAPSULE_PAD_X = 12; // must equal --space-3 in index.css
+export const CAPSULE_DOT_W = 8;
+export const CAPSULE_DOT_GAP = 8; // must equal --space-2 on .capsule-label
+export const CAPSULE_TEXT_W = 98; // measured width of "Second Thought"
+export const CAPSULE_SIDE_INSET = CAPSULE_PAD_X + CAPSULE_DOT_W + CAPSULE_DOT_GAP;
+export const CAPSULE_LABEL_CHROME = CAPSULE_SIDE_INSET * 2;
+export const CAPSULE_CLOSED_W = CAPSULE_TEXT_W + CAPSULE_LABEL_CHROME;
+export const CAPSULE_ICON_W = 44; // 36px hitbox + 8px spacing folded inside as padding (no gap deadzone)
 // No flex `gap` between open-state icons — each .capsule-item carries its own
 // spacing as inner padding so hitboxes touch edge-to-edge with zero dead
 // pixels between them (for_sonnet.md §3.2).

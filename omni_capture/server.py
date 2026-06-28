@@ -22,12 +22,12 @@ Endpoints
   POST /vault/sync-index                    vault diff-sync (add/remove/update index rows)
 
 SSE events emitted by /look/chat:
-  meta     {"confidence": 0.34, "tier": "medium"|"general", "answerable": true}
+  meta     {"confidence": 0.34, "tier": "high"|"talk"|"none", "answerable": true}
   sources  {"sources": [...]}
   token    {"text": "..."}  (repeated)
   done     {}
   error    {"message": "..."}
-  tier "general" = no vault match; LLM answers from baseline knowledge (no REFUSAL).
+  Default vault chat is strict RAG; tier "talk" = /talk prefix (general knowledge).
 
 SSE events emitted by /capture and /share:
   step     {"step": "intercept|enrich|decide|write", "status": "active|done|error"}
@@ -1022,51 +1022,57 @@ def _run_look_chat_blocking(question, history, ignore_history, q, loop, verbose=
     set_look_verbose(verbose)
     try:
         from config import reload_config
-        from rag_engine import hybrid_retrieve, build_system_prompt, parse_strict_prefix, REFUSAL
+        from rag_engine import hybrid_retrieve, build_system_prompt, parse_chat_mode, REFUSAL
         effective_history = [] if ignore_history else history
-        question, strict = parse_strict_prefix(question)
+        question, chat_mode = parse_chat_mode(question)
         if not question:
-            emit("error", message="Question is empty after /strict prefix")
+            emit("error", message="Question is empty")
             return
         look_info(
             f"POST /look/chat question={question!r} history_turns={len(effective_history)} "
-            f"ignore_history={ignore_history} strict={strict}"
+            f"ignore_history={ignore_history} mode={chat_mode}"
         )
         cfg = reload_config()
         custom_prompt = cfg.look.chat_system_prompt or None
-        sources, confidence, tier = hybrid_retrieve(
-            cfg.vault.root, question, cfg.ollama.base_url, cfg.vector.embed_model,
-            top_k=cfg.look.chat_top_k,
-            min_similarity_high=cfg.look.chat_min_similarity_high,
-            min_similarity_medium=cfg.look.chat_min_similarity_medium,
-            min_similarity_floor=cfg.look.chat_min_similarity_floor,
-            history=effective_history or None,
-        )
-        if tier == "none" and strict:
-            emit("meta", confidence=round(confidence, 4), tier="none", answerable=False)
+
+        if chat_mode == "talk":
+            sources: list = []
+            confidence = 0.0
+            tier = "talk"
+            answerable = True
+            emit("meta", confidence=0.0, tier=tier, answerable=answerable)
             emit("sources", sources=[])
-            emit("token", text=REFUSAL)
-            look_info("POST /look/chat strict refusal — no vault match")
-            emit("done")
-            return
-        if tier == "none":
-            tier = "general"
-            sources = []
-        answerable = True
-        emit("meta", confidence=round(confidence, 4), tier=tier, answerable=answerable)
-        emit("sources", sources=sources)
+        else:
+            sources, confidence, tier = hybrid_retrieve(
+                cfg.vault.root, question, cfg.ollama.base_url, cfg.vector.embed_model,
+                top_k=cfg.look.chat_top_k,
+                min_similarity_floor=cfg.look.chat_min_similarity_floor,
+                history=effective_history or None,
+            )
+            if tier == "none":
+                emit("meta", confidence=round(confidence, 4), tier="none", answerable=False)
+                emit("sources", sources=[])
+                emit("token", text=REFUSAL)
+                look_info("POST /look/chat vault refusal — no match")
+                emit("done")
+                return
+            answerable = True
+            emit("meta", confidence=round(confidence, 4), tier="high", answerable=answerable)
+            emit("sources", sources=sources)
+
         from openai import OpenAI
         from llm_engine import _normalize_base_url, OLLAMA_API_KEY
         client = OpenAI(base_url=_normalize_base_url(cfg.ollama.base_url), api_key=OLLAMA_API_KEY)
-        messages = [{"role": "system", "content": build_system_prompt(sources, tier, custom_prompt)}]
+        prompt_mode = "talk" if chat_mode == "talk" else "vault"
+        messages = [{"role": "system", "content": build_system_prompt(sources, prompt_mode, custom_prompt)}]
         messages += [m for m in effective_history if m.get("role") in ("user", "assistant")][-6:]
         messages.append({"role": "user", "content": question})
         temperature = (
-            cfg.look.chat_general_temperature if tier == "general"
-            else cfg.look.chat_temperature
+            cfg.look.chat_general_temperature if chat_mode == "talk"
+            else 0.0
         )
         look_debug(
-            f"streaming LLM answer model={cfg.ollama.model} tier={tier} "
+            f"streaming LLM answer model={cfg.ollama.model} mode={chat_mode} tier={tier} "
             f"sources={len(sources)} temp={temperature}"
         )
         stream = client.chat.completions.create(

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { streamLookChat, type LookSource, type LookTier } from "../lib/api";
-import { parseStrictPrefix } from "../lib/lookChatCommands";
+import { parseLookChatInput, type LookChatMode } from "../lib/lookChatCommands";
 import { logger } from "../lib/logger";
 
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  chatMode?: LookChatMode;
   sources?: LookSource[];
   confidence?: number;
   tier?: LookTier;
@@ -40,7 +41,7 @@ export function useLookChat() {
   }, []);
 
   const ask = useCallback((q: string) => {
-    const { question, strict } = parseStrictPrefix(q);
+    const { question, mode } = parseLookChatInput(q);
     if (!question || streaming) return;
     const history = ignoreHistory
       ? []
@@ -49,12 +50,12 @@ export function useLookChat() {
       questionLen: question.length,
       historyTurns: history.length,
       ignoreHistory,
-      strict,
+      mode,
     });
     setMessages((prev) => [
       ...prev,
-      { role: "user", content: question },
-      { role: "assistant", content: "", sources: [], searching: true },
+      { role: "user", content: question, chatMode: mode },
+      { role: "assistant", content: "", sources: [], searching: true, chatMode: mode },
     ]);
     setStreaming(true);
     const ctrl = new AbortController();
@@ -64,7 +65,7 @@ export function useLookChat() {
     (async () => {
       try {
         for await (const ev of streamLookChat(
-          strict ? `/strict ${question}` : question,
+          mode === "talk" ? `/talk ${question}` : question,
           history,
           ctrl.signal,
           ignoreHistory,

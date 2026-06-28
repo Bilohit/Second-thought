@@ -1,17 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { parseStrictPrefix } from "./lookChatCommands";
+import { parseLookChatInput } from "./lookChatCommands";
 
-describe("parseStrictPrefix", () => {
-  it("passes through normal questions", () => {
-    expect(parseStrictPrefix("what is rust")).toEqual({ question: "what is rust", strict: false });
+describe("parseLookChatInput", () => {
+  it("defaults to vault mode", () => {
+    expect(parseLookChatInput("what is rust")).toEqual({ question: "what is rust", mode: "vault" });
+    expect(parseLookChatInput("dinosaur")).toEqual({ question: "dinosaur", mode: "vault" });
   });
 
-  it("strips /strict prefix", () => {
-    expect(parseStrictPrefix("/strict what is rust")).toEqual({ question: "what is rust", strict: true });
-    expect(parseStrictPrefix("/STRICT notes on async")).toEqual({ question: "notes on async", strict: true });
+  it("strips /talk prefix for general knowledge", () => {
+    expect(parseLookChatInput("/talk what is rust")).toEqual({ question: "what is rust", mode: "talk" });
+    expect(parseLookChatInput("/TALK notes on async")).toEqual({ question: "notes on async", mode: "talk" });
   });
 
-  it("marks strict when prefix is alone", () => {
-    expect(parseStrictPrefix("/strict")).toEqual({ question: "", strict: true });
+  it("allows empty question after /talk", () => {
+    expect(parseLookChatInput("/talk")).toEqual({ question: "", mode: "talk" });
   });
 });

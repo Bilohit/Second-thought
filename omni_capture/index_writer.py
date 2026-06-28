@@ -50,6 +50,8 @@ from frontmatter import strip_frontmatter
 
 # ponytail: 64k cap; raise or chunk FTS if vault notes routinely exceed this
 _BODY_EXCERPT_MAX_CHARS = 65536
+
+_INITIALIZED: set[str] = set()  # db paths whose schema has been set up this process
 _BODY_INDEX_META_KEY = f"body_indexed_v{_BODY_EXCERPT_MAX_CHARS}"
 
 
@@ -251,7 +253,8 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
 def init_db(vault_root: Path) -> sqlite3.Connection:
     """
     Open (or create) the SQLite database at the canonical path.
-    Applies the schema if it is a fresh file.
+    Applies the schema on first call per vault path (within the process);
+    subsequent calls skip the DDL/migration overhead.
     Returns the open connection — caller is responsible for closing it.
     """
     db_path = get_db_path(vault_root)
@@ -261,9 +264,13 @@ def init_db(vault_root: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    # executescript handles multi-statement DDL including trigger bodies
-    conn.executescript(_DDL)
-    _migrate_schema(conn)
+
+    key = str(db_path)
+    if key not in _INITIALIZED:
+        conn.executescript(_DDL)
+        _migrate_schema(conn)
+        _INITIALIZED.add(key)
+
     return conn
 
 

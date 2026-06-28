@@ -61,19 +61,24 @@ interface Props {
   fanStyle?: "spread" | "capped";
 }
 
+function stepPillLabel(def: CaptureStep): string {
+  return def.pillLabel ?? def.label;
+}
+
 function pillLabel(state: CaptureState, stepDefs: CaptureStep[]): string {
   if (state.phase === "error") return "Error";
   if (state.phase === "done") {
-    return state.result?.category ? `Filed · ${state.result.category}` : "Done";
+    return state.result?.category ?? "Done";
   }
   if (state.phase === "background" && state.backgroundJob) {
     const { steps, stepDefs: ytDefs } = deriveYoutubeSteps(state.backgroundJob);
-    return ytDefs.find((d) => steps[d.id] === "active")?.label ?? "Working";
+    const active = ytDefs.find((d) => steps[d.id] === "active");
+    return active ? stepPillLabel(active) : "Working";
   }
   if (state.phase === "capturing") {
-    if (state.starting) return "Starting up";
+    if (state.starting) return "Starting";
     const active = stepDefs.find((d) => state.steps[d.id as keyof CaptureState["steps"]] === "active");
-    return active?.label ?? "Working";
+    return active ? stepPillLabel(active) : "Working";
   }
   return "Second Thought";
 }

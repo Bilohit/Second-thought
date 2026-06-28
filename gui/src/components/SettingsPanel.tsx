@@ -15,6 +15,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getConfig, patchConfig, formatHotkey, DEFAULT_HOTKEY } from "../lib/config";
 import { setHotkey as setHotkeyRust, setLogLevel } from "../lib/tauri";
 import { getVaultCategories } from "../lib/api";
+import { DEFAULT_CHAT_SYSTEM_PROMPT } from "../lib/lookChatDefaults";
 import { logger, LogLevel } from "../lib/logger";
 import { isGeoDebugEnabled, setGeoDebugEnabled } from "../lib/geoLog";
 import { THEMES, THEME_LABELS, type Theme, type LookChatPersist } from "../App";
@@ -952,7 +953,7 @@ export default function SettingsPanel({
                 value={chatSystemPrompt}
                 onChange={(e) => { setChatSystemPrompt(e.target.value); markDirty(); }}
                 rows={5}
-                placeholder="Leave blank to use the built-in default prompt…"
+                placeholder={DEFAULT_CHAT_SYSTEM_PROMPT}
                 spellCheck={false}
                 style={{
                   ...INPUT_STYLE,

@@ -11,24 +11,28 @@ import { anchorPosition, type PillAnchor } from "./pillAnchor";
 // path must use the idle top-left, never the open-window top-left.
 it("right-edge capsule open window is shifted left of idle - must not be saved as pill pos", () => {
   const idleTopLeftLogical = { x: 1000, y: 100 };
-  const idlePillBoxW = 231 + 6 * 2; // CAPSULE_CLOSED_W + PILL_MARGIN*2
+  const idlePillBoxW = CAPSULE_CLOSED_W + 6 * 2; // CAPSULE_CLOSED_W + PILL_MARGIN*2
   const idlePillBoxH = 36 + 6 * 2;
+  const capsuleOpenW = 288; // CAPSULE_OPEN_W
+  const closePadW = 64;     // CLOSE_PAD_W
   const geom = computeCapsuleMenuGeometry({
     idleTopLeftLogical,
     idlePillBoxW,
     idlePillBoxH,
     margin: 6,
-    capsuleOpenW: 288, // CAPSULE_OPEN_W
-    closePadW: 64,     // CLOSE_PAD_W
+    capsuleOpenW,
+    closePadW,
     nearEdge: "right",
   });
-  // grown window top-left is left of idle by exactly windowW - idlePillBoxW = 121
-  expect(geom.windowTopLeftLogical.x).toBe(idleTopLeftLogical.x - 121);
+  const openWindowW = capsuleOpenW + 6 * 2 + closePadW;
+  const shift = openWindowW - idlePillBoxW;
+  // grown window top-left is left of idle by exactly windowW - idlePillBoxW
+  expect(geom.windowTopLeftLogical.x).toBe(idleTopLeftLogical.x - shift);
   expect(geom.windowTopLeftLogical.x).toBeLessThan(idleTopLeftLogical.x);
   // left-edge case is the control: no shift, which is why the bug is edge-dependent
   const left = computeCapsuleMenuGeometry({
     idleTopLeftLogical, idlePillBoxW, idlePillBoxH, margin: 6,
-    capsuleOpenW: 288, closePadW: 64, nearEdge: "left",
+    capsuleOpenW, closePadW, nearEdge: "left",
   });
   expect(left.windowTopLeftLogical.x).toBe(idleTopLeftLogical.x);
 });
@@ -199,8 +203,8 @@ describe("clampPillWindowToMonitor", () => {
 
   it("REGRESSION: feeding the static pill size to a 480px window lets it overflow (the bug)", () => {
     const monitor = { x: 0, y: 0, w: 2560, h: 1440 };
-    // old buggy call: pillW=231 while the window is really 480 wide
-    const r = clampPillWindowToMonitor({ windowTopLeftLogical: { x: 5000, y: 100 }, pillW: 231, pillH: 36, margin: 6, monitorBounds: monitor });
+    // old buggy call: idle pillW while the window is really 480 wide
+    const r = clampPillWindowToMonitor({ windowTopLeftLogical: { x: 5000, y: 100 }, pillW: CAPSULE_CLOSED_W, pillH: 36, margin: 6, monitorBounds: monitor });
     expect(r.x + 480).toBeGreaterThan(2560 + 6); // window right runs off-screen
   });
 });
@@ -345,7 +349,7 @@ describe("pinned radial open keeps the anchored pill centre fixed", () => {
 describe("computeCapsuleMenuGeometry", () => {
   const base = {
     idleTopLeftLogical: { x: 1700, y: 400 },
-    idlePillBoxW: CAPSULE_CLOSED_W + 12, // PILL_DIMS.capsule.w(231) + margin*2
+    idlePillBoxW: CAPSULE_CLOSED_W + 12, // PILL_DIMS.capsule.w + margin*2
     idlePillBoxH: 48,  // PILL_DIMS.capsule.h(36) + margin*2
     margin: 6,
     capsuleOpenW: 300,
@@ -402,16 +406,17 @@ describe("computeMenuGeometry — mode-switch keeps pill center fixed", () => {
     const oldBox = 48;
     const oldCenter = { x: idleTopLeftLogical.x + oldBox / 2, y: idleTopLeftLogical.y + oldBox / 2 };
 
-    // grow to capsule box 243x48 (231 + margin*2)
+    // grow to capsule box 150x48 (CAPSULE_CLOSED_W + margin*2)
+    const capsuleBox = CAPSULE_CLOSED_W + 12;
     const { windowTopLeftLogical } = computeMenuGeometry({
       idleTopLeftLogical,
       idlePillBoxW: oldBox,
       idlePillBoxH: oldBox,
-      targetWinW: 243,
+      targetWinW: capsuleBox,
       targetWinH: 48,
     });
 
-    const newCenter = { x: windowTopLeftLogical.x + 243 / 2, y: windowTopLeftLogical.y + 48 / 2 };
+    const newCenter = { x: windowTopLeftLogical.x + capsuleBox / 2, y: windowTopLeftLogical.y + 48 / 2 };
     // windowTopLeftLogical is Math.round'd to whole pixels, so the recovered
     // center can be off by up to 0.5px — that's pixel-grid rounding, not drift.
     expect(Math.abs(newCenter.x - oldCenter.x)).toBeLessThanOrEqual(0.5);
@@ -428,15 +433,15 @@ describe("computeMenuGeometry — mode-switch keeps pill center fixed", () => {
 it("idle pill clamp reaches screen edges; panel footprint would not", () => {
   const bounds = { x: 0, y: 0, w: 2560, h: 1440 };
   const far = { x: 9999, y: 9999 };
-  // idle capsule pill: 231x36 bare pill, margin 6
-  const pill = clampPillWindowToMonitor({ windowTopLeftLogical: far, pillW: 231, pillH: 36, margin: 6, monitorBounds: bounds });
-  expect(pill.x).toBe(2560 - 231 - 6); // 2323
+  // idle capsule pill: CAPSULE_CLOSED_W x 36 bare pill, margin 6
+  const pill = clampPillWindowToMonitor({ windowTopLeftLogical: far, pillW: CAPSULE_CLOSED_W, pillH: 36, margin: 6, monitorBounds: bounds });
+  expect(pill.x).toBe(2560 - CAPSULE_CLOSED_W - 6);
   expect(pill.y).toBe(1440 - 36 - 6);  // 1398
   // full-panel footprint (480x544 window -> 468x532 inner) clamps short — the
   // phantom boundary from the bug. Deltas equal panel-minus-pill sizes.
   const panel = clampPillWindowToMonitor({ windowTopLeftLogical: far, pillW: 468, pillH: 532, margin: 6, monitorBounds: bounds });
   expect(panel.x).toBe(2086);
   expect(panel.y).toBe(902);
-  expect(pill.x - panel.x).toBe(237);
+  expect(pill.x - panel.x).toBe(468 - CAPSULE_CLOSED_W);
   expect(pill.y - panel.y).toBe(496);
 });

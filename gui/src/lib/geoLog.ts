@@ -43,14 +43,14 @@ function throttled(tag: string): boolean {
   return false;
 }
 
-// On by default — boundary-calibration investigation wants this capturing
-// from app boot with zero setup. Explicit "0" (Settings toggle) opts out.
+// Off by default — boundary-calibration investigation is resolved; opt in
+// via Settings → "Geometry Debug Logging", which sets the key to "1".
 function geoEnabled(): boolean {
   try {
-    return typeof localStorage === "undefined"
-      || localStorage.getItem(GEO_DEBUG_KEY) !== "0";
+    return typeof localStorage !== "undefined"
+      && localStorage.getItem(GEO_DEBUG_KEY) === "1";
   } catch {
-    return true;
+    return false;
   }
 }
 

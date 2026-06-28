@@ -31,6 +31,8 @@ from typing import Optional
 from models import EnrichedPayload
 from interceptor import InputPayload
 
+_VISION_WARMED: bool = False
+
 
 # ── URL classifier patterns ───────────────────────────────────────────────────
 _GITHUB_RE = re.compile(
@@ -651,21 +653,26 @@ def _enrich_image(image_bytes: bytes) -> EnrichedPayload:
     # never a real describe). A throwaway, generously-timed warmup call
     # forces that load to finish up front, so the real attempts below get a
     # warm model instead of spending their retry budget on the cold start.
-    try:
-        warmup_body = _json.dumps({
-            "model": vision_model,
-            "prompt": "ready",
-            "stream": False,
-            "keep_alive": cfg.ollama.keep_alive,
-        }).encode()
-        warmup_request = _req.Request(
-            api_url, data=warmup_body,
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
-        with _req.urlopen(warmup_request, timeout=120):
-            pass
-    except Exception as exc:
-        print(f"[EnrichmentRouter] vision warmup call failed (non-fatal): {exc}", flush=True)
+    # Gate with _VISION_WARMED so the overhead happens once per process, not
+    # once per image capture (the model stays resident via keep_alive anyway).
+    global _VISION_WARMED
+    if not _VISION_WARMED:
+        try:
+            warmup_body = _json.dumps({
+                "model": vision_model,
+                "prompt": "ready",
+                "stream": False,
+                "keep_alive": cfg.ollama.keep_alive,
+            }).encode()
+            warmup_request = _req.Request(
+                api_url, data=warmup_body,
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with _req.urlopen(warmup_request, timeout=120):
+                pass
+            _VISION_WARMED = True
+        except Exception as exc:
+            print(f"[EnrichmentRouter] vision warmup call failed (non-fatal): {exc}", flush=True)
 
     b64 = base64.b64encode(upload_bytes).decode()
 

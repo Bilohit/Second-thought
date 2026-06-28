@@ -11,7 +11,7 @@ import type { JSX } from "react";
 export type MenuTarget = "search" | "vault" | "settings" | "inbox" | "stats" | "hide";
 
 export const MENU_LABELS: Record<MenuTarget, string> = {
-  search: "Search",
+  search: "Look",
   vault: "Vault",
   settings: "Settings",
   inbox: "Inbox",

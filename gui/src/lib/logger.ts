@@ -59,9 +59,9 @@ const MAX_VALUE_LEN = 2000;
 
 const LOCAL_STORAGE_KEY = "second-thought:log-level";
 
-// Verbose by default; tighten via VITE_LOG_LEVEL=DEBUG|INFO|WARN|ERROR at
-// build time, or at runtime via logger.setLevel() (persisted across restarts
-// in localStorage, e.g. from a Settings toggle) — no rebuild required.
+// INFO by default; lower via VITE_LOG_LEVEL=TRACE|DEBUG at build time, or
+// at runtime via logger.setLevel() (persisted in localStorage, e.g. from a
+// Settings toggle) — no rebuild required.
 function initialLevel(): LogLevel {
   try {
     const stored = typeof localStorage !== "undefined" ? localStorage.getItem(LOCAL_STORAGE_KEY) : null;
@@ -74,7 +74,7 @@ function initialLevel(): LogLevel {
   if (env && env.toUpperCase() in LogLevel) {
     return LogLevel[env.toUpperCase() as keyof typeof LogLevel] as LogLevel;
   }
-  return LogLevel.TRACE;
+  return LogLevel.INFO;
 }
 
 // Human-readable single line by default; NDJSON via VITE_LOG_FORMAT=json for

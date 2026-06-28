@@ -105,7 +105,6 @@ class VectorConfig:
     enabled: bool        = True
     embed_model: str     = "all-minilm"
     top_k: int           = 3
-    collection: str      = "omni_capture_notes"
     # Candidates below this cosine similarity are dropped from retrieve_related
     # entirely, instead of injecting the nearest noise as "related" context.
     min_similarity: float = 0.4
@@ -116,7 +115,6 @@ class YouTubeConfig:
     folder_name: str  = "YouTube"
     description: str  = "Summaries and notes captured from YouTube videos."
     job_ttl_seconds: int = 3600  # how long finished job entries stay in the registry
-    write_raw_transcript: bool = True  # keep the full transcript section in the note
 
 
 @dataclass
@@ -249,7 +247,6 @@ def load_config(config_path: Path | None = None) -> Config:
     cfg.vector.enabled        = vec_raw.get("enabled", True)
     cfg.vector.embed_model    = vec_raw.get("embed_model", "all-minilm")
     cfg.vector.top_k          = int(vec_raw.get("top_k", 3))
-    cfg.vector.collection     = vec_raw.get("collection", "omni_capture_notes")
     cfg.vector.min_similarity = float(vec_raw.get("min_similarity", 0.4))
 
     yt_raw = raw.get("youtube", {})
@@ -260,7 +257,6 @@ def load_config(config_path: Path | None = None) -> Config:
         "description", "Summaries and notes captured from YouTube videos."
     )
     cfg.youtube.job_ttl_seconds = int(yt_raw.get("job_ttl_seconds", 3600))
-    cfg.youtube.write_raw_transcript = bool(yt_raw.get("write_raw_transcript", True))
 
     ocr_raw = raw.get("ocr", {})
     cfg.ocr.enabled = bool(ocr_raw.get("enabled", False))
