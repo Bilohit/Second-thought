@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { streamLookChat, type LookSource } from "../lib/api";
 
 export interface ChatMessage { role: "user" | "assistant"; content: string; sources?: LookSource[]; }
@@ -11,7 +11,7 @@ export function useLookChat() {
   const ask = useCallback((q: string) => {
     const question = q.trim();
     if (!question || streaming) return;
-    const history = messages.map((m) => ({ role: m.role, content: m.content }));
+    const history = messages.map((m) => ({ role: m.role, content: m.content })).slice(-6);
     setMessages((prev) => [...prev, { role: "user", content: question },
                                      { role: "assistant", content: "", sources: [] }]);
     setStreaming(true);
@@ -32,6 +32,10 @@ export function useLookChat() {
       finally { setStreaming(false); abortRef.current = null; }
     })();
   }, [messages, streaming]);
+
+  useEffect(() => {
+    return () => { abortRef.current?.abort(); };
+  }, []);
 
   const reset = useCallback(() => { abortRef.current?.abort(); setMessages([]); setStreaming(false); }, []);
   return { messages, streaming, ask, reset };
