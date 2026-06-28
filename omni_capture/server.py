@@ -18,6 +18,13 @@ Endpoints
   POST /inbox/{note_id}/approve
   DELETE /inbox/{note_id}
   GET  /jobs/{job_id}                       background job status (e.g. YouTube)
+  POST /look/chat                           streaming RAG chat (SSE)
+
+SSE events emitted by /look/chat:
+  sources  {"sources": [...]}
+  token    {"text": "..."}  (repeated)
+  done     {}
+  error    {"message": "..."}
 
 SSE events emitted by /capture and /share:
   step     {"step": "intercept|enrich|decide|write", "status": "active|done|error"}
@@ -235,6 +242,10 @@ def _require_secret(x_omni_secret: Optional[str] = Header(default=None)) -> None
 
 
 # -- Pydantic models ----------------------------------------------------------
+
+class LookChatRequest(BaseModel):
+    question: str
+    history: Optional[list[dict]] = None   # [{"role":"user"|"assistant","content":str}], last turns only
 
 class CaptureRequest(BaseModel):
     content_type: str   # text | url | image_b64 | audio_b64
@@ -943,6 +954,66 @@ async def capture_stats(_: None = Depends(_require_secret)):
     """Aggregated capture statistics backed by SQLite."""
     from index_writer import stats as idx_stats
     return idx_stats(_get_vault_root())
+
+
+# -- Look / RAG chat endpoint -------------------------------------------------
+
+@app.post("/look/chat")
+async def look_chat(req: LookChatRequest, _: None = Depends(_require_secret)):
+    return StreamingResponse(
+        _stream_look_chat(req.question, req.history or []),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+async def _stream_look_chat(question: str, history: list[dict]) -> AsyncIterator[str]:
+    loop = asyncio.get_running_loop()
+    q: asyncio.Queue[Optional[dict]] = asyncio.Queue()
+    loop.run_in_executor(_executor, _run_look_chat_blocking, question, history, q, loop)
+    while True:
+        item = await q.get()
+        if item is None:
+            break
+        event = item.pop("event")
+        yield _sse(event, **item)
+
+
+def _run_look_chat_blocking(question, history, q, loop):
+    def emit(event, **kw):
+        loop.call_soon_threadsafe(q.put_nowait, {"event": event, **kw})
+    try:
+        from config import reload_config
+        from rag_engine import hybrid_retrieve, build_system_prompt, REFUSAL
+        cfg = reload_config()
+        sources, answerable = hybrid_retrieve(
+            cfg.vault.root, question, cfg.ollama.base_url, cfg.vector.embed_model,
+            top_k=5, min_similarity=cfg.vector.min_similarity,
+        )
+        emit("sources", sources=sources)
+        if not answerable:
+            emit("token", text=REFUSAL)
+            emit("done")
+            return
+        from openai import OpenAI
+        from llm_engine import _normalize_base_url, OLLAMA_API_KEY
+        client = OpenAI(base_url=_normalize_base_url(cfg.ollama.base_url), api_key=OLLAMA_API_KEY)
+        messages = [{"role": "system", "content": build_system_prompt(sources)}]
+        messages += [m for m in history if m.get("role") in ("user", "assistant")][-6:]
+        messages.append({"role": "user", "content": question})
+        stream = client.chat.completions.create(
+            model=cfg.ollama.model, messages=messages, temperature=0.0, stream=True,
+            extra_body={"keep_alive": cfg.ollama.keep_alive},
+        )
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content if chunk.choices else None
+            if delta:
+                emit("token", text=delta)
+        emit("done")
+    except Exception as exc:
+        emit("error", message=str(exc))
+    finally:
+        loop.call_soon_threadsafe(q.put_nowait, None)
 
 
 # -- Inbox endpoints ----------------------------------------------------------
