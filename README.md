@@ -1,8 +1,15 @@
 # Second Thought
 
-Local-first AI capture for text, URLs, audio, images, and technical notes. Second Thought, powered by the Omni Capture pipeline, turns fleeting inputs into structured Markdown files inside an Obsidian-compatible vault.
+*Offloaded to offline, snap-to-store pipeline. So keep thinking, we'll handle the rest.*
 
-The app is built around a simple idea: capture first, organize later. Copy text, save a URL, record a voice memo, or send the current browser selection. The local pipeline enriches it with Ollama, routes it into the right vault folder, links it to existing notes, and keeps every durable artifact as plain Markdown.
+
+## What is it ?
+
+Most tools force you to categorize the moment inspiration strikes. Second Thought removes the cognitive load of filing by automating the decision, organizing, and linking processes via a local reasoning pipeline. Instead of breaking your flow with folder navigation, tags, or naming conventions, it lets you capture raw input — text, voice, or images — and intelligently files it into your knowledge base. Think of it as a personal librarian that never interrupts you.
+
+The system runs entirely on your machine. The only network calls are to your local Ollama instance and optional outbound fetches for URLs you explicitly capture. There is no cloud, no account, no telemetry, and no lock-in. Your vault is a portable folder of plain `.md` files — fully compatible with Obsidian, Logseq, or any text editor.
+
+TL;DR -  Capture anything, instantly. A local LLM structures, tags, and routes it directly to your Markdown vault. No cloud, no context switching, zero friction. Local-first · AI-organized · Yours
 
 ## Highlights
 
@@ -71,6 +78,7 @@ Key backend modules:
 - `llm_engine.py` - calls Ollama through structured output parsing with retry.
 - `storage_engine.py` - deduplicates, merges, writes notes, or routes to scratchpad.
 - `vector_store.py` - SQLite-backed embedding search.
+- `rag_engine.py` - hybrid RRF retrieval (semantic + FTS5) and zero-hallucination system prompt for the Look panel's Chat mode.
 - `index_writer.py` - SQLite FTS5 index over vault Markdown files.
 - `link_resolver.py` - builds wikilink and alias relationships from vault frontmatter.
 - `summarizer.py` - map-reduce summarization for long documents and transcripts.
@@ -179,8 +187,8 @@ Desktop features include:
 - Radial/capsule menu for capture actions.
 - Inbox for reviewing recent captures.
 - Vault browser for navigating generated notes.
-- Search panel backed by FTS5 and vector search.
-- Stats panel for capture history.
+- **Look panel** — dual-mode Search/Chat. Search mode is backed by FTS5 full-text search. Chat mode is a local RAG assistant that retrieves relevant vault notes via hybrid semantic + lexical ranking (Reciprocal Rank Fusion), cites sources inline, and never answers outside the vault context. Accessible via the pill menu or `Ctrl+K`.
+- History panel for capture history — tile order is Recent / By Category / Daily / Total. Category counts are read live from vault folders. Recent capture rows are clickable and open the note in the default editor.
 - Settings for vault path, models, and capture behavior.
 - System tray controls.
 
@@ -335,3 +343,7 @@ Use Second Thought for:
 
 The result is a growing Markdown knowledge base that can be browsed, searched, linked, synced, backed up, or edited with normal tools.
 
+
+**Stop deciding where things go.**
+Copy data. Click capture. Let the pipeline file it. 
+Your first thought is the idea — the second thought, is yours
