@@ -17,7 +17,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { open as openPath } from "@tauri-apps/plugin-shell";
+import { openVaultPath } from "../lib/api";
 import {
   getVaultCategories,
   createVaultCategory,
@@ -532,7 +532,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
   const handleOpenVaultFolder = async () => {
     setActionError(null);
     try {
-      await openPath(vaultRoot);
+      await openVaultPath(vaultRoot);
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Failed to open vault folder");
     }

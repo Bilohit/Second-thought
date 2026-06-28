@@ -2,8 +2,14 @@
  * api.ts - HTTP client for the Second Thought Python FastAPI server (localhost:7070).
  */
 
+import { openPath } from "@tauri-apps/plugin-opener";
 import { getGuiSecret } from "./tauri";
 import { logger } from "./logger";
+
+/** Open a file or folder with the OS default handler (cross-platform host API). */
+// ponytail: $HOME/** scope; tighten to the live vault root if a user keeps notes outside home
+export async function openFilePath(path: string): Promise<void> { await openPath(path); }
+export async function openVaultPath(path: string): Promise<void> { await openPath(path); }
 
 const BASE = "http://localhost:7070";
 
