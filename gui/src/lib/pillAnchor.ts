@@ -34,6 +34,16 @@ export function anchorPosition(anchor: PillAnchor, w: number, h: number, area: W
   return { x: Math.round(x), y: Math.round(y) };
 }
 
+/** Position for a pill whose window is `box` sized, honoring a fixed anchor;
+ *  returns null for custom (caller keeps live-read/restore path). Used by the
+ *  menu open/close reconcile so anchored pills never depend on a live geometry
+ *  read (the drift source). */
+export function anchoredMenuPosition(
+  anchor: PillAnchor, boxW: number, boxH: number, area: WorkArea,
+): { x: number; y: number } | null {
+  return anchorPosition(anchor, boxW, boxH, area);
+}
+
 /** Pill movability matrix (for_sonnet.md Problem 2): only the "custom"
  *  anchor is ever draggable, and only while the menu is closed — an anchored
  *  pill snaps back via `anchorPosition` anyway, and a dragging gesture while

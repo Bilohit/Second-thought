@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { ANCHOR_ORDER, isPillDraggable } from "./pillAnchor";
+import { ANCHOR_ORDER, anchoredMenuPosition, isPillDraggable } from "./pillAnchor";
+
+const area = { x: 0, y: 0, w: 1920, h: 1080, scale: 1 };
+
+it("br anchor pins grown box to bottom-right minus margin, deterministically", () => {
+  const small = anchoredMenuPosition("br", 60, 60, area)!;
+  const grown = anchoredMenuPosition("br", 320, 320, area)!;
+  // both flush to the same right/bottom edge regardless of box size
+  expect(small.x + 60).toBe(grown.x + 320);
+  expect(small.y + 60).toBe(grown.y + 320);
+});
+
+it("custom returns null (live-read path owns it)", () => {
+  expect(anchoredMenuPosition("custom", 60, 60, area)).toBeNull();
+});
 
 describe("isPillDraggable", () => {
   it("is draggable only for custom anchor with the menu closed", () => {
