@@ -35,6 +35,8 @@ interface Props {
   measureRef?: (el: HTMLDivElement | null) => void;
   lookChat: LookChatHook;
   lookChatPersist: LookChatPersist;
+  /** Full-window shell renders its own toggle in the topbar; suppress the inline one. */
+  hideToggle?: boolean;
 }
 
 function resultSnippet(r: SearchResult): string {
@@ -53,7 +55,7 @@ function tierLabel(tier: string | undefined): string {
   return "No vault match";
 }
 
-export default function LookPanel({ mode, onSelectMode, visible, onClose, measureRef, lookChat, lookChatPersist }: Props) {
+export default function LookPanel({ mode, onSelectMode, visible, onClose, measureRef, lookChat, lookChatPersist, hideToggle = false }: Props) {
   const [mounted, setMounted] = useState(visible);
 
   // Search state
@@ -234,32 +236,34 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
         </div>
         <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 4 }}>
           {/* Mode toggle */}
-          <div
-            role="tablist"
-            aria-label="Look mode"
-            style={{ display: "flex", gap: 2, background: "var(--surface)", borderRadius: "var(--radius)", padding: 2 }}
-          >
-            {(["search", "chat"] as const).map((m) => (
-              <button
-                key={m}
-                role="tab"
-                aria-selected={mode === m}
-                onClick={() => { logger.debug("look", "mode changed", { mode: m }); onSelectMode(m); }}
-                style={{
-                  fontSize: 11,
-                  padding: "4px 10px",
-                  borderRadius: "var(--radius-sm)",
-                  border: "none",
-                  background: mode === m ? "var(--accent)" : "transparent",
-                  color: mode === m ? "var(--on-accent)" : "var(--text-2)",
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                }}
-              >
-                {m === "search" ? "Search" : "Chat"}
-              </button>
-            ))}
-          </div>
+          {!hideToggle && (
+            <div
+              role="tablist"
+              aria-label="Look mode"
+              style={{ display: "flex", gap: 2, background: "var(--surface)", borderRadius: "var(--radius)", padding: 2 }}
+            >
+              {(["search", "chat"] as const).map((m) => (
+                <button
+                  key={m}
+                  role="tab"
+                  aria-selected={mode === m}
+                  onClick={() => { logger.debug("look", "mode changed", { mode: m }); onSelectMode(m); }}
+                  style={{
+                    fontSize: 11,
+                    padding: "4px 10px",
+                    borderRadius: "var(--radius-sm)",
+                    border: "none",
+                    background: mode === m ? "var(--accent)" : "transparent",
+                    color: mode === m ? "var(--on-accent)" : "var(--text-2)",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  {m === "search" ? "Search" : "Chat"}
+                </button>
+              ))}
+            </div>
+          )}
           {/* Refresh button */}
           <button
             className="btn-hover no-drag"
