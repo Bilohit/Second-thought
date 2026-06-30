@@ -22,7 +22,7 @@
         "height": 460,
         "minWidth": 36,
         "minHeight": 36,
-        "maxWidth": 480,
+        "maxWidth": 920,
         "maxHeight": 700,
         "resizable": false,
         "decorations": false,

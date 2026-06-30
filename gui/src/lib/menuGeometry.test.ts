@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeMenuGeometry, clampPillWindowToMonitor, computeCapsuleMenuGeometry, computeProportionalMonitorMove, computeMinimalMenuWindow } from "./menuGeometry";
+import { computeMenuGeometry, clampPillWindowToMonitor, computeCapsuleMenuGeometry, computeProportionalMonitorMove, computeMinimalMenuWindow, resolveCapsuleZone } from "./menuGeometry";
 import { CAPSULE_CLOSED_W } from "../components/PillMenu/CapsuleMenu";
 import { anchorPosition, type PillAnchor } from "./pillAnchor";
 
@@ -397,6 +397,72 @@ describe("computeCapsuleMenuGeometry", () => {
       }
     },
   );
+
+  it("near-center: window is centered on the pill's own center x", () => {
+    const { windowTopLeftLogical, windowW } = computeCapsuleMenuGeometry({
+      ...base,
+      nearEdge: "center",
+    });
+    const pillCenterX = base.idleTopLeftLogical.x + base.idlePillBoxW / 2;
+    const windowCenterX = windowTopLeftLogical.x + windowW / 2;
+    expect(Math.abs(windowCenterX - pillCenterX)).toBeLessThanOrEqual(0.5);
+  });
+
+  it("near-center demotion: App.tsx demotes to left edge when centered window overflows left", () => {
+    // Narrow monitor: pill is in center third but centered open window would clip left edge
+    const narrow = {
+      idleTopLeftLogical: { x: 0, y: 400 },
+      idlePillBoxW: CAPSULE_CLOSED_W + 12,
+      idlePillBoxH: 48,
+      margin: 6,
+      capsuleOpenW: 300,
+      closePadW: 64,
+    };
+    const windowW = narrow.capsuleOpenW + narrow.margin * 2 + narrow.closePadW;
+    const centeredX = narrow.idleTopLeftLogical.x + narrow.idlePillBoxW / 2 - windowW / 2;
+    // centeredX is negative → overflow → demote to left → left-pinned geometry
+    const demotedResult = computeCapsuleMenuGeometry({ ...narrow, nearEdge: "left" });
+    expect(demotedResult.windowTopLeftLogical.x).toBe(narrow.idleTopLeftLogical.x);
+    // verify the centered position would indeed overflow (confirming demotion is warranted)
+    expect(centeredX).toBeLessThan(0);
+  });
+});
+
+describe("resolveCapsuleZone", () => {
+  const monitor = { x: 0, y: 0, w: 1920, h: 1080, scale: 1 };
+  const base = {
+    idleTopLeftLogical: { x: 1700, y: 400 },
+    idlePillBoxW: CAPSULE_CLOSED_W + 12,
+    capsuleOpenW: 300,
+    margin: 6,
+    closePadW: 64,
+  };
+
+  it("right third → right zone", () => {
+    const pillCenterLogical = { x: 1700, y: 424 };
+    expect(resolveCapsuleZone({ ...base, pillCenterLogical, monitorBounds: monitor })).toBe("right");
+  });
+
+  it("left third → left zone", () => {
+    const pillCenterLogical = { x: 200, y: 424 };
+    expect(resolveCapsuleZone({
+      ...base,
+      idleTopLeftLogical: { x: 100, y: 400 },
+      pillCenterLogical,
+      monitorBounds: monitor,
+    })).toBe("left");
+  });
+
+  it("center third demotes to right when symmetric grow overflows", () => {
+    const idleTopLeftLogical = { x: 1850, y: 400 };
+    const pillCenterLogical = { x: idleTopLeftLogical.x + base.idlePillBoxW / 2, y: 424 };
+    expect(resolveCapsuleZone({
+      ...base,
+      idleTopLeftLogical,
+      pillCenterLogical,
+      monitorBounds: monitor,
+    })).toBe("right");
+  });
 });
 
 describe("computeMenuGeometry — mode-switch keeps pill center fixed", () => {

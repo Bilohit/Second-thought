@@ -26,6 +26,8 @@ export default function SegmentedToggle<K extends string>({ options, value, onCh
           style={{
             fontSize: 11,
             padding: "4px 10px",
+            minWidth: 60,
+            textAlign: "center",
             borderRadius: "var(--radius-sm)",
             border: "none",
             background: value === o.key ? "var(--accent)" : "transparent",

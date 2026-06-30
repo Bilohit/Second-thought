@@ -10,17 +10,35 @@
  *   - Icon buttons use .icon-btn utility class (focus-visible ring included)
  *   - Confidence bar width animates via CSS transition
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import StepIndicator from "./StepIndicator";
+import StatusIndicator from "./StatusIndicator";
 import { HEADER_PAD } from "./ui/styles";
 import type { CaptureState, CaptureStep, ThinkingState } from "../hooks/useCapture";
 import { deriveYoutubeSteps } from "../hooks/useCapture";
 import { getConfig, formatHotkey, DEFAULT_HOTKEY } from "../lib/config";
+import type { LlmStatus } from "../lib/api";
+import { staggerDelays } from "../lib/menuTiming";
+
+// Nav icon size matches .icon-btn: 14px icon + 4px padding each side = 22px,
+// gap between icons is 2px → stride = 24px per icon slot.
+const NAV_ICON_SIZE = 22;
+const NAV_GAP = 2;
+const NAV_STRIDE = NAV_ICON_SIZE + NAV_GAP;
+
+// staggerDelays(5 fixed icons, 225ms window, 160ms per-item dur) → [0, 16, 33, 49, 65]
+const NAV_STAGGER_DELAYS = staggerDelays(5, 225, 160);
+
+// Which nav icon slot corresponds to each view (left-to-right order: search, vault, settings, inbox, stats)
+const VIEW_TO_SLOT: Record<string, number> = { look: 0, vault: 1, settings: 2, inbox: 3, stats: 4 };
 
 interface Props {
   measureRef?:    (el: HTMLDivElement | null) => void;
   captureState:   CaptureState;
   stepDefs:       CaptureStep[];
+  llmStatus:      LlmStatus;
+  /** Current view — drives nav slider position. Omit or "capture" → no active icon. */
+  activeView?:    string;
   onOpenSettings: () => void;
   onOpenVault:    () => void;
   onOpenInbox:    () => void;
@@ -94,25 +112,8 @@ function useHotkeyLabel(): string {
 
 function Footer({ state }: { state: CaptureState }) {
   const hotkeyLabel = useHotkeyLabel();
-  if (state.phase === "done" && state.result) {
-    const short = state.result.path ? state.result.path.split(/[\\/]/).slice(-2).join("/") : null;
-    return (
-      <div role="status" aria-live="polite" style={{ display: "flex", alignItems: "center", gap: 6, animation: "fadeIn 0.22s ease forwards" }}>
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-          <circle cx="6" cy="6" r="5.5" stroke="var(--green)" strokeWidth="1.2"/>
-          <polyline points="3,6 5.2,8.2 9,3.5" stroke="var(--green)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-        <span style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "monospace" }}>{short ? `Saved to ${short}` : "Saved"}</span>
-      </div>
-    );
-  }
-  if (state.phase === "error" && state.errorMsg) {
-    const firstLine = state.errorMsg.split("\n")[0];
-    return <span role="alert" style={{ fontSize: 11, color: "var(--red)" }}>{firstLine.length > 60 ? firstLine.slice(0, 57) + "…" : firstLine}</span>;
-  }
-  // Background job in progress: the step list above already shows live
-  // status, so the footer stays quiet instead of showing the idle hotkey hint.
-  if (state.phase === "background") return null;
+  // done/error/background: toasts handle feedback; footer stays quiet.
+  if (state.phase !== "idle" && state.phase !== "capturing") return null;
   return <span style={{ fontSize: 11, color: "var(--text-3)", letterSpacing: "0.03em" }}>{hotkeyLabel} to capture</span>;
 }
 
@@ -285,6 +286,8 @@ export default function CaptureOverlay({
   measureRef,
   captureState,
   stepDefs,
+  llmStatus,
+  activeView,
   onOpenSettings,
   onOpenVault,
   onOpenInbox,
@@ -319,7 +322,6 @@ export default function CaptureOverlay({
     [measureRef],
   );
 
-  const isCapturing = captureState.phase === "capturing" || captureState.phase === "background";
   const showTrayHint = useTrayHintVisible(captureState.phase === "idle");
 
   return (
@@ -346,69 +348,95 @@ export default function CaptureOverlay({
         style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: HEADER_PAD, borderBottom: "1px solid var(--border)" }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span
-            aria-hidden="true"
-            style={{
-              display: "inline-block", width: 7, height: 7, borderRadius: "50%",
-              background: isCapturing ? "var(--accent)" : "var(--border)",
-              boxShadow: isCapturing ? "0 0 8px var(--accent-glow)" : "none",
-              transition: "all 0.3s ease",
-            }}
-          />
+          <StatusIndicator captureState={captureState} llmStatus={llmStatus} />
           <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)", letterSpacing: "0.02em" }}>
             Second Thought
           </span>
         </div>
 
-        <div className="no-drag" style={{ display: "flex", gap: 2 }}>
-          <button className="icon-btn" onClick={onOpenSearch} title="Search vault (Ctrl+K)" aria-label="Search vault">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="11" cy="11" r="8" />
-              <line x1="21" y1="21" x2="16.65" y2="16.65" />
-            </svg>
-          </button>
-          <button className="icon-btn" onClick={onOpenVault} title="Vault (Ctrl+\)" aria-label="Open vault manager">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-            </svg>
-          </button>
-          <button className="icon-btn" onClick={onOpenSettings} title="Settings (Ctrl+,)" aria-label="Open settings">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M12 2v2m0 16v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M2 12h2m16 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-            </svg>
-          </button>
-          <button
-            className="icon-btn"
-            onClick={onOpenInbox}
-            title="Inbox (Ctrl+I)"
-            aria-label={inboxCount > 0 ? `Open inbox, ${inboxCount} item${inboxCount === 1 ? "" : "s"} need review` : "Open inbox"}
-            style={{ position: "relative" }}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M22 12h-6l-2 3h-4l-2-3H2" />
-              <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
-            </svg>
-            {inboxCount > 0 && (
-              <span
+        <div className="no-drag" style={{ display: "flex", gap: NAV_GAP, position: "relative" }}>
+          {/* Sliding active indicator — behind icons via z-index 0 */}
+          {(() => {
+            const slot = activeView !== undefined ? (VIEW_TO_SLOT[activeView] ?? null) : null;
+            return (
+              <div
+                className="nav-slider"
                 aria-hidden="true"
                 style={{
-                  position: "absolute", top: 2, right: 2,
-                  minWidth: 7, height: 7, borderRadius: "50%",
-                  background: "var(--accent)",
+                  transform: `translateY(-50%) translateX(${slot !== null ? slot * NAV_STRIDE : 0}px)`,
+                  opacity: slot !== null && mounted ? 1 : 0,
                 }}
               />
-            )}
-          </button>
-          <button className="icon-btn" onClick={onOpenStats} title="Statistics" aria-label="Open statistics">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <line x1="18" y1="20" x2="18" y2="10" />
-              <line x1="12" y1="20" x2="12" y2="4" />
-              <line x1="6" y1="20" x2="6" y2="14" />
-            </svg>
-          </button>
+            );
+          })()}
+          {/* Fixed nav icons in slot order: look(0), vault(1), settings(2), inbox(3), stats(4) */}
+          {([
+            {
+              view: "look",  onClick: onOpenSearch, title: "Search vault (Ctrl+K)", label: "Search vault",
+              svg: <><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></>,
+            },
+            {
+              view: "vault", onClick: onOpenVault, title: "Vault (Ctrl+\\)", label: "Open vault",
+              svg: <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />,
+            },
+            {
+              view: "settings", onClick: onOpenSettings, title: "Settings (Ctrl+,)", label: "Open settings",
+              svg: <><circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M2 12h2m16 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></>,
+            },
+            {
+              view: "inbox", onClick: onOpenInbox, title: "Inbox (Ctrl+I)",
+              label: inboxCount > 0 ? `Open inbox, ${inboxCount} item${inboxCount === 1 ? "" : "s"} need review` : "Open inbox",
+              svg: <><path d="M22 12h-6l-2 3h-4l-2-3H2" /><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /></>,
+              badge: inboxCount > 0,
+            },
+            {
+              view: "stats", onClick: onOpenStats, title: "Statistics", label: "Open statistics",
+              svg: <><line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" /></>,
+            },
+          ] as Array<{ view: string; onClick: () => void; title: string; label: string; svg: ReactNode; badge?: boolean }>)
+            .map(({ view, onClick, title, label, svg, badge }, i) => {
+              const isActive = activeView === view;
+              const delay = NAV_STAGGER_DELAYS[i] ?? 0;
+              return (
+                <button
+                  key={view}
+                  className="btn-hover nav-btn"
+                  onClick={onClick}
+                  title={title}
+                  aria-label={label}
+                  aria-pressed={isActive}
+                  style={{
+                    position: "relative", zIndex: 1,
+                    background: "none", border: "none", cursor: "pointer",
+                    padding: "var(--space-1)",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    animation: mounted ? `navIconIn 160ms var(--menu-travel-ease) ${delay}ms both` : "none",
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    {svg}
+                  </svg>
+                  {badge && (
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        position: "absolute", top: 2, right: 2,
+                        minWidth: 7, height: 7, borderRadius: "50%",
+                        background: "var(--accent)",
+                      }}
+                    />
+                  )}
+                </button>
+              );
+            })
+          }
           {onCollapseToPill && (
-            <button className="icon-btn" onClick={onCollapseToPill} title="Collapse" aria-label="Collapse">
+            <button className="icon-btn" onClick={onCollapseToPill} title="Collapse" aria-label="Collapse"
+              style={{
+                animation: mounted ? `navIconIn 160ms var(--menu-travel-ease) ${NAV_STAGGER_DELAYS[5] ?? 80}ms both` : "none",
+                position: "relative", zIndex: 1,
+              }}
+            >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M16 3h3a2 2 0 0 1 2 2v3m0 8v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3m0-8V5a2 2 0 0 1 2-2h3"/>
               </svg>

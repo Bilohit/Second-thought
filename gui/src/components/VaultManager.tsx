@@ -43,6 +43,7 @@ interface Props {
   /** Called once openResult has been consumed, so App can clear it. */
   onConsumeOpenResult?: () => void;
   measureRef?: (el: HTMLDivElement | null) => void;
+  embedded?: boolean;
 }
 
 // ── Category card ─────────────────────────────────────────────────────────────
@@ -392,7 +393,7 @@ type ModalState =
   | { kind: "rename"; name: string }
   | { kind: "editDescription"; name: string; current: string | null };
 
-export default function VaultManager({ visible, onClose, openResult, onConsumeOpenResult, measureRef }: Props) {
+export default function VaultManager({ visible, onClose, openResult, onConsumeOpenResult, measureRef, embedded = false }: Props) {
   // Mounted+visible pattern (mirrors SettingsPanel): the panel stays mounted
   // while transitioning out so it can animate, but is removed from the DOM
   // once fully hidden so it can't eat clicks meant for the capture card.
@@ -545,8 +546,9 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
     <div
       ref={measureRef}
       style={{
-        ...PANEL_FRAME,
-        ...panelTransform(visible),
+        ...(embedded
+          ? { position: "relative", width: "100%", height: "100%", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }
+          : { ...PANEL_FRAME, ...panelTransform(visible) }),
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
@@ -554,7 +556,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
       onTransitionEnd={handleTransitionEnd}
     >
       {/* ── Header ───────────────────────────────────────────────────────── */}
-      <div className="drag-region" style={PANEL_HEADER}>
+      <div className={embedded ? "" : "drag-region"} style={PANEL_HEADER}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {drillCat ? (
             <button
@@ -568,15 +570,24 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
               </svg>
             </button>
           ) : (
-            <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
-              <MenuIcon target="vault" size={14} />
+            !embedded && (
+              <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
+                <MenuIcon target="vault" size={14} />
+              </span>
+            )
+          )}
+          {(drillCat || !embedded) && (
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
+              {drillCat ? drillCat : "Vault"}
             </span>
           )}
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
-            {drillCat ? drillCat : "Vault"}
-          </span>
           {!drillCat && vaultRoot && (
-            <span style={{ fontSize: 10, color: "var(--text-3)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }}>
+            <span style={{
+              fontSize: 10, color: "var(--text-3)", fontFamily: "monospace",
+              ...(embedded
+                ? { flex: 1, wordBreak: "break-all" }
+                : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }),
+            }}>
               {vaultRoot}
             </span>
           )}
@@ -624,16 +635,18 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
             </button>
           )}
           {/* Close */}
-          <button
-            className="icon-close-btn"
-            title="Close"
-            onClick={onClose}
-          >
-            <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <line x1="2" y1="2" x2="12" y2="12" />
-              <line x1="12" y1="2" x2="2" y2="12" />
-            </svg>
-          </button>
+          {!embedded && (
+            <button
+              className="icon-close-btn"
+              title="Close"
+              onClick={onClose}
+            >
+              <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="2" y1="2" x2="12" y2="12" />
+                <line x1="12" y1="2" x2="2" y2="12" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 

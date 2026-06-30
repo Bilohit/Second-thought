@@ -51,7 +51,7 @@ function Tile({
   );
 }
 
-function CategoryBar({ category, count, pct }: { category: string; count: number; pct: number }) {
+export function CategoryBar({ category, count, pct }: { category: string; count: number; pct: number }) {
   const [width, setWidth] = useState(0);
   useEffect(() => { requestAnimationFrame(() => setWidth(pct)); }, [pct]);
 
@@ -79,7 +79,7 @@ function CategoryBar({ category, count, pct }: { category: string; count: number
   );
 }
 
-function DaySparkline({ days }: { days: { date: string; count: number }[] }) {
+export function DaySparkline({ days }: { days: { date: string; count: number }[] }) {
   const ordered = days.slice().sort((a, b) => a.date.localeCompare(b.date));
   const max = Math.max(1, ...ordered.map((d) => d.count));
   return (

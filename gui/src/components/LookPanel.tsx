@@ -37,6 +37,7 @@ interface Props {
   lookChatPersist: LookChatPersist;
   /** Full-window shell renders its own toggle in the topbar; suppress the inline one. */
   hideToggle?: boolean;
+  embedded?: boolean;
 }
 
 function resultSnippet(r: SearchResult): string {
@@ -55,7 +56,7 @@ function tierLabel(tier: string | undefined): string {
   return "No vault match";
 }
 
-export default function LookPanel({ mode, onSelectMode, visible, onClose, measureRef, lookChat, lookChatPersist, hideToggle = false }: Props) {
+export default function LookPanel({ mode, onSelectMode, visible, onClose, measureRef, lookChat, lookChatPersist, hideToggle = false, embedded = false }: Props) {
   const [mounted, setMounted] = useState(visible);
 
   // Search state
@@ -216,8 +217,9 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
     <div
       ref={measureRef}
       style={{
-        ...PANEL_FRAME,
-        ...panelTransform(visible),
+        ...(embedded
+          ? { position: "relative", width: "100%", height: "100%", border: "none", borderRadius: 0, background: "transparent" }
+          : { ...PANEL_FRAME, ...panelTransform(visible) }),
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
@@ -225,14 +227,18 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
       onTransitionEnd={handleTransitionEnd}
     >
       {/* Header */}
-      <div className="drag-region" style={PANEL_HEADER}>
+      <div className={embedded ? "" : "drag-region"} style={PANEL_HEADER}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
-            <MenuIcon target="search" size={14} />
-          </span>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
-            Look
-          </span>
+          {!embedded && (
+            <>
+              <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
+                <MenuIcon target="search" size={14} />
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
+                Look
+              </span>
+            </>
+          )}
         </div>
         <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 4 }}>
           {/* Mode toggle */}
@@ -251,6 +257,8 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                   style={{
                     fontSize: 11,
                     padding: "4px 10px",
+                    minWidth: 60,
+                    textAlign: "center",
                     borderRadius: "var(--radius-sm)",
                     border: "none",
                     background: mode === m ? "var(--accent)" : "transparent",
@@ -282,24 +290,14 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
               <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
             </svg>
           </button>
-          {/* Clear chat (chat mode only) */}
-          {mode === "chat" && (
-            <button
-              className="no-drag"
-              onClick={reset}
-              title="Clear chat"
-              aria-label="Clear chat"
-              style={{ ...BTN_GHOST, fontSize: 10, color: "var(--text-3)" }}
-            >
-              Clear
+          {!embedded && (
+            <button className="no-drag icon-close-btn" onClick={onClose} title="Close">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="2" y1="2" x2="12" y2="12" />
+                <line x1="12" y1="2" x2="2" y2="12" />
+              </svg>
             </button>
           )}
-          <button className="no-drag icon-close-btn" onClick={onClose} title="Close">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <line x1="2" y1="2" x2="12" y2="12" />
-              <line x1="12" y1="2" x2="2" y2="12" />
-            </svg>
-          </button>
         </div>
       </div>
 
@@ -615,6 +613,23 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                 <span style={{ fontSize: 10, color: "var(--text-3)", flex: 1 }}>
                   {ignoreHistory ? "Standalone query — prior turns skipped" : "Follow-ups use recent chat context"}
                 </span>
+                <button
+                  type="button"
+                  onClick={reset}
+                  disabled={messages.length === 0}
+                  title="Clear chat"
+                  aria-label="Clear chat"
+                  style={{
+                    ...BTN_SECONDARY,
+                    fontSize: 10,
+                    padding: "3px 8px",
+                    flexShrink: 0,
+                    opacity: messages.length === 0 ? 0.4 : 1,
+                    cursor: messages.length === 0 ? "default" : "pointer",
+                  }}
+                >
+                  Clear
+                </button>
               </div>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <input

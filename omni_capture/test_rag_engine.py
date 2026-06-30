@@ -14,14 +14,14 @@ def _fake_embed(text, base_url, model="x"):
 def test_refusal_when_no_index():
     with tempfile.TemporaryDirectory() as tmp:
         with mock.patch.object(rag_engine, "_embed", _fake_embed):
-            sources, answerable = hybrid_retrieve(
+            sources, confidence, tier = hybrid_retrieve(
                 pathlib.Path(tmp), "anything", "http://localhost:11434", "all-minilm")
     assert sources == []
-    assert answerable is False
+    assert tier == "none"
 
-def test_prompt_numbers_sources_and_embeds_refusal_rule():
+def test_prompt_numbers_sources_without_llm_refusal():
     srcs = [{"n": 1, "path": "/v/Tech/a.md", "category": "Tech",
              "filename": "a.md", "snippet": "async io"}]
-    p = build_system_prompt(srcs)
+    p = build_system_prompt(srcs, "vault")
     assert "[1] (Tech/a.md)" in p
-    assert REFUSAL in p
+    assert REFUSAL not in p

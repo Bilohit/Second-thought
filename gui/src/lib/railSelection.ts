@@ -17,3 +17,10 @@ export function railSliderRect(
   const translateY = selectedIndex * (buttonHeight + gapPx);
   return { translateY, height: buttonHeight };
 }
+
+/** Measured slider rect from a button inside a relative-positioned track. */
+export function railSliderFromElement(
+  button: HTMLElement,
+): { translateY: number; height: number } {
+  return { translateY: button.offsetTop, height: button.offsetHeight };
+}

@@ -24,6 +24,8 @@ import { deriveYoutubeSteps } from "../hooks/useCapture";
 import CapsuleMenu, { CAPSULE_CLOSED_W, CAPSULE_H } from "./PillMenu/CapsuleMenu";
 import RadialMenu, { type PillGeometry } from "./PillMenu/RadialMenu";
 import type { MenuTarget } from "./PillMenu/icons";
+import type { LlmStatus } from "../lib/api";
+import { llmStatusLabel, llmStatusTooltip } from "../lib/llmStatusLabel";
 
 export type PillMode = "capsule" | "minimal";
 export type PillCorner = "sharp" | "rounded";
@@ -33,7 +35,13 @@ interface Props {
   corner: PillCorner;
   captureState: CaptureState;
   stepDefs: CaptureStep[];
+  llmStatus: LlmStatus;
   menuOpen: boolean;
+  /** Capsule mode: gates the width morph until the OS window has grown
+   *  (mirrors fanOpen). Falls back to `menuOpen` when omitted. */
+  capsuleMorphOpen?: boolean;
+  /** Capsule mode: true during the close morph after menuOpen flips false. */
+  capsuleExiting?: boolean;
   /** Minimal mode only: gates the radial fan's render separately from
    *  `menuOpen` so it can never paint before the pill window has actually
    *  grown to fit it (pill-fan-clip fix). Falls back to `menuOpen` when
@@ -49,7 +57,7 @@ interface Props {
   onDragPointerDown: (e: React.PointerEvent) => void;
   /** Which screen edge the capsule bar is pinned to — icons stagger in from
    *  this edge (§4.3.3). Unused in minimal mode. */
-  nearEdge: "left" | "right";
+  nearEdge: "left" | "right" | "center";
   onToggleMenu: () => void;
   inboxCount: number;
   onSelect: (target: Exclude<MenuTarget, "hide">) => void;
@@ -65,7 +73,7 @@ function stepPillLabel(def: CaptureStep): string {
   return def.pillLabel ?? def.label;
 }
 
-function pillLabel(state: CaptureState, stepDefs: CaptureStep[]): string {
+function pillLabel(state: CaptureState, stepDefs: CaptureStep[], llmStatus: LlmStatus): string {
   if (state.phase === "error") return "Error";
   if (state.phase === "done") {
     return state.result?.category ?? "Done";
@@ -80,7 +88,8 @@ function pillLabel(state: CaptureState, stepDefs: CaptureStep[]): string {
     const active = stepDefs.find((d) => state.steps[d.id as keyof CaptureState["steps"]] === "active");
     return active ? stepPillLabel(active) : "Working";
   }
-  return "Second Thought";
+  // idle: swap label to reflect LLM state
+  return llmStatusLabel(llmStatus);
 }
 
 export const PILL_DIMS: Record<PillMode, { w: number; h: number }> = {
@@ -89,15 +98,22 @@ export const PILL_DIMS: Record<PillMode, { w: number; h: number }> = {
 };
 
 export default function PillOverlay({
-  mode, corner, captureState, stepDefs, menuOpen, fanOpen, draggable, dragging, onDragPointerDown, nearEdge, onToggleMenu, inboxCount, onSelect, onHide,
+  mode, corner, captureState, stepDefs, llmStatus, menuOpen, capsuleMorphOpen, capsuleExiting, fanOpen, draggable, dragging, onDragPointerDown, nearEdge, onToggleMenu, inboxCount, onSelect, onHide,
   pillGeometry, fanStyle,
 }: Props) {
   const isActive = captureState.phase === "capturing" || captureState.phase === "background";
   const isError  = captureState.phase === "error";
   const isDone   = captureState.phase === "done";
-  const label    = pillLabel(captureState, stepDefs);
+  const isIdle   = !isActive && !isError && !isDone;
+  const label    = pillLabel(captureState, stepDefs, llmStatus);
 
-  const dotColor = isError ? "var(--red)" : isDone ? "var(--green)" : isActive ? "var(--accent)" : "var(--text-3)";
+  // priority: error > done > capturing > llm-status > idle
+  const dotColor =
+    isError                              ? "var(--red)"
+    : isDone                             ? "var(--green)"
+    : isActive                           ? "var(--accent)"
+    : isIdle && llmStatus === "disconnected" ? "var(--yellow)"
+    : "var(--text-3)";
 
   if (mode === "minimal") {
     return (
@@ -110,7 +126,7 @@ export default function PillOverlay({
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           aria-label={`Second Thought — ${label}. Click to ${menuOpen ? "close" : "open"} the menu.`}
-          title={label}
+          title={isIdle ? llmStatusTooltip(llmStatus) : label}
           style={{
             width: PILL_DIMS.minimal.w,
             height: PILL_DIMS.minimal.h,
@@ -137,6 +153,11 @@ export default function PillOverlay({
               borderRadius: "50%",
               background: dotColor,
               transition: "background 0.2s ease",
+              animation: isIdle && llmStatus === "loading"
+                ? "llmLoadingPulse 2.4s cubic-bezier(0.45,0,0.55,1) infinite"
+                : isIdle && llmStatus === "disconnected"
+                ? "llmWarnFade 2.8s cubic-bezier(0.45,0,0.55,1) infinite"
+                : "none",
             }}
           />
         </button>
@@ -155,16 +176,18 @@ export default function PillOverlay({
 
   return (
     <CapsuleMenu
-      open={menuOpen}
+      open={capsuleMorphOpen ?? menuOpen}
       corner={corner}
       label={label}
       dotColor={dotColor}
       isActive={isActive}
+      llmStatus={llmStatus}
       inboxCount={inboxCount}
       draggable={draggable}
       dragging={dragging}
       onDragPointerDown={onDragPointerDown}
       nearEdge={nearEdge}
+      exiting={capsuleExiting}
       onToggle={onToggleMenu}
       onSelect={onSelect}
       onHide={onHide}

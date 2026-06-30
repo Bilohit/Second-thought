@@ -5,9 +5,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { readText, readImage } from "@tauri-apps/plugin-clipboard-manager";
+import { readFile, readTextFile } from "@tauri-apps/plugin-fs";
 import { streamCapture, getJobStatus, HttpError, type StepName, type StepStatus, type ContentType } from "../lib/api";
 import { logger, setRunId } from "../lib/logger";
 import { isConnectionFailure, nextRetryDelayMs } from "../lib/captureRetry";
+import { fileKind } from "../lib/fileIngest";
 
 /** Short, log-friendly correlation ID — not a security token, just unique enough
  *  to join frontend/backend lines for one capture run in the merged log file. */
@@ -196,6 +198,60 @@ async function readClipboard(): Promise<{
   };
 }
 
+interface CapturePayload {
+  contentType: ContentType;
+  content: string;
+  preview: ContentPreview;
+}
+
+const IMAGE_MIME: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
+};
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(s);
+}
+
+async function readDroppedFile(filePath: string): Promise<CapturePayload> {
+  const kind = fileKind(filePath);
+  if (!kind) throw new Error("Unsupported file type");
+  const name = filePath.split(/[\\/]/).pop() ?? filePath;
+
+  if (kind === "text") {
+    const content = await readTextFile(filePath);
+    const trimmed = content.trim();
+    if (!trimmed) throw new Error("File is empty.");
+    return {
+      contentType: "text",
+      content: trimmed,
+      preview: { type: "text", snippet: trimmed.length > 120 ? trimmed.slice(0, 117) + "..." : trimmed },
+    };
+  }
+
+  const bytes = await readFile(filePath);
+  const b64 = bytesToBase64(bytes);
+
+  if (kind === "image") {
+    const ext = name.split(".").pop()?.toLowerCase() ?? "png";
+    const mime = IMAGE_MIME[ext] ?? "image/png";
+    return {
+      contentType: "image_b64",
+      content: b64,
+      preview: { type: "image", snippet: name, imageSrc: `data:${mime};base64,${b64}` },
+    };
+  }
+
+  return {
+    contentType: "audio_b64",
+    content: b64,
+    preview: { type: "text", snippet: name },
+  };
+}
+
 const BLANK_STATE: CaptureState = {
   phase: "idle",
   steps: { ...INITIAL_STEPS },
@@ -307,47 +363,34 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
     }, JOB_POLL_MS);
   }, [stopJobPolling, scheduleDismiss]);
 
-  const runCapture = useCallback(async () => {
+  const runCaptureWith = useCallback(async (getPayload: () => Promise<CapturePayload>) => {
     if (inFlightRef.current) {
       logger.debug("capture", "runCapture ignored -- a run is already in flight");
       return;
     }
     inFlightRef.current = true;
-    // A second capture starting while a previous background job's poll is
-    // still live would otherwise leave that interval running forever, since
-    // its closure captures the stale job id from the prior run.
     stopJobPolling();
-    // A pending dismiss from the *previous* run (e.g. its AUTO_DISMISS_DONE_MS
-    // timer) would otherwise fire mid-way through this new run and hide the
-    // window / reset state out from under it.
     if (dismissTimer.current) { clearTimeout(dismissTimer.current); dismissTimer.current = null; }
 
     const runId = newRunId();
     setRunId(runId);
     logger.info("capture", "runCapture invoked", { runId });
     const stopRun = logger.time("capture", "full capture session");
-    // Local, not the shared abortRef: with inFlightRef guaranteeing only one
-    // run at a time, this controller belongs solely to this run. abortRef is
-    // kept only so unmount cleanup can still cancel an in-progress request.
     const controller = new AbortController();
     abortRef.current = controller;
     setState({ ...BLANK_STATE, phase: "capturing" });
 
     try {
-      const { contentType, content, preview } = await readClipboard();
+      const { contentType, content, preview } = await getPayload();
 
-      if (contentType !== "image_b64" && !content.trim()) {
+      if (contentType !== "image_b64" && contentType !== "audio_b64" && !content.trim()) {
         throw new Error("Clipboard is empty -- copy something first.");
       }
 
       setState((prev) => ({ ...prev, preview }));
 
-      logger.debug("capture", "clipboard read", { contentType, preview: preview.type });
+      logger.debug("capture", "payload ready", { contentType, preview: preview.type });
 
-      // Retry loop for P1-1: a capture fired right after app restart can hit
-      // the server before uvicorn finishes binding its port (connection
-      // refused). Retry with bounded backoff instead of failing hard; any
-      // other error (a real pipeline failure) is not retried.
       let attempt = 0;
       for (;;) {
         try {
@@ -441,6 +484,9 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
     }
   }, [setStep, scheduleDismiss, pollJob, stopJobPolling]);
 
+  const runCapture = useCallback(() => runCaptureWith(readClipboard), [runCaptureWith]);
+  const captureFile = useCallback((path: string) => runCaptureWith(() => readDroppedFile(path)), [runCaptureWith]);
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listen<void>("trigger-capture", () => { runCapture(); }).then((fn) => { unlisten = fn; });
@@ -452,5 +498,5 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
     };
   }, [runCapture, stopJobPolling]);
 
-  return { state, stepDefs: STEP_DEFS };
+  return { state, stepDefs: STEP_DEFS, captureFile };
 }

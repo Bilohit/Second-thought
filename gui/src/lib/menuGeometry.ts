@@ -17,9 +17,42 @@
  * live drag.
  */
 
+import type { WorkArea } from "./monitor";
+
 export interface Point {
   x: number;
   y: number;
+}
+
+export interface ResolveCapsuleZoneInput {
+  pillCenterLogical: Point;
+  monitorBounds: WorkArea;
+  idleTopLeftLogical: Point;
+  idlePillBoxW: number;
+  capsuleOpenW: number;
+  margin: number;
+  closePadW: number;
+}
+
+/** Viewport thirds zone for custom-position capsules, with center demotion when
+ *  symmetric grow would overflow the monitor (CAPSULE_DIRECTIONAL_MORPH_PLAN). */
+export function resolveCapsuleZone(input: ResolveCapsuleZoneInput): "left" | "right" | "center" {
+  const { pillCenterLogical, monitorBounds, idleTopLeftLogical, idlePillBoxW, capsuleOpenW, margin, closePadW } = input;
+
+  const oneThird = monitorBounds.w / 3;
+  let zone: "left" | "right" | "center";
+  if (pillCenterLogical.x < monitorBounds.x + oneThird) zone = "left";
+  else if (pillCenterLogical.x > monitorBounds.x + 2 * oneThird) zone = "right";
+  else zone = "center";
+
+  if (zone === "center") {
+    const winW = capsuleOpenW + margin * 2 + closePadW;
+    const centeredX = idleTopLeftLogical.x + idlePillBoxW / 2 - winW / 2;
+    if (centeredX < monitorBounds.x || centeredX + winW > monitorBounds.x + monitorBounds.w) {
+      zone = pillCenterLogical.x - monitorBounds.x < monitorBounds.w / 2 ? "left" : "right";
+    }
+  }
+  return zone;
 }
 
 export interface MenuGeometryInput {
@@ -230,9 +263,9 @@ export interface CapsuleMenuGeometryInput {
   /** Width of the transparent click-to-close padding (for_sonnet.md
    *  Problem 3, Option A). */
   closePadW: number;
-  /** Which screen edge the pill is nearer to — the bar hugs this edge and
-   *  the close-padding grows toward the screen center. */
-  nearEdge: "left" | "right";
+  /** Which zone the pill is in — left third anchors left, right third anchors
+   *  right, center third grows symmetrically from the pill's own center. */
+  nearEdge: "left" | "right" | "center";
 }
 
 export interface CapsuleMenuGeometryResult {
@@ -256,6 +289,8 @@ export function computeCapsuleMenuGeometry(input: CapsuleMenuGeometryInput): Cap
 
   const x = nearEdge === "right"
     ? idleTopLeftLogical.x + idlePillBoxW - windowW
+    : nearEdge === "center"
+    ? idleTopLeftLogical.x + idlePillBoxW / 2 - windowW / 2
     : idleTopLeftLogical.x;
 
   return {

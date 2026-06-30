@@ -38,7 +38,7 @@ async function authHeaders(extra?: Record<string, string>): Promise<Record<strin
   };
 }
 
-export type ContentType = "text" | "url" | "image_b64";
+export type ContentType = "text" | "url" | "image_b64" | "audio_b64";
 export type StepName = "intercept" | "enrich" | "decide" | "write";
 export type StepStatus = "active" | "done" | "error";
 
@@ -150,17 +150,27 @@ export interface SearchResult {
   tags: string;
 }
 
-export async function checkHealth(): Promise<boolean> {
+export type LlmStatus = "loading" | "ready" | "disconnected";
+
+export async function checkHealth(): Promise<{ serverOk: boolean; llmStatus: LlmStatus }> {
   const stop = logger.time("api", "GET /health");
   try {
     const r = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(2000) });
     stop({ status: r.status });
-    if (!r.ok) logger.warn("api", "health check returned non-OK", { status: r.status });
-    return r.ok;
+    if (!r.ok) {
+      logger.warn("api", "health check returned non-OK", { status: r.status });
+      return { serverOk: false, llmStatus: "disconnected" };
+    }
+    const body = await r.json() as { ok: boolean; ready: boolean; model_ok: boolean | null };
+    let llmStatus: LlmStatus;
+    if (!body.ready || body.model_ok === null) llmStatus = "loading";
+    else if (body.model_ok === false) llmStatus = "disconnected";
+    else llmStatus = "ready";
+    return { serverOk: true, llmStatus };
   } catch (err) {
     stop({ failed: true });
     logger.error("api", "health check failed — server unreachable at " + BASE, err);
-    return false;
+    return { serverOk: false, llmStatus: "disconnected" };
   }
 }
 

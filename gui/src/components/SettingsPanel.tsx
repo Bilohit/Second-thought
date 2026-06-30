@@ -62,6 +62,8 @@ interface Props {
 
   lookChatPersist?:          LookChatPersist;
   onSelectLookChatPersist?:  (v: LookChatPersist) => void;
+
+  embedded?: boolean;
 }
 
 // ── Theme swatch picker ──────────────────────────────────────────────────────
@@ -307,6 +309,7 @@ export default function SettingsPanel({
   pillSnapEnabled, onTogglePillSnap,
   monitors, selectedMonitorId, onSelectMonitor,
   lookChatPersist, onSelectLookChatPersist,
+  embedded = false,
 }: Props) {
   const [vaultRoot, setVaultRoot] = useState("");
   const [model, setModel] = useState("llama3.2");
@@ -487,16 +490,19 @@ export default function SettingsPanel({
     <div
       ref={measureRef}
       style={{
-        ...PANEL_FRAME,
-        ...panelTransform(visible),
-        overflowY: "auto",
+        ...(embedded
+          ? { position:"relative", width:"100%", height:"100%", border:"none", borderRadius:0, background:"transparent" }
+          : { ...PANEL_FRAME, ...panelTransform(visible) }),
+        display:"flex", flexDirection:"column", overflow:"hidden",
       }}
     >
       {/* Header */}
-      <div style={PANEL_HEADER} className="drag-region">
-        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
-          Settings
-        </span>
+      <div style={PANEL_HEADER} className={embedded ? "" : "drag-region"}>
+        {!embedded && (
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
+            Settings
+          </span>
+        )}
         <button className="no-drag icon-close-btn" onClick={onClose} title="Close">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="2" y1="2" x2="12" y2="12" />
@@ -515,7 +521,7 @@ export default function SettingsPanel({
       {/* Body */}
       <div
         className="no-drag"
-        style={{ padding: "16px 16px 14px", display: "flex", flexDirection: "column", gap: 16 }}
+        style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 16px 14px", display: "flex", flexDirection: "column", gap: 16 }}
       >
         {tab === "form" && (
           <>
@@ -589,7 +595,7 @@ export default function SettingsPanel({
                   })}
                 </div>
                 <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                  Rounded turns Capsule into a true pill/oval and Minimal into a circle. Only affects the pill — everything else stays sharp.
+                  Rounded softens the pill (Capsule/Minimal) and full-window panels; the settings tab stays sharp.
                 </span>
               </Field>
             )}

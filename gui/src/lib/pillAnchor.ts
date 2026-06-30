@@ -51,3 +51,10 @@ export function anchoredMenuPosition(
 export function isPillDraggable(anchor: PillAnchor, menuOpen: boolean): boolean {
   return anchor === "custom" && !menuOpen;
 }
+
+/** Capsule morph zone for fixed anchors — mirrors App.tsx's openingMenu branch. */
+export function capsuleZoneFromPillAnchor(anchor: PillAnchor): "left" | "right" | "center" {
+  if (anchor === "tr" || anchor === "rc" || anchor === "br") return "right";
+  if (anchor === "tc" || anchor === "bc") return "center";
+  return "left";
+}

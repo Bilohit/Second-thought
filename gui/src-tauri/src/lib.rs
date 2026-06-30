@@ -733,6 +733,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .manage(AppState { python_child, gui_secret, active_shortcut: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![
             get_gui_secret, set_hotkey, append_log, log_file_path, get_log_level, set_log_level,

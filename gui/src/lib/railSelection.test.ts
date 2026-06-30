@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { railSliderRect } from "./railSelection";
+import { railSliderRect, railSliderFromElement } from "./railSelection";
 
 describe("railSliderRect", () => {
   it("returns null when nothing is selected", () => {
@@ -22,5 +22,12 @@ describe("railSliderRect", () => {
     const btnH = (300 - 16) / 3;
     const r = railSliderRect(2, 3, 300, 8);
     expect(r).toEqual({ translateY: (btnH + 8) * 2, height: btnH });
+  });
+});
+
+describe("railSliderFromElement", () => {
+  it("reads offsetTop and offsetHeight from the active button", () => {
+    const btn = { offsetTop: 48, offsetHeight: 36 } as HTMLElement;
+    expect(railSliderFromElement(btn)).toEqual({ translateY: 48, height: 36 });
   });
 });

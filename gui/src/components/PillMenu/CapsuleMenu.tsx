@@ -22,6 +22,7 @@ import { useEffect, useMemo, useRef } from "react";
 import type { PillCorner } from "../PillOverlay";
 import { ALL_TARGETS, MENU_LABELS, MenuIcon, type MenuTarget } from "./icons";
 import { staggerDelays } from "../../lib/menuTiming";
+import type { LlmStatus } from "../../lib/api";
 
 // 154px — "Second Thought" (Geist Mono 12px, 98px text) with symmetric side
 // insets: 28px left (12px pad + 8px dot + 8px gap) = 28px right (12px pad +
@@ -62,6 +63,7 @@ interface Props {
   label: string;
   dotColor: string;
   isActive: boolean;
+  llmStatus: LlmStatus;
   inboxCount: number;
   /** for_sonnet.md Problem 2: only "custom" anchor with the menu closed is
    *  draggable; everything else gets the default pointer cursor instead of
@@ -73,13 +75,16 @@ interface Props {
   onDragPointerDown: (e: React.PointerEvent) => void;
   /** Which screen edge the bar's near edge is pinned to — icons stagger in
    *  from this edge inward (§4.3.3), confirmed against the mock. */
-  nearEdge: "left" | "right";
+  nearEdge: "left" | "right" | "center";
+  /** True while the bar is playing its close morph but menuOpen is already
+   *  false — keeps label/dot hidden and layout pinned until the window shrinks. */
+  exiting?: boolean;
   onToggle: () => void;
   onSelect: (target: Exclude<MenuTarget, "hide">) => void;
   onHide: () => void;
 }
 
-export default function CapsuleMenu({ open, corner, label, dotColor, isActive, inboxCount, draggable, dragging, onDragPointerDown, nearEdge, onToggle, onSelect, onHide }: Props) {
+export default function CapsuleMenu({ open, corner, label, dotColor, isActive, llmStatus, inboxCount, draggable, dragging, onDragPointerDown, nearEdge, exiting = false, onToggle, onSelect, onHide }: Props) {
   const sliderRef = useRef<HTMLSpanElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
@@ -103,7 +108,15 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, i
   // stays fixed (ALL_TARGETS) — only the delay assignment flips.
   const delays = useMemo(() => {
     const base = staggerDelays(ALL_TARGETS.length, CAPSULE_ANIM_MS, CAPSULE_ITEM_PLAY_MS);
-    return nearEdge === "right" ? [...base].reverse() : base;
+    if (nearEdge === "right") return [...base].reverse();
+    if (nearEdge === "center") {
+      const n = ALL_TARGETS.length;
+      const maxDelay = CAPSULE_ANIM_MS - CAPSULE_ITEM_PLAY_MS;
+      // center-out: middle index(es) get delay 0, outermost get maxDelay
+      const step = maxDelay / ((n - 1) / 2);
+      return ALL_TARGETS.map((_, i) => Math.round(step * Math.abs(i - (n - 1) / 2)));
+    }
+    return base;
   }, [nearEdge]);
 
   return (
@@ -114,8 +127,9 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, i
     // button's native click bubbles up to this onClick, and each menuitem
     // stops propagation so selecting one doesn't also re-toggle.
     <div
-      className={`capsule-menu${open ? " open" : ""}${draggable ? " pill-drag-handle" : ""}${dragging ? " pill-grabbed" : ""}`}
+      className={`capsule-menu${open ? " open" : ""}${exiting ? " exiting" : ""}${draggable ? " pill-drag-handle" : ""}${dragging ? " pill-grabbed" : ""}`}
       data-corner={corner}
+      data-near={nearEdge}
       style={{ width: open ? CAPSULE_OPEN_W : CAPSULE_CLOSED_W, height: CAPSULE_H }}
       onPointerDown={draggable ? onDragPointerDown : undefined}
       onClick={onToggle}
@@ -130,7 +144,18 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, i
         aria-expanded={open}
         tabIndex={open ? -1 : 0}
       >
-        <span className="capsule-dot" aria-hidden="true" style={{ background: dotColor }} />
+        <span
+          className="capsule-dot"
+          aria-hidden="true"
+          style={{
+            background: dotColor,
+            animation: !isActive && llmStatus === "loading"
+              ? "llmLoadingPulse 2.4s cubic-bezier(0.45,0,0.55,1) infinite"
+              : !isActive && llmStatus === "disconnected"
+              ? "llmWarnFade 2.8s cubic-bezier(0.45,0,0.55,1) infinite"
+              : "none",
+          }}
+        />
         <span className="capsule-label">{label}</span>
       </button>
       <span ref={sliderRef} className="capsule-slider" aria-hidden="true" />

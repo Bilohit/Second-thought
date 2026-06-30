@@ -119,6 +119,8 @@ CONFIG_PATH = Path(__file__).parent / "config.toml"
 # shouldn't pin /health at "never ready" forever, it just means the first
 # real capture pays the cold-model cost instead of a synthetic one.
 _MODEL_READY = False
+# None = still warming, True = warmup succeeded, False = warmup failed
+_MODEL_OK: bool | None = None
 
 
 @app.on_event("startup")
@@ -126,7 +128,7 @@ def _warm_model() -> None:
     """Fire a tiny throwaway generation in the background so the first real
     capture doesn't pay Ollama's cold model-load (~40s observed in logs)."""
     def _warm():
-        global _MODEL_READY
+        global _MODEL_READY, _MODEL_OK
         try:
             from config import reload_config
             cfg = reload_config()
@@ -140,8 +142,10 @@ def _warm_model() -> None:
                 extra_body={"keep_alive": cfg.ollama.keep_alive},
             )
             print("[Warmup] model preloaded", flush=True)
+            _MODEL_OK = True
         except Exception as exc:
             print(f"[Warmup] skipped: {exc}", flush=True)
+            _MODEL_OK = False
         finally:
             _MODEL_READY = True
     _bg_executor.submit(_warm)
@@ -725,7 +729,8 @@ async def _stream_capture(content_type: str, content: str, run_id: Optional[str]
 async def health():
     # Unauthenticated liveness probe: used by launch.ps1 to detect readiness.
     # Returns only booleans, so it leaks nothing sensitive even with a secret set.
-    return {"ok": True, "ready": _MODEL_READY}
+    # model_ok: null = warming, true = ready, false = disconnected/failed
+    return {"ok": True, "ready": _MODEL_READY, "model_ok": _MODEL_OK}
 
 @app.post("/capture")
 async def capture(

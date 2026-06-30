@@ -84,6 +84,27 @@
   --hover-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
 }
 
+/* Full-window shell — rounded setting clips the frameless window edge */
+.fw-shell[data-corner="rounded"] {
+  border-radius: 12px;
+}
+
+/* Radius tokens only on full-window chrome (rail, dashboard, look, library) */
+.fw-chrome[data-corner="rounded"] {
+  --radius-sm: 8px;
+  --radius:    8px;
+  --radius-lg: 12px;
+  --radius-xl: 12px;
+}
+
+/* Settings tab in full window always stays sharp */
+.fw-settings-sharp {
+  --radius-sm: 0px;
+  --radius:    0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+}
+
 [data-theme="light"],
 [data-theme="sage"],
 [data-theme="sky"],
@@ -459,6 +480,114 @@ html, body, #root {
   50%      { box-shadow: 0 0 0 6px var(--accent-glow); }
 }
 
+/* Calmer breath for loading state — slower, lower amplitude than pillPulseGlow */
+@keyframes llmLoadingPulse {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 1; }
+}
+
+/* Slower amber pulse for disconnected — distinct rhythm from llmLoadingPulse */
+@keyframes llmWarnFade {
+  0%, 100% { opacity: 0.5; }
+  60%      { opacity: 1; }
+}
+
+/* Full-mode nav icon — base color handled here so .btn-hover:hover override works */
+.nav-btn { color: var(--text-3); }
+.nav-btn[aria-pressed="true"] { color: var(--accent); }
+/* Active icon keeps accent on hover (higher specificity than btn-hover:hover) */
+.nav-btn[aria-pressed="true"].btn-hover:hover { color: var(--accent); }
+
+/* Nav stagger: icons enter from slightly above on full-mode first paint */
+@keyframes navIconIn {
+  from { opacity: 0; transform: translateY(-4px) scale(0.92); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Full-mode nav active indicator — slides behind icon row, row-oriented */
+.nav-slider {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 22px;
+  height: 22px;
+  background: var(--hover-bg);
+  border: 1px solid var(--hover-border);
+  pointer-events: none;
+  z-index: 0;
+  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1), opacity 150ms ease;
+}
+
+/* Full-window sidebar rail — glides behind active nav icon (main + settings) */
+.rail-slider {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  z-index: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transition:
+    transform 280ms var(--hover-ease-out),
+    height 280ms var(--hover-ease-out),
+    opacity 180ms ease-out;
+}
+
+.rail-slider::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+}
+
+.rail-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  font-family: inherit;
+}
+
+.rail-btn[aria-pressed="true"] {
+  color: var(--text-1);
+}
+
+.rail-btn--main {
+  flex: 1;
+  font-size: 18px;
+}
+
+.rail-btn--footer {
+  flex: none;
+  height: 36px;
+  font-size: 16px;
+}
+
+/* Full-window view swap — subtle horizontal drift + fade */
+@keyframes fwViewIn {
+  from { opacity: 0; transform: translateX(10px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.fw-view-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  animation: fwViewIn 240ms var(--hover-ease-out) both;
+}
+
 /* Reduced motion: collapse everything to a plain fade */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -481,6 +610,16 @@ html, body, #root {
   }
 
   @keyframes paletteIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  @keyframes navIconIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  @keyframes fwViewIn {
     from { opacity: 0; }
     to   { opacity: 1; }
   }
@@ -756,6 +895,28 @@ html, body, #root {
   border-radius: 0;
 }
 
+/* Width collapse must shrink FROM the pinned screen edge inward, mirroring the
+   open grow — otherwise the bar collapses toward its center mid-exit. */
+.capsule-menu[data-near="right"]  { transform-origin: right center; }
+.capsule-menu[data-near="left"]   { transform-origin: left center; }
+.capsule-menu[data-near="center"] { transform-origin: center center; }
+
+/* Pin the morph edge for the whole open/close width transition — width
+   animates from the box's left edge, so margin-left:auto keeps the right
+   edge fixed while the bar expands/contracts left. Must NOT be gated on
+   .open: losing it the instant .open drops made right-zone closes snap
+   toward screen center (the "jerks from the middle" glitch). */
+.capsule-menu[data-near="right"]  { margin-left: auto; }
+.capsule-menu[data-near="center"] { margin-left: auto; margin-right: auto; }
+
+/* Directional icon entrance: icons slide in from the pinned edge so the
+   morph reads as a single unified sweep. Right-pinned → icons enter from
+   right (+x). Left-pinned → icons enter from left (-x). Center → pure
+   scale bloom (stagger already handles center-out timing, no translate bias). */
+.capsule-menu[data-near="left"]   .capsule-item { transform: translateX(-10px) scale(0.7); }
+.capsule-menu[data-near="right"]  .capsule-item { transform: translateX(10px)  scale(0.7); }
+.capsule-menu[data-near="center"] .capsule-item { transform: scale(0.7); }
+
 /* Reset to a plain inline flex region — visuals are entirely the dot/label
    children's, this just hosts them as a real focusable toggle (see
    CapsuleMenu.tsx's nested-button-in-button a11y fix). */
@@ -808,7 +969,9 @@ html, body, #root {
 }
 
 .capsule-menu.open .capsule-dot,
-.capsule-menu.open .capsule-label {
+.capsule-menu.open .capsule-label,
+.capsule-menu.exiting .capsule-dot,
+.capsule-menu.exiting .capsule-label {
   flex: 0 0 0;
   width: 0;
   margin-left: 0;
@@ -830,7 +993,7 @@ html, body, #root {
   width: 0;
   overflow: hidden;
   opacity: 0;
-  transform: translateX(-10px) scale(0.7);
+  transform: scale(0.7);
   color: var(--text-3);
   /* Button reset — .capsule-item is now a real <button> (a11y fix), not a div. */
   padding: 0;
