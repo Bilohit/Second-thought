@@ -136,7 +136,7 @@ function renderRecentCard(stats: Stats | null, onOpenFile: (path: string) => voi
         <span style={{ flex: 1 }} />
         {rows.length > 0 && <span style={chipStyle(false)}>{rows.length}</span>}
       </div>
-      <div style={{ overflow: "auto", flex: 1 }}>
+      <div style={{ overflowY: "auto", overflowX: "hidden", flex: 1, minWidth: 0 }}>
         {rows.map((row) => (
           <button
             key={row.id}
@@ -199,7 +199,7 @@ function renderInboxCard(inbox: InboxItem[], onApprove: (id: string) => void, on
   return (
     <div style={cardStyle(true)}>
       <div style={CLABEL}>Inbox<span style={{ flex: 1 }} />{inbox.length > 0 && <span style={chipStyle(false)}>{inbox.length} need review</span>}</div>
-      <div style={{ overflow: "auto", flex: 1 }}>
+      <div style={{ overflowY: "auto", overflowX: "hidden", flex: 1, minWidth: 0 }}>
         {inbox.map((item) => (
           <div key={item.note_id} style={{ border: "1px solid var(--border-2)", borderRadius: "var(--radius-sm)", background: "var(--glass-bg)", padding: "8px 10px", marginBottom: 8 }}>
             <div style={{ fontSize: 12, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.filename}</div>
