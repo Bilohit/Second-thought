@@ -907,7 +907,7 @@ html, body, #root {
    .open: losing it the instant .open drops made right-zone closes snap
    toward screen center (the "jerks from the middle" glitch). */
 .capsule-menu[data-near="right"]  { margin-left: auto; }
-.capsule-menu[data-near="center"] { margin-left: auto; margin-right: auto; align-self: center; }
+.capsule-menu[data-near="center"] { margin-left: 0; margin-right: 0; }
 
 /* Directional icon entrance: icons slide in from the pinned edge so the
    morph reads as a single unified sweep. Right-pinned → icons enter from
