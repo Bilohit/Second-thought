@@ -22,6 +22,12 @@ describe("staggerDelays", () => {
   it("returns empty for zero items", () => {
     expect(staggerDelays(0, 260, 120)).toEqual([]);
   });
+
+  it("reverse preserves total animation window", () => {
+    const f = staggerDelays(6, 260, 180);
+    const r = [...f].reverse();
+    expect(Math.max(...f) + 180).toBe(Math.max(...r) + 180);
+  });
 });
 
 describe("rankByY", () => {
