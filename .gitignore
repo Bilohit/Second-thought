@@ -19,3 +19,6 @@ Thumbs.db
 CLAUDE.md
 SKILLS.md
 docs/
+*.md
+!README.md
+.gitignore
