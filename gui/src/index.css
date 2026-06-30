@@ -1041,6 +1041,8 @@ html, body, #root {
               opacity 160ms ease-out;
 }
 
+.capsule-menu:not([data-corner="sharp"]) .capsule-slider { border-radius: 17px; }
+
 .capsule-item:focus-visible,
 .capsule-toggle:focus-visible {
   outline: 2px solid var(--accent);

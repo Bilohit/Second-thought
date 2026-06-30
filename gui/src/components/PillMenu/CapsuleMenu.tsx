@@ -21,6 +21,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { PillCorner } from "../PillOverlay";
 import { ALL_TARGETS, MENU_LABELS, MenuIcon, type MenuTarget } from "./icons";
+import { sliderRect } from "./capsuleSlider";
 import { staggerDelays } from "../../lib/menuTiming";
 import type { LlmStatus } from "../../lib/api";
 
@@ -91,8 +92,10 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
   const showSliderAt = (el: HTMLButtonElement | null) => {
     const slider = sliderRef.current;
     if (!el || !slider) return;
-    slider.style.transform = `translateX(${el.offsetLeft}px)`;
-    slider.style.width = `${el.offsetWidth}px`;
+    const idx = itemRefs.current.indexOf(el);
+    const { left, width } = sliderRect(el.offsetLeft, el.offsetWidth, idx, itemRefs.current.length);
+    slider.style.transform = `translateX(${left}px)`;
+    slider.style.width = `${width}px`;
     slider.style.opacity = "1";
   };
   const hideSlider = () => {
