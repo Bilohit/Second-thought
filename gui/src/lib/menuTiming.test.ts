@@ -23,10 +23,11 @@ describe("staggerDelays", () => {
     expect(staggerDelays(0, 260, 120)).toEqual([]);
   });
 
-  it("reverse preserves total animation window", () => {
+  it("reverse is the exact mirror of the forward stagger", () => {
     const f = staggerDelays(6, 260, 180);
     const r = [...f].reverse();
-    expect(Math.max(...f) + 180).toBe(Math.max(...r) + 180);
+    const maxDelay = Math.max(...f);
+    f.forEach((d, i) => expect(r[i]).toBe(maxDelay - d));
   });
 });
 
