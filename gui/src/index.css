@@ -916,7 +916,7 @@ html, body, #root {
    right (+x). Left-pinned → icons enter from left (-x). Center → pure
    scale bloom (stagger already handles center-out timing, no translate bias). */
 .capsule-menu[data-near="left"]   .capsule-item { transform: translateX(-10px) scale(0.7); }
-.capsule-menu[data-near="right"]  .capsule-item { transform: translateX(-10px) scale(0.7); }
+.capsule-menu[data-near="right"]  .capsule-item { transform: translateX(10px) scale(0.7); }
 .capsule-menu[data-near="center"] .capsule-item { transform: scale(0.7); }
 
 /* Reset to a plain inline flex region — visuals are entirely the dot/label
