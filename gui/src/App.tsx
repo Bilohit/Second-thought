@@ -49,7 +49,7 @@ import { getActiveWorkArea, getActiveMonitorBounds, listMonitors, resolveTargetM
 import { computeMenuGeometry, clampPillWindowToMonitor, computeCapsuleMenuGeometry, computeProportionalMonitorMove, computeMinimalMenuWindow, resolveCapsuleZone } from "./lib/menuGeometry";
 import { nextWindowTopLeft, emaVelocity, zeroVelocityAtClamp, dragStartBaseline, type Point } from "./lib/dragMath";
 import { createSpring, stepSpring } from "./lib/spring";
-import { setWindowNoactivate, armMenuClickAway, disarmMenuClickAway } from "./lib/tauri";
+import { setWindowNoactivate, armMenuClickAway, disarmMenuClickAway, setWindowBoundsAtomic } from "./lib/tauri";
 import { geoSnapshot, geoClamp } from "./lib/geoLog";
 import { useToasts } from "./hooks/useToasts";
 import ToastHost from "./components/ToastHost";
@@ -345,6 +345,11 @@ export default function App() {
   // nearer to when the menu opens. The bar hugs this edge and the
   // transparent click-to-close padding grows toward the screen center.
   const [capsuleZone, setCapsuleZone] = useState<"left" | "right" | "center">("left");
+  // Capsule visibility gate — distinct from capsuleReady (width morph) and
+  // capsuleExiting. Only ever flipped false to hide the WebView2 stale-frame
+  // during an origin-shifting window move (right/center zones). See
+  // CAPSULE_OPEN_FLICKER_PLAN.md.
+  const [capsuleShown, setCapsuleShown] = useState(true);
 
   useEffect(() => { try { localStorage.setItem(DISPLAY_MODE_KEY, displayMode); } catch { /* ignore */ } }, [displayMode]);
   useEffect(() => { try { localStorage.setItem(PILL_CORNER_KEY, pillCorner); } catch { /* ignore */ } }, [pillCorner]);
@@ -1391,7 +1396,6 @@ export default function App() {
         closingMenu && displayMode === "capsule" ? CAPSULE_EXIT_MS :
         closingMenu && displayMode === "minimal" ? RADIAL_EXIT_DURATION_MS : 0;
       const moveKind: "instant" | "animate" =
-        closingMenu && displayMode === "capsule" && capsuleZone === "center" ? "animate" :
         openingMenu || closingMenu ? "instant" : "animate";
 
       // Capsule close must stay full-size while the DOM morph (icons
@@ -1406,8 +1410,41 @@ export default function App() {
 
       beginProgrammaticMove();
       try {
-        if (moveKind === "animate") await animateWindowAndSizeTo({ w: targetWinW, h: targetWinH }, targetPos, () => token !== reconcileToken.current);
-        else await setWindowGeometryInstant({ w: targetWinW, h: targetWinH }, targetPos);
+        // Capsule open/close (union-bounds fix): the move is always a single
+        // atomic SetWindowPos (setWindowBoundsAtomic), never the two-IPC-call
+        // setSize+setPosition setWindowGeometryInstant uses. It moves ONCE to
+        // the open-footprint rect *before* the CSS width-morph starts
+        // (capsuleReady flips only after this await, below) and — on close —
+        // ONLY shrinks back after CAPSULE_EXIT_MS, once the morph has fully
+        // settled. Either way the geometry snap lands while nothing on
+        // screen is CSS-animating, so a WM_MOVE/WM_SIZE compositor frame
+        // split has no visible content difference to split (verified fix for
+        // the right/center-zone open+close flicker — investigated via
+        // geoLog's traceCapsuleMorph). Scoped to capsule only; every other
+        // mode keeps the pre-existing animate/instant paths untouched.
+        if (displayMode === "capsule" && moveKind === "instant" && targetPos) {
+          const scale = await getCurrentWindow().scaleFactor();
+          // Origin actually moving? Compare current logical top-left to targetPos.
+          const cur = await getCurrentWindow().outerPosition();      // physical
+          const originMovesX = Math.round(cur.x / scale) !== Math.round(targetPos.x); // targetPos is logical
+          if (originMovesX) {
+            setCapsuleShown(false);                                  // hide the stale frame
+            // ponytail: rAF wait so the hidden frame actually paints before
+            // the OS move — without this the hide never reaches the screen
+            // and the stale-frame ghost still shows. Drop if a future
+            // WebView2 build repaints synchronously on SetWindowPos.
+            await new Promise<void>((r) => requestAnimationFrame(() => r()));
+          }
+          await setWindowBoundsAtomic(targetPos, { w: targetWinW, h: targetWinH }, scale);
+          if (originMovesX) {
+            await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+            setCapsuleShown(true);
+          }
+        } else if (moveKind === "animate") {
+          await animateWindowAndSizeTo({ w: targetWinW, h: targetWinH }, targetPos, () => token !== reconcileToken.current);
+        } else {
+          await setWindowGeometryInstant({ w: targetWinW, h: targetWinH }, targetPos);
+        }
       } finally {
         endProgrammaticMove();
       }
@@ -1543,6 +1580,7 @@ export default function App() {
         menuOpen={menuOpen}
         capsuleMorphOpen={menuOpen && capsuleReady}
         capsuleExiting={capsuleExiting}
+        capsuleShown={capsuleShown}
         fanOpen={fanReady}
         nearEdge={capsuleZone}
         draggable={isPillDraggable(pillAnchor, menuOpen)}

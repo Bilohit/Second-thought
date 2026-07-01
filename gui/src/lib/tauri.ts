@@ -80,3 +80,22 @@ export async function disarmMenuClickAway(): Promise<void> {
     logger.warn("tauri", "disarm_menu_click_away failed", err);
   }
 }
+
+/** Atomic move+resize via Win32 `SetWindowPos` (Windows only — the Rust
+ *  command is behind `#[cfg(windows)]`). Args are *logical* px + the
+ *  window's current `scaleFactor()`; conversion to physical px happens here,
+ *  the one sanctioned physical-coordinate path (mirrors `monitor.ts`).
+ *  Throws on failure (missing command on non-Windows, no Tauri context) so
+ *  callers can fall back to the two-call `setWindowGeometryInstant`. */
+export async function setWindowBoundsAtomic(
+  pos: { x: number; y: number },
+  size: { w: number; h: number },
+  scale: number,
+): Promise<void> {
+  await invoke("set_window_bounds", {
+    x: Math.round(pos.x * scale),
+    y: Math.round(pos.y * scale),
+    w: Math.round(size.w * scale),
+    h: Math.round(size.h * scale),
+  });
+}

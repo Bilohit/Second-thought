@@ -80,12 +80,15 @@ interface Props {
   /** True while the bar is playing its close morph but menuOpen is already
    *  false — keeps label/dot hidden and layout pinned until the window shrinks. */
   exiting?: boolean;
+  /** False hides the bar for one origin-shift resize frame (WebView2
+   *  stale-frame mask, see CAPSULE_OPEN_FLICKER_PLAN.md). Default true. */
+  shown?: boolean;
   onToggle: () => void;
   onSelect: (target: Exclude<MenuTarget, "hide">) => void;
   onHide: () => void;
 }
 
-export default function CapsuleMenu({ open, corner, label, dotColor, isActive, llmStatus, inboxCount, draggable, dragging, onDragPointerDown, nearEdge, exiting = false, onToggle, onSelect, onHide }: Props) {
+export default function CapsuleMenu({ open, corner, label, dotColor, isActive, llmStatus, inboxCount, draggable, dragging, onDragPointerDown, nearEdge, exiting = false, shown = true, onToggle, onSelect, onHide }: Props) {
   const sliderRef = useRef<HTMLSpanElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
@@ -133,7 +136,7 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
       className={`capsule-menu${open ? " open" : ""}${exiting ? " exiting" : ""}${draggable ? " pill-drag-handle" : ""}${dragging ? " pill-grabbed" : ""}`}
       data-corner={corner}
       data-near={nearEdge}
-      style={{ width: open ? CAPSULE_OPEN_W : CAPSULE_CLOSED_W, height: CAPSULE_H }}
+      style={{ width: open ? CAPSULE_OPEN_W : CAPSULE_CLOSED_W, height: CAPSULE_H, visibility: shown ? "visible" : "hidden" }}
       onPointerDown={draggable ? onDragPointerDown : undefined}
       onClick={onToggle}
       onMouseLeave={hideSlider}

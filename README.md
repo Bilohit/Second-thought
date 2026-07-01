@@ -1,34 +1,37 @@
 # Second Thought
 
-*Offloaded to offline, snap-to-store pipeline. So keep thinking, we'll handle the rest.*
+*Offload to offline, snap-to-store pipeline. Keep thinking; we handle the rest.*
 
+## What is it?
 
-## What is it ?
+Most tools force you to categorize the moment inspiration strikes. Second Thought removes that friction by automating filing, organization, and linking via a local reasoning pipeline. Capture raw input — text, URLs, voice, images, code snippets — and the system intelligently routes it into your markdown knowledge base. No flow interruption. No folder navigation. No naming conventions. Think of it as a personal librarian that never asks where to put things.
 
-Most tools force you to categorize the moment inspiration strikes. Second Thought removes the cognitive load of filing by automating the decision, organizing, and linking processes via a local reasoning pipeline. Instead of breaking your flow with folder navigation, tags, or naming conventions, it lets you capture raw input — text, voice, or images — and intelligently files it into your knowledge base. Think of it as a personal librarian that never interrupts you.
+The entire system runs on your machine. The only network access is to your local Ollama instance and optional URL fetches for content you explicitly capture. No cloud backend. No account. No telemetry. No lock-in. Your vault is a portable folder of plain `.md` files — compatible with Obsidian, Logseq, or any text editor.
 
-The system runs entirely on your machine. The only network calls are to your local Ollama instance and optional outbound fetches for URLs you explicitly capture. There is no cloud, no account, no telemetry, and no lock-in. Your vault is a portable folder of plain `.md` files — fully compatible with Obsidian, Logseq, or any text editor.
-
-TL;DR -  Capture anything, instantly. A local LLM structures, tags, and routes it directly to your Markdown vault. No cloud, no context switching, zero friction. Local-first · AI-organized · Yours
+**TL;DR:** Capture anything, instantly. A local LLM structures, tags, and routes it directly to the markdown vault. No cloud. No context switching. Zero friction. Local-first · AI-organized · Yours
 
 ## Highlights
 
-- **Local-first by design** - your notes, indexes, config, and models stay on your machine.
-- **Markdown vault as source of truth** - files are authoritative; SQLite/vector indexes are rebuildable caches.
-- **Always-available desktop capture** - a Tauri pill window, global hotkey, tray entry, and radial menu keep capture one gesture away.
-- **Multiple input paths** - clipboard, direct text, URLs, GitHub links, YouTube content, images, audio, CLI input, and browser extension captures.
-- **Local AI enrichment** - Ollama powers structured extraction, summarization, categorization, tagging, and note generation.
-- **Offline transcription** - Whisper handles voice memo and audio capture locally.
-- **Searchable knowledge base** - full-text search, vector similarity, backlinks, aliases, and wikilink resolution help notes find each other.
-- **Fail-safe storage** - uncertain captures go to scratchpad, long content is written before summarization, and derived indexes never replace source files.
+- **Local-first by design** — notes, indexes, config, and models stay on your machine.
+- **Markdown vault as source of truth** — files are authoritative; SQLite/vector indexes are rebuildable caches.
+- **Always-available desktop capture** — Tauri pill window, global hotkey, tray, and radial menu keep capture one gesture away.
+- **Multiple input paths** — clipboard, direct text, URLs, GitHub links, YouTube transcripts, images, audio, CLI, and browser extension.
+- **Local AI enrichment** — Ollama powers structured extraction, summarization, categorization, tagging, and note generation.
+- **Offline transcription** — Whisper transcribes voice memos and audio locally.
+- **Smart searchable knowledge base** — full-text search, vector similarity, backlinks, aliases, and wikilink resolution.
+- **Inbox workflow** — review, categorize, approve, or discard captures before they land in the vault.
+- **Daily digest generation** — auto-create daily journal entries summarizing captures across categories.
+- **Dashboard & library views** — monitor capture health, browse categories, explore capture rhythm.
+- **Vault sync** — index orphan cleanup and reconciliation on startup.
+- **Fail-safe storage** — uncertain captures route to scratchpad, transcripts land before summaries, derived indexes stay derived.
 
 ## Architecture
 
 Second Thought has three cooperating layers:
 
-1. **Trigger surface** - a Tauri desktop shell built with Rust, React, TypeScript, and TailwindCSS. It owns the pill window, radial menu overlay, global hotkey, tray, settings, vault views, search, inbox, and capture status UI.
-2. **Capture pipeline** - a Python backend that runs as either a CLI process or a FastAPI server. It normalizes input, enriches content, calls local models, and writes structured Markdown into the vault.
-3. **Vault** - an Obsidian-compatible directory of `.md` files. This is the durable source of truth. Databases such as `captures.db`, `vectors.db`, and `dedup_index.json` are derived indexes and can be rebuilt.
+1. **Desktop shell** — Tauri + React + TypeScript. Owns the always-on pill window, radial menu overlay, full-window dashboard, library browser, Look panel (search/chat), settings, inbox, global hotkey, and tray.
+2. **Capture pipeline** — Python backend that runs as CLI or FastAPI server. Intercepts input, enriches content (web pages, YouTube, audio, images), structures via local Ollama, handles dedup/merge, and writes to vault.
+3. **Vault** — Obsidian-compatible `.md` directory. The authoritative source of truth. Indexes (`captures.db`, `vectors.db`, `dedup_index.json`) are derived and rebuildable.
 
 ```text
 [clipboard / CLI / browser extension / GUI]
@@ -70,26 +73,34 @@ index_writer.py + vector_store.py + link_resolver.py
 
 Key backend modules:
 
-- `main.py` - CLI entry point and synchronous pipeline runner.
-- `server.py` - FastAPI server, SSE capture stream, settings, search, stats, inbox, and vault endpoints.
-- `interceptor.py` - converts clipboard, text, URL, and audio input into a normalized payload.
-- `pre_resolver.py` - detects content shape before LLM routing.
-- `enrichment_router.py` - dispatches URL, GitHub, YouTube, image, audio, and text enrichment.
-- `llm_engine.py` - calls Ollama through structured output parsing with retry.
-- `storage_engine.py` - deduplicates, merges, writes notes, or routes to scratchpad.
-- `vector_store.py` - SQLite-backed embedding search.
-- `rag_engine.py` - hybrid RRF retrieval (semantic + FTS5) and zero-hallucination system prompt for the Look panel's Chat mode.
-- `index_writer.py` - SQLite FTS5 index over vault Markdown files.
-- `link_resolver.py` - builds wikilink and alias relationships from vault frontmatter.
-- `summarizer.py` - map-reduce summarization for long documents and transcripts.
+- `main.py` — CLI entry point and synchronous pipeline runner.
+- `server.py` — FastAPI server, SSE capture stream, settings, search, stats, inbox, vault sync, and vault management endpoints.
+- `interceptor.py` — converts clipboard, text, URL, and audio input into normalized payloads.
+- `pre_resolver.py` — detects content shape (text, URL, GitHub, YouTube, image, audio) before LLM routing.
+- `enrichment_router.py` — dispatches URL fetches, GitHub metadata, YouTube transcripts, audio transcription, image OCR, and long-form summarization.
+- `llm_engine.py` — calls Ollama via structured output parsing with two-pass retry on parse failures.
+- `storage_engine.py` — deduplicates, merges, writes notes, or routes low-confidence captures to scratchpad.
+- `vector_store.py` — SQLite-backed embedding search and semantic indexing.
+- `rag_engine.py` — hybrid RRF retrieval (semantic + FTS5) and zero-hallucination context for Look panel chat.
+- `index_writer.py` — SQLite FTS5 index over vault Markdown files.
+- `link_resolver.py` — builds wikilink and alias relationships from vault frontmatter.
+- `summarizer.py` — map-reduce chunked summarization for long documents and transcripts.
+- `vault_sync.py` — index reconciliation: removes orphans, adds/updates changed files on startup.
+- `daily_digest.py` — generates daily journal entries summarizing captures by category (CLI or cron).
+- `frontmatter.py` — YAML frontmatter parsing helpers.
 
 Key frontend modules:
 
-- `src-tauri/` - Rust shell, process spawning, global hotkey, tray, and window configuration.
-- `App.tsx` - pill behavior, dragging, snapping, clamping, and menu control.
-- `MenuWindow.tsx` - radial/capsule menu overlay.
-- `hooks/useCapture.ts` - capture lifecycle state machine and SSE polling guards.
-- `lib/*.ts` - pure geometry, monitor, API, config, and layout helpers with sibling tests.
+- `src-tauri/` — Rust shell: spawns Python backend, global hotkey, tray, window lifecycle.
+- `App.tsx` — pill window controller: dragging, snapping, clamping, menu toggle.
+- `FullWindow.tsx` — full-screen app: rails navigation between Dashboard, Look, Library, and Settings.
+- `DashboardView.tsx` — capture status, recent activity, health indicators, inbox tile.
+- `LibraryView.tsx` — vault browser, category breakdown, daily capture rhythm sparkline.
+- `LookPanel.tsx` — dual-mode search and RAG chat over vault with source attribution.
+- `InboxPanel.tsx` — review, approve, discard, and auto-categorize captures before vault write.
+- `MenuWindow.tsx` — radial/capsule menu overlay for quick actions.
+- `hooks/useCapture.ts` — capture lifecycle state machine and SSE polling.
+- `lib/*.ts` — pure geometry, monitor, API, config, and layout helpers with sibling tests.
 
 ## Requirements
 
@@ -178,21 +189,24 @@ Common workflows:
 
 ## Desktop App
 
-The Tauri app provides an always-on-top pill and separate menu overlay. The split-window design avoids cross-monitor DPI jumps and keeps geometry stable.
+The Tauri app provides an always-on-top pill window and full-window dashboard with rail navigation. Split-window design avoids cross-monitor DPI jumps; geometry stays stable.
 
-Desktop features include:
+**Pill window:**
 
-- Global hotkey capture, default `Ctrl+Shift+Space`.
-- Drag, snap-to-edge, and clamp-to-screen behavior.
-- Radial/capsule menu for capture actions.
-- Inbox for reviewing recent captures.
-- Vault browser for navigating generated notes.
-- **Look panel** — dual-mode Search/Chat. Search mode is backed by FTS5 full-text search. Chat mode is a local RAG assistant that retrieves relevant vault notes via hybrid semantic + lexical ranking (Reciprocal Rank Fusion), cites sources inline, and never answers outside the vault context. Accessible via the pill menu or `Ctrl+K`.
-- History panel for capture history — tile order is Recent / By Category / Daily / Total. Category counts are read live from vault folders. Recent capture rows are clickable and open the note in the default editor.
-- Settings for vault path, models, and capture behavior.
-- System tray controls.
+- Global hotkey trigger (default `Ctrl+Shift+Space`).
+- Drag-snap-clamp behavior; follows screen edges and respects multiple monitors.
+- Radial/capsule menu for quick capture actions.
 
-All Tauri window positioning uses logical coordinates through the monitor geometry helpers.
+**Full-window dashboard:**
+
+- **Dashboard** — capture-in-progress card, recent activity, system health, and inbox tile. Drag-and-drop files to queue for capture.
+- **Library** — vault browser, live category breakdown, daily capture rhythm sparkline.
+- **Look panel** — dual-mode search and RAG chat. Search queries vault via FTS5 full-text. Chat mode retrieves relevant notes via hybrid semantic + lexical ranking (Reciprocal Rank Fusion), cites sources inline, never hallucinates outside vault context. Access via `Ctrl+K` or menu.
+- **Inbox workflow** — review low-confidence captures, auto-suggest categories, approve to vault or discard. Prevents noisy/uncertain notes from cluttering knowledge base.
+- **Settings** — vault path, model selection, capture behavior, theme, display modes, pill anchor, fan styles, and vault sync control.
+- **System tray** — quick access to dashboard, capture, search, settings.
+
+All window positioning uses logical coordinates; monitor geometry helpers ensure DPI-aware placement across multi-monitor setups.
 
 ## Browser Extension
 
@@ -218,41 +232,40 @@ Each capture follows the same four-stage sequence in both CLI and GUI paths.
 
 ### 1. Intercept
 
-`interceptor.py` reads clipboard content or injected input and converts it into an `InputPayload`.
+`interceptor.py` reads clipboard, injected text, file drag-drop, or API input and normalizes it into an `InputPayload`.
 
 ### 2. Pre-resolve
 
-`pre_resolver.py` detects the content shape, such as plain text, URL, GitHub link, YouTube link, image, or audio. This produces a category hint before the LLM runs.
+`pre_resolver.py` detects content shape (plain text, URL, GitHub, YouTube, image, audio file) and emits a category hint for the LLM.
 
 ### 3. Enrich
 
 `enrichment_router.py` dispatches content-specific enrichment:
 
-- Web pages are fetched and converted into readable content.
-- GitHub links are treated as technical sources.
-- YouTube captures fetch transcripts when available.
-- Audio is transcribed locally through Whisper.
-- Images can use OCR and vision models.
-- Long-form content is summarized with map-reduce chunking.
+- **Web pages** — fetched and converted to readable text via readability-lxml.
+- **GitHub links** — parsed as technical metadata source.
+- **YouTube URLs** — transcripts fetched via youtube-transcript-api.
+- **Audio files** — transcribed locally via openai-whisper.
+- **Images** — optional OCR via rapidocr-onnxruntime; vision-capable Ollama models extract content.
+- **Long-form content** — map-reduce chunked summarization with token budgeting.
 
-Most enrichment paths fail softly and preserve the original capture. Vision capture is stricter: when image understanding is required and the vision model is unavailable, the pipeline marks the capture accordingly and routes it away from confident LLM processing.
+Most enrichment paths fail softly: if web fetch fails, raw URL is preserved. Vision capture is stricter: if image understanding is required but unavailable, the pipeline marks the capture and routes it away from confident LLM processing.
 
 ### 4. Structure and Store
 
-`llm_engine.py` asks Ollama to produce a structured `CaptureOutput`. If structured parsing fails, the engine performs a two-pass retry. `storage_engine.py` then decides whether to write a new note, merge into an existing note, or place the capture in scratchpad.
+`llm_engine.py` calls Ollama to produce structured `CaptureOutput` (category, title, tags, body). On parse failure, engine retries with stricter instructions (two-pass retry). `storage_engine.py` then decides: write new note, merge into existing via content similarity, or route uncertain captures to scratchpad. `index_writer.py` updates SQLite FTS5 and audit log. `vector_store.py` embeds and indexes for semantic search.
 
 ## Vault Model
 
-The vault is a normal folder of Markdown files with frontmatter. It is compatible with Obsidian-style workflows and remains portable across machines.
+The vault is a folder of Markdown files with YAML frontmatter. It's portable, compatible with Obsidian, Logseq, or any text editor, and stays meaningful even if all databases disappear.
 
-Important rules:
+**Key rules:**
 
-- The vault is the source of truth.
-- Folder names define available categories at runtime.
-- Categories are never hardcoded.
-- Frontmatter aliases power wikilink resolution.
-- Full-text and vector indexes are derived from files.
-- Deleting derived indexes should not delete user data.
+- Files are authoritative. Indexes (`captures.db`, `vectors.db`, `dedup_index.json`) are derived and rebuildable.
+- Folder names define available categories at runtime (never hardcoded).
+- Frontmatter aliases and tags power wikilink resolution and dedup matching.
+- Full-text and vector indexes are continuously rebuilt as files change.
+- `vault_sync.py` runs on startup: removes orphan index rows, reconciles file changes.
 
 ## Privacy
 
@@ -276,6 +289,64 @@ The pipeline is designed to avoid losing data and avoid inventing certainty.
 - Low-confidence captures are routed to scratchpad.
 - YouTube transcripts are written before summarization so a failed summary does not lose the transcript.
 - Merge and dedup decisions read actual Markdown files, not only derived indexes.
+
+## Inbox Workflow
+
+Uncertain captures are held in inbox for human review before landing in the vault. This prevents low-confidence LLM outputs and noisy duplicates from cluttering your knowledge base.
+
+The inbox interface shows:
+
+- Raw capture content and extracted text.
+- Auto-suggested category (editable).
+- Approve to write to vault, or discard.
+- Category auto-learn from your approvals over time.
+
+Inbox items are transient and cleared after approval or discard. The vault remains the single source of truth.
+
+## Daily Digest
+
+`daily_digest.py` generates a daily journal entry summarizing captures from the index.
+
+```bash
+python daily_digest.py                    # digest for today
+python daily_digest.py --date 2025-06-15  # specific date
+python daily_digest.py --dry-run          # preview before writing
+```
+
+Output format:
+
+```markdown
+# Daily Digest — 2025-Jun-17
+
+> 7 captures today across 3 categories
+
+## Tech_Notes (4)
+- [[python-asyncio-notes]] — 2025-06-17 09:12  ↗ https://...
+- [[fastapi-dependency-injection]]
+
+## CRM (2)
+- [[john-doe-follow-up]]
+- [[acme-intro-call]]
+
+---
+Generated by Second Thought daily_digest.py
+```
+
+Digests can be scheduled via cron or Windows Task Scheduler. Each run is idempotent (overwrites the day's entry).
+
+## Vault Sync & Index Reconciliation
+
+On startup, `vault_sync.py` runs an index reconciliation:
+
+- Removes index rows for deleted vault files.
+- Adds/updates index entries for changed files.
+- Rebuilds FTS5 and vector embeddings incrementally.
+
+Orphan cleanup is fast (no LLM calls) and safe for every startup. Use it to recover vault state if databases become stale or corrupted.
+
+```bash
+python -c "from vault_sync import purge_orphan_index_entries; purge_orphan_index_entries(vault_root)"
+```
 
 ## Development Commands
 
@@ -317,32 +388,44 @@ The project uses focused tests per layer:
 
 Before committing GUI changes, `npm run build` should pass.
 
-## Configuration Notes
+## Key Constraints
 
-Keep these constraints in mind:
+These are load-bearing decisions. Violating them causes real regressions:
 
-- `ollama.base_url` must be a bare host such as `http://localhost:11434`.
-- Do not configure Ollama with a `/v1` suffix.
-- Vault categories are derived from live folder names.
-- Files are authoritative; databases are derived.
-- Vision failures should not silently become confident text captures.
-- Tauri geometry should use `LogicalPosition` and `LogicalSize`.
-- The CLI and FastAPI pipeline paths intentionally duplicate the same four-stage flow.
+- **Ollama base URL must be bare** (`http://localhost:11434`), never `/v1`-suffixed. App appends `/v1` only where OpenAI-compatible paths are required (text LLM calls); native endpoints (vision, embeddings, `/api/tags`) require the bare host.
+- **Files are authoritative.** Never let a database row override file-based decisions for dedup, merge, or category routing.
+- **Vision failures are fail-fast.** When `image_required = true` and vision unavailable, mark it and route away from confident LLM processing; don't silently become a text capture.
+- **CLI and FastAPI paths duplicate intentionally.** Same four-stage sequence in `main.py:run_pipeline()` and `server.py:_run_pipeline_blocking()`. Any change (retry logic, context assembly, index updates) must be mirrored in both by hand — don't collapse into a callback to avoid inverting control flow over the hottest code path.
+- **Tauri geometry uses `LogicalPosition`/`LogicalSize`.** All monitor reads go through `gui/src/lib/monitor.ts` (divides by `scaleFactor`). Never write physical coordinates into `Logical`* calls.
+- **Vault categories are never hardcoded.** Live folder names define the enum at runtime via `models.py:build_capture_model()`.
 
-## Daily Workflows
+## Workflows
 
-Use Second Thought for:
+**Capturing:**
 
-- Quick clipboard capture.
-- Research articles and documentation.
-- GitHub links, error messages, and code snippets.
-- YouTube transcripts and summaries.
-- Voice memos and meeting takeaways.
-- Image and screenshot capture.
-- Searchable technical notes.
+- Hit `Ctrl+Shift+Space`, capture from clipboard or open menu for text/URL/audio input.
+- Pill follows you across monitors; snaps to edges; drag to move.
+- Hotkey triggers full-window dashboard if you want to monitor progress, review inbox, or search.
 
-The result is a growing Markdown knowledge base that can be browsed, searched, linked, synced, backed up, or edited with normal tools.
+**Filing:**
 
+- Most captures land directly in vault (auto-categorized, tagged, linked).
+- Low-confidence captures hold in inbox for your review.
+- Approve to vault or discard; categories auto-learn from your choices.
+
+**Searching & exploring:**
+
+- Dashboard shows recent activity, capture rhythm, category breakdown.
+- Library browser navigates vault; Look panel searches (FTS5) or chats (RAG).
+- Chat cites sources inline; never answers outside vault context.
+
+**Maintaining:**
+
+- Daily digest summarizes captures by category (email to yourself, or review in vault).
+- Vault sync reconciles indexes on startup (safe to run whenever).
+- All data stays in `.md` files; databases are rebuildable.
+
+**Result:** A growing Markdown knowledge base searchable, linkable, synced, backed up, and edited with normal tools. Zero lock-in.
 
 **Stop deciding where things go.**
 Copy data. Click capture. Let the pipeline file it. 

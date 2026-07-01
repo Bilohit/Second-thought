@@ -145,6 +145,54 @@ export async function geoSnapshot(tag: string, extra?: Record<string, unknown>):
 }
 
 /**
+ * Capsule-morph frame tracer — samples the window's inner width and the
+ * capsule bar's rect once per animation frame for `durationMs`, then logs the
+ * whole timeline as one line. Purpose: prove/disprove the right-zone "jumps
+ * out too fast" jerk — compare when `winW` jumps to full (webview actually
+ * presented the resized/moved window) against when `barW`/`barL` start moving
+ * (CSS width morph begins). If the bar's left edge grows leftward BEFORE winW
+ * jumps, the morph is racing ahead of the window present = the jerk.
+ * Pure diagnostics, gated on the same geo-debug flag. No-op when disabled.
+ */
+export function traceCapsuleMorph(zone: string, durationMs = 500): void {
+  // ponytail: TEMP always-on (not gated on geoEnabled) — right-zone morph
+  // investigation. Restore the `if (!geoEnabled()) return;` guard once fixed.
+  const t0 = performance.now();
+  const samples: Array<{ t: number; sx: number; winW: number; barW: number; barL: number; barR: number; items: string }> = [];
+  const frame = (now: number) => {
+    const dt = now - t0;
+    const bar = document.querySelector<HTMLElement>(".capsule-menu");
+    const r = bar?.getBoundingClientRect();
+    // Per-item ground truth of the unfurl: which icon has width first, and at
+    // what x. Reveal order = order items cross w>2. l relative to bar-left so
+    // right-zone/left-zone are directly comparable. Compact "idx:l/w" string
+    // per visible item keeps one frame on one line.
+    const items = Array.from(document.querySelectorAll<HTMLElement>(".capsule-item"))
+      .map((el, i) => {
+        const ir = el.getBoundingClientRect();
+        return ir.width > 2 ? `${i}:${Math.round(ir.left - (r?.left ?? 0))}/${Math.round(ir.width)}` : "";
+      })
+      .filter(Boolean)
+      .join(" ");
+    samples.push({
+      t: Math.round(dt),
+      // screen-space window left (synchronous) — catches the window itself
+      // jumping left then snapping back on right-zone open, which the
+      // window-relative bar rect below cannot see.
+      sx: typeof window.screenX === "number" ? window.screenX : (window.screenLeft ?? -1),
+      winW: window.innerWidth,
+      barW: r ? Math.round(r.width) : -1,
+      barL: r ? Math.round(r.left) : -1,
+      barR: r ? Math.round(r.right) : -1,
+      items,
+    });
+    if (dt < durationMs) requestAnimationFrame(frame);
+    else logger.info("geo", `capsuleMorph.${zone}`, { samples });
+  };
+  requestAnimationFrame(frame);
+}
+
+/**
  * Synchronous clamp in/out logger — call right where clampPillWindowToMonitor
  * is invoked, passing its input and output, plus the monitorBounds it used.
  * Pairs with a nearby geoSnapshot so you can see whether the bounds rect's

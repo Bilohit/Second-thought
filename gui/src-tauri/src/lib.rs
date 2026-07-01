@@ -558,6 +558,22 @@ mod noactivate {
         .map_err(|e| e.to_string())
     }
 
+    /// Atomic move+resize via a single Win32 `SetWindowPos` call, so the
+    /// capsule's right-zone open (window widens *and* shifts left in one
+    /// step) never lands as two separate compositor frames — see
+    /// PLAN_capsule_right_motion.md Gripe 2. All args are physical px; the
+    /// JS caller converts logical→physical via `scaleFactor()` once, the
+    /// one sanctioned physical-coordinate path (mirrors `monitor.ts`).
+    #[tauri::command]
+    pub fn set_window_bounds(window: tauri::Window, x: i32, y: i32, w: i32, h: i32) -> Result<(), String> {
+        let raw = window.hwnd().map_err(|e| e.to_string())?;
+        let hwnd = raw.0 as HWND;
+        unsafe {
+            SetWindowPos(hwnd, std::ptr::null_mut(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -737,7 +753,8 @@ pub fn run() {
         .manage(AppState { python_child, gui_secret, active_shortcut: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![
             get_gui_secret, set_hotkey, append_log, log_file_path, get_log_level, set_log_level,
-            noactivate::set_window_noactivate, noactivate::arm_menu_click_away, noactivate::disarm_menu_click_away
+            noactivate::set_window_noactivate, noactivate::arm_menu_click_away, noactivate::disarm_menu_click_away,
+            noactivate::set_window_bounds
         ])
         .setup(move |app| {
             // ── 1. Spawn Python FastAPI server ─────────────────────────────

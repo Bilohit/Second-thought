@@ -919,6 +919,14 @@ html, body, #root {
 .capsule-menu[data-near="right"]  .capsule-item { transform: translateX(10px) scale(0.7); }
 .capsule-menu[data-near="center"] .capsule-item { transform: scale(0.7); }
 
+/* Open-state icon packing must anchor to the pinned edge, mirroring the
+   reversed stagger in CapsuleMenu.tsx — otherwise flex-start always packs
+   revealed items to the left regardless of zone, reading as "unfurl from
+   the growing side" on the right zone. Gated to .open/.exiting only: an
+   ungated rule would also right-align the closed dot+label. */
+.capsule-menu[data-near="right"].open,
+.capsule-menu[data-near="right"].exiting { justify-content: flex-end; }
+
 /* Reset to a plain inline flex region — visuals are entirely the dot/label
    children's, this just hosts them as a real focusable toggle (see
    CapsuleMenu.tsx's nested-button-in-button a11y fix). */
@@ -932,7 +940,16 @@ html, body, #root {
   font: inherit;
   cursor: pointer;
   pointer-events: none; /* clicks pass through to .capsule-menu's onToggle */
+  transform: translateX(0);
+  transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+/* Directional label+dot entrance, mirrors .capsule-item (index.css:918-920) —
+   only while morphing; settled/closed resets to 0 above. */
+.capsule-menu.open[data-near="right"]    .capsule-toggle,
+.capsule-menu.exiting[data-near="right"] .capsule-toggle { transform: translateX(6px); }
+.capsule-menu.open[data-near="left"]     .capsule-toggle,
+.capsule-menu.exiting[data-near="left"]  .capsule-toggle { transform: translateX(-6px); }
 
 /* Doesn't participate in layout — items stay direct flex children of
    .capsule-menu visually, this only groups them for role="menu" semantics. */

@@ -42,6 +42,9 @@ interface Props {
   capsuleMorphOpen?: boolean;
   /** Capsule mode: true during the close morph after menuOpen flips false. */
   capsuleExiting?: boolean;
+  /** Capsule mode: false hides the bar for one origin-shift resize frame
+   *  (WebView2 stale-frame mask). Defaults to true. */
+  capsuleShown?: boolean;
   /** Minimal mode only: gates the radial fan's render separately from
    *  `menuOpen` so it can never paint before the pill window has actually
    *  grown to fit it (pill-fan-clip fix). Falls back to `menuOpen` when
@@ -98,7 +101,7 @@ export const PILL_DIMS: Record<PillMode, { w: number; h: number }> = {
 };
 
 export default function PillOverlay({
-  mode, corner, captureState, stepDefs, llmStatus, menuOpen, capsuleMorphOpen, capsuleExiting, fanOpen, draggable, dragging, onDragPointerDown, nearEdge, onToggleMenu, inboxCount, onSelect, onHide,
+  mode, corner, captureState, stepDefs, llmStatus, menuOpen, capsuleMorphOpen, capsuleExiting, capsuleShown, fanOpen, draggable, dragging, onDragPointerDown, nearEdge, onToggleMenu, inboxCount, onSelect, onHide,
   pillGeometry, fanStyle,
 }: Props) {
   const isActive = captureState.phase === "capturing" || captureState.phase === "background";
@@ -188,6 +191,7 @@ export default function PillOverlay({
       onDragPointerDown={onDragPointerDown}
       nearEdge={nearEdge}
       exiting={capsuleExiting}
+      shown={capsuleShown}
       onToggle={onToggleMenu}
       onSelect={onSelect}
       onHide={onHide}
