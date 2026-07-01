@@ -608,6 +608,32 @@ mod noactivate {
     }
 }
 
+// ponytail: WS_EX_NOACTIVATE / WH_MOUSE_LL have no Linux equivalent (X11/Wayland
+// window activation isn't controlled this way); these are no-ops until a Linux
+// pill window ever needs the same non-activating behavior.
+#[cfg(not(windows))]
+mod noactivate {
+    #[tauri::command]
+    pub fn set_window_noactivate(_window: tauri::Window, _enabled: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub fn arm_menu_click_away(_app: tauri::AppHandle, _window_label: String) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub fn disarm_menu_click_away(_app: tauri::AppHandle) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub fn set_window_bounds(_window: tauri::Window, _x: i32, _y: i32, _w: i32, _h: i32) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 // ── Tray icon setup ─────────────────────────────────────────────────────────
 
 fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
