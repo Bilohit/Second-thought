@@ -1,5 +1,8 @@
 [vault]
-root = "C:\\Users\\biloh\\second-thought-storage"
+# Portable default: ~ expands to the current user's home on any OS
+# (see config.py:_resolve_path). Override with an absolute path if you
+# want the vault somewhere else.
+root = "~/second-thought-storage"
 
 [ollama]
 base_url = "http://localhost:11434"
