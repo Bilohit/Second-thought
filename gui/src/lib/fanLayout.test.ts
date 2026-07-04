@@ -145,6 +145,15 @@ describe("unifiedFan — full wheel", () => {
     const search = result.items.find((i) => i.id === "search")!;
     expect(search.angleDeg).toBeCloseTo(-90, 4);
   });
+
+  it("pins hide to 6 o'clock (bottom-middle) opposite search on a full wheel", () => {
+    const result = unifiedFan(baseParams({ cx: 720, cy: 450 }));
+    const search = result.items.find((i) => i.id === "search")!;
+    const hide = result.items.find((i) => i.id === "hide")!;
+    expect(result.fullFits).toBe(true);
+    expect(search.angleDeg).toBeCloseTo(-90, 4);
+    expect(hide.angleDeg).toBeCloseTo(90, 4);
+  });
 });
 
 describe("unifiedFan — dynamic chip size", () => {

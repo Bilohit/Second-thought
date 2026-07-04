@@ -602,6 +602,7 @@ def _build_frontmatter(
     scratchpad: bool = False,
     note_id: Optional[str] = None,
     extra_frontmatter: Optional[Dict[str, str]] = None,
+    vault_root: Optional[Path] = None,
 ) -> str:
     """
     Build YAML frontmatter with a flat schema shared across all categories.
@@ -620,6 +621,13 @@ def _build_frontmatter(
     """
     now = datetime.now().isoformat(timespec="seconds")
     tags = _signals_to_tags(output.key_signals)
+    if vault_root is not None:
+        try:
+            from tag_vocab import load_vocab, normalize_tags
+            from index_writer import get_db_path
+            tags = normalize_tags(tags, load_vocab(get_db_path(vault_root)))
+        except Exception:
+            pass  # vocab normalization is best-effort; raw tags are still valid
     cat = _category_str(output)
 
     lines = ["---", f"created: {now}", f"category: {cat}"]
@@ -665,10 +673,11 @@ def _write_new_file(
     scratchpad: bool = False,
     note_id: Optional[str] = None,
     extra_frontmatter: Optional[Dict[str, str]] = None,
+    vault_root: Optional[Path] = None,
 ) -> None:
     content = body_content if body_content is not None else output.markdown_content
     front = _build_frontmatter(output, source_url, scratchpad=scratchpad, note_id=note_id,
-                                extra_frontmatter=extra_frontmatter)
+                                extra_frontmatter=extra_frontmatter, vault_root=vault_root)
     path.write_text(front + content, encoding="utf-8")
 
 
@@ -703,7 +712,8 @@ def route_to_scratchpad(
     filename = _safe_stem(output.suggested_filename)
     path = _scratchpad_path(vault_root, scratchpad_folder) / (filename + "-" + note_id + ".md")
     _write_new_file(path, output, source_url,
-                    body_content=body_content, scratchpad=True, note_id=note_id)
+                    body_content=body_content, scratchpad=True, note_id=note_id,
+                    vault_root=vault_root)
     print(f"[StorageEngine] routed to scratchpad (note_id={note_id}): {path}")
     return path
 
@@ -750,6 +760,7 @@ def route_failed_vision(
         path, placeholder, source_url=None, body_content=body,
         scratchpad=True, note_id=note_id,
         extra_frontmatter={"needs_vision_retry": "true"},
+        vault_root=vault_root,
     )
     print(f"[StorageEngine] WARN vision failed (note_id={note_id}): {reason} -> {path}", flush=True)
     return path
@@ -1184,6 +1195,48 @@ def create_youtube_note(
     return path
 
 
+def create_voice_note(
+    title: Optional[str],
+    transcript_md: str,
+    vault_root: Path,
+    scratchpad_folder: str = "_scratchpad",
+) -> Path:
+    """
+    Sibling of create_youtube_note for long voice recordings: write the full,
+    untranscribed-loss transcript to a real note immediately, before any LLM
+    call, with a placeholder summary region marked by
+    _YOUTUBE_SUMMARY_SENTINEL so finalize_youtube_note can be reused as-is.
+
+    Voice notes have no dedicated category config (unlike YouTube's
+    youtube_cfg.folder_name), so they land in the scratchpad like other
+    fail-soft placeholder routes (see route_failed_vision).
+    """
+    init_vault(vault_root, scratchpad_folder)
+
+    heading = title or f"Voice note {datetime.now():%Y-%m-%d %H:%M}"
+    stem = _youtube_title_stem(heading, max_chars=80)
+    base_path = _scratchpad_path(vault_root, scratchpad_folder) / (stem + ".md")
+    path = _unique_file_path(base_path)
+
+    now = datetime.now().isoformat(timespec="seconds")
+    content = (
+        "---\n"
+        f"created: {now}\n"
+        f"category: {scratchpad_folder}\n"
+        "status: summarizing\n"
+        "tags: []\n"
+        "---\n\n"
+        f"# {heading}\n\n"
+        "## Summary\n"
+        f"{_YOUTUBE_SUMMARY_SENTINEL}\n"
+        "⏳ Summarizing transcript…\n\n"
+        "## Transcript\n"
+        f"{transcript_md}\n"
+    )
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def finalize_youtube_note(
     path: Path,
     summary_md: str,
@@ -1356,6 +1409,21 @@ def write_to_vault(
     linked_content = _postprocess_content(_try_inject_wikilinks(output, path, vault_root))
     if deterministic_append:
         linked_content = linked_content + "\n\n" + deterministic_append
+
+    # Voice notes: every recording is its own note. The LLM reuses slugs for
+    # similar recordings (observed: tomorrow-reminder.md created twice then
+    # appended), and smart-merge/append silently folded new recordings into
+    # old ones. Timestamped filename guarantees uniqueness; skip merge/append.
+    if source_metadata and source_metadata.get("audio_path"):
+        from datetime import datetime as _dt
+        stem = _safe_stem(output.suggested_filename)
+        path = vault_root / cat / f"{stem}-{_dt.now():%Y%m%d-%H%M%S-%f}.md"
+        _write_new_file(path, output, source_url, body_content=linked_content,
+                        extra_frontmatter=extra_fm, vault_root=vault_root)
+        print(f"[StorageEngine] created (voice, unique): {path.relative_to(vault_root)}")
+        register_in_dedup_index(output.markdown_content, source_url, vault_root, path)
+        return path
+
     is_ledger = cat in _LEDGER_FILES
 
     if not path.exists():
@@ -1374,7 +1442,7 @@ def write_to_vault(
             action = "appended (smart-merge)"
         else:
             _write_new_file(path, output, source_url, body_content=linked_content,
-                            extra_frontmatter=extra_fm)
+                            extra_frontmatter=extra_fm, vault_root=vault_root)
             action = "created"
     else:
         # File already exists — append when it's the same topic, or
@@ -1391,7 +1459,7 @@ def write_to_vault(
         else:
             path = _unique_file_path(base_path)
             _write_new_file(path, output, source_url, body_content=linked_content,
-                            extra_frontmatter=extra_fm)
+                            extra_frontmatter=extra_fm, vault_root=vault_root)
             action = "created (topic-collision avoided)"
             print(
                 f"[StorageEngine] WARNING: suggested_filename collision on different topic. "

@@ -24,6 +24,9 @@ import { ALL_TARGETS, MENU_LABELS, MenuIcon, type MenuTarget } from "./icons";
 import { sliderRect } from "./capsuleSlider";
 import { staggerDelays } from "../../lib/menuTiming";
 import type { LlmStatus } from "../../lib/api";
+import type { VoicePhase } from "../../hooks/useVoiceRecording";
+import { formatElapsed } from "../../lib/voiceLimits";
+import FluidVisualizer from "./FluidVisualizer";
 
 // 154px — "Second Thought" (Geist Mono 12px, 98px text) with symmetric side
 // insets: 28px left (12px pad + 8px dot + 8px gap) = 28px right (12px pad +
@@ -84,11 +87,20 @@ interface Props {
    *  stale-frame mask, see CAPSULE_OPEN_FLICKER_PLAN.md). Default true. */
   shown?: boolean;
   onToggle: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
   onSelect: (target: Exclude<MenuTarget, "hide">) => void;
   onHide: () => void;
+  /** Voice recording (A6): while recording and the bar is closed, the
+   *  oscilloscope trace replaces the label text; unused otherwise. */
+  voicePhase?: VoicePhase;
+  voiceElapsedMs?: number;
+  readWaveform?: (out: Float32Array) => void;
+  readSpectrum?: (out: Uint8Array) => void;
+  sampleRate?: number;
 }
 
-export default function CapsuleMenu({ open, corner, label, dotColor, isActive, llmStatus, inboxCount, draggable, dragging, onDragPointerDown, nearEdge, exiting = false, shown = true, onToggle, onSelect, onHide }: Props) {
+export default function CapsuleMenu({ open, corner, label, dotColor, isActive, llmStatus, inboxCount, draggable, dragging, onDragPointerDown, nearEdge, exiting = false, shown = true, onToggle, onContextMenu, onSelect, onHide, voicePhase, voiceElapsedMs, readWaveform, readSpectrum, sampleRate }: Props) {
+  const isRecording = voicePhase === "recording";
   const sliderRef = useRef<HTMLSpanElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
@@ -139,6 +151,7 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
       style={{ width: open ? CAPSULE_OPEN_W : CAPSULE_CLOSED_W, height: CAPSULE_H, visibility: shown ? "visible" : "hidden" }}
       onPointerDown={draggable ? onDragPointerDown : undefined}
       onClick={onToggle}
+      onContextMenu={onContextMenu}
       onMouseLeave={hideSlider}
     >
       {isActive && <span className="capsule-ring" aria-hidden="true" />}
@@ -146,23 +159,32 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
         type="button"
         className="capsule-toggle no-drag"
         aria-haspopup="menu"
-        aria-label={`Second Thought — ${label}. Click to ${open ? "close" : "open"} the menu.`}
+        aria-label={isRecording
+          ? `Second Thought — recording, ${label}. Click to stop and send.`
+          : `Second Thought — ${label}. Click to ${open ? "close" : "open"} the menu.`}
         aria-expanded={open}
         tabIndex={open ? -1 : 0}
       >
         <span
-          className="capsule-dot"
+          className={`capsule-dot${isRecording ? " rec-dot" : ""}`}
           aria-hidden="true"
           style={{
             background: dotColor,
-            animation: !isActive && llmStatus === "loading"
+            animation: isRecording ? undefined : !isActive && llmStatus === "loading"
               ? "llmLoadingPulse 2.4s cubic-bezier(0.45,0,0.55,1) infinite"
               : !isActive && llmStatus === "disconnected"
               ? "llmWarnFade 2.8s cubic-bezier(0.45,0,0.55,1) infinite"
               : "none",
           }}
         />
-        <span className="capsule-label">{label}</span>
+        {isRecording && readWaveform ? (
+          <span className="capsule-label capsule-voice-row" aria-hidden="true">
+            <FluidVisualizer readWaveform={readWaveform} readSpectrum={readSpectrum} sampleRate={sampleRate} width={CAPSULE_TEXT_W - 34} height={20} active />
+            <span className="capsule-voice-timer">{formatElapsed(voiceElapsedMs ?? 0)}</span>
+          </span>
+        ) : (
+          <span className="capsule-label">{label}</span>
+        )}
       </button>
       <span ref={sliderRef} className="capsule-slider" aria-hidden="true" />
       <div role="menu" aria-label="Second Thought actions" className="capsule-items">

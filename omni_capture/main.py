@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -116,6 +117,22 @@ def _parse_args() -> argparse.Namespace:
     )
 
     return p.parse_args()
+
+
+# mirrored from server.py by design (main.py cannot import server.py -- see
+# CLAUDE.md's hand-duplication rule for main.py/server.py).
+def _merge_large_text_tags(
+    key_signals: list[str], chunk_tags: list[list[str]], vocab: dict[str, str],
+) -> list[str]:
+    """Merge the classifier's key_signals with every chunk's Map-phase tags,
+    then dedupe/normalize against the vault's existing tag vocabulary
+    (B1's tag_vocab.normalize_tags) and cap at 10 -- pure, no I/O."""
+    from tag_vocab import normalize_tags
+
+    combined = list(key_signals)
+    for tags in chunk_tags:
+        combined.extend(tags)
+    return normalize_tags(combined, vocab)
 
 
 def run_pipeline(
@@ -238,6 +255,56 @@ def run_pipeline(
         timer.log_summary()
         return result
 
+    # ponytail: synchronous map-reduce; promote to a background job like
+    # voice/youtube if pastes ever exceed ~30k tokens.
+    _large_text_original: str | None = None
+    _large_text_chunk_tags: list[list[str]] = []
+    if enriched.input_type == "text":
+        from summarizer import _char_estimate
+        # Cheap local estimate first (propose-then-verify, same pattern as
+        # chunk_transcript) -- avoids a network /api/tokenize probe for every
+        # ordinary-length text capture; only texts that could plausibly be
+        # over threshold pay for the real count.
+        if _char_estimate(enriched.enriched_text) > cfg.capture.large_text_token_threshold:
+            from summarizer import count_tokens
+            text_token_count = count_tokens(
+                enriched.enriched_text,
+                base_url=cfg.ollama.base_url.rstrip("/"),
+                model=cfg.ollama.model,
+            )
+        else:
+            text_token_count = 0
+        if text_token_count > cfg.capture.large_text_token_threshold:
+            from functools import partial as _partial
+            from summarizer import chunk_transcript, digest_chunks
+
+            _large_text_original = enriched.enriched_text
+            base_url = cfg.ollama.base_url.rstrip("/")
+            count = _partial(count_tokens, base_url=base_url, model=cfg.ollama.model)
+            max_chunk_tokens = (
+                cfg.capture.summary_model_context_tokens
+                - cfg.capture.summary_safety_buffer_tokens
+                - cfg.capture.summary_reserved_output_tokens
+            )
+            segments = [{"text": ln} for ln in _large_text_original.splitlines() if ln.strip()]
+            chunks = chunk_transcript(
+                segments, count=count, max_tokens=max_chunk_tokens,
+                overlap_tokens=cfg.capture.summary_chunk_overlap_tokens,
+                max_chunks=cfg.capture.summary_max_chunks,
+            )
+            digests = digest_chunks(
+                chunks, base_url=base_url, model=cfg.ollama.model,
+                temperature=cfg.capture.llm_temperature,
+                max_retries=cfg.capture.llm_max_retries,
+            )
+            _large_text_chunk_tags = [tags for tags, _ in digests]
+            mini_summaries = [summary for _, summary in digests if summary]
+            enriched.enriched_text = (
+                chunks[0]
+                + "\n\n## Section summaries (of the full document)\n\n"
+                + "\n".join(mini_summaries)
+            )
+
     # -- Stage 3: Pre-Resolver + Semantic Retrieval -> LLM (single pass) -------
     t_res0 = time.perf_counter()
 
@@ -312,6 +379,33 @@ def run_pipeline(
         print(f"  timing            : {(t_llm1 - t_llm0) * 1000:.0f} ms  [{pass_count}-pass]")
         print(f"  active categories : {list(category_descriptions.keys())}")
 
+    if _large_text_original is not None:
+        from index_writer import get_db_path
+        from tag_vocab import load_vocab
+        try:
+            vocab = load_vocab(get_db_path(vault))
+        except Exception:
+            vocab = {}
+        output.key_signals = _merge_large_text_tags(
+            output.key_signals or [], _large_text_chunk_tags, vocab,
+        )
+        # The decide-stage call above only saw chunk[0] + section summaries
+        # (a faithful whole-document view for classification) -- keep the
+        # ORIGINAL full text in the note body so nothing is lost.
+        output.markdown_content = (
+            f"{output.markdown_content}\n\n## Full Original Text\n\n{_large_text_original}"
+        )
+
+    # mirrored from server.py by design (main.py cannot import server.py --
+    # see CLAUDE.md's hand-duplication rule for main.py/server.py).
+    def _append_transcript(markdown: str, enriched) -> str:
+        """Voice notes keep the full transcript below the LLM summary."""
+        if enriched.input_type != "audio":
+            return markdown
+        return f"{markdown}\n\n## Transcript\n\n{enriched.enriched_text}"
+
+    output.markdown_content = _append_transcript(output.markdown_content, enriched)
+
     result = output.model_dump()
 
     # -- Stage 4: Storage ------------------------------------------------------
@@ -333,6 +427,12 @@ def run_pipeline(
             )
         result["_written_to"] = str(written_path)
         print(f"\nCaptured -> {written_path}")
+
+        from datetime import datetime
+        from models import filter_future_events
+        future = filter_future_events(output.detected_events, datetime.now())
+        for e in future:
+            print(f"[events] {e.when_iso} — {e.label} (set reminders from the GUI)")
 
         if cfg.vector.enabled:
             with timer.stage("index"):
@@ -481,6 +581,14 @@ def run_self_check(config_path: str | None = None) -> bool:
             "openai-whisper not installed -- audio capture will fail.\n"
             "       Run: pip install openai-whisper"
         )
+    if shutil.which("ffmpeg"):
+        ok("ffmpeg on PATH")
+    else:
+        fail(
+            "ffmpeg not found -- GUI voice recordings (webm/opus) cannot be decoded.\n"
+            "       Install: winget install Gyan.FFmpeg"
+        )
+        all_ok = False
 
     # 7. SQLite index dir
     print("\n[7] SQLite FTS index")

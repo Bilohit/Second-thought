@@ -646,7 +646,12 @@ fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
     let menu = Menu::with_items(app, &[&vault_item, &settings_item, &inbox_item, &stats_item, &hide_item, &quit_item])?;
 
-    TrayIconBuilder::new()
+    let mut builder = TrayIconBuilder::new();
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+
+    builder
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -798,24 +803,37 @@ pub fn run() {
                 "--log-level", "error",
             ];
 
-            let child = std::process::Command::new("python")
-                .args(server_args)
+            #[cfg(windows)]
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+            let mut cmd = std::process::Command::new("python");
+            cmd.args(server_args)
                 .current_dir(&project_root)
                 .env("OMNI_GUI_SECRET", &gui_secret_for_spawn)
                 .env("PYTHONPATH", &project_root)
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .or_else(|_| {
-                    std::process::Command::new("python3")
-                        .args(server_args)
-                        .current_dir(&project_root)
-                        .env("OMNI_GUI_SECRET", &gui_secret_for_spawn)
-                        .env("PYTHONPATH", &project_root)
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn()
-                });
+                .stderr(Stdio::piped());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+
+            let child = cmd.spawn().or_else(|_| {
+                let mut cmd = std::process::Command::new("python3");
+                cmd.args(server_args)
+                    .current_dir(&project_root)
+                    .env("OMNI_GUI_SECRET", &gui_secret_for_spawn)
+                    .env("PYTHONPATH", &project_root)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(CREATE_NO_WINDOW);
+                }
+                cmd.spawn()
+            });
 
             match child {
                 Ok(mut c) => {

@@ -98,3 +98,18 @@ def test_patch_survives_a_real_reload_from_disk():
         fresh = config.load_config(cfg)
         assert fresh.capture.confidence_threshold == 0.85
         assert fresh.capture.llm_scrutiny == "relaxed"
+
+
+def test_patch_reminders_delivery_persists_and_survives_reload():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / "config.toml"
+        cfg.write_text('[vault]\nroot = "' + tmp.replace("\\", "/") + '"\n', encoding="utf-8")
+        client, server = _client(cfg)
+        with mock.patch.object(server, "reload_config", lambda *a, **k: None):
+            r = client.patch("/config", json={"reminders_delivery": "os"})
+        assert r.status_code == 200
+
+        import config
+        importlib.reload(config)
+        fresh = config.load_config(cfg)
+        assert fresh.reminders.delivery == "os"

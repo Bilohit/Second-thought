@@ -17,6 +17,9 @@ Endpoints
   GET  /inbox
   POST /inbox/{note_id}/approve
   DELETE /inbox/{note_id}
+  GET  /reminders
+  POST /reminders
+  DELETE /reminders/{reminder_id}
   GET  /jobs/{job_id}                       background job status (e.g. YouTube)
   POST /look/chat                           streaming RAG chat (SSE)
   POST /vault/sync-index                    vault diff-sync (add/remove/update index rows)
@@ -32,9 +35,12 @@ SSE events emitted by /look/chat:
 SSE events emitted by /capture and /share:
   step     {"step": "intercept|enrich|decide|write", "status": "active|done|error"}
   thinking {"rationale": "...", "key_signals": [...], "confidence": 0.95, "category": "CRM"}
+  reminder_offer {"events": [{"when_iso": "...", "label": "..."}], "note_path": "..."} -- emitted
+           after write, before done, only when the capture contains concrete future
+           dates/times; GUI offers to create reminders via POST /reminders.
   done     {"path": "/vault/Category/file.md", "category": "Tech_Notes"}
   error    {"message": "..."}
-  job      {"job_id": "...", "kind": "youtube", "status": "queued"} -- hand-off to a
+  job      {"job_id": "...", "kind": "youtube"|"voice", "status": "queued"} -- hand-off to a
            background job; the stream closes after this event and the GUI polls
            GET /jobs/{job_id} for completion instead of waiting on this stream.
 
@@ -43,8 +49,7 @@ content_type values accepted by /capture:
   url         HTTP/HTTPS URL string
   image_b64   base64-encoded PNG/JPEG image -> routed to LLaVA (_enrich_image)
   audio_b64   base64-encoded audio file  -> routed to Whisper (_enrich_audio)
-              (CLI/HTTP only -- the GUI's ContentType union does not expose
-              an audio capture path; see gui/src/lib/api.ts)
+              GUI voice path: pill right-click -> MediaRecorder -> audio_b64
 
 Security
   CORS       restricted to OMNI_TAURI_ORIGIN (default: http://tauri.localhost).
@@ -173,6 +178,46 @@ def _startup_db_tasks() -> None:
             print(f"[Reindex] skipped: {exc}", flush=True)
     _bg_executor.submit(_run)
 
+
+def _fire_due(db_path, notify_fn) -> None:
+    """Notify and mark-fired every reminder whose fire_at has passed.
+    A single bad row/notification must never kill the loop for the rest."""
+    from datetime import datetime
+    from reminders import due_reminders, mark_fired
+
+    for r in due_reminders(db_path, datetime.now().isoformat(timespec="seconds")):
+        try:
+            notify_fn(f"⏰ {r['label']}", Path(r["note_path"]).name)
+            mark_fired(db_path, r["id"])
+        except Exception as exc:
+            print(f"[Reminders] fire failed for id={r.get('id')}: {exc}", flush=True)
+            continue
+
+
+@app.on_event("startup")
+def _startup_reminders_thread() -> None:
+    """Background due-checker: polls reminders.due_reminders() on a fixed
+    interval and fires desktop notifications for anything past its fire_at.
+    Config is captured once at startup (matches this file's other startup
+    hooks -- none of them re-read config per iteration; only the request-time
+    pipeline calls reload_config())."""
+    from config import get_config
+    from index_writer import get_db_path
+    from notifier import send_notification
+
+    cfg = get_config()
+    interval = cfg.reminders.check_interval_seconds
+    db_path = get_db_path(cfg.vault.root)
+
+    def _loop():
+        while True:
+            time.sleep(interval)
+            try:
+                _fire_due(db_path, notify_fn=lambda t, m: send_notification(t, m))
+            except Exception as exc:
+                print(f"[Reminders] due-check pass failed: {exc}", flush=True)
+    threading.Thread(target=_loop, daemon=True).start()
+
 # ---------------------------------------------------------------------------
 # Background job registry (in-process; the server is a single long-lived
 # process spawned by Rust, so a dict is sufficient -- no DB needed).
@@ -286,6 +331,7 @@ class ConfigPatch(BaseModel):
     ocr_text_min_chars: Optional[int] = None
     auto_describe_new_folders: Optional[bool] = None
     chat_system_prompt: Optional[str] = None
+    reminders_delivery: Optional[str] = None
 
 class CategoryCreate(BaseModel):
     name: str
@@ -298,6 +344,13 @@ class CategoryDescriptionPatch(BaseModel):
 
 class InboxApprove(BaseModel):
     target_category: Optional[str] = None
+
+class ReminderCreate(BaseModel):
+    note_path: str
+    label: str
+    when_iso: str
+    delivery: Optional[str] = None
+    notify: bool = False
 
 
 # -- Vault helpers -------------------------------------------------------------
@@ -425,6 +478,76 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
 
         emit("step", step="enrich", status="done")
 
+        if content_type == "audio_b64":
+            # Long recordings: transcript summarization is expensive enough
+            # (map-reduce over many chunks) to block this SSE stream, so hand
+            # off to a background job -- same shape as the YouTube hand-off
+            # above, minus the fetching phase (transcript already in hand).
+            from summarizer import count_tokens
+            token_count = count_tokens(
+                enriched.enriched_text,
+                base_url=cfg.ollama.base_url.rstrip("/"),
+                model=cfg.ollama.model,
+            )
+            if _voice_needs_summarize_job(
+                token_count=token_count, threshold=cfg.whisper.summarize_threshold_tokens
+            ):
+                job_id = uuid.uuid4().hex
+                _set_job(job_id, status="queued", kind="voice", category=None, path=None, error=None)
+                emit("job", job_id=job_id, kind="voice", status="queued")
+                _bg_executor.submit(_run_voice_job, job_id, enriched, cfg)
+                return
+
+        # ponytail: synchronous map-reduce; promote to a background job like
+        # voice/youtube if pastes ever exceed ~30k tokens.
+        _large_text_original: Optional[str] = None
+        _large_text_chunk_tags: list[list[str]] = []
+        if content_type == "text":
+            from summarizer import _char_estimate
+            # Cheap local estimate first (propose-then-verify, same pattern as
+            # chunk_transcript) -- avoids a network /api/tokenize probe for
+            # every ordinary-length text capture; only texts that could
+            # plausibly be over threshold pay for the real count.
+            if _char_estimate(enriched.enriched_text) > cfg.capture.large_text_token_threshold:
+                from summarizer import count_tokens
+                text_token_count = count_tokens(
+                    enriched.enriched_text,
+                    base_url=cfg.ollama.base_url.rstrip("/"),
+                    model=cfg.ollama.model,
+                )
+            else:
+                text_token_count = 0
+            if text_token_count > cfg.capture.large_text_token_threshold:
+                from functools import partial as _partial
+                from summarizer import chunk_transcript, digest_chunks
+
+                _large_text_original = enriched.enriched_text
+                base_url = cfg.ollama.base_url.rstrip("/")
+                count = _partial(count_tokens, base_url=base_url, model=cfg.ollama.model)
+                max_chunk_tokens = (
+                    cfg.capture.summary_model_context_tokens
+                    - cfg.capture.summary_safety_buffer_tokens
+                    - cfg.capture.summary_reserved_output_tokens
+                )
+                segments = [{"text": ln} for ln in _large_text_original.splitlines() if ln.strip()]
+                chunks = chunk_transcript(
+                    segments, count=count, max_tokens=max_chunk_tokens,
+                    overlap_tokens=cfg.capture.summary_chunk_overlap_tokens,
+                    max_chunks=cfg.capture.summary_max_chunks,
+                )
+                digests = digest_chunks(
+                    chunks, base_url=base_url, model=cfg.ollama.model,
+                    temperature=cfg.capture.llm_temperature,
+                    max_retries=cfg.capture.llm_max_retries,
+                )
+                _large_text_chunk_tags = [tags for tags, _ in digests]
+                mini_summaries = [summary for _, summary in digests if summary]
+                enriched.enriched_text = (
+                    chunks[0]
+                    + "\n\n## Section summaries (of the full document)\n\n"
+                    + "\n".join(mini_summaries)
+                )
+
         if enriched.source_metadata.get("vision_available") is False:
             # Vision failed at capture time. The placeholder enriched_text
             # carries no real content -- classifying or semantically
@@ -503,12 +626,31 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                         scrutiny=cfg.capture.llm_scrutiny,
                     )
 
+        if _large_text_original is not None:
+            from index_writer import get_db_path
+            from tag_vocab import load_vocab
+            try:
+                vocab = load_vocab(get_db_path(cfg.vault.root))
+            except Exception:
+                vocab = {}
+            output.key_signals = _merge_large_text_tags(
+                output.key_signals or [], _large_text_chunk_tags, vocab,
+            )
+            # The decide-stage call above only saw chunk[0] + section summaries
+            # (a faithful whole-document view for classification) -- keep the
+            # ORIGINAL full text in the note body so nothing is lost.
+            output.markdown_content = (
+                f"{output.markdown_content}\n\n## Full Original Text\n\n{_large_text_original}"
+            )
+
         emit("thinking",
              rationale=output.rationale or "",
              key_signals=output.key_signals or [],
              confidence=round(output.confidence, 2),
              category=output.category)
         emit("step", step="decide", status="done")
+
+        output.markdown_content = _append_transcript(output.markdown_content, enriched)
 
         emit("step", step="write", status="active")
         with timer.stage("write"):
@@ -530,6 +672,15 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                     cfg.ollama.base_url, cfg.vector.embed_model,
                 )
         emit("step", step="write", status="done")
+
+        from datetime import datetime as _datetime
+        from models import filter_future_events
+        future = filter_future_events(output.detected_events, _datetime.now())
+        if future:
+            emit("reminder_offer",
+                 events=[{"when_iso": e.when_iso, "label": e.label} for e in future],
+                 note_path=str(written_path))
+
         emit("done", path=str(written_path), category=output.category)
 
         with timer.stage("notify"):
@@ -553,6 +704,31 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
         except Exception:
             pass
         loop.call_soon_threadsafe(q.put_nowait, None)
+
+
+def _append_transcript(markdown: str, enriched) -> str:
+    """Voice notes keep the full transcript below the LLM summary."""
+    if enriched.input_type != "audio":
+        return markdown
+    return f"{markdown}\n\n## Transcript\n\n{enriched.enriched_text}"
+
+
+def _voice_needs_summarize_job(*, token_count: int, threshold: int) -> bool:
+    return token_count > threshold
+
+
+def _merge_large_text_tags(
+    key_signals: list[str], chunk_tags: list[list[str]], vocab: dict[str, str],
+) -> list[str]:
+    """Merge the classifier's key_signals with every chunk's Map-phase tags,
+    then dedupe/normalize against the vault's existing tag vocabulary
+    (B1's tag_vocab.normalize_tags) and cap at 10 -- pure, no I/O."""
+    from tag_vocab import normalize_tags
+
+    combined = list(key_signals)
+    for tags in chunk_tags:
+        combined.extend(tags)
+    return normalize_tags(combined, vocab)
 
 
 def _run_youtube_job(job_id: str, url: str, cfg) -> None:
@@ -707,6 +883,138 @@ def _run_youtube_job(job_id: str, url: str, cfg) -> None:
         set_status("error", error=str(exc))
 
 
+def _run_voice_job(job_id: str, enriched, cfg) -> None:
+    """
+    Background worker driving the long-recording voice pipeline -- clone of
+    _run_youtube_job minus the fetching phase (transcript already in hand):
+
+      queued -> writing_transcript -> summarizing -> [combining] ->
+      finalizing -> done | error
+    """
+
+    def set_status(status: str, **extra) -> None:
+        _set_job(job_id, status=status, **extra)
+
+    try:
+        import asyncio
+        from functools import partial
+
+        from storage_engine import create_voice_note, finalize_youtube_note, register_in_dedup_index
+        from summarizer import count_tokens, chunk_transcript, _map_phase, reduce_summaries
+        from llm_engine import summarize_async, DETAILED_SUMMARY_PROMPT, OLLAMA_API_KEY, _normalize_base_url
+        from openai import AsyncOpenAI
+
+        full_text = enriched.enriched_text
+        title = None
+        segments = [{"text": ln} for ln in full_text.splitlines() if ln.strip()]
+
+        # Canonical bare host (matches the project-wide invariant: base_url is
+        # always bare; /v1 is added only at OpenAI-compatible client construction
+        # via _normalize_base_url). count_tokens below hits Ollama's native
+        # /api/tokenize and needs the bare host; the AsyncOpenAI client gets /v1.
+        base_url = cfg.ollama.base_url.rstrip("/")
+        model = cfg.ollama.model
+
+        path = create_voice_note(title, full_text, cfg.vault.root, cfg.vault.scratchpad_folder)
+        set_status("writing_transcript", path=str(path))
+
+        count = partial(count_tokens, base_url=base_url, model=model)
+        max_chunk_tokens = (
+            cfg.capture.summary_model_context_tokens
+            - cfg.capture.summary_safety_buffer_tokens
+            - cfg.capture.summary_reserved_output_tokens
+        )
+
+        async def run_summarization() -> str:
+            client = AsyncOpenAI(base_url=_normalize_base_url(base_url), api_key=OLLAMA_API_KEY)
+            try:
+                if count(full_text) <= max_chunk_tokens:
+                    set_status("summarizing", chunk_index=1, chunk_total=1,
+                               detail="Summarizing transcript")
+                    return await summarize_async(
+                        full_text, instruction=DETAILED_SUMMARY_PROMPT, base_url=base_url,
+                        model=model, temperature=cfg.capture.llm_temperature,
+                        max_retries=cfg.capture.llm_max_retries, timeout=None, client=client,
+                    )
+
+                chunks = chunk_transcript(
+                    segments, count=count, max_tokens=max_chunk_tokens,
+                    overlap_tokens=cfg.capture.summary_chunk_overlap_tokens,
+                    max_chunks=cfg.capture.summary_max_chunks,
+                )
+                total = len(chunks)
+                set_status("summarizing", chunk_index=0, chunk_total=total,
+                           detail=f"Summarizing 0 of {total} sections")
+
+                def on_progress(done: int, total_: int) -> None:
+                    set_status("summarizing", chunk_index=done, chunk_total=total_,
+                               detail=f"Summarized {done} of {total_} sections")
+
+                partials = await _map_phase(
+                    chunks, client=client, model=model, temperature=cfg.capture.llm_temperature,
+                    max_retries=cfg.capture.llm_max_retries, timeout=None,
+                    max_concurrency=cfg.capture.summary_max_concurrency,
+                    on_progress=on_progress, base_url=base_url,
+                )
+
+                set_status("combining", chunk_total=total, detail="Combining section summaries")
+                return await reduce_summaries(
+                    partials, count=count, client=client, model=model,
+                    temperature=cfg.capture.llm_temperature, max_retries=cfg.capture.llm_max_retries,
+                    timeout=None, max_chunk_tokens=max_chunk_tokens,
+                    overlap_tokens=cfg.capture.summary_chunk_overlap_tokens,
+                    max_chunks=cfg.capture.summary_max_chunks,
+                    max_concurrency=cfg.capture.summary_max_concurrency,
+                    reduce_max_depth=cfg.capture.reduce_max_depth, base_url=base_url,
+                )
+            finally:
+                await client.close()
+
+        summary = asyncio.run(run_summarization())
+
+        set_status("finalizing", detail="Finalizing note")
+        finalize_youtube_note(path, summary, cfg.vault.root)
+
+        category = path.parent.name
+
+        if cfg.vector.enabled:
+            try:
+                from vector_store import index_note
+                note_text = path.read_text(encoding="utf-8", errors="ignore")
+                index_note(cfg.vault.root, path, note_text, cfg.ollama.base_url, cfg.vector.embed_model)
+            except Exception as exc:
+                print(f"[server] voice job {job_id} vector index skipped: {exc}", flush=True)
+
+        try:
+            register_in_dedup_index(summary, str(path), cfg.vault.root, path)
+        except Exception:
+            pass
+
+        set_status("done", category=category, path=str(path))
+
+        try:
+            from notifier import notify_capture_success
+            from capture_log import log_capture
+            from models import CaptureOutput
+            if cfg.notifications.enabled:
+                notify_capture_success(category=category,
+                                       filepath=str(path),
+                                       title_prefix=cfg.notifications.title_prefix)
+            minimal_output = CaptureOutput(
+                category=category,
+                suggested_filename=path.stem,
+                markdown_content=summary,
+                confidence=1.0,
+            )
+            log_capture(minimal_output, enriched, str(path), cfg.ollama.model)
+        except Exception:
+            pass
+
+    except Exception as exc:
+        print(f"[server] voice job {job_id} failed: {exc}", flush=True)
+        set_status("error", error=str(exc))
+
+
 async def _stream_capture(content_type: str, content: str, run_id: Optional[str] = None) -> AsyncIterator[str]:
     if _is_duplicate_request(content_type, content):
         yield _sse("duplicate")
@@ -843,6 +1151,10 @@ async def patch_config(patch: ConfigPatch, _: None = Depends(_require_secret)):
         _set("capture", "auto_describe_new_folders", bool(patch.auto_describe_new_folders))
     if patch.chat_system_prompt is not None:
         _set("look", "chat_system_prompt", patch.chat_system_prompt)
+    if patch.reminders_delivery is not None:
+        delivery = patch.reminders_delivery.strip().lower()
+        if delivery in ("app", "os"):
+            _set("reminders", "delivery", delivery)
 
     CONFIG_PATH.write_text(tomlkit.dumps(doc), encoding="utf-8")
 
@@ -1203,3 +1515,52 @@ async def discard_inbox(note_id: str, _: None = Depends(_require_secret)):
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"ok": True, "discarded": note_id}
+
+
+@app.get("/reminders")
+async def get_reminders(_: None = Depends(_require_secret)):
+    """List all reminders (pending and fired)."""
+    from config import get_config
+    from index_writer import get_db_path
+    from reminders import list_reminders
+    db = get_db_path(get_config().vault.root)
+    return {"reminders": list_reminders(db, include_done=True)}
+
+
+@app.post("/reminders")
+async def create_reminder_endpoint(body: ReminderCreate, _: None = Depends(_require_secret)):
+    """Create a reminder for a note. Validates when_iso; defaults delivery from config."""
+    from datetime import datetime
+    from config import get_config
+    from index_writer import get_db_path
+    from reminders import create_reminder
+
+    try:
+        datetime.fromisoformat(body.when_iso)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid when_iso: {body.when_iso!r}")
+
+    cfg = get_config()
+    db = get_db_path(cfg.vault.root)
+    delivery = body.delivery or cfg.reminders.delivery
+    rid = create_reminder(
+        db, note_path=body.note_path, label=body.label,
+        fire_at_iso=body.when_iso, delivery=delivery,
+    )
+    if body.notify:
+        try:
+            from notifier import send_notification
+            send_notification("Reminder set", f"{body.label} — {body.when_iso}")
+        except Exception:
+            pass  # notification is best-effort; the reminder row is already committed
+    return {"id": rid}
+
+
+@app.delete("/reminders/{reminder_id}", status_code=204)
+async def delete_reminder_endpoint(reminder_id: int, _: None = Depends(_require_secret)):
+    """Delete a reminder."""
+    from config import get_config
+    from index_writer import get_db_path
+    from reminders import delete_reminder
+    db = get_db_path(get_config().vault.root)
+    delete_reminder(db, reminder_id)

@@ -4,6 +4,8 @@ export interface ToastItem {
   id: string;
   tone: "success" | "error" | "info";
   message: string;
+  action?: { label: string; run: () => void };
+  ttlMs?: number;
 }
 
 const TTL: Record<ToastItem["tone"], number> = { success: 3000, error: 5000, info: 4000 };
@@ -27,7 +29,7 @@ export function useToasts() {
     timers.current.set(id, setTimeout(() => {
       timers.current.delete(id);
       setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, TTL[toast.tone]));
+    }, toast.ttlMs ?? TTL[toast.tone]));
   }, []);
 
   return { toasts, pushToast, dismiss };

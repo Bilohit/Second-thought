@@ -52,6 +52,9 @@ _MAX_EMBED_CHARS     = 4_000
 _MAX_SNIPPET_CHARS   = 500
 _DEFAULT_EMBED_MODEL = "nomic-embed-text"
 _DB_NAME             = "vectors.db"
+# ponytail: char-based chunk boundary (~1k tokens); switch to summarizer token
+# chunking if retrieval quality demands.
+_CHUNK_CHARS         = 4_000
 
 
 def _preview(text: str, n: int = 80) -> str:
@@ -251,6 +254,31 @@ def _cosine_top_k(
     return _cosine_all(query_vec, rows)[:top_k]
 
 
+def _dedupe_to_parent(
+    ranked: list[tuple[float, str, str]],
+    top_k: int,
+) -> list[tuple[float, str, str]]:
+    """
+    Collapse chunk rows (id `f"{parent}::c{i}"`) to their parent note, keeping
+    only the best-scoring chunk per parent, then truncate to top_k.
+
+    `ranked` must already be sorted descending by similarity (as returned by
+    _cosine_all/_cosine_top_k), so the first occurrence of each parent is its
+    best-scoring row.
+    """
+    seen: set[str] = set()
+    out: list[tuple[float, str, str]] = []
+    for sim, doc_id, doc in ranked:
+        parent = doc_id.split("::c")[0]
+        if parent in seen:
+            continue
+        seen.add(parent)
+        out.append((sim, parent, doc))
+        if len(out) >= top_k:
+            break
+    return out
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def index_note(
@@ -270,23 +298,45 @@ def index_note(
             print(f"[VectorStore] skip index: blank content (len={len(content or '')})",
                   file=sys.stderr, flush=True)
             return
-        embedding = _embed(content, base_url, embed_model)
-        vec_bytes = np.array(embedding, dtype=np.float32).tobytes()
-
         try:
             rel = str(note_path.relative_to(vault_root)).replace("\\", "/")
         except ValueError:
             rel = str(note_path).replace("\\", "/")
 
         category = note_path.parent.name
-        snippet  = content[:_MAX_SNIPPET_CHARS]
 
         with _connect(vault_root) as conn:
+            # Clear any stale rows (single-row or prior chunk rows) before
+            # re-inserting, so re-indexing is idempotent regardless of
+            # whether the chunk count changed between runs.
             conn.execute(
-                "INSERT OR REPLACE INTO embeddings "
-                "(id, embedding, document, category) VALUES (?,?,?,?)",
-                (rel, vec_bytes, snippet, category),
+                "DELETE FROM embeddings WHERE id = ? OR id LIKE ?",
+                (rel, rel + "::c%"),
             )
+
+            if len(content) <= _CHUNK_CHARS:
+                embedding = _embed(content, base_url, embed_model)
+                vec_bytes = np.array(embedding, dtype=np.float32).tobytes()
+                snippet = content[:_MAX_SNIPPET_CHARS]
+                conn.execute(
+                    "INSERT OR REPLACE INTO embeddings "
+                    "(id, embedding, document, category) VALUES (?,?,?,?)",
+                    (rel, vec_bytes, snippet, category),
+                )
+            else:
+                slices = [
+                    content[i:i + _CHUNK_CHARS]
+                    for i in range(0, len(content), _CHUNK_CHARS)
+                ]
+                for i, slice_ in enumerate(slices):
+                    embedding = _embed(slice_, base_url, embed_model)
+                    vec_bytes = np.array(embedding, dtype=np.float32).tobytes()
+                    snippet = slice_[:_MAX_SNIPPET_CHARS]
+                    conn.execute(
+                        "INSERT OR REPLACE INTO embeddings "
+                        "(id, embedding, document, category) VALUES (?,?,?,?)",
+                        (f"{rel}::c{i}", vec_bytes, snippet, category),
+                    )
         print(f"[VectorStore] indexed: {rel}", flush=True)
 
     except Exception as exc:
@@ -302,7 +352,10 @@ def remove_from_index(vault_root: Path, note_path: Path) -> None:
         except ValueError:
             rel = str(note_path).replace("\\", "/")
         with _connect(vault_root) as conn:
-            conn.execute("DELETE FROM embeddings WHERE id = ?", (rel,))
+            conn.execute(
+                "DELETE FROM embeddings WHERE id = ? OR id LIKE ?",
+                (rel, rel + "::c%"),
+            )
         print(f"[VectorStore] removed: {rel}", flush=True)
     except Exception as exc:
         print(f"[{_ist_now()}] [VectorStore] remove_from_index error: {exc}",
@@ -343,7 +396,9 @@ def retrieve_related(
             return []
 
         embedding = _embed(query_text, base_url, embed_model)
-        ranked    = _cosine_top_k(embedding, rows, top_k)
+        # ponytail: 3x overfetch heuristic so k parents survive dedupe
+        candidates = _cosine_top_k(embedding, rows, top_k * 3)
+        ranked     = _dedupe_to_parent(candidates, top_k)
 
         return [
             f"### Related note: {doc_id}  (similarity {sim:.2f})\n{doc}"
@@ -392,7 +447,9 @@ def best_match(
             return None
 
         embedding = _embed(query_text, base_url, embed_model)
-        ranked = _cosine_top_k(embedding, rows, top_k=1)
+        # ponytail: 3x overfetch heuristic so k parents survive dedupe
+        candidates = _cosine_top_k(embedding, rows, top_k=3)
+        ranked = _dedupe_to_parent(candidates, top_k=1)
         if not ranked:
             return None
         sim, doc_id, _doc = ranked[0]

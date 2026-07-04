@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Second Thought — Compact Mode Menus (Design Options)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* ── Tokens (mirrors gui/src/index.css dark theme) ─────────────────── */
+  :root {
+    --bg: #0a0a0a; --surface: #262626; --surface-2: #404040;
+    --border: #383838; --border-2: #262626;
+    --text-1: #fafafa; --text-2: #a3a3a3; --text-3: #737373;
+    --accent: #737373; --accent-glow: rgba(115,115,115,0.30);
+    --green: #4ade80; --ease: cubic-bezier(0.16,1,0.3,1);
+    --bar-ms: 260ms; --panel-ms: 300ms;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text-1);
+    font: 13px/1.5 "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+    padding: 32px 24px 80px; max-width: 1080px; margin: 0 auto;
+  }
+  h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+  h2 { font-size: 14px; font-weight: 600; margin: 48px 0 4px; }
+  h3 { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 28px 0 6px; }
+  p.note { color: var(--text-3); font-size: 12px; max-width: 68ch; }
+  .picked { color: var(--green); font-size: 10px; border: 1px solid var(--green); padding: 1px 6px; margin-left: 8px; }
+
+  /* fake monitor stage */
+  .stage {
+    position: relative; height: 460px; margin-top: 8px;
+    border: 1px solid var(--border); background: #111;
+    overflow: hidden;
+  }
+  .stage .zoneline {
+    position: absolute; left: 0; right: 0; height: 0;
+    border-top: 1px dashed #222; pointer-events: none;
+  }
+  .zlabel { position: absolute; right: 8px; color: #333; font-size: 10px; pointer-events: none; }
+  .hint { position: absolute; left: 10px; top: 8px; color: #3a3a3a; font-size: 10px; pointer-events: none; }
+  .controls { display: flex; gap: 8px; margin: 12px 0 0; flex-wrap: wrap; align-items: center; }
+  .controls button {
+    background: var(--surface); color: var(--text-2); border: 1px solid var(--border);
+    font: inherit; font-size: 11px; padding: 5px 12px; cursor: pointer;
+  }
+  .controls button.on { color: var(--text-1); border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-glow); }
+  .controls button:hover { color: var(--text-1); }
+
+  /* ── Capsule primitives ────────────────────────────────────────────── */
+  .cap-root { position: absolute; left: 50%; transform: translateX(-50%); }
+  .capsule {
+    display: flex; align-items: center; padding: 0 12px;
+    height: 36px; width: 154px;
+    background: var(--surface); border: 1px solid var(--border);
+    cursor: pointer; position: relative; z-index: 3;
+    transition: width var(--bar-ms) var(--ease);
+    user-select: none;
+  }
+  .capsule.open { width: 288px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); margin-right: 8px; flex: none;
+    transition: width var(--bar-ms) var(--ease), margin var(--bar-ms) var(--ease), opacity 150ms; }
+  .cap-label { font-size: 12px; color: var(--text-2); white-space: nowrap; overflow: hidden;
+    transition: width var(--bar-ms) var(--ease), opacity 120ms; }
+  .capsule.open .dot, .capsule.open .cap-label { width: 0; margin: 0; opacity: 0; }
+  .cap-items { display: flex; position: absolute; inset: 0; align-items: center; justify-content: center; pointer-events: none; }
+  .capsule.open .cap-items { pointer-events: auto; }
+  .cap-item {
+    width: 44px; height: 36px; display: flex; align-items: center; justify-content: center;
+    color: var(--text-2); background: none; border: 0; cursor: pointer;
+    transform: scale(0.6); opacity: 0; transition: transform 180ms var(--ease), opacity 180ms, color 120ms;
+  }
+  .cap-item:hover { color: var(--text-1); }
+  .capsule.open .cap-item { transform: scale(1); opacity: 1; }
+  .cap-item svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ── Panel skeleton (shared) ───────────────────────────────────────── */
+  .panel {
+    width: 288px; background: var(--surface); border: 1px solid var(--border);
+    overflow: hidden; position: absolute; left: 0; z-index: 2;
+  }
+  .panel-head {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    border-bottom: 1px solid var(--border-2); color: var(--text-2); font-size: 11px;
+  }
+  .panel-head .x { margin-left: auto; cursor: pointer; color: var(--text-3); background: none; border: 0; font: inherit; }
+  .panel-head .x:hover { color: var(--text-1); }
+  .panel-body { padding: 10px 12px; font-size: 11px; color: var(--text-3); }
+  .prow { display: flex; gap: 6px; margin-bottom: 8px; }
+  .seg { display: flex; border: 1px solid var(--border); }
+  .seg span { padding: 3px 10px; cursor: pointer; }
+  .seg span.on { background: var(--surface-2); color: var(--text-1); }
+  .fauxinput { border: 1px solid var(--border); background: #1c1c1c; padding: 5px 8px; color: var(--text-3); flex: 1; min-width: 0; }
+  .chk { display: flex; align-items: center; gap: 6px; font-size: 10.5px; }
+  .mini { border: 1px solid var(--border); background: none; color: var(--text-3); font: inherit; font-size: 10.5px; padding: 3px 8px; cursor: pointer; }
+  .mini:hover { color: var(--text-1); }
+  .res { padding: 6px 8px; border: 1px solid var(--border-2); margin-top: 6px; color: var(--text-2); }
+  .res small { display: block; color: var(--text-3); }
+
+  /* capsule panel reveal (option A/C: clip; option B: slide) */
+  .panel { transition: clip-path var(--panel-ms) var(--ease), transform var(--panel-ms) var(--ease), opacity var(--panel-ms) var(--ease); }
+  .panel.hidden-down  { clip-path: inset(0 0 100% 0); opacity: 0; }
+  .panel.hidden-up    { clip-path: inset(100% 0 0 0); opacity: 0; }
+  .panel.hidden-mid   { clip-path: inset(50% 0 50% 0); opacity: 0; }
+  .panel.shown        { clip-path: inset(0 0 0 0); opacity: 1; }
+  .panel.b-hidden-down { clip-path: none; transform: translateY(-8px) scaleY(0.92); transform-origin: top; opacity: 0; }
+  .panel.b-hidden-up   { clip-path: none; transform: translateY(8px) scaleY(0.92); transform-origin: bottom; opacity: 0; }
+  .panel.b-hidden-mid  { clip-path: none; transform: scaleY(0.85); transform-origin: center; opacity: 0; }
+  .panel.b-shown       { clip-path: none; transform: none; opacity: 1; }
+
+  /* ── Minimal primitives ────────────────────────────────────────────── */
+  .mini-pill {
+    width: 36px; height: 36px; background: var(--surface); border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+    position: absolute; z-index: 5; transition: opacity 160ms var(--ease), box-shadow 150ms;
+  }
+  .mini-pill .dot { margin: 0; }
+  .spoke {
+    position: absolute; width: 34px; height: 34px; background: var(--surface); border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 4;
+    color: var(--text-2); transform: translate(0,0) scale(0.4); opacity: 0; pointer-events: none;
+    transition: transform 240ms var(--ease), opacity 200ms, color 120ms;
+  }
+  .spoke svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .spoke:hover { color: var(--text-1); border-color: var(--accent); }
+  .mpanel {
+    position: absolute; background: var(--surface); border: 1px solid var(--border);
+    z-index: 6; overflow: hidden; opacity: 0; pointer-events: none;
+    transition: clip-path var(--panel-ms) var(--ease),
+                left var(--panel-ms) var(--ease), top var(--panel-ms) var(--ease),
+                width var(--panel-ms) var(--ease), height var(--panel-ms) var(--ease),
+                opacity 240ms var(--ease);
+  }
+  .mpanel.notrans { transition: none; }
+  .mpanel .tabstrip, .mpanel .panel-body { transition: opacity 180ms var(--ease) 120ms; }
+  .mpanel.content-hid .tabstrip, .mpanel.content-hid .panel-body { opacity: 0; transition-delay: 0ms; }
+  .tabstrip { display: flex; border-bottom: 1px solid var(--border-2); }
+  .tabstrip button {
+    flex: 1; background: none; border: 0; color: var(--text-3); padding: 7px 0; cursor: pointer; font: inherit;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .tabstrip button svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .tabstrip button.on { color: var(--text-1); box-shadow: inset 0 -1px 0 var(--text-1); }
+  .tabstrip button:hover { color: var(--text-2); }
+  .legend { font-size: 10.5px; color: var(--text-3); margin-top: 6px; max-width: 78ch; }
+  code { color: var(--text-2); background: #1a1a1a; padding: 0 4px; }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition-duration: 1ms !important; transition-delay: 0ms !important; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Second Thought — Compact Mode Menus</h1>
+<p class="note">Interactive mock, round 2. Capsule style <b>A</b> locked in. Minimal-mode options now each have their <b>own stage</b> below — no shared toggling. Pick one of M1 / M2 / M3.</p>
+
+<!-- ══════════════════ CAPSULE ══════════════════ -->
+<h2>1 · Capsule mode — vertical zone morph <span class="picked">PICKED: A · Extruded sheet</span></h2>
+<p class="note">Kept for reference/tuning. Click capsule → width morph. Click icon → vertical panel morph, direction by screen third. Close: ✕ or background click.</p>
+
+<div class="controls">
+  Zone: <button data-zone="top" class="on">Top → grows down</button>
+  <button data-zone="middle">Middle → grows both ways</button>
+  <button data-zone="bottom">Bottom → grows up</button>
+</div>
+
+<div class="stage" id="capStage">
+  <div class="zoneline" style="top:33.3%"></div><div class="zoneline" style="top:66.6%"></div>
+  <span class="zlabel" style="top:14%">top zone</span>
+  <span class="zlabel" style="top:48%">middle zone</span>
+  <span class="zlabel" style="top:82%">bottom zone</span>
+
+  <div class="cap-root" id="capRoot" style="top:60px">
+    <div class="capsule" id="capsule">
+      <span class="dot"></span><span class="cap-label">Second Thought</span>
+      <div class="cap-items" id="capItems"></div>
+    </div>
+    <div class="panel" id="capPanel">
+      <div class="panel-head"><span id="capPanelTitle">Look</span><button class="x" id="capClose">✕</button></div>
+      <div class="panel-body" id="capPanelBody"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ MINIMAL ══════════════════ -->
+<h2>2 · Minimal mode — pick M1 / M2 / M3</h2>
+<p class="note">Same interaction in every stage: click pill → radial fan; click a spoke → that option's panel; click background (or the pill again) to close. Everything clamps to the stage edge like the real monitor clamp.</p>
+
+<h3>M1 · Ray bloom — panel inflates outward along the clicked spoke's ray</h3>
+<div class="stage mstage" id="m1stage" style="height:380px"><span class="hint">click pill → click any spoke — panel opens on that spoke's side</span></div>
+<p class="legend">Menu and content are one gesture: the panel is anchored past the chip you clicked and unclips away from the pill. Other spokes retract. No tab strip — back out to the fan to switch panels.</p>
+
+<h3>M2 · Island morph — the pill itself morphs into a mini-panel with icon tabs</h3>
+<div class="stage mstage" id="m2stage" style="height:380px"><span class="hint">click pill → click any spoke — pill rectangle grows into the panel; switch panels via the icon tab strip</span></div>
+<p class="legend">Dynamic-Island style: fan retracts, the 36px pill rectangle physically grows into the panel (position+size animate together on the app's curve), content fades in after the morph settles. All five targets stay reachable in the tab header, so switching needs no re-open. Closing reverses the morph back into the pill.</p>
+
+<h3>M3 · Petal column — panel unfolds beside the pill; pill stays as the handle</h3>
+<div class="stage mstage" id="m3stage" style="height:380px"><span class="hint">click pill → click any spoke — panel unfolds top-down next to the pill; click the pill to close</span></div>
+<p class="legend">Most conservative: pill never disappears, panel reveals top-down on the screen-aware side (right of pill when pill sits in the left half, left otherwise). Tab strip included. Best behavior for edge-parked pills.</p>
+
+<h2>3 · Panel content parity</h2>
+<p class="note">Locked per your call: <b>no reduced feature sets</b> — compact panels carry the full controls of their FullWindow counterparts (Look: search/chat toggle, ignore-history, Clear, Reload indexing; Settings/Vault/Inbox/History: complete), laid out for 288px with internal scroll. No "open full window" glyph.</p>
+
+<script>
+// ── shared icon paths (copied from icons.tsx) ────────────────────────────
+const ICONS = {
+  search:  '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+  vault:   '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  settings:'<circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M2 12h2m16 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>',
+  inbox:   '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  stats:   '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>',
+  hide:    '<path d="M12 4v9"/><path d="M8 10l4 4 4-4"/><path d="M4 18h16"/>'
+};
+const TARGETS = ["search","vault","settings","inbox","stats","hide"];
+const LABELS = { search:"Look", vault:"Vault", settings:"Settings", inbox:"Inbox", stats:"History", hide:"Hide" };
+const svg = (id) => `<svg viewBox="0 0 24 24">${ICONS[id]}</svg>`;
+
+const LOOK_BODY = `
+  <div class="prow"><div class="seg"><span class="on">Search</span><span>Chat</span></div>
+    <label class="chk"><input type="checkbox"> Ignore history</label></div>
+  <div class="prow"><input class="fauxinput" placeholder="Search vault…" readonly value=""></div>
+  <div class="prow"><button class="mini">Clear</button><button class="mini">Reload indexing</button></div>
+  <div class="res">graph-rag notes <small>Research/2026-06-30 · 0.82</small></div>
+  <div class="res">whisper batching <small>Dev/2026-07-01 · 0.74</small></div>`;
+const GENERIC_BODY = (t) => `
+  <div class="prow"><input class="fauxinput" readonly value="${t} — compact layout"></div>
+  <div class="res">item one <small>context line</small></div>
+  <div class="res">item two <small>context line</small></div>
+  <div class="prow" style="margin-top:8px"><button class="mini">Action</button><button class="mini">Refresh</button></div>`;
+
+// ── CAPSULE demo (style A locked) ────────────────────────────────────────
+const capsule = document.getElementById("capsule");
+const capItems = document.getElementById("capItems");
+const capPanel = document.getElementById("capPanel");
+const capRoot = document.getElementById("capRoot");
+const capStage = document.getElementById("capStage");
+let zone = "top", capOpen = false, panelOpen = false;
+
+TARGETS.forEach((id, i) => {
+  const b = document.createElement("button");
+  b.className = "cap-item"; b.innerHTML = svg(id); b.title = LABELS[id];
+  b.style.transitionDelay = (i * 36) + "ms";
+  b.onclick = (e) => { e.stopPropagation(); if (id === "hide") return closeAll(); openCapPanel(id); };
+  capItems.appendChild(b);
+});
+
+function zoneTop(z){ return z === "top" ? 60 : z === "middle" ? 212 : 364; }
+function layoutCapPanel(){
+  const PANEL_H = 232, BAR_H = 36, GAP = -1; // A: fused border
+  capPanel.style.width = "288px";
+  capPanel.style.height = PANEL_H + "px";
+  if (zone === "top")        { capPanel.style.top = (BAR_H + GAP) + "px"; capPanel.style.bottom = ""; }
+  else if (zone === "bottom"){ capPanel.style.top = ""; capPanel.style.bottom = (BAR_H + GAP) + "px"; }
+  else                       { capPanel.style.top = (BAR_H/2 - PANEL_H/2) + "px"; capPanel.style.bottom = ""; }
+  capPanel.style.left = "0";
+}
+function capHiddenClass(){ return zone === "top" ? "hidden-down" : zone === "bottom" ? "hidden-up" : "hidden-mid"; }
+function resetCapPanel(){
+  capPanel.className = "panel " + capHiddenClass();
+  capPanel.style.pointerEvents = "none";
+}
+function openCapPanel(id){
+  document.getElementById("capPanelTitle").textContent = LABELS[id];
+  document.getElementById("capPanelBody").innerHTML = id === "search" ? LOOK_BODY : GENERIC_BODY(LABELS[id]);
+  layoutCapPanel(); resetCapPanel();
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    capPanel.className = "panel shown";
+    capPanel.style.pointerEvents = "auto";
+    panelOpen = true;
+  }));
+}
+function closeAll(){
+  resetCapPanel(); panelOpen = false;
+  capsule.classList.remove("open"); capOpen = false;
+}
+capsule.onclick = () => {
+  if (panelOpen) return closeAll();
+  capOpen = !capOpen; capsule.classList.toggle("open", capOpen);
+};
+document.getElementById("capClose").onclick = (e) => { e.stopPropagation(); closeAll(); };
+capStage.onclick = (e) => { if (e.target === capStage) closeAll(); };
+capPanel.onclick = (e) => e.stopPropagation();
+resetCapPanel();
+
+document.querySelectorAll("[data-zone]").forEach(b => b.onclick = () => {
+  document.querySelectorAll("[data-zone]").forEach(x => x.classList.remove("on")); b.classList.add("on");
+  zone = b.dataset.zone; closeAll(); capRoot.style.top = zoneTop(zone) + "px";
+});
+
+// ── MINIMAL demos — one self-contained instance per stage ────────────────
+function clamp(v, lo, hi){ return Math.max(lo, Math.min(v, hi)); }
+
+function minimalDemo(stageId, opt){
+  const stage = document.getElementById(stageId);
+  const PW = 252, PH = 272, R = 80;
+
+  const pill = document.createElement("div");
+  pill.className = "mini-pill"; pill.innerHTML = '<span class="dot"></span>';
+  stage.appendChild(pill);
+
+  const panel = document.createElement("div");
+  panel.className = "mpanel";
+  panel.innerHTML = '<div class="tabstrip"></div><div class="panel-body"></div>';
+  stage.appendChild(panel);
+  const tabs = panel.querySelector(".tabstrip");
+  const body = panel.querySelector(".panel-body");
+
+  let fanOpen = false, panelUp = false, spokes = [];
+  const center = () => ({ x: stage.clientWidth / 2, y: stage.clientHeight / 2 });
+
+  function placePill(){
+    const p = center();
+    pill.style.left = (p.x - 18) + "px";
+    pill.style.top  = (p.y - 18) + "px";
+  }
+
+  function buildSpokes(){
+    spokes.forEach(s => s.remove()); spokes = [];
+    const p = center(), n = TARGETS.length;
+    TARGETS.forEach((id, i) => {
+      const ang = (-90 + (360 / n) * i) * Math.PI / 180;
+      const el = document.createElement("button");
+      el.className = "spoke"; el.innerHTML = svg(id); el.title = LABELS[id];
+      el.style.left = (p.x - 17) + "px"; el.style.top = (p.y - 17) + "px";
+      el.dataset.tx = Math.round(Math.cos(ang) * R);
+      el.dataset.ty = Math.round(Math.sin(ang) * R);
+      el.style.transitionDelay = (i * 24) + "ms";
+      el.onclick = (e) => { e.stopPropagation(); if (id === "hide") return close(); select(id, el); };
+      stage.appendChild(el); spokes.push(el);
+    });
+  }
+
+  function showFan(show){
+    fanOpen = show;
+    spokes.forEach(s => {
+      s.style.transform = show ? `translate(${s.dataset.tx}px,${s.dataset.ty}px) scale(1)` : "translate(0,0) scale(0.4)";
+      s.style.opacity = show ? 1 : 0;
+      s.style.pointerEvents = show ? "auto" : "none";
+    });
+  }
+
+  function buildTabs(active){
+    tabs.innerHTML = "";
+    TARGETS.filter(t => t !== "hide").forEach(id => {
+      const b = document.createElement("button");
+      b.innerHTML = svg(id); b.title = LABELS[id];
+      b.className = id === active ? "on" : "";
+      b.onclick = (e) => { e.stopPropagation(); buildTabs(id); setBody(id); };
+      tabs.appendChild(b);
+    });
+  }
+  function setBody(id){ body.innerHTML = id === "search" ? LOOK_BODY : GENERIC_BODY(LABELS[id]); }
+
+  // instant style application without transition, then re-enable
+  function jump(fn){
+    panel.classList.add("notrans");
+    fn();
+    void panel.offsetWidth; // force reflow so the jump lands before transitions resume
+    panel.classList.remove("notrans");
+  }
+
+  function select(id, spokeEl){
+    const p = center();
+    setBody(id);
+    buildTabs(id);
+    tabs.style.display = opt === "M1" ? "none" : "flex";
+
+    if (opt === "M1") {
+      // panel sits past the clicked spoke, unclips away from the pill
+      const tx = +spokeEl.dataset.tx, ty = +spokeEl.dataset.ty;
+      let x = tx > 10 ? p.x + tx + 26 : tx < -10 ? p.x + tx - 26 - PW : p.x - PW / 2;
+      let y = ty > 10 ? p.y + ty + 26 : ty < -10 ? p.y + ty - 26 - PH : p.y - PH / 2;
+      x = clamp(x, 8, stage.clientWidth - PW - 8);
+      y = clamp(y, 8, stage.clientHeight - PH - 8);
+      // collapse toward the corner nearest the pill
+      const from = `inset(${ty < -10 ? 100 : 0}% ${tx < -10 ? 100 : 0}% ${ty > 10 ? 100 : 0}% ${tx > 10 ? 100 : 0}%)`;
+      jump(() => {
+        panel.style.left = x + "px"; panel.style.top = y + "px";
+        panel.style.width = PW + "px"; panel.style.height = PH + "px";
+        panel.style.clipPath = from; panel.style.opacity = 0;
+        panel.classList.remove("content-hid");
+      });
+      showFan(false);
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        panel.style.clipPath = "inset(0 0 0 0)"; panel.style.opacity = 1;
+        panel.style.pointerEvents = "auto"; panelUp = true;
+      }));
+
+    } else if (opt === "M2") {
+      // pill rect physically grows into the panel rect
+      const fx = clamp(p.x - PW / 2, 8, stage.clientWidth - PW - 8);
+      const fy = clamp(p.y - PH / 2, 8, stage.clientHeight - PH - 8);
+      jump(() => {
+        panel.style.left = (p.x - 18) + "px"; panel.style.top = (p.y - 18) + "px";
+        panel.style.width = "36px"; panel.style.height = "36px";
+        panel.style.clipPath = "inset(0 0 0 0)"; panel.style.opacity = 1;
+        panel.classList.add("content-hid");
+      });
+      showFan(false);
+      pill.style.opacity = 0;
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        panel.style.left = fx + "px"; panel.style.top = fy + "px";
+        panel.style.width = PW + "px"; panel.style.height = PH + "px";
+        panel.classList.remove("content-hid"); // content fades in (delayed transition)
+        panel.style.pointerEvents = "auto"; panelUp = true;
+      }));
+
+    } else {
+      // M3: unfold beside the pill, screen-aware side, top-down reveal
+      const left = p.x < stage.clientWidth / 2;
+      let x = left ? p.x + 28 : p.x - 28 - PW;
+      let y = clamp(p.y - 44, 8, stage.clientHeight - PH - 8);
+      x = clamp(x, 8, stage.clientWidth - PW - 8);
+      jump(() => {
+        panel.style.left = x + "px"; panel.style.top = y + "px";
+        panel.style.width = PW + "px"; panel.style.height = PH + "px";
+        panel.style.clipPath = "inset(0 0 100% 0)"; panel.style.opacity = 0;
+        panel.classList.remove("content-hid");
+      });
+      showFan(false);
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        panel.style.clipPath = "inset(0 0 0 0)"; panel.style.opacity = 1;
+        panel.style.pointerEvents = "auto"; panelUp = true;
+      }));
+    }
+  }
+
+  function close(){
+    if (opt === "M2" && panelUp) {
+      // reverse morph back into the pill rect
+      const p = center();
+      panel.classList.add("content-hid");
+      panel.style.left = (p.x - 18) + "px"; panel.style.top = (p.y - 18) + "px";
+      panel.style.width = "36px"; panel.style.height = "36px";
+      panel.style.pointerEvents = "none";
+      setTimeout(() => {
+        jump(() => { panel.style.opacity = 0; });
+        pill.style.opacity = 1;
+      }, 300);
+    } else {
+      panel.style.opacity = 0;
+      panel.style.pointerEvents = "none";
+      pill.style.opacity = 1;
+    }
+    panelUp = false;
+    showFan(false);
+  }
+
+  pill.onclick = (e) => { e.stopPropagation(); if (panelUp) return close(); showFan(!fanOpen); };
+  stage.onclick = (e) => { if (e.target === stage) close(); };
+  panel.onclick = (e) => e.stopPropagation();
+
+  placePill(); buildSpokes();
+}
+
+minimalDemo("m1stage", "M1");
+minimalDemo("m2stage", "M2");
+minimalDemo("m3stage", "M3");
+</script>
+</body>
+</html>

@@ -19,7 +19,7 @@ captures
   input_type    TEXT
   model         TEXT
   filename      TEXT
-  body_excerpt  TEXT                   -- note body, frontmatter stripped, capped ~4000 chars
+  body_excerpt  TEXT                   -- note body, frontmatter stripped, capped ~65536 chars
 
 captures_fts   (FTS5 virtual table)
   rowid -> captures.id
@@ -487,7 +487,10 @@ def upsert_capture_from_file(vault_root: Path, abs_path: Path) -> None:
         category   = p.parent.name
         body       = _read_body_excerpt(str(p))
         h          = _file_hash(str(p))
-        timestamp  = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        # File mtime, not wall-clock now: a bulk vault sync must not stamp
+        # every pre-existing note as captured-today (it poisons Recent
+        # activity and the 30-day by_day stats).
+        timestamp  = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc).isoformat(timespec="seconds")
         conn = init_db(vault_root)
         conn.execute(
             """

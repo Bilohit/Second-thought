@@ -38,6 +38,9 @@ interface Props {
   /** Full-window shell renders its own toggle in the topbar; suppress the inline one. */
   hideToggle?: boolean;
   embedded?: boolean;
+  /** Full-window shell drives sync from its topbar button; use these instead of internal state. */
+  externalSyncing?: boolean;
+  externalSyncStatus?: string | null;
 }
 
 function resultSnippet(r: SearchResult): string {
@@ -56,7 +59,7 @@ function tierLabel(tier: string | undefined): string {
   return "No vault match";
 }
 
-export default function LookPanel({ mode, onSelectMode, visible, onClose, measureRef, lookChat, lookChatPersist, hideToggle = false, embedded = false }: Props) {
+export default function LookPanel({ mode, onSelectMode, visible, onClose, measureRef, lookChat, lookChatPersist, hideToggle = false, embedded = false, externalSyncing, externalSyncStatus }: Props) {
   const [mounted, setMounted] = useState(visible);
 
   // Search state
@@ -211,7 +214,9 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
 
   if (!mounted) return null;
 
-  const syncFailed = syncStatus?.startsWith("Sync failed");
+  const effSyncing = embedded ? (externalSyncing ?? false) : syncing;
+  const effSyncStatus = embedded ? (externalSyncStatus ?? null) : syncStatus;
+  const syncFailed = effSyncStatus?.startsWith("Sync failed");
 
   return (
     <div
@@ -227,89 +232,85 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
       onTransitionEnd={handleTransitionEnd}
     >
       {/* Header */}
-      <div className={embedded ? "" : "drag-region"} style={PANEL_HEADER}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {!embedded && (
-            <>
-              <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
-                <MenuIcon target="search" size={14} />
-              </span>
-              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
-                Look
-              </span>
-            </>
-          )}
-        </div>
-        <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          {/* Mode toggle */}
-          {!hideToggle && (
-            <div
-              role="tablist"
-              aria-label="Look mode"
-              style={{ display: "flex", gap: 2, background: "var(--surface)", borderRadius: "var(--radius)", padding: 2 }}
+      {!embedded && (
+        <div className="drag-region" style={PANEL_HEADER}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
+              <MenuIcon target="search" size={14} />
+            </span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
+              Look
+            </span>
+          </div>
+          <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            {/* Mode toggle */}
+            {!hideToggle && (
+              <div
+                role="tablist"
+                aria-label="Look mode"
+                style={{ display: "flex", gap: 2, background: "var(--surface)", borderRadius: "var(--radius)", padding: 2 }}
+              >
+                {(["search", "chat"] as const).map((m) => (
+                  <button
+                    key={m}
+                    role="tab"
+                    aria-selected={mode === m}
+                    onClick={() => { logger.debug("look", "mode changed", { mode: m }); onSelectMode(m); }}
+                    style={{
+                      fontSize: 11,
+                      padding: "4px 10px",
+                      minWidth: 60,
+                      textAlign: "center",
+                      borderRadius: "var(--radius-sm)",
+                      border: "none",
+                      background: mode === m ? "var(--accent)" : "transparent",
+                      color: mode === m ? "var(--on-accent)" : "var(--text-2)",
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    {m === "search" ? "Search" : "Chat"}
+                  </button>
+                ))}
+              </div>
+            )}
+            {/* Refresh button */}
+            <button
+              className="btn-hover no-drag"
+              onClick={handleRefresh}
+              disabled={syncing}
+              title="Sync vault index"
+              aria-label="Sync vault index"
+              style={{ ...BTN_GHOST, opacity: syncing ? 0.5 : 1 }}
             >
-              {(["search", "chat"] as const).map((m) => (
-                <button
-                  key={m}
-                  role="tab"
-                  aria-selected={mode === m}
-                  onClick={() => { logger.debug("look", "mode changed", { mode: m }); onSelectMode(m); }}
-                  style={{
-                    fontSize: 11,
-                    padding: "4px 10px",
-                    minWidth: 60,
-                    textAlign: "center",
-                    borderRadius: "var(--radius-sm)",
-                    border: "none",
-                    background: mode === m ? "var(--accent)" : "transparent",
-                    color: mode === m ? "var(--on-accent)" : "var(--text-2)",
-                    cursor: "pointer",
-                    fontFamily: "inherit",
-                  }}
-                >
-                  {m === "search" ? "Search" : "Chat"}
-                </button>
-              ))}
-            </div>
-          )}
-          {/* Refresh button */}
-          <button
-            className="btn-hover no-drag"
-            onClick={handleRefresh}
-            disabled={syncing}
-            title="Sync vault index"
-            aria-label="Sync vault index"
-            style={{ ...BTN_GHOST, opacity: syncing ? 0.5 : 1 }}
-          >
-            <svg
-              width="13" height="13" viewBox="0 0 24 24"
-              fill="none" stroke="currentColor" strokeWidth="2"
-              strokeLinecap="round" strokeLinejoin="round"
-            >
-              <polyline points="23 4 23 10 17 10" />
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-            </svg>
-          </button>
-          {!embedded && (
+              <svg
+                width="13" height="13" viewBox="0 0 24 24"
+                fill="none" stroke="currentColor" strokeWidth="2"
+                strokeLinecap="round" strokeLinejoin="round"
+              >
+                <polyline points="23 4 23 10 17 10" />
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+              </svg>
+            </button>
             <button className="no-drag icon-close-btn" onClick={onClose} title="Close">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <line x1="2" y1="2" x2="12" y2="12" />
                 <line x1="12" y1="2" x2="2" y2="12" />
               </svg>
             </button>
-          )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Sync banner */}
-      {syncing && (
+      {effSyncing && (
         <div style={{ fontSize: 12, color: "var(--text-3)", borderBottom: "1px solid var(--border)", textAlign: "center", padding: "6px 14px" }}>
           Syncing vault index…
         </div>
       )}
-      {!syncing && syncStatus && (
+      {!effSyncing && effSyncStatus && (
         <div style={{ fontSize: 12, color: syncFailed ? "var(--red)" : "var(--text-3)", borderBottom: "1px solid var(--border)", textAlign: "center", padding: "6px 14px" }}>
-          {syncStatus}
+          {effSyncStatus}
         </div>
       )}
 
@@ -318,8 +319,8 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
         className="no-drag"
         style={{
           flex: 1, minHeight: 0, display: "flex", flexDirection: "column",
-          opacity: syncing ? 0.45 : 1,
-          pointerEvents: syncing ? "none" : undefined,
+          opacity: effSyncing ? 0.45 : 1,
+          pointerEvents: effSyncing ? "none" : undefined,
           transition: "opacity 0.15s",
         }}
       >

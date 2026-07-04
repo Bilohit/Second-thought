@@ -71,3 +71,67 @@ def test_sync_vault_indexes_removes_orphan_on_disk_delete():
         conn.close()
         assert result["removed"] == 1
         assert rows == []
+
+
+def test_sync_preserves_chunk_embeddings_for_existing_files():
+    """Chunk rows (id '<parent>::c<i>') must survive a sync while the parent
+    file exists, and be purged (counted once) when it is deleted."""
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp)
+        note = vault / "Notes" / "big.md"
+        note.parent.mkdir(parents=True)
+        note.write_text("# Big\nlong body", encoding="utf-8")
+        upsert_capture_from_file(vault, note)
+
+        from vector_store import _connect
+        with _connect(vault) as conn:
+            for i in range(2):
+                conn.execute(
+                    "INSERT INTO embeddings (id, embedding, document, category) VALUES (?,?,?,?)",
+                    (f"Notes/big.md::c{i}", b"\x00\x00\x80\x3f", "chunk", "Notes"),
+                )
+
+        with mock.patch("vault_sync.index_note"):
+            result = sync_vault_indexes(vault, "http://localhost:11434", "all-minilm")
+
+        with _connect(vault) as conn:
+            n = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+        assert n == 2, f"chunk embeddings wrongly purged (left {n})"
+        assert result["removed"] == 0
+
+        # Delete the file: one note removed, counted once (not once per chunk).
+        note.unlink()
+        with mock.patch("vault_sync.index_note"):
+            result2 = sync_vault_indexes(vault, "http://localhost:11434", "all-minilm")
+
+        with _connect(vault) as conn:
+            n2 = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+        assert n2 == 0
+
+
+def test_startup_purge_removes_embeddings_only_orphans():
+    """An embedding row with no captures row and no file must be purged at
+    startup; one whose file exists must survive."""
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp)
+        keep = vault / "Notes" / "keep.md"
+        keep.parent.mkdir(parents=True)
+        keep.write_text("# Keep", encoding="utf-8")
+
+        from vector_store import _connect
+        with _connect(vault) as conn:
+            conn.execute(
+                "INSERT INTO embeddings (id, embedding, document, category) VALUES (?,?,?,?)",
+                ("Notes/keep.md", b"\x00\x00\x80\x3f", "keep", "Notes"),
+            )
+            conn.execute(
+                "INSERT INTO embeddings (id, embedding, document, category) VALUES (?,?,?,?)",
+                ("Notes/ghost.md::c0", b"\x00\x00\x80\x3f", "ghost chunk", "Notes"),
+            )
+
+        removed = purge_orphan_index_entries(vault)
+
+        with _connect(vault) as conn:
+            ids = {r[0] for r in conn.execute("SELECT id FROM embeddings").fetchall()}
+        assert removed == 1
+        assert ids == {"Notes/keep.md"}

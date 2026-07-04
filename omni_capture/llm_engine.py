@@ -206,6 +206,13 @@ _SYSTEM_PROMPT_TEMPLATE = textwrap.dedent("""
                     below 0.70 uncertain — consider requires_new_category=true
 
     TODAY'S DATE: {today}
+
+    DETECTED EVENTS
+    * detected_events: list any concrete FUTURE dates/times found in the content
+      (meetings, deadlines, appointments). Resolve relative dates (e.g. "next
+      Tuesday", "in 3 days") against TODAY'S DATE above into an ISO-8601
+      when_iso value. Output plain LOCAL time with NO timezone suffix —
+      never append "Z" or "+hh:mm". Leave empty when none are present.
 """).lstrip()
 
 _SCRUTINY_PARAGRAPHS = {

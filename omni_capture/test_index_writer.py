@@ -321,13 +321,13 @@ class TestBodyIndexing(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             vault = Path(td) / "vault"
             vault.mkdir()
-            filepath = self._write_note(vault, "long-note", "x" * 5000)
+            filepath = self._write_note(vault, "long-note", "x" * 70000)
             log_capture_db(_entry(filepath=filepath, filename="long-note"), vault)
             conn = init_db(vault)
             row = conn.execute("SELECT body_excerpt FROM captures").fetchone()
             conn.close()
             self.assertNotIn("title:", row["body_excerpt"])
-            self.assertLessEqual(len(row["body_excerpt"]), 4000)
+            self.assertLessEqual(len(row["body_excerpt"]), 65536)
 
     def test_reindex_bodies_backfills_existing_rows(self):
         with tempfile.TemporaryDirectory() as td:
@@ -358,6 +358,36 @@ class TestBodyIndexing(unittest.TestCase):
             second = reindex_bodies(vault)
             self.assertEqual(first, 1)   # one row visited and (re)backfilled
             self.assertEqual(second, 0)  # gated by the _meta flag set after the first call
+
+
+def test_upsert_capture_from_file_uses_file_mtime():
+    import os
+    import tempfile
+    import time
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from index_writer import init_db, upsert_capture_from_file
+
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp)
+        note = vault / "Tech" / "old.md"
+        note.parent.mkdir(parents=True)
+        note.write_text("# Old note", encoding="utf-8")
+        old = time.time() - 90 * 86400  # 90 days ago
+        os.utime(note, (old, old))
+
+        upsert_capture_from_file(vault, note)
+
+        conn = init_db(vault)
+        row = conn.execute(
+            "SELECT timestamp FROM captures WHERE path = ?", (str(note),)
+        ).fetchone()
+        conn.close()
+
+        expected = datetime.fromtimestamp(old, tz=timezone.utc).isoformat(timespec="seconds")
+        assert row is not None
+        assert row["timestamp"] == expected, f"{row['timestamp']} != {expected}"
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────

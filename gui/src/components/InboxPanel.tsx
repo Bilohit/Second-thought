@@ -13,8 +13,13 @@ import {
   discardInboxItem,
   getVaultCategories,
   suggestCategories,
+  listReminders,
+  deleteReminder,
   type InboxItem,
+  type Reminder,
 } from "../lib/api";
+import { formatWhen } from "../lib/reminderFormat";
+import SegmentedToggle from "./ui/SegmentedToggle";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
   BTN_GHOST, BTN_PRIMARY, ROW_CARD, INPUT_STYLE,
@@ -24,11 +29,17 @@ import { MenuIcon } from "./PillMenu/icons";
 
 const NEW_FOLDER_SENTINEL = "__new_folder__";
 
+export type InboxTab = "inbox" | "reminders";
+
 interface Props {
   visible: boolean;
   onClose: () => void;
   onCountChange?: (count: number) => void;
   measureRef?: (el: HTMLDivElement | null) => void;
+  /** Full-window shell hosts this panel inline (no slide frame, no close). */
+  embedded?: boolean;
+  /** Which tab to show on mount — full-window "Reminders" header jumps here. */
+  initialTab?: InboxTab;
 }
 
 function InboxRow({
@@ -211,13 +222,21 @@ function InboxRow({
   );
 }
 
-export default function InboxPanel({ visible, onClose, onCountChange, measureRef }: Props) {
+export default function InboxPanel({ visible, onClose, onCountChange, measureRef, embedded = false, initialTab = "inbox" }: Props) {
   const [mounted, setMounted] = useState(visible);
   const [items, setItems] = useState<InboxItem[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [leavingIds, setLeavingIds] = useState<Set<string>>(new Set());
+  const [tab, setTab] = useState<InboxTab>(initialTab);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+
+  const loadReminders = useCallback(() => {
+    listReminders().then(setReminders).catch(() => {});
+  }, []);
+  const handleDeleteReminder = (id: number) =>
+    deleteReminder(id).then(() => setReminders((rows) => rows.filter((r) => r.id !== id))).catch(() => {});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -235,8 +254,8 @@ export default function InboxPanel({ visible, onClose, onCountChange, measureRef
   }, [onCountChange]);
 
   useEffect(() => {
-    if (visible) { setMounted(true); load(); }
-  }, [visible, load]);
+    if (visible) { setMounted(true); setTab(initialTab); load(); loadReminders(); }
+  }, [visible, load, loadReminders, initialTab]);
 
   const handleTransitionEnd = () => {
     if (!visible) setMounted(false);
@@ -283,78 +302,131 @@ export default function InboxPanel({ visible, onClose, onCountChange, measureRef
 
   if (!mounted) return null;
 
+  const pending = reminders.filter((r) => r.status === "pending");
+  const fired = reminders.filter((r) => r.status !== "pending");
+
   return (
     <div
       ref={measureRef}
       style={{
-        ...PANEL_FRAME,
-        ...panelTransform(visible),
+        ...(embedded
+          ? { position: "relative", width: "100%", height: "100%", border: "none", borderRadius: 0, background: "transparent" }
+          : { ...PANEL_FRAME, ...panelTransform(visible) }),
         overflowY: "auto",
       }}
       onTransitionEnd={handleTransitionEnd}
     >
-      <div className="drag-region" style={PANEL_HEADER}>
+      <div className={embedded ? undefined : "drag-region"} style={PANEL_HEADER}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
             <MenuIcon target="inbox" size={14} />
           </span>
           <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
-            Inbox {items.length > 0 && <span style={{ color: "var(--text-3)", fontWeight: 400 }}>({items.length})</span>}
+            Inbox {tab === "inbox" && items.length > 0 && <span style={{ color: "var(--text-3)", fontWeight: 400 }}>({items.length})</span>}
           </span>
         </div>
-        <div className="no-drag" style={{ display: "flex", gap: 4 }}>
+        <div className="no-drag" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <SegmentedToggle
+            ariaLabel="Inbox view"
+            options={[{ key: "inbox" as const, label: "Inbox" }, { key: "reminders" as const, label: "Reminders" }]}
+            value={tab}
+            onChange={setTab}
+          />
           <button
             className="btn-hover"
             style={BTN_GHOST}
             title="Refresh"
-            onClick={load}
+            onClick={() => { load(); loadReminders(); }}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="23 4 23 10 17 10" />
               <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
             </svg>
           </button>
-          <button
-            className="no-drag icon-close-btn"
-            onClick={onClose}
-            title="Close"
-          >
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <line x1="2" y1="2" x2="12" y2="12" />
-              <line x1="12" y1="2" x2="2" y2="12" />
-            </svg>
-          </button>
+          {!embedded && (
+            <button
+              className="no-drag icon-close-btn"
+              onClick={onClose}
+              title="Close"
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="2" y1="2" x2="12" y2="12" />
+                <line x1="12" y1="2" x2="2" y2="12" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 
-      <div
-        className="no-drag"
-        style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}
-      >
-        {loading && (
-          <div style={{ display: "flex", justifyContent: "center", padding: 20 }}>
-            <span style={{ fontSize: 12, color: "var(--text-3)" }}>Loading…</span>
-          </div>
-        )}
-        {error && (
-          <span style={{ fontSize: 11, color: "var(--red)" }}>{error} — is the Python server running?</span>
-        )}
-        {!loading && !error && items.length === 0 && (
-          <span style={{ fontSize: 12, color: "var(--text-3)", textAlign: "center", paddingTop: 20 }}>
-            Nothing needs review.
-          </span>
-        )}
-        {items.map((item) => (
-          <InboxRow
-            key={item.note_id}
-            item={item}
-            categories={categories}
-            onApprove={handleApprove}
-            onDiscard={handleDiscard}
-            leaving={leavingIds.has(item.note_id)}
-          />
-        ))}
-      </div>
+      {tab === "inbox" && (
+        <div
+          className="no-drag"
+          style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}
+        >
+          {loading && (
+            <div style={{ display: "flex", justifyContent: "center", padding: 20 }}>
+              <span style={{ fontSize: 12, color: "var(--text-3)" }}>Loading…</span>
+            </div>
+          )}
+          {error && (
+            <span style={{ fontSize: 11, color: "var(--red)" }}>{error} — is the Python server running?</span>
+          )}
+          {!loading && !error && items.length === 0 && (
+            <span style={{ fontSize: 12, color: "var(--text-3)", textAlign: "center", paddingTop: 20 }}>
+              Nothing needs review.
+            </span>
+          )}
+          {items.map((item) => (
+            <InboxRow
+              key={item.note_id}
+              item={item}
+              categories={categories}
+              onApprove={handleApprove}
+              onDiscard={handleDiscard}
+              leaving={leavingIds.has(item.note_id)}
+            />
+          ))}
+        </div>
+      )}
+
+      {tab === "reminders" && (
+        <div
+          className="no-drag"
+          style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 6 }}
+        >
+          {pending.map((r) => (
+            <div key={r.id} style={{ ...ROW_CARD, padding: "8px 10px", display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.label}</div>
+                <div style={{ fontSize: 10, color: "var(--text-3)", marginTop: 2 }}>{formatWhen(r.fire_at, new Date())}</div>
+              </div>
+              <button
+                onClick={() => handleDeleteReminder(r.id)}
+                aria-label="Delete reminder"
+                className="btn-hover hover-danger"
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", fontSize: 12, padding: "2px 4px", flexShrink: 0 }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          {fired.length > 0 && (
+            <>
+              <div style={{ borderTop: "1px solid var(--border-2, var(--border))", margin: "4px 0" }} />
+              {fired.map((r) => (
+                <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", opacity: 0.5 }}>
+                  <div style={{ flex: 1, minWidth: 0, fontSize: 11, color: "var(--text-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.label}</div>
+                </div>
+              ))}
+            </>
+          )}
+          {reminders.length === 0 && (
+            <span style={{ fontSize: 12, color: "var(--text-3)", textAlign: "center", paddingTop: 20 }}>
+              No reminders.
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -78,7 +78,22 @@ export interface JobEvent {
   status: string;
 }
 
-export type CaptureEvent = StepEvent | ThinkingEvent | DoneEvent | ErrorEvent | DuplicateEvent | JobEvent;
+export interface ReminderOfferEvent {
+  kind: "reminder_offer";
+  events: { when_iso: string; label: string }[];
+  note_path: string;
+}
+
+export type CaptureEvent = StepEvent | ThinkingEvent | DoneEvent | ErrorEvent | DuplicateEvent | JobEvent | ReminderOfferEvent;
+
+export interface Reminder {
+  id: number;
+  note_path: string;
+  label: string;
+  fire_at: string;
+  status: string;
+  delivery: string;
+}
 
 export interface JobStatus {
   job_id: string;
@@ -120,6 +135,9 @@ export interface Config {
   };
   look?: {
     chat_system_prompt?: string;
+  };
+  reminders?: {
+    delivery?: "app" | "os";
   };
 }
 
@@ -242,6 +260,12 @@ export async function* streamCapture(
             jobKind: parsed.kind ?? "",
             status: parsed.status ?? "queued",
           } as JobEvent;
+        } else if (eventType === "reminder_offer") {
+          yield {
+            kind: "reminder_offer",
+            events: parsed.events ?? [],
+            note_path: parsed.note_path ?? "",
+          } as ReminderOfferEvent;
         }
       } catch { /* skip malformed frames */ }
     }
@@ -280,6 +304,7 @@ export async function patchConfig(patch: {
   ocr_text_min_chars?: number;
   auto_describe_new_folders?: boolean;
   chat_system_prompt?: string;
+  reminders_delivery?: "app" | "os";
 }): Promise<void> {
   const r = await fetch(`${BASE}/config`, {
     method: "PATCH",
@@ -410,6 +435,32 @@ export async function discardInboxItem(noteId: string): Promise<void> {
     headers: await authHeaders(),
   });
   await assertOk(r, "Failed to discard item");
+}
+
+export async function listReminders(): Promise<Reminder[]> {
+  const r = await fetch(`${BASE}/reminders`, { headers: await authHeaders() });
+  await assertOk(r, "Failed to fetch reminders");
+  const data = await r.json() as { reminders: Reminder[] };
+  return data.reminders;
+}
+
+export async function createReminder(notePath: string, label: string, whenIso: string, notify = false): Promise<number> {
+  const r = await fetch(`${BASE}/reminders`, {
+    method: "POST",
+    headers: await authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ note_path: notePath, label, when_iso: whenIso, notify }),
+  });
+  await assertOk(r, "Failed to create reminder");
+  const data = await r.json() as { id: number };
+  return data.id;
+}
+
+export async function deleteReminder(id: number): Promise<void> {
+  const r = await fetch(`${BASE}/reminders/${encodeURIComponent(String(id))}`, {
+    method: "DELETE",
+    headers: await authHeaders(),
+  });
+  await assertOk(r, "Failed to delete reminder");
 }
 
 export interface LookSource { n: number; path: string; category: string; filename: string; snippet: string; }

@@ -2,6 +2,10 @@
 
 *Offload to offline, snap-to-store pipeline. Keep thinking; we handle the rest.*
 
+## Development Tools
+
+This project uses Claude Code with several installed skills for enhanced development workflows. See [SKILLS.md](SKILLS.md) for the full list of installed skills and how to use them.
+
 ## What is it?
 
 Most tools force you to categorize the moment inspiration strikes. Second Thought removes that friction by automating filing, organization, and linking via a local reasoning pipeline. Capture raw input — text, URLs, voice, images, code snippets — and the system intelligently routes it into your markdown knowledge base. No flow interruption. No folder navigation. No naming conventions. Think of it as a personal librarian that never asks where to put things.
@@ -254,6 +258,19 @@ Most enrichment paths fail softly: if web fetch fails, raw URL is preserved. Vis
 ### 4. Structure and Store
 
 `llm_engine.py` calls Ollama to produce structured `CaptureOutput` (category, title, tags, body). On parse failure, engine retries with stricter instructions (two-pass retry). `storage_engine.py` then decides: write new note, merge into existing via content similarity, or route uncertain captures to scratchpad. `index_writer.py` updates SQLite FTS5 and audit log. `vector_store.py` embeds and indexes for semantic search.
+
+### Voice Capture
+
+The GUI pill window supports voice memo recording via right-click gesture. Click the red record button to start, click again to stop, or press Esc to cancel. Recordings are limited to 10 minutes. Captured audio is transcribed via local `openai-whisper` and automatically routed to the enrichment pipeline.
+
+**Requirement:** `ffmpeg` must be on your PATH for webm/opus decoding. Install via:
+```bash
+winget install Gyan.FFmpeg
+```
+
+### Reminders
+
+When a capture contains a concrete future date/time, the app offers to set a reminder. Reminders are stored locally in SQLite and delivered one of two ways (Settings → Reminders): **In-app** (default) — an in-server due-checker fires a desktop notification while the app is running; or **Windows Task Scheduler** — the reminder fires even when the app is closed.
 
 ## Vault Model
 

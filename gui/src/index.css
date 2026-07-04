@@ -127,6 +127,7 @@
   --accent:       #737373;
   --accent-d:     rgba(115, 115, 115, 0.18);
   --accent-glow:  rgba(115, 115, 115, 0.30);
+  --recording:    #c25b52;
   --on-accent:    #fafafa;
   --green:        #4ade80;
   --yellow:       #facc15;
@@ -152,6 +153,7 @@
   --accent:       #737373;
   --accent-d:     rgba(115, 115, 115, 0.10);
   --accent-glow:  rgba(115, 115, 115, 0.22);
+  --recording:    #b0443c;
   --on-accent:    #fafafa;
   --green:        #16a34a;
   --yellow:       #92660a;
@@ -177,6 +179,7 @@
   --accent:       #7fa05f;
   --accent-d:     rgba(127, 160, 95, 0.12);
   --accent-glow:  rgba(127, 160, 95, 0.24);
+  --recording:    #c07a5b;
   --on-accent:    #f8fbf3;
   --green:        #16a34a;
   --yellow:       #92660a;
@@ -202,6 +205,7 @@
   --accent:       #6eb8dd;
   --accent-d:     rgba(31, 127, 179, 0.12);
   --accent-glow:  rgba(31, 127, 179, 0.24);
+  --recording:    #d06a5e;
   --on-accent:    #f3fafd;
   --green:        #16a34a;
   --yellow:       #92660a;
@@ -227,6 +231,7 @@
   --accent:       #a2556f;
   --accent-d:     rgba(162, 85, 111, 0.12);
   --accent-glow:  rgba(162, 85, 111, 0.24);
+  --recording:    #c9536e;
   --on-accent:    #fdf6f8;
   --green:        #16a34a;
   --yellow:       #92660a;
@@ -252,6 +257,7 @@
   --accent:       #6cb8b1;
   --accent-d:     rgba(108, 184, 177, 0.18);
   --accent-glow:  rgba(108, 184, 177, 0.30);
+  --recording:    #c96f6a;
   --on-accent:    #0d1717;
   --green:        #4ade80;
   --yellow:       #facc15;
@@ -277,6 +283,7 @@
   --accent:       #c08fdd;
   --accent-d:     rgba(192, 143, 221, 0.18);
   --accent-glow:  rgba(192, 143, 221, 0.30);
+  --recording:    #c76a8a;
   --on-accent:    #170f1b;
   --green:        #4ade80;
   --yellow:       #facc15;
@@ -302,6 +309,7 @@
   --accent:       #cf9e5c;
   --accent-d:     rgba(207, 158, 92, 0.18);
   --accent-glow:  rgba(207, 158, 92, 0.30);
+  --recording:    #c2704f;
   --on-accent:    #19140f;
   --green:        #4ade80;
   --yellow:       #facc15;
@@ -328,6 +336,7 @@
   --accent:       #a8415f;
   --accent-d:     rgba(168, 65, 95, 0.18);
   --accent-glow:  rgba(168, 65, 95, 0.30);
+  --recording:    #d0656a;
   --on-accent:    #fdf2f5;
   --green:        #4ade80;
   --yellow:       #facc15;
@@ -479,6 +488,12 @@ html, body, #root {
   0%, 100% { box-shadow: 0 0 0 0 var(--accent-glow); }
   50%      { box-shadow: 0 0 0 6px var(--accent-glow); }
 }
+
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.55; transform: scale(0.82); }
+}
+.rec-dot { background: var(--recording); animation: rec-pulse 1.2s ease-in-out infinite; }
 
 /* Calmer breath for loading state — slower, lower amplitude than pillPulseGlow */
 @keyframes llmLoadingPulse {
@@ -987,6 +1002,22 @@ html, body, #root {
               margin-left 160ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+.capsule-voice-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  flex: 1;
+}
+.capsule-voice-timer {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--recording);
+  margin-left: auto;
+  margin-right: -6px; /* nudge toward the bar's right edge */
+}
+
 .capsule-menu.open .capsule-dot,
 .capsule-menu.open .capsule-label,
 .capsule-menu.exiting .capsule-dot,
@@ -1103,5 +1134,172 @@ html, body, #root {
   .spoke,
   .capsule-item {
     transition-delay: 0ms !important;   /* cancel the staggered fan-in */
+  }
+}
+
+/* Dashboard card header links — chevron slides in on hover (user-locked Q5) */
+.hdr-link:hover { color: var(--text-1); }
+.hdr-link .hdr-chev {
+  opacity: 0;
+  margin-left: 4px;
+  display: inline-block;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.hdr-link:hover .hdr-chev { opacity: 1; transform: translateX(2px); }
+
+/* ── Compact panel shell (Compact Mode Menu Decoupling, Task 2.1) ────────── */
+/* Fixed-width panel that grows beneath/above/around the capsule pill.
+   Revealed via clip-path (GPU-safe, no width/height animation on the DOM
+   panel — see lib/compactPanel.ts PANEL_ANIM_MS/PANEL_EXIT_MS). Hidden
+   origin depends on which third of the screen the pill sits in
+   (`[data-zone]`), so the reveal always sweeps outward from the bar. */
+.compact-panel {
+  width: 288px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  color: var(--text-1);
+  clip-path: inset(0 0 100% 0);
+  opacity: 0;
+  transition: clip-path 300ms cubic-bezier(0.16, 1, 0.3, 1), opacity 300ms;
+}
+
+.compact-panel[data-corner="rounded"] { border-radius: 12px; }
+.compact-panel[data-corner="sharp"]   { border-radius: 0; }
+
+.compact-panel[data-zone="top"]    { clip-path: inset(0 0 100% 0); }
+.compact-panel[data-zone="bottom"] { clip-path: inset(100% 0 0 0); }
+.compact-panel[data-zone="middle"] { clip-path: inset(50% 0 50% 0); }
+
+/* GATE-1 option A (extruded sheet, Task 2.2): the edge touching the bar is
+   suppressed so bar+panel read as one fused surface instead of two bordered
+   boxes stacked with a visible seam. */
+.compact-panel[data-zone="top"]    { border-top: none; }
+.compact-panel[data-zone="bottom"] { border-bottom: none; }
+.compact-panel[data-zone="middle"] { border-top: none; border-bottom: none; }
+
+/* Height mirrors PANEL_H in lib/compactPanel.ts (kept in sync with the
+   already-hardcoded PANEL_W == 288px above), so the panel's rendered box
+   matches the geometry the offsets were computed against. */
+.compact-panel { height: 320px; }
+
+.compact-panel.open {
+  clip-path: inset(0);
+  opacity: 1;
+}
+
+.compact-panel-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.compact-panel-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--text-1);
+}
+
+.compact-panel-close {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-1);
+  opacity: 0.6;
+  cursor: pointer;
+  transition: opacity 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.compact-panel-close:hover { opacity: 1; }
+
+.compact-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact-panel {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Minimal-mode island morph (Compact Mode Menu Decoupling, Task 3.1) ──── */
+/* The pill's own rect physically grows into the panel: a DOM-element rect
+   animation (left/top/width/height) inside the already-grown, transparent
+   OS window (App.tsx's reconcile effect grows the window atomically before
+   this ever starts) — never an OS-window animation. Same curve as every
+   other morph in the app. */
+.island-panel {
+  transition:
+    left 300ms cubic-bezier(0.16, 1, 0.3, 1),
+    top 300ms cubic-bezier(0.16, 1, 0.3, 1),
+    width 300ms cubic-bezier(0.16, 1, 0.3, 1),
+    height 300ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .island-panel {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Header icon tab strip (Task 3.1's CompactShell `tabs` variant) — replaces
+   the static icon+title header only for the minimal-mode island; capsule
+   keeps the plain title. Switching tabs never replays the morph or resizes
+   the window (App.tsx routes it through the same handleMenuSelect used for
+   opening, but openingPanel only fires on null -> target, not target ->
+   target). */
+.compact-panel-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.compact-panel-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-2);
+  opacity: 0.7;
+  cursor: pointer;
+  box-shadow: inset 0 -1px 0 transparent;
+  transition: opacity 160ms cubic-bezier(0.16, 1, 0.3, 1), color 160ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.compact-panel-tab:hover { opacity: 1; }
+
+.compact-panel-tab.active {
+  color: var(--text-1);
+  opacity: 1;
+  box-shadow: inset 0 -1px 0 var(--text-1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact-panel-tab {
+    transition-duration: 0.01ms !important;
   }
 }

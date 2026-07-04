@@ -1,0 +1,22 @@
+# cargo-audit configuration.
+# Run:  cargo audit   (from gui/src-tauri/)
+
+[advisories]
+ignore = [
+    # RUSTSEC-2024-0429 — unsoundness in glib's VariantStrIter Iterator /
+    # DoubleEndedIterator impls (NULL deref via an &p out-argument passed to a
+    # variadic C function).
+    #
+    # Not exploitable here:
+    #   * glib is pulled ONLY transitively, via gtk3 / webkit2gtk, which are
+    #     cfg(target_os = "linux") dependencies of Tauri.
+    #   * This app targets Windows (WebView2) and macOS (WKWebView); the gtk
+    #     stack — and therefore VariantStrIter — never compiles on those targets.
+    #   * No fixed release exists in the 0.18 line that the current Tauri /
+    #     webkit2gtk 2.0 stack pins (fix landed in glib 0.19.9 / 0.20.0, which
+    #     the gtk3 ecosystem has not moved to).
+    #
+    # Re-evaluate and remove this ignore once Tauri's Linux backend pins
+    # glib >= 0.20, or if a Linux build target is added.
+    "RUSTSEC-2024-0429",
+]

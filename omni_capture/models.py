@@ -7,6 +7,7 @@ whose 'category' field is constrained to exactly the discovered folder names.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import List, Optional, Type
 
@@ -19,6 +20,13 @@ class EnrichedPayload(BaseModel):
     enriched_text: str = Field(description="Processed/extracted content ready for the LLM.")
     source_url: Optional[str] = None
     source_metadata: dict = Field(default_factory=dict)
+
+
+class DetectedEvent(BaseModel):
+    when_iso: str = Field(
+        description="ISO-8601 local datetime, e.g. 2026-07-05T15:00. Only concrete, resolvable dates/times."
+    )
+    label: str = Field(description="Short label for what happens then, e.g. 'Dentist appointment'.")
 
 
 class CaptureOutput(BaseModel):
@@ -48,6 +56,36 @@ class CaptureOutput(BaseModel):
             "Routes to scratchpad for manual review."
         ),
     )
+    detected_events: List[DetectedEvent] = Field(
+        default_factory=list,
+        description=(
+            "Concrete FUTURE dates/times found in the content (meetings, deadlines, "
+            "appointments). Resolve relative dates against today's date. Empty when none."
+        ),
+    )
+
+
+def filter_future_events(events: List[DetectedEvent], now: datetime) -> List[DetectedEvent]:
+    """Drop unparseable and past events. LLM output is untrusted input."""
+    kept: List[DetectedEvent] = []
+    for e in events:
+        try:
+            when = datetime.fromisoformat(e.when_iso)
+        except ValueError:
+            continue
+        # LLM sometimes suffixes "Z"/"+05:30" despite the local-datetime
+        # instruction. The value IS local wall-clock time — the suffix is
+        # noise, not a real UTC conversion. Strip it (astimezone() here
+        # shifted +05:30 and turned "tomorrow 19:30" into 01:00 next day).
+        # Also rewrite when_iso so every downstream consumer (reminder_offer
+        # SSE, POST /reminders, fire_at storage, due_reminders' lexical
+        # compare, schtasks) sees a naive local ISO string.
+        if when.tzinfo is not None:
+            when = when.replace(tzinfo=None)
+            e.when_iso = when.isoformat(timespec="minutes")
+        if when > now:
+            kept.append(e)
+    return kept
 
 
 def build_capture_model(categories: List[str]) -> Type[CaptureOutput]:

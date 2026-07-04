@@ -19,6 +19,7 @@ image_required = false
 [whisper]
 model = "base"
 device = "auto"
+summarize_threshold_tokens = 6000
 
 [capture]
 web_max_chars = 8000
@@ -56,6 +57,10 @@ summary_chunk_overlap_tokens = 80      # 50-100 tokens carried between consecuti
 summary_max_chunks = 40                # hard cap; bounds total LLM calls / runtime
 summary_max_concurrency = 3            # parallel Map calls in flight (bound for local Ollama)
 reduce_max_depth = 3                   # recursion cap for the Reduce phase
+# Text captures above this token count get chunked Map-Reduce tagging plus a
+# faithful whole-document decide-context (chunk 1 + section summaries)
+# instead of a silent single-pass truncation by the model's context window.
+large_text_token_threshold = 3000
 auto_describe_new_folders = true
 
 [log]
@@ -64,6 +69,10 @@ path = "~/second-thought-storage/.omni_capture/captures.jsonl"
 [notifications]
 enabled = true
 title_prefix = "Second Thought"
+
+[reminders]
+delivery = "app"
+check_interval_seconds = 30
 
 [gui]
 hotkey = "ctrl+shift+space"

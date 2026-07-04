@@ -47,6 +47,7 @@ class OllamaConfig:
 class WhisperConfig:
     model: str  = "base"
     device: str = "auto"
+    summarize_threshold_tokens: int = 6000
 
 
 @dataclass
@@ -87,6 +88,10 @@ class CaptureConfig:
     summary_max_chunks: int             = 40
     summary_max_concurrency: int        = 3
     reduce_max_depth: int               = 3
+    # Text captures whose token count exceeds this get chunked Map-Reduce
+    # tagging + a faithful whole-document decide-context instead of a silent
+    # single-pass truncation by the model's own context window.
+    large_text_token_threshold: int     = 3000
 
 
 @dataclass
@@ -98,6 +103,12 @@ class LogConfig:
 class NotificationConfig:
     enabled: bool      = True
     title_prefix: str  = "Second Thought"
+
+
+@dataclass
+class RemindersConfig:
+    delivery: str = "app"
+    check_interval_seconds: int = 30
 
 
 @dataclass
@@ -142,6 +153,7 @@ class Config:
     capture: CaptureConfig            = field(default_factory=CaptureConfig)
     log: LogConfig                    = field(default_factory=LogConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
+    reminders: RemindersConfig        = field(default_factory=RemindersConfig)
     vector: VectorConfig              = field(default_factory=VectorConfig)
     youtube: YouTubeConfig            = field(default_factory=YouTubeConfig)
     look: LookConfig                  = field(default_factory=LookConfig)
@@ -188,6 +200,7 @@ def load_config(config_path: Path | None = None) -> Config:
     whisper_raw = raw.get("whisper", {})
     cfg.whisper.model  = whisper_raw.get("model", "base")
     cfg.whisper.device = whisper_raw.get("device", "auto")
+    cfg.whisper.summarize_threshold_tokens = whisper_raw.get("summarize_threshold_tokens", 6000)
 
     cap_raw = raw.get("capture", {})
     cfg.capture.web_max_chars     = cap_raw.get("web_max_chars", 8000)
@@ -213,6 +226,7 @@ def load_config(config_path: Path | None = None) -> Config:
     cfg.capture.summary_max_chunks             = int(cap_raw.get("summary_max_chunks", 40))
     cfg.capture.summary_max_concurrency        = int(cap_raw.get("summary_max_concurrency", 3))
     cfg.capture.reduce_max_depth               = int(cap_raw.get("reduce_max_depth", 3))
+    cfg.capture.large_text_token_threshold     = int(cap_raw.get("large_text_token_threshold", 3000))
 
     # max_chunk_tokens must come out positive and comfortably large, or every
     # chunk's verify step would reject everything. Clamp the buffer/reserved
@@ -242,6 +256,10 @@ def load_config(config_path: Path | None = None) -> Config:
     notif_raw = raw.get("notifications", {})
     cfg.notifications.enabled      = notif_raw.get("enabled", True)
     cfg.notifications.title_prefix = notif_raw.get("title_prefix", "Second Thought")
+
+    reminders_raw = raw.get("reminders", {})
+    cfg.reminders.delivery = str(reminders_raw.get("delivery", "app"))
+    cfg.reminders.check_interval_seconds = int(reminders_raw.get("check_interval_seconds", 30))
 
     vec_raw = raw.get("vector", {})
     cfg.vector.enabled        = vec_raw.get("enabled", True)

@@ -35,22 +35,43 @@ export default function Toast({ toast, onDismiss }: Props) {
       <span style={{ fontSize: 11.5, color: "var(--text-2)", lineHeight: 1.4 }}>
         {toast.message}
       </span>
-      <button
-        onClick={() => onDismiss(toast.id)}
-        aria-label="Dismiss notification"
-        style={{
-          background: "none",
-          border: "none",
-          cursor: "pointer",
-          color: "var(--text-3)",
-          fontSize: 13,
-          lineHeight: 1,
-          padding: "2px 4px",
-          flexShrink: 0,
-        }}
-      >
-        ✕
-      </button>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+        {toast.action && (
+          <button
+            onClick={() => { toast.action!.run(); onDismiss(toast.id); }}
+            style={{
+              background: "none",
+              border: `1px solid ${TONE_COLOR[toast.tone]}`,
+              borderRadius: "var(--radius-sm)",
+              cursor: "pointer",
+              color: "var(--text-1)",
+              fontSize: 11,
+              lineHeight: 1,
+              padding: "4px 8px",
+              fontFamily: "inherit",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {toast.action.label}
+          </button>
+        )}
+        <button
+          onClick={() => onDismiss(toast.id)}
+          aria-label="Dismiss notification"
+          style={{
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            color: "var(--text-3)",
+            fontSize: 13,
+            lineHeight: 1,
+            padding: "2px 4px",
+            flexShrink: 0,
+          }}
+        >
+          ✕
+        </button>
+      </div>
     </div>
   );
 }

@@ -22,7 +22,9 @@ import math
 import os
 import urllib.error
 import urllib.request
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
+
+from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # Token counting
@@ -242,6 +244,53 @@ def chunk_transcript(
         chunks = _coalesce_to_limit(chunks, max_chunks)
 
     return chunks
+
+
+# ---------------------------------------------------------------------------
+# Map phase -- large-text tagging digest (sync; for the non-async text-capture
+# pipeline in server.py/main.py, which has no event loop of its own to join).
+# ---------------------------------------------------------------------------
+
+class _ChunkDigest(BaseModel):
+    tags: List[str] = Field(default_factory=list, max_length=5,
+                            description="Up to 5 short topic tags for this section.")
+    summary: str = Field(description="2-3 sentence summary of this section.")
+
+
+def digest_chunks(
+    chunks: List[str], *, base_url: str, model: str,
+    temperature: float, max_retries: int,
+) -> List[Tuple[List[str], str]]:
+    """Map phase for large-text tagging: (tags, mini_summary) per chunk.
+
+    Sync (uses llm_engine._make_client's instructor client, same convention
+    as run_llm_engine's structured call) so both main.py and server.py's
+    synchronous pipelines can call it without an event loop. Fail-soft per
+    chunk -- a failed chunk contributes ([], "") rather than aborting the
+    whole large-text branch.
+    """
+    import os as _os
+    from llm_engine import _make_client
+
+    client = _make_client()
+    keep_alive = _os.getenv("OLLAMA_KEEP_ALIVE", "30m")
+    out: List[Tuple[List[str], str]] = []
+    for chunk in chunks:
+        try:
+            digest: _ChunkDigest = client.chat.completions.create(
+                model=model,
+                response_model=_ChunkDigest,
+                messages=[{"role": "user",
+                           "content": f"Tag and summarize this document section.\n\n{chunk}"}],
+                max_retries=max_retries,
+                temperature=temperature,
+                extra_body={"keep_alive": keep_alive},
+            )
+            out.append((digest.tags, digest.summary))
+        except Exception as exc:
+            print(f"[Summarizer] chunk digest failed: {exc}", flush=True)
+            out.append(([], ""))
+    return out
 
 
 # ---------------------------------------------------------------------------

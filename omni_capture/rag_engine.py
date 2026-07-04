@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import TypedDict
 
-from vector_store import _embed, _connect, _MAX_SNIPPET_CHARS, _cosine_all  # reuse Ollama embed + DB
+from vector_store import _embed, _connect, _MAX_SNIPPET_CHARS, _cosine_all, _dedupe_to_parent  # reuse Ollama embed + DB
 from index_writer import search as fts_search
 from look_log import look_debug, look_warn
 from frontmatter import strip_frontmatter
@@ -72,8 +72,13 @@ def _semantic_ranked(vault_root: Path, query: str, base_url: str, embed_model: s
         if not results:
             return [], 0.0, {}
         best = results[0][0]
-        paths = [rel for _s, rel, _doc in results[:limit]]
-        sim_by_abs = {str(vault_root / rel): sim for sim, rel, _doc in results}
+        # Chunk rows (id `f"{rel}::c{i}"`) must collapse to their parent note
+        # -- one row per real path, keeping only the best-scoring chunk --
+        # otherwise chunk-suffixed ids never match a real vault path and
+        # p.exists() silently drops every hit for large (chunked) notes.
+        deduped = _dedupe_to_parent(results, len(results))
+        paths = [rel for _s, rel, _doc in deduped[:limit]]
+        sim_by_abs = {str(vault_root / rel): sim for sim, rel, _doc in deduped}
         return paths, best, sim_by_abs
     except Exception as exc:
         look_warn(f"semantic retrieval failed: {exc}")

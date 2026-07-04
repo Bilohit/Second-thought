@@ -29,21 +29,28 @@ import PillOverlay, { PILL_DIMS, type PillMode, type PillCorner } from "./compon
 import { CAPSULE_OPEN_W, CAPSULE_EXIT_MS } from "./components/PillMenu/CapsuleMenu";
 import { RADIAL_ANIM_MS, RADIAL_STAGGER_MS, type PillGeometry } from "./components/PillMenu/RadialMenu";
 import { ALL_TARGETS, type MenuTarget } from "./components/PillMenu/icons";
+import {
+  type VerticalZone,
+  resolveVerticalZone,
+  computeCapsulePanelGeometry,
+  computeIslandMorphRects,
+  PANEL_ANIM_MS,
+  PANEL_EXIT_MS,
+  PANEL_W,
+  PANEL_H,
+  PANEL_GAP,
+} from "./lib/compactPanel";
 import { exitDurationMs } from "./lib/menuTiming";
 import DevTuner from "./components/PillMenu/DevTuner";
 import { useRadialTuning } from "./lib/devTuning";
 import FullWindow from "./components/FullWindow/FullWindow";
-import CaptureOverlay from "./components/CaptureOverlay";
-import SettingsPanel from "./components/SettingsPanel";
-import VaultManager from "./components/VaultManager";
-import InboxPanel from "./components/InboxPanel";
-import StatsPanel from "./components/StatsPanel";
-import LookPanel from "./components/LookPanel";
 import { useCapture } from "./hooks/useCapture";
+import { useVoiceRecording } from "./hooks/useVoiceRecording";
 import { useLookChat } from "./hooks/useLookChat";
 import { useLlmStatus } from "./hooks/useLlmStatus";
 import { logger } from "./lib/logger";
-import { getInbox, openFilePath } from "./lib/api";
+import { getInbox, openFilePath, createReminder } from "./lib/api";
+import { formatWhen } from "./lib/reminderFormat";
 import { type PillAnchor, anchorPosition, anchoredMenuPosition, capsuleZoneFromPillAnchor, isPillDraggable } from "./lib/pillAnchor";
 import { getActiveWorkArea, getActiveMonitorBounds, listMonitors, resolveTargetMonitor, type MonitorInfo } from "./lib/monitor";
 import { computeMenuGeometry, clampPillWindowToMonitor, computeCapsuleMenuGeometry, computeProportionalMonitorMove, computeMinimalMenuWindow, resolveCapsuleZone } from "./lib/menuGeometry";
@@ -162,6 +169,11 @@ function getInitialSelectedMonitorId(): string | null {
 // ── View ───────────────────────────────────────────────────────────────────
 
 type View = "capture" | "settings" | "vault" | "inbox" | "stats" | "look";
+
+// Legacy pill-menu targets → FullWindow rail views (branch C purge).
+const VIEW_TO_RAIL: Record<string, "dashboard" | "look" | "library" | "settings" | "inbox"> = {
+  capture: "dashboard", look: "look", vault: "library", settings: "settings", inbox: "inbox", stats: "library",
+};
 
 // ── Animated window movement ────────────────────────────────────────────────
 // Tauri's setPosition is an instant OS-level jump; everything else in this app
@@ -350,10 +362,71 @@ export default function App() {
   // during an origin-shifting window move (right/center zones). See
   // CAPSULE_OPEN_FLICKER_PLAN.md.
   const [capsuleShown, setCapsuleShown] = useState(true);
+  // Compact-mode in-pill panel (Task 1.1): clicking a menu item in
+  // Capsule/Minimal mode opens this instead of routing into FullWindow.
+  // `panelReady` mirrors the capsuleReady contract (gates the panel's
+  // render until the window has actually grown to fit it — wired by Task
+  // 1.2's geometry work, unused visually until then). `panelZone` is the
+  // vertical third the panel grows into.
+  const [compactPanel, setCompactPanel] = useState<Exclude<MenuTarget, "hide"> | null>(null);
+  const [panelReady, setPanelReady] = useState(false);
+  const [panelZone, setPanelZone] = useState<VerticalZone>("top");
+  // Geometry ref for the compact panel's open footprint, memoized at the
+  // moment the panel opens (openingPanel edge below) so it doesn't get
+  // recomputed on every reconcile-effect run while the panel stays open.
+  const capsulePanelGeomRef = useRef<ReturnType<typeof computeCapsulePanelGeometry> | null>(null);
+  // Minimal-mode counterpart of capsulePanelGeomRef: the island-morph rects
+  // (Task 0.2's computeIslandMorphRects), committed at the moment the panel
+  // opens (openingPanel edge below). Deliberately state, not a ref like
+  // capsulePanelGeomRef — the island's CSS rect-morph needs an intermediate
+  // render at `startRect` (pill-sized, geometry just committed, window not
+  // yet grown) BEFORE `panelReady` flips true and the CSS transition kicks
+  // the rect out to `endRect`. A ref wouldn't force that extra render, and
+  // both values would appear to PillOverlay in the same frame, skipping the
+  // grow animation entirely.
+  const [islandMorphGeom, setIslandMorphGeom] = useState<ReturnType<typeof computeIslandMorphRects> | null>(null);
+  // The island DOM element must stay mounted through the whole close morph
+  // (reverse rect animation + fade), even though `compactPanel` itself
+  // already flips to null the instant the user clicks close (that's what
+  // drives the pill's own fade-back-in and the reconcile effect's
+  // closingPanel edge). This tracks "last non-null target while in minimal
+  // mode" so the island keeps rendering its last content until
+  // islandMorphGeom is cleared (closingPanel block above, after
+  // PANEL_EXIT_MS) — mirrors, without touching, the reconcile effect itself.
+  const lastMinimalPanelTargetRef = useRef<Exclude<MenuTarget, "hide"> | null>(null);
+  useEffect(() => {
+    if (displayMode === "minimal" && compactPanel) lastMinimalPanelTargetRef.current = compactPanel;
+  }, [displayMode, compactPanel]);
+  // Gates the island's CompactShell content reveal — distinct from
+  // panelReady (which only means "the OS window has finished growing").
+  // Content must wait an additional PANEL_ANIM_MS (rect settle) + 120ms
+  // (mock's content-hid delay) after that, so tab strip/body never paint
+  // mid-rect-morph. Reset to false immediately on close (no delay on exit,
+  // matching capsule's own content-fade-immediately-on-close contract).
+  const [islandContentReady, setIslandContentReady] = useState(false);
 
   useEffect(() => { try { localStorage.setItem(DISPLAY_MODE_KEY, displayMode); } catch { /* ignore */ } }, [displayMode]);
+  // Flash hardening: leaving Full mode always resets to the capture/dashboard
+  // view and collapses the expanded window, so a later re-entry into Full
+  // never briefly shows a stale non-dashboard rail view.
+  const prevModeRef = useRef(displayMode);
+  useEffect(() => {
+    if (prevModeRef.current === "full" && displayMode !== "full") {
+      setView("capture");
+      setExpanded(false);
+    }
+    prevModeRef.current = displayMode;
+  }, [displayMode]);
   useEffect(() => { try { localStorage.setItem(PILL_CORNER_KEY, pillCorner); } catch { /* ignore */ } }, [pillCorner]);
   useEffect(() => { try { localStorage.setItem(PILL_PINNED_KEY, pillPinned ? "1" : "0"); } catch { /* ignore */ } }, [pillPinned]);
+  // Window starts hidden (tauri.conf.json `visible: false`) and only the tray/
+  // hotkey show() it. If Stay Pinned was left on last session, restore that
+  // state on launch instead of leaving the app stuck in the tray.
+  useEffect(() => {
+    if (getInitialPillPinned()) {
+      getCurrentWindow().show().catch(() => { /* ignore */ });
+    }
+  }, []);
   useEffect(() => { try { localStorage.setItem(PILL_ANCHOR_KEY, pillAnchor); } catch { /* ignore */ } }, [pillAnchor]);
   useEffect(() => { try { localStorage.setItem(PILL_FAN_STYLE_KEY, pillFanStyle); } catch { /* ignore */ } }, [pillFanStyle]);
   useEffect(() => { try { localStorage.setItem(PILL_SNAP_KEY, pillSnapEnabled ? "1" : "0"); } catch { /* ignore */ } }, [pillSnapEnabled]);
@@ -383,8 +456,11 @@ export default function App() {
   useEffect(() => { menuOpenRef.current = menuOpen; }, [menuOpen]);
   const pillPinnedRef = useRef(pillPinned);
   useEffect(() => { pillPinnedRef.current = pillPinned; }, [pillPinned]);
+  const compactPanelRef = useRef(compactPanel);
+  useEffect(() => { compactPanelRef.current = compactPanel; }, [compactPanel]);
 
-  const { state: captureState, stepDefs, captureFile } = useCapture(holdOpenRef);
+  const { state: captureState, stepDefs, captureFile, captureAudio } = useCapture(holdOpenRef);
+  const voice = useVoiceRecording(captureAudio);
   const llmStatus = useLlmStatus();
   const { toasts, pushToast, dismiss: dismissToast } = useToasts();
 
@@ -419,6 +495,9 @@ export default function App() {
       setCapsuleReady(false);
       setRadialPillGeometry(null);
       setMinimalWrapperOffset({ x: PILL_MARGIN, y: PILL_MARGIN });
+      setCompactPanel(null);
+      setPanelReady(false);
+      setPanelZone("top");
     }
   }, [showPill]);
 
@@ -488,6 +567,49 @@ export default function App() {
     }
   }, [captureState.phase, captureState.result, captureState.errorMsg, pushToast]);
 
+  // Offer to set reminders for future date/time mentions detected in the
+  // note just written — one glance + one click, never a form.
+  const prevReminderOfferRef = useRef(captureState.reminderOffer);
+  useEffect(() => {
+    const offer = captureState.reminderOffer;
+    if (offer && offer !== prevReminderOfferRef.current) {
+      const { events, note_path } = offer;
+      if (events.length > 0) {
+        if (displayMode !== "full") {
+          // Pill modes have no room for a toast (window is pill-sized).
+          // User decision: auto-create + Windows notification confirms it;
+          // unwanted reminders are deleted from the Dashboard panel.
+          void (async () => {
+            try {
+              for (const e of events) await createReminder(note_path, e.label, e.when_iso, true);
+            } catch { /* server notification path already reports; nothing to render here */ }
+          })();
+        } else {
+          const more = events.length > 1 ? ` (+${events.length - 1} more)` : "";
+          pushToast({
+            tone: "info",
+            message: `⏰ ${events[0].label} — ${formatWhen(events[0].when_iso, new Date())}${more}`,
+            ttlMs: 12000,
+            action: {
+              label: "Set reminder",
+              run: () => {
+                void (async () => {
+                  try {
+                    for (const e of events) await createReminder(note_path, e.label, e.when_iso);
+                    pushToast({ tone: "success", message: "Reminder set" });
+                  } catch (err) {
+                    pushToast({ tone: "error", message: `Reminder failed — ${err instanceof Error ? err.message : "server error"}` });
+                  }
+                })();
+              },
+            },
+          });
+        }
+      }
+    }
+    prevReminderOfferRef.current = offer;
+  }, [captureState.reminderOffer, pushToast, displayMode]);
+
   // ── Keyboard shortcuts ───────────────────────────────────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -514,6 +636,14 @@ export default function App() {
         return;
       }
       if (e.key === "Escape") {
+        if (voice.phase === "recording") {
+          voice.cancel();
+          return;
+        }
+        if (compactPanel !== null) {
+          setCompactPanel(null);
+          return;
+        }
         if (menuOpen) {
           closePillMenu();
           return;
@@ -524,7 +654,7 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [view, menuOpen, displayMode, closePillMenu]);
+  }, [view, menuOpen, compactPanel, displayMode, closePillMenu, voice.phase, voice.cancel]);
 
   // ── Tauri events ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -553,6 +683,11 @@ export default function App() {
     (async () => {
       try {
         unlisten = await listen<void>("menu:dismiss", () => {
+          if (compactPanelRef.current !== null) {
+            setCompactPanel(null);
+            if (!menuOpenRef.current && !pillPinnedRef.current) getCurrentWindow().hide();
+            return;
+          }
           if (!menuOpenRef.current) return;
           closePillMenuRef.current();
           if (!pillPinnedRef.current) getCurrentWindow().hide();
@@ -562,69 +697,29 @@ export default function App() {
     return () => { unlisten?.(); };
   }, []);
 
-  // Arm/disarm the click-away hook exactly while a menu is open.
+  // Arm/disarm the click-away hook while a menu or a compact panel is open.
   useEffect(() => {
-    if (!menuOpen) {
+    if (!menuOpen && compactPanel === null) {
       disarmMenuClickAway();
       return;
     }
     armMenuClickAway("main");
     return () => { disarmMenuClickAway(); };
-  }, [menuOpen]);
+  }, [menuOpen, compactPanel]);
 
   // Non-activating pill (for_sonnet.md Piece A): the pill and its menu must
   // never steal foreground focus from whatever app was active. Toggled off
   // only for the expanded full view, which needs real keyboard focus for
   // search/settings inputs.
   useEffect(() => {
-    if (showPill) {
-      setWindowNoactivate(true);
-    } else {
-      setWindowNoactivate(false).then(() => { getCurrentWindow().setFocus().catch(() => {}); });
-    }
-  }, [showPill]);
-
-  // ── Dynamic window sizing (B1: content-measured) ──────────────────────────
-  // The window height tracks the *real* content height of whichever view is
-  // active, measured live via ResizeObserver. This replaces the old fixed
-  // VIEW_H table (arbitrary per-tab heights that jawed the window and clipped
-  // cross-fades). Because scrollHeight reports full content height even when a
-  // panel is clamped + scrolling, panels keep height:100% and still measure
-  // correctly; the capture card's ThinkingPanel expand is picked up on the same
-  // curve, so there is no more capture 360→520 jump/empty-gap flash.
-  const MAX_CONTENT_H = 600;   // cap → window stops growing, capture scrolls internally
-  const SECONDARY_H   = 520;   // one canonical height for every list panel (B1.2)
-  const V_MARGIN      = 24;    // 12px breathing room top + bottom inside the window
-
-  const measureEls = useRef<Partial<Record<View, HTMLElement | null>>>({});
-  const setMeasureEl = (v: View) => (el: HTMLElement | null) => {
-    measureEls.current[v] = el;
-  };
-  const viewRef = useRef(view);
-  viewRef.current = view;
-  const [contentH, setContentH] = useState(360);
-
-  // Only the capture card is content-measured — it grows when the ThinkingPanel
-  // expands and must track that exactly. List panels (settings/vault/inbox/
-  // stats) use one canonical height so cycling between them never jaws the
-  // window, and so flex:1 + internal-scroll panels (VaultManager) have a
-  // definite height to fill.
-  useEffect(() => {
-    if (view !== "capture") return;
-    const el = measureEls.current.capture;
-    if (!el) return;
-    const measure = () => {
-      const h = el.scrollHeight;
-      if (h > 0) setContentH(h);
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [view]);
-
-  const displayH =
-    view === "capture" ? Math.min(contentH, MAX_CONTENT_H) : SECONDARY_H;
+    const panelOpen = compactPanel !== null;
+    setWindowNoactivate(!panelOpen && showPill).then(() => {
+      // Panels with inputs (Look, Settings) need real keyboard focus to
+      // type; a plain pill/menu never should (must not steal foreground
+      // focus from whatever app was active).
+      if (panelOpen || !showPill) getCurrentWindow().setFocus().catch(() => {});
+    });
+  }, [showPill, compactPanel]);
 
   // "full" has no pill; fall back so geometry math stays defined.
   const pillDims = PILL_DIMS[displayMode as PillMode] ?? PILL_DIMS.minimal;
@@ -632,8 +727,8 @@ export default function App() {
   const FULL_WIN_H = 560;
   const FULL_WIN_MIN_W = 640;
   const FULL_WIN_MIN_H = 400;
-  const pillBoxW = showPill ? pillDims.w + PILL_MARGIN * 2 : (displayMode === "full" ? FULL_WIN_W : 480);
-  const pillBoxH = showPill ? pillDims.h + PILL_MARGIN * 2 : (displayMode === "full" ? FULL_WIN_H : displayH + V_MARGIN);
+  const pillBoxW = showPill ? pillDims.w + PILL_MARGIN * 2 : FULL_WIN_W;
+  const pillBoxH = showPill ? pillDims.h + PILL_MARGIN * 2 : FULL_WIN_H;
 
   // While the pill menu is open, the OS window must grow to contain it (it's
   // sized tightly around the idle pill otherwise — see for_sonnet.md §5.5,
@@ -647,8 +742,27 @@ export default function App() {
   const menuBoxW = displayMode === "minimal" ? RADIAL_MENU_BOX : CAPSULE_OPEN_W + PILL_MARGIN * 2 + CLOSE_PAD_W;
   const menuBoxH = displayMode === "minimal" ? RADIAL_MENU_BOX : PILL_DIMS.capsule.h + PILL_MARGIN * 2;
   const menuOpenGrowsPillWindow = showPill && menuOpen;
-  const targetWinW = menuOpenGrowsPillWindow ? menuBoxW : pillBoxW;
-  const targetWinH = menuOpenGrowsPillWindow ? menuBoxH : pillBoxH;
+
+  // Compact-mode panel box (Task 1.2): the OS window size when a compact
+  // panel is open. Sizes only — never positions — so these are pure
+  // functions of displayMode/panelZone and safe to read at render time
+  // (the clamp inside computeCapsulePanelGeometry/computeIslandMorphRects
+  // only ever adjusts the window's top-left, never its w/h, for a fixed
+  // zone). Kept in lockstep with the same math those two functions use so
+  // targetWinW/H below (and thus the growing/shrinking edges) always match
+  // what the reconcile effect's openingPanel branch actually sets.
+  const panelBoxWMinimal = PANEL_W + PILL_MARGIN * 2;
+  const panelBoxHMinimal = PANEL_H + PILL_MARGIN * 2;
+  const panelBoxWCapsule = Math.max(pillBoxW, PANEL_W + PILL_MARGIN * 2);
+  const panelBoxHCapsule = panelZone === "middle"
+    ? PILL_MARGIN * 2 + PANEL_H
+    : PILL_MARGIN + PILL_DIMS.capsule.h + PANEL_GAP + PANEL_H + PILL_MARGIN;
+  const panelBoxW = displayMode === "minimal" ? panelBoxWMinimal : panelBoxWCapsule;
+  const panelBoxH = displayMode === "minimal" ? panelBoxHMinimal : panelBoxHCapsule;
+  const panelOpenGrowsPillWindow = showPill && !menuOpen && compactPanel !== null;
+
+  const targetWinW = menuOpenGrowsPillWindow ? menuBoxW : panelOpenGrowsPillWindow ? panelBoxW : pillBoxW;
+  const targetWinH = menuOpenGrowsPillWindow ? menuBoxH : panelOpenGrowsPillWindow ? panelBoxH : pillBoxH;
 
   // Remember window position across restarts. The window is created hidden
   // (tauri.conf.json `visible: false`) and only ever shown via the global
@@ -1020,6 +1134,9 @@ export default function App() {
   // exactly on close so repeated open/close cycles never drift.
   const prevMenuOpenRef = useRef(menuOpen);
   const pillBoxBeforeMenuRef = useRef<{ x: number; y: number } | null>(null);
+  // Same "prev" convention as prevMenuOpenRef, for the compact panel's own
+  // open/close edges (Task 1.2).
+  const prevCompactPanelRef = useRef(compactPanel);
 
   // Grow the OS window immediately (nothing to clip); shrink only after the
   // 200ms cross-fade/collapse has finished, so the outgoing panel's still-
@@ -1049,7 +1166,18 @@ export default function App() {
     const enteringPill = pillModeActive && !prevShowPill && showPill; // full -> pill
     const prevMenuOpen = prevMenuOpenRef.current;
     const openingMenu = pillModeActive && showPill && prevShowPill && menuOpen && !prevMenuOpen;
-    const closingMenu = pillModeActive && showPill && prevShowPill && !menuOpen && prevMenuOpen;
+    // compactPanel !== null guard is defensive belt-and-suspenders; actual
+    // race safety when a menu selection opens a panel is carried by
+    // reconcileToken supersession, not by same-tick simultaneity.
+    const closingMenu = pillModeActive && showPill && prevShowPill && !menuOpen && prevMenuOpen && compactPanel === null;
+
+    // Same "prev" edge-detection discipline as prevMenuOpenRef immediately
+    // above: advance the baseline the moment this effect observes a new
+    // compactPanel, not at the end of a possibly-deferred/superseded apply().
+    const prevCompactPanel = prevCompactPanelRef.current;
+    const openingPanel = pillModeActive && showPill && prevShowPill && compactPanel !== null && prevCompactPanel === null;
+    const closingPanel = pillModeActive && showPill && prevShowPill && compactPanel === null && prevCompactPanel !== null;
+    prevCompactPanelRef.current = compactPanel;
 
     // Edge detection for menu open/close is pure UI intent — advance the
     // baseline the moment this effect observes a new menuOpen, not at the end
@@ -1077,6 +1205,12 @@ export default function App() {
     } else if (enteringPill) {
       setContentHidden(true);
     }
+
+    // Panel close (mirrors panelReady's own contract): flip it false the
+    // instant the close is observed, not inside `apply()` — this is what
+    // starts the panel's CSS exit-clip morph immediately, same tick the
+    // shrink-delay countdown below begins.
+    if (closingPanel) setPanelReady(false);
 
     const apply = async () => {
       // Full mode: set default size once on boot/enter; user resize after that.
@@ -1356,9 +1490,78 @@ export default function App() {
           // animation) would throw the pill to the window's corner until the
           // shrink lands. Both resets happen with the shrink instead.
         }
+      } else if (openingPanel) {
+        // Compact-mode panel grow (Task 1.2): same discipline as capsule's
+        // openingMenu branch above — keep the pill's visual position fixed
+        // (pillBoxBeforeMenuRef, the same idle box the menu open/close edges
+        // already established and never re-read live) while the window grows
+        // to fit the panel underneath/around it. panelZone was already
+        // resolved synchronously by prefetchPanelZone before compactPanel
+        // committed (mirrors prefetchCapsuleZone/capsuleZone), so it's safe
+        // to read here without re-deriving it mid-morph.
+        try {
+          const idleTopLeftLogical = pillBoxBeforeMenuRef.current;
+          if (idleTopLeftLogical) {
+            const scale = await getCurrentWindow().scaleFactor();
+            const pillCenterPhysical = {
+              x: (idleTopLeftLogical.x + pillBoxW / 2) * scale,
+              y: (idleTopLeftLogical.y + pillBoxH / 2) * scale,
+            };
+            const area = await getActiveWorkArea(pillCenterPhysical);
+            if (token !== reconcileToken.current) return;
+            if (displayMode === "capsule") {
+              const geom = computeCapsulePanelGeometry({
+                idleTopLeftLogical,
+                idlePillBoxW: pillBoxW,
+                idlePillBoxH: pillBoxH,
+                barH: PILL_DIMS.capsule.h,
+                panelW: PANEL_W,
+                panelH: PANEL_H,
+                gap: PANEL_GAP,
+                margin: PILL_MARGIN,
+                zone: panelZone,
+                monitorBounds: area,
+              });
+              capsulePanelGeomRef.current = geom;
+              targetPos = geom.windowTopLeftLogical;
+            } else {
+              // Minimal mode: the pill grows directly into the panel —
+              // island-morph geometry, same pure fn Task 0.2 already wrote.
+              const morph = computeIslandMorphRects({
+                pillTopLeftLogical: idleTopLeftLogical,
+                pillW: pillBoxW,
+                pillH: pillBoxH,
+                panelW: PANEL_W,
+                panelH: PANEL_H,
+                margin: PILL_MARGIN,
+                monitorBounds: area,
+              });
+              setIslandMorphGeom(morph);
+              targetPos = morph.windowTopLeftLogical;
+            }
+          }
+        } catch { /* ignore */ }
+      } else if (closingPanel) {
+        // Mirror closingMenu: restore to wherever the menu's own close would
+        // have restored to — pillBoxBeforeMenuRef is the single source of
+        // truth for "where the idle pill was," whether or not the menu
+        // chrome was still open when the panel took over (it wasn't, by
+        // construction, but the ref is never re-read live either way).
+        if (pillAnchor !== "custom") {
+          try {
+            const area = pickedMonitor?.workArea ?? await getActiveWorkArea();
+            targetPos = anchoredMenuPosition(pillAnchor, pillBoxW, pillBoxH, area);
+          } catch { /* ignore */ }
+        } else if (pillBoxBeforeMenuRef.current) {
+          targetPos = pillBoxBeforeMenuRef.current;
+          logger.info("menu", "panel closed", { displayMode, pos: targetPos });
+          // NOTE: pillBoxBeforeMenuRef deliberately NOT cleared here — same
+          // reasoning as closingMenu: cleared as a post-move side effect
+          // below, only once this close actually completes.
+        }
       } else if (
         pillAnchor === "custom" && showPill && prevShowPill &&
-        !openingMenu && !closingMenu && !enteringPill && !leavingPill &&
+        !openingMenu && !closingMenu && !openingPanel && !closingPanel && !enteringPill && !leavingPill &&
         (targetWinW !== prevSize.current.w || targetWinH !== prevSize.current.h)
       ) {
         // Plain pill resize within pill mode (e.g. minimal -> capsule). Keep
@@ -1394,9 +1597,10 @@ export default function App() {
 
       const preMoveDelayMs =
         closingMenu && displayMode === "capsule" ? CAPSULE_EXIT_MS :
-        closingMenu && displayMode === "minimal" ? RADIAL_EXIT_DURATION_MS : 0;
+        closingMenu && displayMode === "minimal" ? RADIAL_EXIT_DURATION_MS :
+        closingPanel ? PANEL_EXIT_MS : 0;
       const moveKind: "instant" | "animate" =
-        openingMenu || closingMenu ? "instant" : "animate";
+        openingMenu || closingMenu || openingPanel || closingPanel ? "instant" : "animate";
 
       // Capsule close must stay full-size while the DOM morph (icons
       // collapsing) plays, and the radial fan's staggered exit needs the
@@ -1467,6 +1671,11 @@ export default function App() {
       if (openingMenu && displayMode === "minimal") setFanReady(true);
       if (openingMenu && displayMode === "capsule") setCapsuleReady(true);
 
+      // Only now has the window actually finished growing to fit the panel —
+      // same contract as fanReady/capsuleReady above, and the same reason:
+      // it can't paint into a still-pill-sized window mid-IPC-grow.
+      if (openingPanel) setPanelReady(true);
+
       if (closingMenu && displayMode === "minimal") {
         // Reset-after-shrink: there is never a frame pairing the full-size
         // window with the idle offset (which is what made the pill jump to
@@ -1476,6 +1685,14 @@ export default function App() {
       }
       if (closingMenu) pillBoxBeforeMenuRef.current = null;
       if (closingMenu && displayMode === "capsule") setCapsuleExiting(false);
+
+      if (closingPanel) {
+        // Mirror closingMenu's reset-after-shrink discipline exactly.
+        if (displayMode === "minimal") setMinimalWrapperOffset({ x: PILL_MARGIN, y: PILL_MARGIN });
+        pillBoxBeforeMenuRef.current = null;
+        capsulePanelGeomRef.current = null;
+        setIslandMorphGeom(null);
+      }
 
       // Reveal only after the window has actually finished resizing/moving —
       // the whole point being the window never shows a clipped 440px card
@@ -1495,7 +1712,21 @@ export default function App() {
     }
     if (displayMode !== "full") fullSizeInitializedRef.current = false;
     prevDisplayModeRef.current = displayMode;
-  }, [targetWinW, targetWinH, showPill, pillAnchor, displayMode, menuOpen, capsuleZone, monitors, selectedMonitorId]);
+  }, [targetWinW, targetWinH, showPill, pillAnchor, displayMode, menuOpen, capsuleZone, compactPanel, panelZone, monitors, selectedMonitorId]);
+
+  // Island content reveal (minimal-mode Task 3.1): once the OS window has
+  // finished growing (panelReady) the DOM rect-morph still has to run
+  // (PANEL_ANIM_MS) before the tab strip/body fade in another 120ms after
+  // that — mirrors the mock's `content-hid` delay. Any drop of panelReady
+  // (close, or a fast re-open race) clears it immediately, no delay, so the
+  // close sequence's "content fades out immediately" contract holds.
+  useEffect(() => {
+    if (displayMode === "minimal" && compactPanel && panelReady) {
+      const t = setTimeout(() => setIslandContentReady(true), PANEL_ANIM_MS + 120);
+      return () => clearTimeout(t);
+    }
+    setIslandContentReady(false);
+  }, [displayMode, compactPanel, panelReady]);
 
   // Display picker selection (for_sonnet.md §4). Single owner of the actual
   // move: this only updates state — the resize effect above is the sole
@@ -1508,14 +1739,42 @@ export default function App() {
     setSelectedMonitorId(id);
   }, []);
 
+  // Panel zone must be correct before the first open frame, same reasoning
+  // and same call pattern as prefetchCapsuleZone below: resolved from the
+  // pill's saved idle position (pillBoxBeforeMenuRef — the live window is
+  // still menu-open-sized at this point, not idle-pill-sized) synchronously
+  // before compactPanel commits, so the reconcile effect's openingPanel edge
+  // never has to re-derive it mid-morph.
+  const prefetchPanelZone = useCallback(async () => {
+    try {
+      const idleTopLeftLogical = pillBoxBeforeMenuRef.current;
+      if (!idleTopLeftLogical) return;
+      const pillCenterLogical = {
+        x: idleTopLeftLogical.x + pillBoxW / 2,
+        y: idleTopLeftLogical.y + pillBoxH / 2,
+      };
+      const scale = await getCurrentWindow().scaleFactor();
+      const pillCenterPhysical = { x: pillCenterLogical.x * scale, y: pillCenterLogical.y * scale };
+      const area = await getActiveWorkArea(pillCenterPhysical);
+      setPanelZone(resolveVerticalZone(pillCenterLogical.y, area));
+    } catch { /* reconcile effect will use the stale zone */ }
+  }, [pillBoxW, pillBoxH]);
+
   // ── Pill menu routing (for_sonnet.md §5.1/§8.5) ─────────────────────────
   // Selecting a nav item closes the menu and expands to the full window on
   // that view; "search" routes to the look view instead of a modal.
   const handleMenuSelect = useCallback((target: Exclude<MenuTarget, "hide">) => {
-    closePillMenu();
-    setExpanded(true);
-    setView(target === "search" ? "look" : target);
-  }, [closePillMenu]);
+    if (displayMode === "full") {
+      closePillMenu();
+      setExpanded(true);
+      setView(target === "search" ? "look" : target);
+      return;
+    }
+    // Compact modes (Capsule/Minimal): stay in pill land — the menu morphs
+    // into the in-context panel instead of routing into FullWindow.
+    setMenuOpen(false);                 // menu chrome yields to panel (no capsuleExiting: bar stays open-width under the panel)
+    void prefetchPanelZone().then(() => setCompactPanel(target));
+  }, [displayMode, closePillMenu, prefetchPanelZone]);
 
   // D1: a dedicated Hide item sends the app to the tray even when pinned,
   // distinct from re-clicking the pill (which only dismisses the menu).
@@ -1555,6 +1814,32 @@ export default function App() {
     } catch { /* reconcile effect will retry */ }
   }, [pillAnchor, pillBoxW, pillBoxH, PILL_MARGIN, CLOSE_PAD_W]);
 
+  // Hoisted so both the pill (compact panel) and full-window branches below
+  // can supply the exact same settings state/handlers — CompactSettings
+  // (Task 2.4) needs full parity with FullWindow's Settings tab.
+  const settingsProps = {
+    theme,
+    themeLabel: THEME_LABELS[theme],
+    onSelectTheme: selectTheme,
+    displayMode,
+    onSelectDisplayMode: setDisplayMode,
+    pillCorner,
+    onSelectPillCorner: setPillCorner,
+    pillPinned,
+    onTogglePillPinned: setPillPinned,
+    pillAnchor,
+    onSelectPillAnchor: setPillAnchor,
+    pillFanStyle,
+    onSelectPillFanStyle: setPillFanStyle,
+    pillSnapEnabled,
+    onTogglePillSnap: setPillSnapEnabled,
+    monitors,
+    selectedMonitorId,
+    onSelectMonitor: handleSelectMonitor,
+    lookChatPersist,
+    onSelectLookChatPersist: setLookChatPersist,
+  };
+
   if (renderPill) {
     // Capsule open: push the bar to whichever edge it's pinned to, leaving
     // the free space (the click-to-close padding) on the inner side
@@ -1570,6 +1855,33 @@ export default function App() {
         ? (capsuleZone === "right" ? "flex-end" : capsuleZone === "left" ? "flex-start" : "center")
         : "center";
 
+    // Minimal-mode island rects, in the same in-window coordinate space the
+    // island DOM element renders in: startRect = pillOffset (where the pill
+    // itself sits inside the already-grown window — never recomputed, so
+    // this is exactly the morph's zero-drift origin), endRect = the panel's
+    // own offset within that same window (always {margin, margin} by
+    // construction of computeIslandMorphRects's windowTopLeftLogical).
+    const islandGeom = displayMode === "minimal" && islandMorphGeom
+      ? {
+          startRect: {
+            left: islandMorphGeom.pillOffset.x,
+            top: islandMorphGeom.pillOffset.y,
+            width: islandMorphGeom.startRect.w,
+            height: islandMorphGeom.startRect.h,
+          },
+          endRect: {
+            left: islandMorphGeom.endRect.x - islandMorphGeom.windowTopLeftLogical.x,
+            top: islandMorphGeom.endRect.y - islandMorphGeom.windowTopLeftLogical.y,
+            width: islandMorphGeom.endRect.w,
+            height: islandMorphGeom.endRect.h,
+          },
+        }
+      : null;
+    // Lingers past `compactPanel` flipping to null so the island keeps
+    // rendering its last content through the whole close morph — see
+    // lastMinimalPanelTargetRef above.
+    const islandTarget = displayMode === "minimal" ? (compactPanel ?? lastMinimalPanelTargetRef.current) : null;
+
     const pillOverlay = (
       <PillOverlay
         mode={displayMode as PillMode}
@@ -1578,7 +1890,7 @@ export default function App() {
         stepDefs={stepDefs}
         llmStatus={llmStatus}
         menuOpen={menuOpen}
-        capsuleMorphOpen={menuOpen && capsuleReady}
+        capsuleMorphOpen={(menuOpen && capsuleReady) || compactPanel !== null}
         capsuleExiting={capsuleExiting}
         capsuleShown={capsuleShown}
         fanOpen={fanReady}
@@ -1608,12 +1920,40 @@ export default function App() {
         onHide={handleMenuHide}
         pillGeometry={radialPillGeometry}
         fanStyle={pillFanStyle}
+        voicePhase={voice.phase}
+        voiceElapsedMs={voice.elapsedMs}
+        readWaveform={voice.readWaveform}
+        readSpectrum={voice.readSpectrum}
+        sampleRate={voice.sampleRate}
+        onVoiceToggle={voice.toggle}
+        onVoiceCancel={voice.cancel}
+        compactPanel={compactPanel}
+        panelReady={panelReady}
+        panelZone={panelZone}
+        panelGeom={displayMode === "capsule" ? capsulePanelGeomRef.current : null}
+        islandGeom={islandGeom}
+        islandTarget={islandTarget}
+        islandContentReady={islandContentReady}
+        onClosePanel={() => setCompactPanel(null)}
+        lookMode={lookMode}
+        onSelectLookMode={setLookMode}
+        lookChat={lookChat}
+        lookChatPersist={lookChatPersist}
+        settingsProps={settingsProps}
+        onOpenFile={(path) => openFilePath(path).catch(() => {})}
       />
     );
 
     return (
       <div
         onClick={() => { if (menuOpen) closePillMenu(); }}
+        // data-panel-* exposed here (not consumed by any CSS/logic yet) so
+        // panelReady/panelZone — driven by the reconcile effect's
+        // openingPanel/closingPanel edges — stay inspectable in devtools
+        // ahead of the compact-panel component itself landing.
+        data-panel-target={compactPanel ?? undefined}
+        data-panel-ready={compactPanel ? panelReady : undefined}
+        data-panel-zone={compactPanel ? panelZone : undefined}
         style={{
           width: "100vw",
           height: "100vh",
@@ -1634,8 +1974,7 @@ export default function App() {
     );
   }
 
-  if (displayMode === "full") {
-    return (
+  return (
       <div
         style={{
           width: "100vw",
@@ -1667,31 +2006,20 @@ export default function App() {
             lookChat={lookChat}
             lookChatPersist={lookChatPersist}
             onOpenFile={(path) => openFilePath(path).catch(() => {})}
-            onHideToTray={() => getCurrentWindow().hide()}
+            initialView={VIEW_TO_RAIL[view] ?? "dashboard"}
+            onHideToTray={displayMode === "full"
+              ? () => getCurrentWindow().hide()
+              : () => setView("capture")}
             onCaptureFile={captureFile}
             pillCorner={pillCorner}
-            settingsProps={{
-              theme,
-              themeLabel: THEME_LABELS[theme],
-              onSelectTheme: selectTheme,
-              displayMode,
-              onSelectDisplayMode: setDisplayMode,
-              pillCorner,
-              onSelectPillCorner: setPillCorner,
-              pillPinned,
-              onTogglePillPinned: setPillPinned,
-              pillAnchor,
-              onSelectPillAnchor: setPillAnchor,
-              pillFanStyle,
-              onSelectPillFanStyle: setPillFanStyle,
-              pillSnapEnabled,
-              onTogglePillSnap: setPillSnapEnabled,
-              monitors,
-              selectedMonitorId,
-              onSelectMonitor: handleSelectMonitor,
-              lookChatPersist,
-              onSelectLookChatPersist: setLookChatPersist,
-            }}
+            voicePhase={voice.phase}
+            voiceElapsedMs={voice.elapsedMs}
+            readWaveform={voice.readWaveform}
+            readSpectrum={voice.readSpectrum}
+            sampleRate={voice.sampleRate}
+            onVoiceToggle={voice.toggle}
+            onVoiceCancel={voice.cancel}
+            settingsProps={settingsProps}
           />
         </div>
 
@@ -1705,89 +2033,4 @@ export default function App() {
         </div>
       </div>
     );
-  }
-
-  // Pill modes (capsule / minimal) — dedicated panels keyed off `view`
-  return (
-    <div style={{ width: "100vw", height: "100vh", display: "flex",
-                  alignItems: "center", justifyContent: "center",
-                  background: "transparent", overflow: "hidden" }}>
-      <div style={{ position: "relative", width: 440, height: displayH,
-                    transition: "height 0.2s cubic-bezier(0.16,1,0.3,1), opacity 0.2s cubic-bezier(0.16,1,0.3,1)",
-                    opacity: contentHidden ? 0 : 1,
-                    pointerEvents: contentHidden ? "none" : undefined }}>
-        <CaptureOverlay
-          measureRef={setMeasureEl("capture")}
-          captureState={captureState}
-          stepDefs={stepDefs}
-          llmStatus={llmStatus}
-          activeView={view}
-          onOpenSettings={() => setView("settings")}
-          onOpenVault={() => setView("vault")}
-          onOpenInbox={() => setView("inbox")}
-          onOpenSearch={() => setView("look")}
-          onOpenStats={() => setView("stats")}
-          visible={view === "capture"}
-          inboxCount={inboxCount}
-          onCollapseToPill={() => setExpanded(false)}
-        />
-        <SettingsPanel
-          measureRef={setMeasureEl("settings")}
-          visible={view === "settings"}
-          onClose={() => setView("capture")}
-          theme={theme}
-          themeLabel={THEME_LABELS[theme]}
-          onSelectTheme={selectTheme}
-          displayMode={displayMode}
-          onSelectDisplayMode={setDisplayMode}
-          pillCorner={pillCorner}
-          onSelectPillCorner={setPillCorner}
-          pillPinned={pillPinned}
-          onTogglePillPinned={setPillPinned}
-          pillAnchor={pillAnchor}
-          onSelectPillAnchor={setPillAnchor}
-          pillFanStyle={pillFanStyle}
-          onSelectPillFanStyle={setPillFanStyle}
-          pillSnapEnabled={pillSnapEnabled}
-          onTogglePillSnap={setPillSnapEnabled}
-          monitors={monitors}
-          selectedMonitorId={selectedMonitorId}
-          onSelectMonitor={handleSelectMonitor}
-          lookChatPersist={lookChatPersist}
-          onSelectLookChatPersist={setLookChatPersist}
-        />
-        <VaultManager
-          measureRef={setMeasureEl("vault")}
-          visible={view === "vault"}
-          onClose={() => setView("capture")}
-        />
-        <InboxPanel
-          measureRef={setMeasureEl("inbox")}
-          visible={view === "inbox"}
-          onClose={() => setView("capture")}
-          onCountChange={setInboxCount}
-        />
-        <StatsPanel
-          measureRef={setMeasureEl("stats")}
-          visible={view === "stats"}
-          onClose={() => setView("capture")}
-        />
-        <LookPanel
-          measureRef={setMeasureEl("look")}
-          visible={view === "look"}
-          mode={lookMode}
-          onSelectMode={setLookMode}
-          onClose={() => setView("capture")}
-          lookChat={lookChat}
-          lookChatPersist={lookChatPersist}
-        />
-      </div>
-      <DevTuner />
-      <div style={{ position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", width: 408, pointerEvents: "none" }}>
-        <div style={{ pointerEvents: "all" }}>
-          <ToastHost toasts={toasts} onDismiss={dismissToast} />
-        </div>
-      </div>
-    </div>
-  );
 }

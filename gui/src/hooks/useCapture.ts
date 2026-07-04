@@ -6,7 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { readText, readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { readFile, readTextFile } from "@tauri-apps/plugin-fs";
-import { streamCapture, getJobStatus, HttpError, type StepName, type StepStatus, type ContentType } from "../lib/api";
+import { streamCapture, getJobStatus, HttpError, type StepName, type StepStatus, type ContentType, type ReminderOfferEvent } from "../lib/api";
 import { logger, setRunId } from "../lib/logger";
 import { isConnectionFailure, nextRetryDelayMs } from "../lib/captureRetry";
 import { fileKind } from "../lib/fileIngest";
@@ -67,6 +67,9 @@ export interface CaptureState {
    *  binding its port (P1-1) — phase stays "capturing" so existing pill
    *  rendering applies, this only swaps the pill label to "Starting". */
   starting: boolean;
+  /** Future date/time mentions detected in the just-written note, offered as
+   *  one-click reminders. Reset to null at the start of every run. */
+  reminderOffer: ReminderOfferEvent | null;
 }
 
 const STEP_DEFS: CaptureStep[] = [
@@ -261,6 +264,7 @@ const BLANK_STATE: CaptureState = {
   thinking: null,
   backgroundJob: null,
   starting: false,
+  reminderOffer: null,
 };
 
 const JOB_POLL_MS = 1500;
@@ -439,6 +443,8 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
               }));
               pollJob(event.job_id);
               return;
+            } else if (event.kind === "reminder_offer") {
+              setState((prev) => ({ ...prev, reminderOffer: event }));
             }
           }
           break;
@@ -486,6 +492,15 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
 
   const runCapture = useCallback(() => runCaptureWith(readClipboard), [runCaptureWith]);
   const captureFile = useCallback((path: string) => runCaptureWith(() => readDroppedFile(path)), [runCaptureWith]);
+  const captureAudio = useCallback(
+    (b64: string) =>
+      runCaptureWith(async () => ({
+        contentType: "audio_b64" as const,
+        content: b64,
+        preview: { type: "text" as const, snippet: "Voice note" },
+      })),
+    [runCaptureWith],
+  );
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -498,5 +513,5 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
     };
   }, [runCapture, stopJobPolling]);
 
-  return { state, stepDefs: STEP_DEFS, captureFile };
+  return { state, stepDefs: STEP_DEFS, captureFile, captureAudio };
 }

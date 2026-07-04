@@ -1,4 +1,4 @@
-import { useRef, useState, useLayoutEffect, useCallback } from "react";
+import { useRef, useState, useLayoutEffect, useCallback, useEffect } from "react";
 import StatusIndicator from "../StatusIndicator";
 import SegmentedToggle from "../ui/SegmentedToggle";
 import LookPanel from "../LookPanel";
@@ -7,11 +7,14 @@ import DashboardView from "./DashboardView";
 import LibraryView from "./LibraryView";
 import { railSliderFromElement } from "../../lib/railSelection";
 import { MenuIcon } from "../PillMenu/icons";
+import { syncVaultIndex, getStats, getInbox } from "../../lib/api";
+import InboxPanel, { type InboxTab } from "../InboxPanel";
 import type { CaptureState, CaptureStep } from "../../hooks/useCapture";
 import type { LlmStatus } from "../../lib/api";
 import type { LookChatPersist } from "../../App";
 import type { ChatMessage } from "../../hooks/useLookChat";
 import type { PillCorner } from "../PillOverlay";
+import type { VoicePhase } from "../../hooks/useVoiceRecording";
 
 interface LookChatHook {
   messages: ChatMessage[];
@@ -23,17 +26,18 @@ interface LookChatHook {
 }
 
 type MainView = "dashboard" | "look" | "library";
-type RailView = MainView | "settings";
+type RailView = MainView | "settings" | "inbox";
 const MAIN_VIEWS: MainView[] = ["dashboard", "look", "library"];
 const TITLES: Record<RailView, [string, string]> = {
-  dashboard: ["Dashboard", "capture · recent · health · inbox"],
+  dashboard: ["Dashboard", "capture · recent · inbox"],
   look:      ["Look", "search · chat over vault"],
   library:   ["Library", "vault · category · rhythm"],
   settings:  ["Settings", "preferences"],
+  inbox:     ["Inbox", "review · reminders"],
 };
 
 // Subset of SettingsPanel props that FullWindow receives and forwards
-interface SettingsForward {
+export interface SettingsForward {
   theme?: Parameters<typeof SettingsPanel>[0]["theme"];
   themeLabel?: string;
   onSelectTheme?: Parameters<typeof SettingsPanel>[0]["onSelectTheme"];
@@ -69,17 +73,37 @@ interface FullWindowProps {
   onCaptureFile: (path: string) => void;
   pillCorner: PillCorner;
   settingsProps: SettingsForward;
+  voicePhase: VoicePhase;
+  voiceElapsedMs: number;
+  readWaveform: (out: Float32Array) => void;
+  readSpectrum: (out: Uint8Array) => void;
+  sampleRate: number;
+  onVoiceToggle: () => void;
+  onVoiceCancel: () => void;
+  initialView?: RailView;
 }
 
 export default function FullWindow(props: FullWindowProps) {
-  const [view, setView] = useState<RailView>("dashboard");
+  const [view, setView] = useState<RailView>(props.initialView ?? "dashboard");
+  useEffect(() => {
+    if (props.initialView) setView(props.initialView);
+  }, [props.initialView]);
+  const [inboxTab, setInboxTab] = useState<InboxTab>("inbox");
+  const [healthOpen, setHealthOpen] = useState(false);
+  const [healthVault, setHealthVault] = useState<number | null>(null);
+  const [healthInbox, setHealthInbox] = useState<number | null>(null);
+  const openHealth = useCallback(() => {
+    setHealthOpen(true);
+    getStats().then((s) => setHealthVault(s.total)).catch(() => {});
+    getInbox().then((r) => setHealthInbox(r.inbox.length)).catch(() => {});
+  }, []);
   const railTrackRef = useRef<HTMLDivElement | null>(null);
   const railBtnRefs = useRef<Partial<Record<RailView, HTMLButtonElement | null>>>({});
   const [sliderRect, setSliderRect] = useState<{ translateY: number; height: number } | null>(null);
 
   const syncSlider = useCallback(() => {
     const btn = railBtnRefs.current[view];
-    if (!btn) return;
+    if (!btn) { setSliderRect(null); return; }
     setSliderRect(railSliderFromElement(btn));
   }, [view]);
 
@@ -94,6 +118,33 @@ export default function FullWindow(props: FullWindowProps) {
 
   const [title, subtitle] = TITLES[view];
 
+  const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string | null>(null);
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleRefresh = useCallback(async () => {
+    if (syncing) return;
+    setSyncing(true);
+    setSyncStatus(null);
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    try {
+      const result = await syncVaultIndex();
+      const total = result.added + result.removed + result.updated;
+      setSyncStatus(
+        total === 0
+          ? `Index up to date — ${result.skipped} unchanged`
+          : `Index updated: +${result.added} new, −${result.removed} removed, ${result.updated} changed, ${result.skipped} unchanged`
+      );
+    } catch (err) {
+      setSyncStatus(`Sync failed — ${err instanceof Error ? err.message : "unknown error"}`);
+    } finally {
+      setSyncing(false);
+      syncTimerRef.current = setTimeout(() => setSyncStatus(null), 4000);
+    }
+  }, [syncing]);
+
+  useEffect(() => () => { if (syncTimerRef.current) clearTimeout(syncTimerRef.current); }, []);
+
   return (
     <div
       className="fw-shell"
@@ -106,8 +157,37 @@ export default function FullWindow(props: FullWindowProps) {
         data-corner={props.pillCorner}
         style={{ width: 56, background: "var(--glass-bg)", borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", padding: 8, gap: 8, flex: "none" }}
       >
-        <div style={{ height: 40, display: "flex", alignItems: "center", justifyContent: "center", flex: "none" }}>
+        <div
+          style={{ height: 40, display: "flex", alignItems: "center", justifyContent: "center", flex: "none", position: "relative" }}
+          onMouseEnter={openHealth}
+          onMouseLeave={() => setHealthOpen(false)}
+        >
           <StatusIndicator captureState={props.captureState} llmStatus={props.llmStatus} size={9} />
+          {healthOpen && (
+            <div
+              role="tooltip"
+              style={{
+                position: "absolute", left: 44, top: 8, zIndex: 60,
+                background: "var(--surface)", border: "1px solid var(--border)",
+                borderRadius: "var(--radius-sm)", padding: "6px 12px",
+                boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+                display: "flex", gap: 14, alignItems: "center", whiteSpace: "nowrap",
+                fontSize: 11, color: "var(--text-2)", overflow: "hidden",
+              }}
+            >
+              <AmbientStrand />
+              {([
+                { label: props.llmStatus === "ready" ? "LLM" : props.llmStatus === "loading" ? "LLM warming" : "LLM offline", ok: props.llmStatus === "ready" },
+                { label: healthVault === null ? "… notes" : `${healthVault} notes`, ok: true },
+                { label: healthInbox === null ? "… inbox" : healthInbox === 0 ? "inbox clear" : `${healthInbox} inbox`, ok: healthInbox === 0 || healthInbox === null },
+              ]).map((r) => (
+                <span key={r.label} style={{ position: "relative", display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: r.ok ? "var(--green)" : "var(--yellow)", flexShrink: 0 }} />
+                  {r.label}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         <div ref={railTrackRef} style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8, position: "relative", minHeight: 0 }}>
@@ -165,13 +245,30 @@ export default function FullWindow(props: FullWindowProps) {
           <span style={{ fontSize: 11, color: "var(--text-3)" }}>{subtitle}</span>
           <span style={{ flex: 1 }} />
           {view === "look" && (
-            <div className="no-drag">
-            <SegmentedToggle
-              ariaLabel="Look mode"
-              options={[{ key: "search" as const, label: "Search" }, { key: "chat" as const, label: "Chat" }]}
-              value={props.lookMode}
-              onChange={props.onSelectLookMode}
-            />
+            <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <button
+                className="btn-hover no-drag"
+                onClick={handleRefresh}
+                disabled={syncing}
+                title="Sync vault index"
+                aria-label="Sync vault index"
+                style={{ opacity: syncing ? 0.5 : 1, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "var(--text-2)" }}
+              >
+                <svg
+                  width="13" height="13" viewBox="0 0 24 24"
+                  fill="none" stroke="currentColor" strokeWidth="2"
+                  strokeLinecap="round" strokeLinejoin="round"
+                >
+                  <polyline points="23 4 23 10 17 10" />
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                </svg>
+              </button>
+              <SegmentedToggle
+                ariaLabel="Look mode"
+                options={[{ key: "search" as const, label: "Search" }, { key: "chat" as const, label: "Chat" }]}
+                value={props.lookMode}
+                onChange={props.onSelectLookMode}
+              />
             </div>
           )}
         </div>
@@ -182,9 +279,21 @@ export default function FullWindow(props: FullWindowProps) {
               visible
               captureState={props.captureState}
               stepDefs={props.stepDefs}
-              llmStatus={props.llmStatus}
               onOpenFile={props.onOpenFile}
               onCaptureFile={props.onCaptureFile}
+              llmStatus={props.llmStatus}
+              onNavigate={(t) => {
+                if (t === "library") { setView("library"); return; }
+                setInboxTab(t === "reminders" ? "reminders" : "inbox");
+                setView("inbox");
+              }}
+              voicePhase={props.voicePhase}
+              voiceElapsedMs={props.voiceElapsedMs}
+              readWaveform={props.readWaveform}
+              readSpectrum={props.readSpectrum}
+              sampleRate={props.sampleRate}
+              onVoiceToggle={props.onVoiceToggle}
+              onVoiceCancel={props.onVoiceCancel}
             />
           </div>
         )}
@@ -199,12 +308,19 @@ export default function FullWindow(props: FullWindowProps) {
               lookChatPersist={props.lookChatPersist}
               hideToggle
               embedded
+              externalSyncing={syncing}
+              externalSyncStatus={syncStatus}
             />
           </div>
         )}
         {view === "library" && (
           <div key="library" className="fw-view-panel">
             <LibraryView visible />
+          </div>
+        )}
+        {view === "inbox" && (
+          <div key={`inbox-${inboxTab}`} className="fw-view-panel">
+            <InboxPanel visible embedded initialTab={inboxTab} onClose={() => setView("dashboard")} />
           </div>
         )}
         {view === "settings" && (
@@ -215,4 +331,47 @@ export default function FullWindow(props: FullWindowProps) {
       </div>
     </div>
   );
+}
+
+/** Slow drifting harmonic line behind the health-strip text (user-locked
+ *  Q4). Decorative only: two fixed sines at ~0.05 cycles/s, accent color at
+ *  low alpha, no audio input. Sized once per mount from the parent strip —
+ *  the strip's content is fixed while open, so no resize handling needed. */
+function AmbientStrand() {
+  const ref = useRef<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas || !canvas.parentElement) return;
+    const w = canvas.parentElement.clientWidth;
+    const h = canvas.parentElement.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#737373";
+    let raf = 0;
+    const t0 = performance.now();
+    const draw = () => {
+      const t = (performance.now() - t0) / 1000;
+      ctx.clearRect(0, 0, w, h);
+      ctx.beginPath();
+      for (let i = 0; i < 48; i++) {
+        const x = i / 47;
+        const y = h / 2
+          + Math.sin(2 * Math.PI * (1.4 * x + 0.05 * t)) * (h * 0.19)
+          + Math.sin(2 * Math.PI * (2.6 * x - 0.03 * t) + 2) * (h * 0.115);
+        i === 0 ? ctx.moveTo(0, y) : ctx.lineTo(x * w, y);
+      }
+      ctx.strokeStyle = accent;
+      ctx.globalAlpha = 0.16;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      raf = requestAnimationFrame(draw);
+    };
+    draw();
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  return <canvas ref={ref} aria-hidden="true" style={{ position: "absolute", inset: 0, pointerEvents: "none" }} />;
 }

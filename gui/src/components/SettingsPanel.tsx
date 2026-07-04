@@ -64,6 +64,11 @@ interface Props {
   onSelectLookChatPersist?:  (v: LookChatPersist) => void;
 
   embedded?: boolean;
+  /** Compact Mode Menu Decoupling (Task 2.4): 288px capsule panel context.
+   *  Additive, layout-only — swaps multi-button rows from a flex row to a
+   *  single-column grid so labels don't clip at 288px. No control is
+   *  removed and no behavior/logic branches on this flag. */
+  compact?: boolean;
 }
 
 // ── Theme swatch picker ──────────────────────────────────────────────────────
@@ -310,7 +315,15 @@ export default function SettingsPanel({
   monitors, selectedMonitorId, onSelectMonitor,
   lookChatPersist, onSelectLookChatPersist,
   embedded = false,
+  compact = false,
 }: Props) {
+  // Additive layout-only branch (GATE-3): multi-button option rows read fine
+  // as a flex row in FullWindow's 440px panel but clip/cram at the 288px
+  // capsule width, so compact stacks them one-per-row instead. No control is
+  // dropped, no business logic forks on this.
+  const optionRowStyle: CSSProperties = compact
+    ? { display: "grid", gridTemplateColumns: "1fr", gap: 4 }
+    : { display: "flex", gap: 4 };
   const [vaultRoot, setVaultRoot] = useState("");
   const [model, setModel] = useState("llama3.2");
   const [hotkey, setHotkey] = useState(DEFAULT_HOTKEY);
@@ -323,6 +336,7 @@ export default function SettingsPanel({
   const [scrutiny, setScrutiny] = useState<"relaxed" | "balanced" | "strict">("balanced");
   const [autoDescribe, setAutoDescribe] = useState(false);
   const [chatSystemPrompt, setChatSystemPrompt] = useState("");
+  const [reminderDelivery, setReminderDelivery] = useState<"app" | "os">("app");
 
   // Form (look/placement) vs Function (behavior) tabs. Always reopens on
   // Form so returning to Settings doesn't strand the user on Function.
@@ -355,11 +369,11 @@ export default function SettingsPanel({
   const lastGoodRef = useRef<{
     vaultRoot: string; model: string; hotkey: string;
     confidence: number; scrutiny: "relaxed" | "balanced" | "strict"; autoDescribe: boolean;
-    chatSystemPrompt: string;
+    chatSystemPrompt: string; reminderDelivery: "app" | "os";
   }>({
     vaultRoot: "", model: "llama3.2", hotkey: DEFAULT_HOTKEY,
     confidence: 0.6, scrutiny: "balanced", autoDescribe: false,
-    chatSystemPrompt: "",
+    chatSystemPrompt: "", reminderDelivery: "app",
   });
 
   // Load config when panel opens. Retries with backoff: right after launch
@@ -397,6 +411,7 @@ export default function SettingsPanel({
           scrutiny: cfg.capture?.llm_scrutiny ?? "balanced",
           autoDescribe: cfg.capture?.auto_describe_new_folders ?? false,
           chatSystemPrompt: cfg.look?.chat_system_prompt ?? "",
+          reminderDelivery: cfg.reminders?.delivery ?? "app",
         };
         setVaultRoot(loaded.vaultRoot);
         setModel(loaded.model);
@@ -405,6 +420,7 @@ export default function SettingsPanel({
         setScrutiny(loaded.scrutiny);
         setAutoDescribe(loaded.autoDescribe);
         setChatSystemPrompt(loaded.chatSystemPrompt);
+        setReminderDelivery(loaded.reminderDelivery);
         lastGoodRef.current = loaded;
         setDirty(false);
         loadedRef.current = true;
@@ -442,9 +458,10 @@ export default function SettingsPanel({
         llm_scrutiny: scrutiny,
         auto_describe_new_folders: autoDescribe,
         chat_system_prompt: chatSystemPrompt,
+        reminders_delivery: reminderDelivery,
       });
       await setHotkeyRust(hotkey);
-      lastGoodRef.current = { vaultRoot, model, hotkey, confidence, scrutiny, autoDescribe, chatSystemPrompt };
+      lastGoodRef.current = { vaultRoot, model, hotkey, confidence, scrutiny, autoDescribe, chatSystemPrompt, reminderDelivery };
       setDirty(false);
       if (!opts.silent) {
         setSaved(true);
@@ -462,11 +479,12 @@ export default function SettingsPanel({
       setScrutiny(g.scrutiny);
       setAutoDescribe(g.autoDescribe);
       setChatSystemPrompt(g.chatSystemPrompt);
+      setReminderDelivery(g.reminderDelivery);
       setDirty(false);
     } finally {
       if (!opts.silent) setSaving(false);
     }
-  }, [vaultRoot, model, hotkey, confidence, scrutiny, autoDescribe, chatSystemPrompt]);
+  }, [vaultRoot, model, hotkey, confidence, scrutiny, autoDescribe, chatSystemPrompt, reminderDelivery]);
 
   const handleSave = () => { void flush({ silent: false }); };
 
@@ -497,19 +515,19 @@ export default function SettingsPanel({
       }}
     >
       {/* Header */}
-      <div style={PANEL_HEADER} className={embedded ? "" : "drag-region"}>
-        {!embedded && (
+      {!embedded && (
+        <div style={PANEL_HEADER} className="drag-region">
           <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
             Settings
           </span>
-        )}
-        <button className="no-drag icon-close-btn" onClick={onClose} title="Close">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <line x1="2" y1="2" x2="12" y2="12" />
-            <line x1="12" y1="2" x2="2" y2="12" />
-          </svg>
-        </button>
-      </div>
+          <button className="no-drag icon-close-btn" onClick={onClose} title="Close">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <line x1="2" y1="2" x2="12" y2="12" />
+              <line x1="12" y1="2" x2="2" y2="12" />
+            </svg>
+          </button>
+        </div>
+      )}
 
       {/* Tabs */}
       <Tabs
@@ -521,7 +539,7 @@ export default function SettingsPanel({
       {/* Body */}
       <div
         className="no-drag"
-        style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 16px 14px", display: "flex", flexDirection: "column", gap: 16 }}
+        style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: compact ? "10px 10px 12px" : "16px 16px 14px", display: "flex", flexDirection: "column", gap: compact ? 12 : 16 }}
       >
         {tab === "form" && (
           <>
@@ -538,7 +556,7 @@ export default function SettingsPanel({
             {/* Display Mode (Item 2: pill/minimized window) */}
             {onSelectDisplayMode && displayMode && (
               <Field label="Display Mode">
-                <div style={{ display: "flex", gap: 4 }}>
+                <div style={optionRowStyle}>
                   {([
                     { v: "full" as const,    label: "Full" },
                     { v: "capsule" as const, label: "Capsule" },
@@ -572,7 +590,7 @@ export default function SettingsPanel({
 
             {onSelectPillCorner && pillCorner && (
               <Field label="Corner Style">
-                <div style={{ display: "flex", gap: 4 }}>
+                <div style={optionRowStyle}>
                   {([{ v: "sharp" as const, label: "Sharp" }, { v: "rounded" as const, label: "Rounded" }]).map(({ v, label }) => {
                     const active = pillCorner === v;
                     return (
@@ -602,7 +620,7 @@ export default function SettingsPanel({
 
             {onTogglePillPinned && pillPinned !== undefined && (
               <Field label="Stay Pinned">
-                <div style={{ display: "flex", gap: 4 }}>
+                <div style={optionRowStyle}>
                   {([{ v: true, label: "On" }, { v: false, label: "Off" }] as const).map(({ v, label }) => {
                     const active = pillPinned === v;
                     return (
@@ -679,7 +697,7 @@ export default function SettingsPanel({
 
             {onSelectPillFanStyle && pillFanStyle && (
               <Field label="Fan Style">
-                <div style={{ display: "flex", gap: 4 }}>
+                <div style={optionRowStyle}>
                   {([
                     { v: "spread" as const, label: "Spread" },
                     { v: "capped" as const, label: "Capped" },
@@ -714,7 +732,7 @@ export default function SettingsPanel({
               const snapApplicable = pillAnchor === "custom";
               return (
                 <Field label="Snap to Edge & Corner">
-                  <div style={{ display: "flex", gap: 4, opacity: snapApplicable ? 1 : 0.4 }}>
+                  <div style={{ ...optionRowStyle, opacity: snapApplicable ? 1 : 0.4 }}>
                     {([{ v: true, label: "On" }, { v: false, label: "Off" }] as const).map(({ v, label }) => {
                       const active = pillSnapEnabled === v;
                       return (
@@ -819,7 +837,7 @@ export default function SettingsPanel({
 
             {/* Classification strictness (llm_scrutiny) */}
             <Field label="Classification Strictness">
-              <div style={{ display: "flex", gap: 4 }}>
+              <div style={optionRowStyle}>
                 {(["relaxed", "balanced", "strict"] as const).map((level) => {
                   const active = scrutiny === level;
                   return (
@@ -846,7 +864,7 @@ export default function SettingsPanel({
 
             {/* Auto-describe new folders */}
             <Field label="Auto-describe New Folders">
-              <div style={{ display: "flex", gap: 4 }}>
+              <div style={optionRowStyle}>
                 {([{ v: true, label: "On" }, { v: false, label: "Off" }] as const).map(({ v, label }) => {
                   const active = autoDescribe === v;
                   return (
@@ -873,6 +891,36 @@ export default function SettingsPanel({
               </span>
             </Field>
 
+            {/* Reminder delivery */}
+            <Field label="Reminders">
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {([
+                  { v: "app" as const, label: "In-app notification (default)" },
+                  { v: "os" as const, label: "Windows Task Scheduler — fires even when the app is closed" },
+                ]).map(({ v, label }) => {
+                  const active = reminderDelivery === v;
+                  return (
+                    <button
+                      key={v}
+                      onClick={() => { setReminderDelivery(v); markDirty(); }}
+                      className="btn-hover"
+                      style={{
+                        ...BTN_SECONDARY,
+                        textAlign: "left",
+                        background: active ? "var(--accent)" : (BTN_SECONDARY.background as string),
+                        color: active ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
+                        borderColor: active ? "var(--accent)" : "var(--border)",
+                      }}
+                      role="radio"
+                      aria-checked={active}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+
             {/* Log level — runtime toggle, no rebuild required */}
             <Field label="Log Level">
               <select
@@ -894,7 +942,7 @@ export default function SettingsPanel({
                 scale geometry to the same log file via geoLog (scope "geo"),
                 for diagnosing pill drag/clamp boundary issues. */}
             <Field label="Geometry Debug Logging">
-              <div style={{ display: "flex", gap: 4 }}>
+              <div style={optionRowStyle}>
                 {([{ v: true, label: "On" }, { v: false, label: "Off" }] as const).map(({ v, label }) => {
                   const active = geoDebug === v;
                   return (
@@ -923,7 +971,7 @@ export default function SettingsPanel({
 
             {onSelectLookChatPersist && lookChatPersist && (
               <Field label="Look chat history">
-                <div style={{ display: "flex", gap: 4 }}>
+                <div style={optionRowStyle}>
                   {([
                     { v: "preserve" as const, label: "Preserve" },
                     { v: "clear" as const,    label: "Clear on close" },

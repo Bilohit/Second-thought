@@ -124,3 +124,11 @@ def notify_capture_error(
         title=f"{title_prefix} — Error",
         message=error_message[:120],
     )
+
+
+if __name__ == "__main__":
+    # CLI for OS-scheduled reminders: python notifier.py "title" "message"
+    if len(sys.argv) >= 3:
+        send_notification(sys.argv[1], sys.argv[2])
+    else:
+        send_notification("Second Thought", "notifier CLI smoke test")
