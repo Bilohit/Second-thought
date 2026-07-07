@@ -3,18 +3,23 @@
  * ---------------
  * Compact Mode Menu Decoupling, Task 2.3: FULL-parity Look (search/chat)
  * content for the capsule's `CompactShell` body. Wraps embedded `LookPanel`
- * with the same controls FullWindow's topbar exposes for the Look view —
- * search/chat toggle, ignore-history, clear, reload indexing — just laid
- * out as a compact toolbar row above the panel instead of inline in a
- * shared topbar. GATE-3: no feature is dropped, only re-flowed for 288px.
+ * with the same controls FullWindow's topbar exposes for the Look view.
+ * Task 5 restructure: the toggle + refresh no longer render a toolbar row
+ * inside this component's own body — they're forwarded up into
+ * `CompactShell`'s header row (next to the "Look" title) via the
+ * `onHeaderActionsChange` slot, the same B-pattern as CompactInbox/
+ * CompactVault. The sync banner still renders here, above LookPanel's own
+ * body. Ignore-history/Clear now live in LookPanel's compact composer
+ * footer (see LookPanel.tsx's `compact` branch).
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import LookPanel from "../LookPanel";
 import type { useLookChat } from "../../hooks/useLookChat";
 import type { LookChatPersist } from "../../App";
 import { syncVaultIndex } from "../../lib/api";
 import SegmentedToggle from "../ui/SegmentedToggle";
-import { BTN_SECONDARY } from "../ui/styles";
+import { BTN_GHOST } from "../ui/styles";
+import { ChatIcon, SearchIcon, RefreshIcon } from "../PillMenu/icons";
 
 interface Props {
   lookMode: "search" | "chat";
@@ -22,9 +27,12 @@ interface Props {
   lookChat: ReturnType<typeof useLookChat>;
   lookChatPersist: LookChatPersist;
   onClose: () => void;
+  /** B-pattern (CompactInbox/CompactVault): toggle + refresh render in
+   *  CompactShell's header row next to the "Look" title. */
+  onHeaderActionsChange?: (actions: ReactNode | null) => void;
 }
 
-export default function CompactLook({ lookMode, onSelectLookMode, lookChat, lookChatPersist, onClose }: Props) {
+export default function CompactLook({ lookMode, onSelectLookMode, lookChat, lookChatPersist, onClose, onHeaderActionsChange }: Props) {
   // ponytail: handleRefresh is hand-duplicated from FullWindow.tsx's own
   // copy (and LookPanel's internal one) rather than lifted into a shared
   // hook — three call sites, same 15-line pattern, deliberate per
@@ -57,85 +65,37 @@ export default function CompactLook({ lookMode, onSelectLookMode, lookChat, look
 
   useEffect(() => () => { if (syncTimerRef.current) clearTimeout(syncTimerRef.current); }, []);
 
-  const { messages, reset, ignoreHistory, setIgnoreHistory } = lookChat;
+  useEffect(() => {
+    onHeaderActionsChange?.(
+      <>
+        <SegmentedToggle
+          ariaLabel="Look mode"
+          options={[
+            { key: "search" as const, label: "Search", icon: <SearchIcon size={12} /> },
+            { key: "chat" as const, label: "Chat", icon: <ChatIcon size={12} /> },
+          ]}
+          value={lookMode}
+          onChange={onSelectLookMode}
+        />
+        <button
+          className="btn-hover"
+          onClick={handleRefresh}
+          disabled={syncing}
+          title="Refresh index"
+          aria-label="Refresh index"
+          style={{ ...BTN_GHOST, flexShrink: 0, opacity: syncing ? 0.5 : 1, cursor: syncing ? "default" : "pointer" }}
+        >
+          <RefreshIcon size={13} />
+        </button>
+      </>
+    );
+    return () => onHeaderActionsChange?.(null);
+  }, [lookMode, onSelectLookMode, syncing, handleRefresh, onHeaderActionsChange]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
-      {/* Compact toolbar: search/chat toggle + reload on one row, ignore
-          history + clear on a second — 288px is too narrow for FullWindow's
-          single-row topbar layout. */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "8px 10px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <SegmentedToggle
-            ariaLabel="Look mode"
-            options={[{ key: "search" as const, label: "Search" }, { key: "chat" as const, label: "Chat" }]}
-            value={lookMode}
-            onChange={onSelectLookMode}
-          />
-          <span style={{ flex: 1 }} />
-          <button
-            className="btn-hover"
-            onClick={handleRefresh}
-            disabled={syncing}
-            title="Sync vault index"
-            aria-label="Sync vault index"
-            style={{ opacity: syncing ? 0.5 : 1, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "var(--text-2)" }}
-          >
-            <svg
-              width="13" height="13" viewBox="0 0 24 24"
-              fill="none" stroke="currentColor" strokeWidth="2"
-              strokeLinecap="round" strokeLinejoin="round"
-            >
-              <polyline points="23 4 23 10 17 10" />
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-            </svg>
-          </button>
-        </div>
-        {lookMode === "chat" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button
-              type="button"
-              onClick={() => setIgnoreHistory(!ignoreHistory)}
-              aria-pressed={ignoreHistory}
-              title="When on, each message is sent without prior conversation context"
-              style={{
-                ...BTN_SECONDARY,
-                fontSize: 10,
-                padding: "3px 8px",
-                flexShrink: 0,
-                background: ignoreHistory ? "var(--accent)" : (BTN_SECONDARY.background as string),
-                color: ignoreHistory ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
-                border: ignoreHistory ? "1px solid var(--accent)" : (BTN_SECONDARY.border as string),
-                fontWeight: ignoreHistory ? 600 : 400,
-              }}
-            >
-              Ignore history
-            </button>
-            <span style={{ flex: 1 }} />
-            <button
-              type="button"
-              onClick={reset}
-              disabled={messages.length === 0}
-              title="Clear chat"
-              aria-label="Clear chat"
-              style={{
-                ...BTN_SECONDARY,
-                fontSize: 10,
-                padding: "3px 8px",
-                flexShrink: 0,
-                opacity: messages.length === 0 ? 0.4 : 1,
-                cursor: messages.length === 0 ? "default" : "pointer",
-              }}
-            >
-              Clear
-            </button>
-          </div>
-        )}
-      </div>
-
       {/* Sync banner (mirrors LookPanel's own, driven externally so it sits
-          above the compact toolbar's second row rather than the panel's
-          suppressed header). */}
+          above the panel body rather than the panel's suppressed header). */}
       {syncing && (
         <div style={{ fontSize: 11, color: "var(--text-3)", borderBottom: "1px solid var(--border)", textAlign: "center", padding: "5px 10px", flexShrink: 0 }}>
           Syncing vault index…
@@ -157,6 +117,7 @@ export default function CompactLook({ lookMode, onSelectLookMode, lookChat, look
           lookChatPersist={lookChatPersist}
           hideToggle
           embedded
+          compact
           externalSyncing={syncing}
           externalSyncStatus={syncStatus}
         />

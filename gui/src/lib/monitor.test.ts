@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { monitorToInfo, resolveTargetMonitor, type MonitorInfo } from "./monitor";
+import { logicalToPhysicalRect, monitorToInfo, resolveTargetMonitor, type MonitorInfo } from "./monitor";
 import type { Monitor } from "@tauri-apps/api/window";
 
 function fakeMonitor(opts: { name: string | null; x: number; y: number; w: number; h: number; scale: number }): Monitor {
@@ -68,5 +68,46 @@ describe("resolveTargetMonitor", () => {
 
   it("falls back to primary when no selection has been made", () => {
     expect(resolveTargetMonitor(monitors, null)).toBe(primary);
+  });
+});
+
+describe("logicalToPhysicalRect", () => {
+  const scales = [1, 1.25, 1.5, 1.75];
+
+  it("matches Math.round((pos+size)*scale) for the right/bottom edge across fractional scales", () => {
+    for (const scale of scales) {
+      const pos = { x: 100.4, y: 50.6 };
+      const size = { w: 288.3, h: 320.7 };
+      const r = logicalToPhysicalRect(pos, size, scale);
+      expect(r.x + r.w).toBe(Math.round((pos.x + size.w) * scale));
+      expect(r.y + r.h).toBe(Math.round((pos.y + size.h) * scale));
+    }
+  });
+
+  it("rounds x/y independently (top-left is the anchor)", () => {
+    const r = logicalToPhysicalRect({ x: 100.4, y: 50.6 }, { w: 288.3, h: 320.7 }, 1.5);
+    expect(r.x).toBe(Math.round(100.4 * 1.5));
+    expect(r.y).toBe(Math.round(50.6 * 1.5));
+  });
+
+  // Known drift repro: round(x*s) + round(w*s) !== round((x+w)*s) at these
+  // exact fractional inputs — this is the T4 bug. The old (buggy)
+  // independent-rounding logic is inlined here as `oldRight` for contrast;
+  // `logicalToPhysicalRect` must NOT reproduce it.
+  it("demonstrates the fixed drift vs. the old independent-rounding logic", () => {
+    const cases = [
+      { scale: 1.25, x: 100.1, w: 287.5 }, // old 484, correct 485
+      { scale: 1.5, x: 100.1, w: 287.6 },  // old 581, correct 582
+      { scale: 1.75, x: 100.1, w: 287.1 }, // old 677, correct 678
+    ];
+    for (const { scale, x, w } of cases) {
+      const oldRight = Math.round(x * scale) + Math.round(w * scale);
+      const correctRight = Math.round((x + w) * scale);
+      expect(oldRight).not.toBe(correctRight); // sanity: the case actually drifts
+
+      const r = logicalToPhysicalRect({ x, y: 0 }, { w, h: 0 }, scale);
+      expect(r.x + r.w).toBe(correctRight);
+      expect(r.x + r.w).not.toBe(oldRight);
+    }
   });
 });

@@ -1,6 +1,14 @@
 """
 server.py - FastAPI bridge between the Tauri GUI and the Second Thought pipeline.
 
+Owns: FastAPI app wiring, the capture SSE endpoint, and `_run_pipeline_blocking`
+(kept here per CLAUDE.md hard rule -- hand-duplicated alongside
+main.py:run_pipeline(), never moved into a shared module). Background-job
+machinery (registry, workers, `/jobs/{id}` polling) lives in `jobs.py`;
+vault-admin-only endpoints (category CRUD, search, stats) live in
+`vault_admin.py` -- both are mounted below via `app.include_router(...)` so
+the route table is unchanged.
+
 Endpoints
   GET  /health
   POST /capture                        SSE stream of pipeline events
@@ -57,7 +65,7 @@ Security
              If OMNI_GUI_SECRET is unset the check is skipped with a startup warning.
 """
 from __future__ import annotations
-import asyncio, base64, hashlib, hmac, json, os, shutil, sys, threading, time, uuid
+import asyncio, base64, hashlib, hmac, json, os, sys, threading, time, uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import AsyncIterator, List, Optional
@@ -76,6 +84,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from config import reload_config
+import index_health
 
 # -- CORS & shared-secret configuration ---------------------------------------
 # The webview origin differs between dev and the packaged build:
@@ -110,9 +119,10 @@ if not _GUI_SECRET:
     )
 
 _executor = ThreadPoolExecutor(max_workers=2)
-# Separate pool for long-running background jobs (e.g. YouTube transcript
-# fetch + summarisation) so they cannot starve normal /capture requests.
-_bg_executor = ThreadPoolExecutor(max_workers=2)
+# Long-running background jobs (YouTube/voice transcript+summarize) and this
+# file's own startup warmup/DB-maintenance tasks share `jobs._bg_executor` --
+# a single small pool, not duplicated -- so neither starves normal /capture
+# requests handled by `_executor` above.
 
 # Max base64-encoded payload size (64 MB encoded ≈ 48 MB decoded).
 # A 4K PNG screenshot is ~20-30 MB; this cap blocks accidental or deliberate
@@ -153,7 +163,7 @@ def _warm_model() -> None:
             _MODEL_OK = False
         finally:
             _MODEL_READY = True
-    _bg_executor.submit(_warm)
+    jobs._bg_executor.submit(_warm)
 
 
 @app.on_event("startup")
@@ -176,7 +186,7 @@ def _startup_db_tasks() -> None:
                 print(f"[Reindex] body_excerpt backfilled for {n} rows", flush=True)
         except Exception as exc:
             print(f"[Reindex] skipped: {exc}", flush=True)
-    _bg_executor.submit(_run)
+    jobs._bg_executor.submit(_run)
 
 
 def _fire_due(db_path, notify_fn) -> None:
@@ -192,6 +202,19 @@ def _fire_due(db_path, notify_fn) -> None:
         except Exception as exc:
             print(f"[Reminders] fire failed for id={r.get('id')}: {exc}", flush=True)
             continue
+
+
+@app.on_event("startup")
+def _startup_load_jobs() -> None:
+    """Reload persisted background-job rows so GET /jobs/{id} survives a
+    server restart (see docs/ROADMAP.md: "Persist the background-job
+    registry"). Best-effort -- a failure here never blocks startup."""
+    try:
+        n = jobs.load_jobs()
+        if n:
+            print(f"[jobs] reloaded {n} persisted job(s)", flush=True)
+    except Exception as exc:
+        print(f"[jobs] startup reload failed: {exc}", flush=True)
 
 
 @app.on_event("startup")
@@ -219,31 +242,6 @@ def _startup_reminders_thread() -> None:
     threading.Thread(target=_loop, daemon=True).start()
 
 # ---------------------------------------------------------------------------
-# Background job registry (in-process; the server is a single long-lived
-# process spawned by Rust, so a dict is sufficient -- no DB needed).
-# ---------------------------------------------------------------------------
-_jobs: dict[str, dict] = {}   # job_id -> {status, kind, category, path, error, created, updated}
-_jobs_lock = threading.Lock()
-
-
-def _set_job(job_id: str, ttl_seconds: int = 3600, **fields) -> None:
-    now = time.time()
-    with _jobs_lock:
-        entry = _jobs.setdefault(job_id, {"created": now})
-        entry.update(fields)
-        entry["updated"] = now
-
-        stale = [k for k, v in _jobs.items() if now - v.get("updated", now) > ttl_seconds]
-        for k in stale:
-            del _jobs[k]
-
-
-def _get_job(job_id: str) -> Optional[dict]:
-    with _jobs_lock:
-        entry = _jobs.get(job_id)
-        return dict(entry) if entry is not None else None
-
-# ---------------------------------------------------------------------------
 # Request-level dedup gate
 # ---------------------------------------------------------------------------
 # The hotkey binding (AutoHotkey / Hammerspoon) often fires 2-3 times per
@@ -257,6 +255,53 @@ def _get_job(job_id: str) -> Optional[dict]:
 
 _DEDUP_WINDOW_S: float = 0.5
 _recent_request_hashes: dict[str, float] = {}  # hash -> epoch seconds
+
+
+# ---------------------------------------------------------------------------
+# Capture retry idempotency (run_id -> terminal event replay)
+# ---------------------------------------------------------------------------
+# useCapture.ts generates one `runId` per logical capture attempt BEFORE its
+# retry loop (gui/src/hooks/useCapture.ts:379, loop starts at :399) and reuses
+# it across every retry of that SAME capture -- it is NOT regenerated per
+# retry -- so it's a safe idempotency key: unique across different captures,
+# stable across retries of one capture. It already arrives here as
+# X-Capture-Run-Id (see the `capture` route below).
+#
+# Problem: a connection drop can lose the SSE response even though the
+# pipeline already finished (vault write succeeded). Without this map, the
+# GUI's retry re-POSTs the same content and the pipeline runs -- and writes
+# to the vault -- a second time.
+#
+# We record the terminal event ("done", or "job" for YouTube/voice hand-off,
+# which also eventually writes to the vault) keyed by run_id the moment it's
+# observed leaving the pipeline queue in `_stream_capture`, and on any later
+# request carrying the same run_id we replay that exact event instead of
+# invoking `_run_pipeline_blocking` again. This only wraps the SSE endpoint --
+# `_run_pipeline_blocking` itself is untouched (CLAUDE.md: main.py/server.py
+# pipeline bodies stay hand-duplicated and are not to be restructured here).
+#
+# ponytail: plain in-memory dict, lost on server restart -- acceptable, a
+# restart mid-retry-window already breaks the SSE stream itself. TTL is a
+# few minutes, well past the GUI's realistic retry-backoff window (a handful
+# of attempts, seconds), swept lazily on insert like `jobs._jobs`.
+_CAPTURE_DEDUP_TTL_S: float = 300.0  # 5 min
+_capture_results: dict[str, dict] = {}  # run_id -> {"event", "payload", "ts"}
+_capture_results_lock = threading.Lock()
+
+
+def _record_capture_terminal(run_id: str, event: str, payload: dict) -> None:
+    now = time.time()
+    with _capture_results_lock:
+        _capture_results[run_id] = {"event": event, "payload": payload, "ts": now}
+        stale = [k for k, v in _capture_results.items() if now - v["ts"] > _CAPTURE_DEDUP_TTL_S]
+        for k in stale:
+            del _capture_results[k]
+
+
+def _get_capture_terminal(run_id: str) -> Optional[dict]:
+    with _capture_results_lock:
+        entry = _capture_results.get(run_id)
+        return dict(entry) if entry is not None else None
 
 
 def _request_hash(content_type: str, content: str) -> str:
@@ -303,6 +348,18 @@ def _require_secret(x_omni_secret: Optional[str] = Header(default=None)) -> None
         raise HTTPException(status_code=403, detail="Invalid or missing X-Omni-Secret.")
 
 
+# -- Split-out routers (jobs.py, vault_admin.py) ------------------------------
+# See docs/ROADMAP.md "Split server.py into jobs.py + vault_admin.py". Both are
+# mounted with the same X-Omni-Secret dependency every other route in this file
+# enforces, applied once here at include-time rather than per-route, so auth
+# coverage is identical to before the split.
+import jobs
+import vault_admin
+
+app.include_router(jobs.router, dependencies=[Depends(_require_secret)])
+app.include_router(vault_admin.router, dependencies=[Depends(_require_secret)])
+
+
 # -- Pydantic models ----------------------------------------------------------
 
 class LookChatRequest(BaseModel):
@@ -333,15 +390,6 @@ class ConfigPatch(BaseModel):
     chat_system_prompt: Optional[str] = None
     reminders_delivery: Optional[str] = None
 
-class CategoryCreate(BaseModel):
-    name: str
-
-class CategoryRename(BaseModel):
-    new_name: str
-
-class CategoryDescriptionPatch(BaseModel):
-    description: Optional[str] = None  # None = clear description; str = set/update (max 500 chars)
-
 class InboxApprove(BaseModel):
     target_category: Optional[str] = None
 
@@ -359,34 +407,6 @@ def _get_vault_root() -> Path:
     """Return the vault root from the live config (single source of truth)."""
     from config import get_config
     return get_config().vault.root
-
-def _safe_name(name: str) -> str:
-    import re
-    return re.sub(r"[^\w\-. ]", "_", name).strip()
-
-
-def _safe_category_dir(root: Path, name: str) -> Path:
-    """
-    Resolve a category directory and guarantee it stays directly inside the
-    vault root. Rejects path-traversal, path separators, and any name
-    that would escape or nest below the vault.
-
-    Raises HTTPException(400) on any invalid / unsafe name.
-    """
-    import re as _re
-    cleaned = _safe_name(name)
-    cleaned = _re.sub(r"[. ]+$", "", cleaned)  # Windows silently strips trailing dots/spaces
-    if not cleaned or cleaned in (".", ".."):
-        raise HTTPException(status_code=400, detail="Invalid category name.")
-
-    root_resolved = root.resolve()
-    target = (root_resolved / cleaned).resolve()
-    if target.parent != root_resolved:
-        raise HTTPException(
-            status_code=400,
-            detail="Category name must not contain path separators or traversal.",
-        )
-    return target
 
 
 # -- SSE helper ---------------------------------------------------------------
@@ -406,6 +426,8 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
     def emit(event, **kwargs):
         loop.call_soon_threadsafe(q.put_nowait, {"event": event, **kwargs})
 
+    enriched = None  # set once Stage 2 (enrich) succeeds; checked in the except below
+                     # so an LLM/decide/write failure can still save the raw captured text.
     try:
         from config import reload_config
         cfg = reload_config()
@@ -433,9 +455,9 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
             # instead of blocking this SSE stream.
             emit("step", step="intercept", status="done")
             job_id = uuid.uuid4().hex[:12]
-            _set_job(job_id, ttl_seconds=cfg.youtube.job_ttl_seconds,
+            jobs._set_job(job_id, ttl_seconds=cfg.youtube.job_ttl_seconds,
                      status="queued", kind="youtube", category=None, path=None, error=None)
-            _bg_executor.submit(_run_youtube_job, job_id, content, cfg)
+            jobs._bg_executor.submit(jobs._run_youtube_job, job_id, content, cfg)
             emit("job", job_id=job_id, kind="youtube", status="queued")
             return
 
@@ -493,9 +515,9 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                 token_count=token_count, threshold=cfg.whisper.summarize_threshold_tokens
             ):
                 job_id = uuid.uuid4().hex
-                _set_job(job_id, status="queued", kind="voice", category=None, path=None, error=None)
+                jobs._set_job(job_id, status="queued", kind="voice", category=None, path=None, error=None)
                 emit("job", job_id=job_id, kind="voice", status="queued")
-                _bg_executor.submit(_run_voice_job, job_id, enriched, cfg)
+                jobs._bg_executor.submit(jobs._run_voice_job, job_id, enriched, cfg)
                 return
 
         # ponytail: synchronous map-reduce; promote to a background job like
@@ -601,30 +623,68 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
             existing_context = "\n\n---\n\n".join(ctx_parts) if ctx_parts else None
 
         category_descriptions = build_category_descriptions(cfg.vault.root, cfg.vault.scratchpad_folder)
-        with timer.stage("llm"):
-            output = run_llm_engine(
-                enriched,
-                category_descriptions=category_descriptions,
-                existing_context=existing_context,
-                max_retries=cfg.capture.llm_max_retries,
-                temperature=cfg.capture.llm_temperature,
-                scrutiny=cfg.capture.llm_scrutiny,
-            )
+        # NARROW scope: only an LLM-stage failure is fail-soft-to-scratchpad
+        # (mirrors main.py:run_pipeline). A later write/index failure is a real
+        # error, NOT a fail-soft case -- letting the broad outer except catch it
+        # here would double-write (the note already on disk + a scratchpad
+        # placeholder). Keep this try around the two run_llm_engine calls only.
+        try:
+            with timer.stage("llm"):
+                output = run_llm_engine(
+                    enriched,
+                    category_descriptions=category_descriptions,
+                    existing_context=existing_context,
+                    max_retries=cfg.capture.llm_max_retries,
+                    temperature=cfg.capture.llm_temperature,
+                    scrutiny=cfg.capture.llm_scrutiny,
+                )
 
-            # Two-pass fallback: the pre-resolver was uncertain, but now that the
-            # LLM has picked a category we can check for an existing CRM/Finance
-            # file and re-run with that context loaded.
-            if resolved.certainty == "low" and output.category in ("CRM", "Finance"):
-                fallback_context = read_existing_context(output, vault_root=cfg.vault.root)
-                if fallback_context:
-                    output = run_llm_engine(
-                        enriched,
-                        category_descriptions=category_descriptions,
-                        existing_context=fallback_context,
-                        max_retries=cfg.capture.llm_max_retries,
-                        temperature=cfg.capture.llm_temperature,
-                        scrutiny=cfg.capture.llm_scrutiny,
+                # Two-pass fallback: the pre-resolver was uncertain, but now that the
+                # LLM has picked a category we can check for an existing CRM/Finance
+                # file and re-run with that context loaded.
+                if resolved.certainty == "low" and output.category in ("CRM", "Finance"):
+                    fallback_context = read_existing_context(output, vault_root=cfg.vault.root)
+                    if fallback_context:
+                        output = run_llm_engine(
+                            enriched,
+                            category_descriptions=category_descriptions,
+                            existing_context=fallback_context,
+                            max_retries=cfg.capture.llm_max_retries,
+                            temperature=cfg.capture.llm_temperature,
+                            scrutiny=cfg.capture.llm_scrutiny,
+                        )
+        except Exception as llm_exc:
+            # LLM enrichment failed even after the two-pass retry (Ollama down,
+            # model error, parse failure, or a request timeout) -- fail-soft like
+            # every other enrichment path (see CLAUDE.md): route the raw captured
+            # text to the scratchpad flagged for retry instead of losing it.
+            from storage_engine import route_failed_llm
+            print(f"[server] {tag}LLM enrichment failed: {llm_exc}", flush=True)
+            # Prefer the ORIGINAL full text for large-text captures -- enriched_text
+            # was overwritten above with chunk[0]+section summaries.
+            fail_text = _large_text_original if _large_text_original is not None else enriched.enriched_text
+            emit("step", step="decide", status="done")
+            emit("step", step="write", status="active")
+            with timer.stage("write_scratchpad"):
+                written_path = route_failed_llm(
+                    fail_text,
+                    str(llm_exc),
+                    vault_root=cfg.vault.root,
+                    scratchpad_folder=cfg.vault.scratchpad_folder,
+                    source_url=enriched.source_url,
+                )
+            emit("step", step="write", status="done")
+            emit("done", path=str(written_path), category="Unprocessed_Captures")
+            try:
+                from notifier import notify_capture_error
+                if cfg.notifications.enabled:
+                    notify_capture_error(
+                        "LLM enrichment failed -- capture saved for retry.",
+                        title_prefix=cfg.notifications.title_prefix,
                     )
+            except Exception:
+                pass
+            return
 
         if _large_text_original is not None:
             from index_writer import get_db_path
@@ -664,13 +724,20 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                 source_metadata=enriched.source_metadata,
             )
         if cfg.vector.enabled:
+            # Derived-index write is FAIL-SOFT: the vault .md is already written
+            # (source of truth), so an embeddings/index failure must never turn a
+            # successful capture into a reported error -- swallow + log, per
+            # CLAUDE.md "files are the source of truth, DBs are derived indexes".
             with timer.stage("index"):
                 from pathlib import Path as _Path
-                note_text = _Path(written_path).read_text(encoding="utf-8", errors="ignore")
-                index_note(
-                    cfg.vault.root, _Path(written_path), note_text,
-                    cfg.ollama.base_url, cfg.vector.embed_model,
-                )
+                try:
+                    note_text = _Path(written_path).read_text(encoding="utf-8", errors="ignore")
+                    index_note(
+                        cfg.vault.root, _Path(written_path), note_text,
+                        cfg.ollama.base_url, cfg.vector.embed_model,
+                    )
+                except Exception as index_exc:
+                    print(f"[server] {tag}index write failed (note still saved): {index_exc}", flush=True)
         emit("step", step="write", status="done")
 
         from datetime import datetime as _datetime
@@ -696,6 +763,11 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                 pass
 
     except Exception as exc:
+        # Genuine failure OUTSIDE the fail-soft LLM stage (intercept/enrich, or a
+        # write_to_vault failure). LLM-stage failures are already handled by the
+        # narrow try above and never reach here. A write failure is a real error,
+        # not a fail-soft case -- surface it (mirrors main.py, where non-LLM
+        # failures propagate to the top-level catch rather than route-to-scratchpad).
         print(f"[server] {tag}pipeline failed: {exc}", flush=True)
         emit("error", message=str(exc))
     finally:
@@ -731,291 +803,15 @@ def _merge_large_text_tags(
     return normalize_tags(combined, vocab)
 
 
-def _run_youtube_job(job_id: str, url: str, cfg) -> None:
-    """
-    Background worker driving the four-phase async YouTube pipeline:
-
-      fetching -> writing_transcript -> summarizing -> [combining] ->
-      finalizing -> done | error
-
-    The note is written to the vault with the full raw transcript BEFORE any
-    LLM call (end of writing_transcript), so the source text is never lost
-    even if summarization later fails or the process crashes mid-job.
-    """
-    ttl = cfg.youtube.job_ttl_seconds
-
-    def set_status(status: str, **extra) -> None:
-        _set_job(job_id, ttl_seconds=ttl, status=status, **extra)
-
-    try:
-        import asyncio
-        from datetime import datetime
-        from functools import partial
-
-        from enrichment_router import fetch_youtube_transcript
-        from storage_engine import create_youtube_note, finalize_youtube_note, register_in_dedup_index
-        from summarizer import count_tokens, chunk_transcript, _map_phase, reduce_summaries
-        from llm_engine import summarize_async, DETAILED_SUMMARY_PROMPT, OLLAMA_API_KEY, _normalize_base_url
-        from openai import AsyncOpenAI
-
-        set_status("fetching")
-        transcript = fetch_youtube_transcript(url)
-
-        if not transcript.get("transcript_available"):
-            print(f"[server] youtube job {job_id} failed: no captions available "
-                  f"(url={url}, detail={transcript.get('error', 'n/a')})", flush=True)
-            set_status("error", error="No captions available for this video")
+async def _stream_capture(content_type: str, content: str, run_id: Optional[str] = None) -> AsyncIterator[str]:
+    if run_id:
+        prior = _get_capture_terminal(run_id)
+        if prior is not None:
+            print(f"[server] [run:{run_id}] idempotent retry -- replaying prior "
+                  f"'{prior['event']}' instead of re-running the pipeline", flush=True)
+            yield _sse(prior["event"], **prior["payload"])
             return
 
-        full_text = transcript["full_text"]
-        title = transcript.get("title")
-        segments = transcript["segments"]
-
-        # Canonical bare host (matches the project-wide invariant: base_url is
-        # always bare; /v1 is added only at OpenAI-compatible client construction
-        # via _normalize_base_url). count_tokens below hits Ollama's native
-        # /api/tokenize and needs the bare host; the AsyncOpenAI client gets /v1.
-        base_url = cfg.ollama.base_url.rstrip("/")
-        model = cfg.ollama.model
-
-        fetched_note = f"*{len(segments)} segments • fetched {datetime.now().isoformat(timespec='seconds')}*"
-        transcript_md = f"{fetched_note}\n\n{full_text}"
-        path = create_youtube_note(
-            title, url, transcript_md, cfg.vault.root, cfg.youtube, cfg.vault.scratchpad_folder,
-        )
-        set_status("writing_transcript", path=str(path))
-
-        count = partial(count_tokens, base_url=base_url, model=model)
-        max_chunk_tokens = (
-            cfg.capture.summary_model_context_tokens
-            - cfg.capture.summary_safety_buffer_tokens
-            - cfg.capture.summary_reserved_output_tokens
-        )
-
-        async def run_summarization() -> str:
-            client = AsyncOpenAI(base_url=_normalize_base_url(base_url), api_key=OLLAMA_API_KEY)
-            try:
-                if count(full_text) <= max_chunk_tokens:
-                    set_status("summarizing", chunk_index=1, chunk_total=1,
-                               detail="Summarizing transcript")
-                    return await summarize_async(
-                        full_text, instruction=DETAILED_SUMMARY_PROMPT, base_url=base_url,
-                        model=model, temperature=cfg.capture.llm_temperature,
-                        max_retries=cfg.capture.llm_max_retries, timeout=None, client=client,
-                    )
-
-                chunks = chunk_transcript(
-                    segments, count=count, max_tokens=max_chunk_tokens,
-                    overlap_tokens=cfg.capture.summary_chunk_overlap_tokens,
-                    max_chunks=cfg.capture.summary_max_chunks,
-                )
-                total = len(chunks)
-                set_status("summarizing", chunk_index=0, chunk_total=total,
-                           detail=f"Summarizing 0 of {total} sections")
-
-                def on_progress(done: int, total_: int) -> None:
-                    set_status("summarizing", chunk_index=done, chunk_total=total_,
-                               detail=f"Summarized {done} of {total_} sections")
-
-                partials = await _map_phase(
-                    chunks, client=client, model=model, temperature=cfg.capture.llm_temperature,
-                    max_retries=cfg.capture.llm_max_retries, timeout=None,
-                    max_concurrency=cfg.capture.summary_max_concurrency,
-                    on_progress=on_progress, base_url=base_url,
-                )
-
-                set_status("combining", chunk_total=total, detail="Combining section summaries")
-                return await reduce_summaries(
-                    partials, count=count, client=client, model=model,
-                    temperature=cfg.capture.llm_temperature, max_retries=cfg.capture.llm_max_retries,
-                    timeout=None, max_chunk_tokens=max_chunk_tokens,
-                    overlap_tokens=cfg.capture.summary_chunk_overlap_tokens,
-                    max_chunks=cfg.capture.summary_max_chunks,
-                    max_concurrency=cfg.capture.summary_max_concurrency,
-                    reduce_max_depth=cfg.capture.reduce_max_depth, base_url=base_url,
-                )
-            finally:
-                await client.close()
-
-        summary = asyncio.run(run_summarization())
-
-        set_status("finalizing", detail="Finalizing note")
-        finalize_youtube_note(path, summary, cfg.vault.root)
-
-        if cfg.vector.enabled:
-            try:
-                from vector_store import index_note
-                note_text = path.read_text(encoding="utf-8", errors="ignore")
-                index_note(cfg.vault.root, path, note_text, cfg.ollama.base_url, cfg.vector.embed_model)
-            except Exception as exc:
-                print(f"[server] youtube job {job_id} vector index skipped: {exc}", flush=True)
-
-        try:
-            register_in_dedup_index(summary, url, cfg.vault.root, path)
-        except Exception:
-            pass
-
-        set_status("done", category=cfg.youtube.folder_name, path=str(path))
-
-        try:
-            from notifier import notify_capture_success
-            from capture_log import log_capture
-            from models import CaptureOutput, EnrichedPayload
-            if cfg.notifications.enabled:
-                notify_capture_success(category=cfg.youtube.folder_name,
-                                       filepath=str(path),
-                                       title_prefix=cfg.notifications.title_prefix)
-            minimal_output = CaptureOutput(
-                category=cfg.youtube.folder_name,
-                suggested_filename=path.stem,
-                markdown_content=summary,
-                confidence=1.0,
-            )
-            minimal_enriched = EnrichedPayload(
-                raw_input=url, input_type="url_youtube", enriched_text=full_text, source_url=url,
-            )
-            log_capture(minimal_output, minimal_enriched, str(path), cfg.ollama.model)
-        except Exception:
-            pass
-
-    except Exception as exc:
-        print(f"[server] youtube job {job_id} failed: {exc}", flush=True)
-        set_status("error", error=str(exc))
-
-
-def _run_voice_job(job_id: str, enriched, cfg) -> None:
-    """
-    Background worker driving the long-recording voice pipeline -- clone of
-    _run_youtube_job minus the fetching phase (transcript already in hand):
-
-      queued -> writing_transcript -> summarizing -> [combining] ->
-      finalizing -> done | error
-    """
-
-    def set_status(status: str, **extra) -> None:
-        _set_job(job_id, status=status, **extra)
-
-    try:
-        import asyncio
-        from functools import partial
-
-        from storage_engine import create_voice_note, finalize_youtube_note, register_in_dedup_index
-        from summarizer import count_tokens, chunk_transcript, _map_phase, reduce_summaries
-        from llm_engine import summarize_async, DETAILED_SUMMARY_PROMPT, OLLAMA_API_KEY, _normalize_base_url
-        from openai import AsyncOpenAI
-
-        full_text = enriched.enriched_text
-        title = None
-        segments = [{"text": ln} for ln in full_text.splitlines() if ln.strip()]
-
-        # Canonical bare host (matches the project-wide invariant: base_url is
-        # always bare; /v1 is added only at OpenAI-compatible client construction
-        # via _normalize_base_url). count_tokens below hits Ollama's native
-        # /api/tokenize and needs the bare host; the AsyncOpenAI client gets /v1.
-        base_url = cfg.ollama.base_url.rstrip("/")
-        model = cfg.ollama.model
-
-        path = create_voice_note(title, full_text, cfg.vault.root, cfg.vault.scratchpad_folder)
-        set_status("writing_transcript", path=str(path))
-
-        count = partial(count_tokens, base_url=base_url, model=model)
-        max_chunk_tokens = (
-            cfg.capture.summary_model_context_tokens
-            - cfg.capture.summary_safety_buffer_tokens
-            - cfg.capture.summary_reserved_output_tokens
-        )
-
-        async def run_summarization() -> str:
-            client = AsyncOpenAI(base_url=_normalize_base_url(base_url), api_key=OLLAMA_API_KEY)
-            try:
-                if count(full_text) <= max_chunk_tokens:
-                    set_status("summarizing", chunk_index=1, chunk_total=1,
-                               detail="Summarizing transcript")
-                    return await summarize_async(
-                        full_text, instruction=DETAILED_SUMMARY_PROMPT, base_url=base_url,
-                        model=model, temperature=cfg.capture.llm_temperature,
-                        max_retries=cfg.capture.llm_max_retries, timeout=None, client=client,
-                    )
-
-                chunks = chunk_transcript(
-                    segments, count=count, max_tokens=max_chunk_tokens,
-                    overlap_tokens=cfg.capture.summary_chunk_overlap_tokens,
-                    max_chunks=cfg.capture.summary_max_chunks,
-                )
-                total = len(chunks)
-                set_status("summarizing", chunk_index=0, chunk_total=total,
-                           detail=f"Summarizing 0 of {total} sections")
-
-                def on_progress(done: int, total_: int) -> None:
-                    set_status("summarizing", chunk_index=done, chunk_total=total_,
-                               detail=f"Summarized {done} of {total_} sections")
-
-                partials = await _map_phase(
-                    chunks, client=client, model=model, temperature=cfg.capture.llm_temperature,
-                    max_retries=cfg.capture.llm_max_retries, timeout=None,
-                    max_concurrency=cfg.capture.summary_max_concurrency,
-                    on_progress=on_progress, base_url=base_url,
-                )
-
-                set_status("combining", chunk_total=total, detail="Combining section summaries")
-                return await reduce_summaries(
-                    partials, count=count, client=client, model=model,
-                    temperature=cfg.capture.llm_temperature, max_retries=cfg.capture.llm_max_retries,
-                    timeout=None, max_chunk_tokens=max_chunk_tokens,
-                    overlap_tokens=cfg.capture.summary_chunk_overlap_tokens,
-                    max_chunks=cfg.capture.summary_max_chunks,
-                    max_concurrency=cfg.capture.summary_max_concurrency,
-                    reduce_max_depth=cfg.capture.reduce_max_depth, base_url=base_url,
-                )
-            finally:
-                await client.close()
-
-        summary = asyncio.run(run_summarization())
-
-        set_status("finalizing", detail="Finalizing note")
-        finalize_youtube_note(path, summary, cfg.vault.root)
-
-        category = path.parent.name
-
-        if cfg.vector.enabled:
-            try:
-                from vector_store import index_note
-                note_text = path.read_text(encoding="utf-8", errors="ignore")
-                index_note(cfg.vault.root, path, note_text, cfg.ollama.base_url, cfg.vector.embed_model)
-            except Exception as exc:
-                print(f"[server] voice job {job_id} vector index skipped: {exc}", flush=True)
-
-        try:
-            register_in_dedup_index(summary, str(path), cfg.vault.root, path)
-        except Exception:
-            pass
-
-        set_status("done", category=category, path=str(path))
-
-        try:
-            from notifier import notify_capture_success
-            from capture_log import log_capture
-            from models import CaptureOutput
-            if cfg.notifications.enabled:
-                notify_capture_success(category=category,
-                                       filepath=str(path),
-                                       title_prefix=cfg.notifications.title_prefix)
-            minimal_output = CaptureOutput(
-                category=category,
-                suggested_filename=path.stem,
-                markdown_content=summary,
-                confidence=1.0,
-            )
-            log_capture(minimal_output, enriched, str(path), cfg.ollama.model)
-        except Exception:
-            pass
-
-    except Exception as exc:
-        print(f"[server] voice job {job_id} failed: {exc}", flush=True)
-        set_status("error", error=str(exc))
-
-
-async def _stream_capture(content_type: str, content: str, run_id: Optional[str] = None) -> AsyncIterator[str]:
     if _is_duplicate_request(content_type, content):
         yield _sse("duplicate")
         return
@@ -1028,6 +824,8 @@ async def _stream_capture(content_type: str, content: str, run_id: Optional[str]
         if item is None:
             break
         event = item.pop("event")
+        if run_id and event in ("done", "job"):
+            _record_capture_terminal(run_id, event, dict(item))
         yield _sse(event, **item)
 
 
@@ -1038,7 +836,15 @@ async def health():
     # Unauthenticated liveness probe: used by launch.ps1 to detect readiness.
     # Returns only booleans, so it leaks nothing sensitive even with a secret set.
     # model_ok: null = warming, true = ready, false = disconnected/failed
-    return {"ok": True, "ready": _MODEL_READY, "model_ok": _MODEL_OK}
+    # index_health: last captures.db/vectors.db write outcome per index --
+    # purely observational, never authoritative (see CLAUDE.md "Files are
+    # the source of truth" hard rule).
+    return {
+        "ok": True,
+        "ready": _MODEL_READY,
+        "model_ok": _MODEL_OK,
+        "index_health": index_health.snapshot(),
+    }
 
 @app.post("/capture")
 async def capture(
@@ -1077,25 +883,6 @@ async def share(req: ShareRequest, _: None = Depends(_require_secret)):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
-
-
-@app.get("/jobs/{job_id}")
-async def get_job(job_id: str, _: None = Depends(_require_secret)):
-    """Status of a background job (e.g. a YouTube capture). Cheap; polled by the GUI."""
-    job = _get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
-    return {
-        "job_id": job_id,
-        "status": job.get("status"),
-        "kind": job.get("kind"),
-        "category": job.get("category"),
-        "path": job.get("path"),
-        "error": job.get("error"),
-        "chunk_index": job.get("chunk_index"),
-        "chunk_total": job.get("chunk_total"),
-        "detail": job.get("detail"),
-    }
 
 
 @app.get("/config")
@@ -1161,146 +948,6 @@ async def patch_config(patch: ConfigPatch, _: None = Depends(_require_secret)):
     reload_config()
 
     return {"ok": True}
-
-
-# -- Vault management endpoints -----------------------------------------------
-
-@app.get("/vault/categories")
-async def list_categories(_: None = Depends(_require_secret)):
-    root = _get_vault_root()
-    if not root.exists():
-        return {"categories": [], "vault_root": str(root)}
-    from storage_engine import read_category_config
-    result = []
-    for entry in sorted(root.iterdir()):
-        if entry.is_dir():
-            md_files = [f for f in entry.iterdir() if f.suffix == ".md"]
-            cfg = read_category_config(entry)
-            result.append({
-                "name": entry.name,
-                "file_count": len(md_files),
-                "path": str(entry),
-                "description": cfg.get("description", None),
-            })
-    return {"categories": result, "vault_root": str(root)}
-
-@app.post("/vault/categories")
-async def create_category(body: CategoryCreate, _: None = Depends(_require_secret)):
-    from config import get_config
-    root = _get_vault_root()
-    new_dir = _safe_category_dir(root, body.name)
-    name = new_dir.name
-    if new_dir.exists():
-        raise HTTPException(status_code=409, detail=f"'{name}' already exists.")
-    new_dir.mkdir(parents=True, exist_ok=False)
-
-    description = None
-    if get_config().capture.auto_describe_new_folders:
-        from storage_engine import generate_category_description, write_category_description
-        # generate_category_description() ends in a blocking asyncio.run(), which
-        # raises if called from a thread that already has a running event loop
-        # (true here -- this is an async route). Run it on a worker thread instead.
-        generated = await anyio.to_thread.run_sync(generate_category_description, name)
-        if generated:
-            description = write_category_description(new_dir, generated)
-
-    return {"ok": True, "name": name, "path": str(new_dir), "description": description}
-
-@app.patch("/vault/categories/{name}")
-async def rename_category(name: str, body: CategoryRename, _: None = Depends(_require_secret)):
-    root = _get_vault_root()
-    src = _safe_category_dir(root, name)
-    if not src.exists():
-        raise HTTPException(status_code=404, detail=f"'{name}' not found.")
-    dst = _safe_category_dir(root, body.new_name)
-    new_name = dst.name
-    if dst.exists():
-        raise HTTPException(status_code=409, detail=f"'{new_name}' already exists.")
-    src.rename(dst)
-    return {"ok": True, "old_name": name, "new_name": new_name}
-
-@app.patch("/vault/categories/{name}/description")
-async def update_category_description(
-    name: str,
-    body: CategoryDescriptionPatch,
-    _: None = Depends(_require_secret),
-):
-    """
-    Set or clear the LLM routing description for a category folder.
-
-    The description is persisted in <vault>/<category>/.category.toml under
-    the 'description' key.  This file is read by build_category_descriptions()
-    and injected verbatim into the LLM system prompt on every capture so the
-    model can route files more precisely.
-
-    Pass description=null (JSON null) or an empty string to clear it.
-    Maximum length: 500 characters.
-    """
-    from storage_engine import write_category_description
-    root = _get_vault_root()
-    target = _safe_category_dir(root, name)
-    if not target.exists():
-        raise HTTPException(status_code=404, detail=f"'{name}' not found.")
-
-    desc = write_category_description(target, body.description)
-    return {"ok": True, "name": name, "description": desc}
-
-
-@app.delete("/vault/categories/{name}")
-async def delete_category(name: str, force: bool = False, _: None = Depends(_require_secret)):
-    root = _get_vault_root()
-    target = _safe_category_dir(root, name)
-    if not target.exists():
-        raise HTTPException(status_code=404, detail=f"'{name}' not found.")
-    files = [f for f in target.iterdir() if f.is_file()]
-    if files and not force:
-        raise HTTPException(status_code=409,
-            detail=f"'{name}' contains {len(files)} file(s). Pass force=true to delete anyway.")
-    shutil.rmtree(target)
-    return {"ok": True, "deleted": name}
-
-@app.get("/vault/categories/{name}/files")
-async def list_category_files(name: str, _: None = Depends(_require_secret)):
-    root = _get_vault_root()
-    target = _safe_category_dir(root, name)
-    if not target.exists():
-        raise HTTPException(status_code=404, detail=f"'{name}' not found.")
-    files = []
-    for f in sorted(target.iterdir()):
-        if f.is_file() and f.suffix == ".md":
-            stat = f.stat()
-            files.append({"name": f.stem, "filename": f.name, "path": str(f),
-                          "size_bytes": stat.st_size, "modified": stat.st_mtime})
-    return {"category": name, "files": files}
-
-
-# -- Search & stats endpoints -------------------------------------------------
-
-@app.get("/search")
-async def search_captures(
-    q: str = "",
-    category: Optional[str] = None,
-    since: Optional[str] = None,
-    limit: int = 25,
-    _: None = Depends(_require_secret),
-    x_log_level: Optional[str] = Header(None, alias="X-Log-Level"),
-):
-    """Full-text search over captured notes via the SQLite FTS5 index."""
-    from index_writer import search as idx_search
-    from look_log import debug_logging_from_level, set_look_verbose, look_debug, look_info
-    set_look_verbose(debug_logging_from_level(x_log_level))
-    limit = min(max(1, limit), 200)
-    look_debug(f"GET /search q={q!r} category={category} since={since} limit={limit}")
-    results = idx_search(q, _get_vault_root(), category=category, since=since, limit=limit)
-    look_info(f"GET /search returned {len(results)} result(s) for q={q!r}")
-    return {"results": results, "count": len(results), "query": q}
-
-
-@app.get("/stats")
-async def capture_stats(_: None = Depends(_require_secret)):
-    """Aggregated capture statistics backed by SQLite."""
-    from index_writer import stats as idx_stats
-    return idx_stats(_get_vault_root())
 
 
 # -- Look / RAG chat endpoint -------------------------------------------------
@@ -1452,7 +1099,7 @@ async def approve_inbox(
     cfg = get_config()
 
     if body.target_category:
-        _safe_category_dir(root, body.target_category)  # raises HTTP 400 on traversal
+        vault_admin._safe_category_dir(root, body.target_category)  # raises HTTP 400 on traversal
 
     is_new = bool(body.target_category) and not (root / body.target_category).exists()
     sample_text = get_scratchpad_item_text(note_id, root, cfg.vault.scratchpad_folder) if is_new else None

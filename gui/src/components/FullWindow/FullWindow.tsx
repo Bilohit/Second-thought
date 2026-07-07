@@ -9,6 +9,7 @@ import { railSliderFromElement } from "../../lib/railSelection";
 import { MenuIcon } from "../PillMenu/icons";
 import { syncVaultIndex, getStats, getInbox } from "../../lib/api";
 import InboxPanel, { type InboxTab } from "../InboxPanel";
+import ErrorBoundary from "../ErrorBoundary";
 import type { CaptureState, CaptureStep } from "../../hooks/useCapture";
 import type { LlmStatus } from "../../lib/api";
 import type { LookChatPersist } from "../../App";
@@ -21,6 +22,7 @@ interface LookChatHook {
   streaming: boolean;
   ask: (q: string) => void;
   reset: () => void;
+  retry: (index: number) => void;
   ignoreHistory: boolean;
   setIgnoreHistory: (enabled: boolean) => void;
 }
@@ -39,7 +41,6 @@ const TITLES: Record<RailView, [string, string]> = {
 // Subset of SettingsPanel props that FullWindow receives and forwards
 export interface SettingsForward {
   theme?: Parameters<typeof SettingsPanel>[0]["theme"];
-  themeLabel?: string;
   onSelectTheme?: Parameters<typeof SettingsPanel>[0]["onSelectTheme"];
   displayMode?: Parameters<typeof SettingsPanel>[0]["displayMode"];
   onSelectDisplayMode?: Parameters<typeof SettingsPanel>[0]["onSelectDisplayMode"];
@@ -210,7 +211,7 @@ export default function FullWindow(props: FullWindowProps) {
                 title={TITLES[v][0]}
                 aria-pressed={view === v}
               >
-                {v === "dashboard" ? "⊞" : v === "look" ? "⌕" : <MenuIcon target="vault" size={18} />}
+                {v === "dashboard" ? "⊞" : v === "look" ? <MenuIcon target="search" size={18} /> : <MenuIcon target="vault" size={18} />}
               </button>
             ))}
           </div>
@@ -273,6 +274,11 @@ export default function FullWindow(props: FullWindowProps) {
           )}
         </div>
 
+        {/* C2: a render throw in the routed view never blanks the whole
+            window — this boundary is keyed by `view` (auto-resets on tab
+            switch) and lives entirely inside the content area, so the rail
+            above (view switching itself) always survives a tab crash. */}
+        <ErrorBoundary key={view}>
         {view === "dashboard" && (
           <div key="dashboard" className="fw-view-panel">
             <DashboardView
@@ -328,6 +334,7 @@ export default function FullWindow(props: FullWindowProps) {
             <SettingsPanel visible onClose={() => setView("dashboard")} {...props.settingsProps} embedded />
           </div>
         )}
+        </ErrorBoundary>
       </div>
     </div>
   );

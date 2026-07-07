@@ -11,6 +11,9 @@ export interface ChatMessage {
   confidence?: number;
   tier?: LookTier;
   searching?: boolean;  // true while waiting for first meta/sources event
+  /** Assistant messages only: the raw user query that produced this reply,
+   *  so a failed (⚠-prefixed) message can be retried without re-typing. */
+  userQuery?: string;
 }
 
 const IGNORE_HISTORY_KEY = "omni-look-ignore-history";
@@ -26,6 +29,25 @@ export function setIgnoreHistoryPref(enabled: boolean): void {
   try {
     localStorage.setItem(IGNORE_HISTORY_KEY, enabled ? "1" : "0");
   } catch { /* ignore */ }
+}
+
+/** Mirrors the sibling "error" SSE-event convention (`⚠ ${message}`) for transport-level failures. */
+export function formatChatFailure(err: unknown): string {
+  return `⚠ Chat failed: ${err instanceof Error ? err.message : "connection lost"}`;
+}
+
+/** Pure: resolves what `retry(index)` should do — the stored query to re-ask,
+ *  and the message list with the failed assistant turn (and its paired user
+ *  turn) dropped so ask() re-pushes a clean pair. Returns null when `index`
+ *  isn't a retryable assistant message (no stored userQuery). Split out from
+ *  the hook so it's testable without a React renderer (repo has no jsdom). */
+export function getRetryTarget(
+  messages: ChatMessage[],
+  index: number
+): { query: string; truncated: ChatMessage[] } | null {
+  const msg = messages[index];
+  if (!msg || msg.role !== "assistant" || !msg.userQuery) return null;
+  return { query: msg.userQuery, truncated: messages.slice(0, Math.max(0, index - 1)) };
 }
 
 export function useLookChat() {
@@ -55,7 +77,7 @@ export function useLookChat() {
     setMessages((prev) => [
       ...prev,
       { role: "user", content: question, chatMode: mode },
-      { role: "assistant", content: "", sources: [], searching: true, chatMode: mode },
+      { role: "assistant", content: "", sources: [], searching: true, chatMode: mode, userQuery: q },
     ]);
     setStreaming(true);
     const ctrl = new AbortController();
@@ -91,6 +113,7 @@ export function useLookChat() {
           logger.debug("look", "chat aborted");
         } else {
           logger.error("look", "chat failed", err);
+          updateLast({ content: formatChatFailure(err), searching: false });
         }
       } finally { setStreaming(false); abortRef.current = null; }
     })();
@@ -107,5 +130,14 @@ export function useLookChat() {
     logger.debug("look", "chat reset");
   }, []);
 
-  return { messages, streaming, ask, reset, ignoreHistory, setIgnoreHistory };
+  /** Re-sends the user query stored on a failed (⚠) assistant message. */
+  const retry = useCallback((index: number) => {
+    const target = getRetryTarget(messages, index);
+    if (!target) return;
+    logger.info("look", "retry", { index });
+    setMessages(target.truncated);
+    ask(target.query);
+  }, [messages, ask]);
+
+  return { messages, streaming, ask, reset, retry, ignoreHistory, setIgnoreHistory };
 }

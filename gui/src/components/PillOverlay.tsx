@@ -19,17 +19,17 @@
  * component's shape (and the menu chips, which inherit it — D2), never any
  * panel/control elsewhere.
  */
+import { useState, type ReactNode } from "react";
 import type { CaptureState, CaptureStep } from "../hooks/useCapture";
 import { deriveYoutubeSteps } from "../hooks/useCapture";
-import CapsuleMenu, { CAPSULE_CLOSED_W, CAPSULE_H, CAPSULE_PAD_X, CAPSULE_ICON_W } from "./PillMenu/CapsuleMenu";
+import CapsuleMenu, { CAPSULE_CLOSED_W, CAPSULE_H, CAPSULE_OPEN_W } from "./PillMenu/CapsuleMenu";
 import RadialMenu, { type PillGeometry } from "./PillMenu/RadialMenu";
-import { ALL_TARGETS, MENU_LABELS, type MenuTarget } from "./PillMenu/icons";
-import { sliderRect } from "./PillMenu/capsuleSlider";
+import { MENU_LABELS, type MenuTarget } from "./PillMenu/icons";
 import type { LlmStatus } from "../lib/api";
 import { llmStatusLabel, llmStatusTooltip } from "../lib/llmStatusLabel";
 import type { VoicePhase } from "../hooks/useVoiceRecording";
 import { formatElapsed } from "../lib/voiceLimits";
-import { MicIcon } from "./PillMenu/icons";
+import { MicIcon, RefreshIcon } from "./PillMenu/icons";
 import FluidVisualizer from "./PillMenu/FluidVisualizer";
 import CompactShell from "./CompactPanels/CompactShell";
 import CompactLook from "./CompactPanels/CompactLook";
@@ -37,7 +37,7 @@ import CompactInbox from "./CompactPanels/CompactInbox";
 import CompactSettings from "./CompactPanels/CompactSettings";
 import CompactVault from "./CompactPanels/CompactVault";
 import CompactHistory from "./CompactPanels/CompactHistory";
-import type { VerticalZone } from "../lib/compactPanel";
+import type { PanelExtrudeZone } from "../lib/compactPanel";
 import type { useLookChat } from "../hooks/useLookChat";
 import type { LookChatPersist } from "../App";
 import type { SettingsForward } from "./FullWindow/FullWindow";
@@ -102,7 +102,10 @@ interface Props {
   /** = App's panelReady — gates CompactShell's reveal until the OS window
    *  has actually grown to fit it (same contract as capsuleMorphOpen). */
   panelReady?: boolean;
-  panelZone?: VerticalZone;
+  /** Task 2.2: middle-float variant deleted — App.tsx maps
+   *  `resolveVerticalZone`'s "middle" result to "top" before it ever reaches
+   *  here, so only the two extrude directions remain. */
+  panelZone?: PanelExtrudeZone;
   /** Bar/panel placement within the grown window, from
    *  `computeCapsulePanelGeometry` (App.tsx, memoized in
    *  capsulePanelGeomRef at open time). Undefined/null while no panel is
@@ -120,11 +123,18 @@ interface Props {
    *  close morph, while `compactPanel` itself (used for the pill's own
    *  fade-back-in) flips immediately. */
   islandTarget?: Exclude<MenuTarget, "hide"> | null;
-  /** Gates the island's CompactShell reveal — distinct from `panelReady`
-   *  (window-grown gate): content additionally waits for the rect-morph to
-   *  settle plus the mock's 120ms `content-hid` delay (App.tsx). */
-  islandContentReady?: boolean;
+  /** Capsule mode only (RC-3): the capsule twin of `islandTarget` above —
+   *  lingers past `compactPanel` flipping to null (App.tsx's
+   *  lastCapsulePanelTargetRef) so CompactShell and the bar/panel absolute
+   *  offsets stay mounted with their last content through the whole
+   *  PANEL_EXIT_MS close, instead of snapping to the flex-centered layout
+   *  while the OS window is still panel-sized. */
+  capsulePanelTarget?: Exclude<MenuTarget, "hide"> | null;
   onClosePanel?: () => void;
+  /** C2: forwarded straight through to both CompactShell mounts below —
+   *  fires when a render throw inside a compact panel auto-collapses it, so
+   *  App can tint the pill briefly. See CompactShell's `onPanelError` doc. */
+  onPanelError?: (error: unknown) => void;
   /** Task 2.3: Look panel content/state, mirrored from FullWindow's wiring
    *  so CompactLook has full parity (search/chat, ignore-history, clear,
    *  reload indexing) — only present/used while compactPanel === "search". */
@@ -140,6 +150,14 @@ interface Props {
   /** Task 2.4: open-note handler for CompactVault/CompactHistory, mirrored
    *  from FullWindow's onOpenFile wiring. */
   onOpenFile?: (path: string) => void;
+  /** P2 reminder-consent parity: a just-auto-created reminder's brief undo
+   *  window (App.tsx's reminderUndo state). While set and the pill is idle,
+   *  it takes over the pill/capsule bar's label + click target (tap to
+   *  undo) instead of its normal status text / menu-open behavior — the
+   *  bar's own content-swap is reused rather than adding a second floating
+   *  toast element, since the pill/capsule OS window is sized tightly
+   *  around the bar with no spare room for one. */
+  reminderToast?: { message: string; onUndo: () => void } | null;
 }
 
 function stepPillLabel(def: CaptureStep): string {
@@ -173,55 +191,79 @@ export const PILL_DIMS: Record<PillMode, { w: number; h: number }> = {
 export default function PillOverlay({
   mode, corner, captureState, stepDefs, llmStatus, menuOpen, capsuleMorphOpen, capsuleExiting, capsuleShown, fanOpen, draggable, dragging, onDragPointerDown, nearEdge, onToggleMenu, inboxCount, onSelect, onHide,
   pillGeometry, fanStyle, voicePhase, voiceElapsedMs, readWaveform, readSpectrum, sampleRate, onVoiceToggle,
-  compactPanel, panelReady, panelZone, panelGeom, islandGeom, islandTarget, islandContentReady, onClosePanel,
+  compactPanel, panelReady, panelZone, panelGeom, islandGeom, islandTarget, capsulePanelTarget, onClosePanel, onPanelError,
   lookMode, onSelectLookMode, lookChat, lookChatPersist,
-  settingsProps, onOpenFile,
+  settingsProps, onOpenFile, reminderToast,
 }: Props) {
   const isActive = captureState.phase === "capturing" || captureState.phase === "background";
   const isError  = captureState.phase === "error";
   const isDone   = captureState.phase === "done";
   const isIdle   = !isActive && !isError && !isDone;
   const isRecording = voicePhase === "recording";
-  const label    = isRecording ? formatElapsed(voiceElapsedMs) : pillLabel(captureState, stepDefs, llmStatus);
+  // Only takes over the bar when nothing more urgent (recording/capturing/
+  // error/done) is already showing there — a reminder undo toast should
+  // never mask a live capture's own status.
+  const showReminderToast = !!reminderToast && isIdle && !isRecording;
+  const label    = showReminderToast ? reminderToast!.message
+    : isRecording ? formatElapsed(voiceElapsedMs) : pillLabel(captureState, stepDefs, llmStatus);
 
-  // priority: recording > error > done > capturing > llm-status > idle
+  // priority: recording > error > done > capturing > reminder-undo > llm-status > idle
   const dotColor =
     isRecording                          ? "var(--recording)"
     : isError                            ? "var(--red)"
     : isDone                             ? "var(--green)"
     : isActive                           ? "var(--accent)"
+    : showReminderToast                  ? "var(--green)"
     : isIdle && llmStatus === "disconnected" ? "var(--yellow)"
     : "var(--text-3)";
+
+  // B3/B5: Vault and Inbox each forward their own top-level action controls
+  // (open folder/refresh/new-folder; Inbox/Reminders toggle+refresh) up
+  // through this single slot so CompactShell's header can render them —
+  // only one target's content is ever mounted at a time (keyed remount in
+  // renderPanelBody below), so one shared slot is enough; the owning
+  // component clears it to null on unmount/target switch.
+  const [panelHeaderActions, setPanelHeaderActions] = useState<ReactNode | null>(null);
 
   // Shared panel body switch — capsule's extruded-sheet render and minimal's
   // island morph both need the exact same target->content mapping, so it's
   // factored out once rather than duplicated per mode (Task 3.1).
-  const renderPanelBody = (target: Exclude<MenuTarget, "hide">) =>
-    target === "search" && lookMode && onSelectLookMode && lookChat && lookChatPersist ? (
-      <CompactLook
-        lookMode={lookMode}
-        onSelectLookMode={onSelectLookMode}
-        lookChat={lookChat}
-        lookChatPersist={lookChatPersist}
-        onClose={() => onClosePanel?.()}
-      />
-    ) : target === "inbox" ? (
-      <CompactInbox />
-    ) : target === "settings" && settingsProps ? (
-      <CompactSettings onClose={() => onClosePanel?.()} {...settingsProps} />
-    ) : target === "vault" ? (
-      <CompactVault />
-    ) : target === "stats" ? (
-      <CompactHistory onOpenFile={onOpenFile} />
-    ) : (
-      /* Placeholder fallback — reached only if a target's required props
-         (e.g. settingsProps) weren't supplied by the caller. */
-      <div style={{ padding: "var(--space-3)", fontSize: 12, color: "var(--text-2)" }}>
-        {MENU_LABELS[target]} panel — content coming soon.
-      </div>
-    );
+  // Task 2.4/M1: keyed remount per target so the content-swap CSS animation
+  // (`.compact-swap` / `compactSwapIn` in index.css) restarts on every icon
+  // click, exactly like FullWindow's `key={view}` pattern. Keyed INSIDE
+  // `.compact-panel-body` (CompactShell renders this as `children`) so the
+  // scroll container itself never remounts — only this inner wrapper does.
+  const renderPanelBody = (target: Exclude<MenuTarget, "hide">) => (
+    <div key={target} className="compact-swap">
+      {target === "search" && lookMode && onSelectLookMode && lookChat && lookChatPersist ? (
+        <CompactLook
+          lookMode={lookMode}
+          onSelectLookMode={onSelectLookMode}
+          lookChat={lookChat}
+          lookChatPersist={lookChatPersist}
+          onClose={() => onClosePanel?.()}
+          onHeaderActionsChange={setPanelHeaderActions}
+        />
+      ) : target === "inbox" ? (
+        <CompactInbox onHeaderActionsChange={setPanelHeaderActions} />
+      ) : target === "settings" && settingsProps ? (
+        <CompactSettings onClose={() => onClosePanel?.()} {...settingsProps} />
+      ) : target === "vault" ? (
+        <CompactVault onHeaderActionsChange={setPanelHeaderActions} />
+      ) : target === "stats" ? (
+        <CompactHistory onOpenFile={onOpenFile} />
+      ) : (
+        /* Placeholder fallback — reached only if a target's required props
+           (e.g. settingsProps) weren't supplied by the caller. */
+        <div style={{ padding: "var(--space-3)", fontSize: 12, color: "var(--text-2)" }}>
+          {MENU_LABELS[target]} panel — content coming soon.
+        </div>
+      )}
+    </div>
+  );
 
   if (mode === "minimal") {
+    const panelActive = !!(islandTarget && islandGeom);
     // Island geometry not ready yet (panel just requested, morph rects not
     // computed/committed) — render the plain pill+fan, identical to no-panel
     // state. The very next render (islandGeom populated by App's reconcile
@@ -229,7 +271,7 @@ export default function PillOverlay({
     const island = islandTarget && islandGeom ? (
       <div
         className="island-panel"
-        data-panel-open={islandContentReady ? "true" : "false"}
+        data-panel-open={panelReady ? "true" : "false"}
         style={{
           position: "absolute",
           left: (panelReady ? islandGeom.endRect.left : islandGeom.startRect.left),
@@ -248,9 +290,11 @@ export default function PillOverlay({
             target={islandTarget}
             corner={corner}
             zone={panelZone ?? "top"}
-            open={islandContentReady ?? false}
+            open={panelReady ?? false}
             onClose={() => onClosePanel?.()}
-            tabs={{ active: islandTarget, onSelect }}
+            showClose
+            headerActions={panelHeaderActions}
+            onPanelError={onPanelError}
           >
             {renderPanelBody(islandTarget)}
           </CompactShell>
@@ -258,9 +302,13 @@ export default function PillOverlay({
       </div>
     ) : null;
 
+    const pillLeft = panelActive ? islandGeom!.startRect.left : undefined;
+    const pillTop = panelActive ? islandGeom!.startRect.top : undefined;
+
     return (
-      <div style={{ position: "relative", width: PILL_DIMS.minimal.w, height: PILL_DIMS.minimal.h }}>
-        {isRecording && (
+      <div style={{ position: "relative", width: panelActive ? "100%" : PILL_DIMS.minimal.w, height: panelActive ? "100%" : PILL_DIMS.minimal.h }}>
+        {island}
+        {!panelActive && isRecording && (
           <div aria-hidden="true" style={{ position: "absolute", left: -6, top: -6, width: 48, height: 48, zIndex: 20, pointerEvents: "none" }}>
             <FluidVisualizer readWaveform={readWaveform} width={48} height={48} active variant="ring" />
           </div>
@@ -271,19 +319,22 @@ export default function PillOverlay({
           onPointerDown={draggable ? onDragPointerDown : undefined}
           onClick={(e) => {
             e.stopPropagation();
+            if (showReminderToast) { reminderToast!.onUndo(); return; }
             if (isRecording) { onVoiceToggle(); return; }
             onToggleMenu();
           }}
           onContextMenu={(e) => {
             e.preventDefault();
-            if (!menuOpen) onVoiceToggle();
+            if (!menuOpen && !showReminderToast) onVoiceToggle();
           }}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
-          aria-label={isRecording
+          aria-label={showReminderToast
+            ? `${label}. Click to undo.`
+            : isRecording
             ? `Second Thought — recording, ${label}. Click to stop and send.`
             : `Second Thought — ${label}. Click to ${menuOpen ? "close" : "open"} the menu.`}
-          title={isRecording ? `Recording — ${label}` : isIdle ? llmStatusTooltip(llmStatus) : label}
+          title={showReminderToast ? `${label} — click to undo` : isRecording ? `Recording — ${label}` : isIdle ? llmStatusTooltip(llmStatus) : label}
           style={{
             width: PILL_DIMS.minimal.w,
             height: PILL_DIMS.minimal.h,
@@ -295,14 +346,11 @@ export default function PillOverlay({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            position: "relative",
+            position: panelActive ? "absolute" : "relative",
+            left: pillLeft,
+            top: pillTop,
             zIndex: 21,
             boxShadow: menuOpen ? "0 0 0 1px var(--accent-glow)" : "none",
-            // Island morph (Task 3.1): pill fades out over 160ms the instant
-            // a panel is requested, and is not interactive/focusable while
-            // the island sits on top of it. Fades back in as soon as the
-            // panel closes (compactPanel -> null), independent of the
-            // island's own rect-reverse-morph duration.
             opacity: compactPanel ? 0 : 1,
             pointerEvents: compactPanel ? "none" : "auto",
             transition: "transform 0.18s cubic-bezier(0.16,1,0.3,1), box-shadow 0.15s ease, opacity 160ms cubic-bezier(0.16,1,0.3,1)",
@@ -312,6 +360,10 @@ export default function PillOverlay({
           {isRecording ? (
             <span aria-hidden="true" style={{ display: "flex", color: "var(--text-1)" }}>
               <MicIcon size={14} />
+            </span>
+          ) : showReminderToast ? (
+            <span aria-hidden="true" style={{ display: "flex", color: "var(--green)" }}>
+              <RefreshIcon size={14} />
             </span>
           ) : (
             <span
@@ -331,16 +383,17 @@ export default function PillOverlay({
             />
           )}
         </button>
-        <RadialMenu
-          open={fanOpen ?? menuOpen}
-          corner={corner}
-          fanStyle={fanStyle}
-          pillGeometry={pillGeometry}
-          inboxCount={inboxCount}
-          onSelect={onSelect}
-          onHide={onHide}
-        />
-        {island}
+        {!compactPanel && (
+          <RadialMenu
+            open={fanOpen ?? menuOpen}
+            corner={corner}
+            fanStyle={fanStyle}
+            pillGeometry={pillGeometry}
+            inboxCount={inboxCount}
+            onSelect={onSelect}
+            onHide={onHide}
+          />
+        )}
       </div>
     );
   }
@@ -360,8 +413,10 @@ export default function PillOverlay({
       nearEdge={nearEdge}
       exiting={capsuleExiting}
       shown={capsuleShown}
-      onToggle={() => { if (isRecording) { onVoiceToggle(); return; } onToggleMenu(); }}
-      onContextMenu={(e) => { e.preventDefault(); if (!menuOpen) onVoiceToggle(); }}
+      panelZone={compactPanel ? (panelZone ?? "top") : undefined}
+      activeTarget={compactPanel ?? null}
+      onToggle={() => { if (showReminderToast) { reminderToast!.onUndo(); return; } if (isRecording) { onVoiceToggle(); return; } onToggleMenu(); }}
+      onContextMenu={(e) => { e.preventDefault(); if (!menuOpen && !showReminderToast) onVoiceToggle(); }}
       onSelect={onSelect}
       onHide={onHide}
       voicePhase={voicePhase}
@@ -374,7 +429,12 @@ export default function PillOverlay({
 
   // No panel open (or geometry not yet available) — unchanged render path,
   // CapsuleMenu alone, centered by App's flex wrapper exactly as before.
-  if (!compactPanel || !panelGeom) return capsuleMenu;
+  // RC-3: capsulePanelTarget lingers past compactPanel flipping to null so
+  // this branch (and CompactShell's exit-clip morph) keeps rendering through
+  // the whole close instead of bailing to the plain centered CapsuleMenu
+  // while the OS window is still panel-sized.
+  const capsuleTarget = capsulePanelTarget ?? compactPanel;
+  if (!capsuleTarget || !panelGeom) return capsuleMenu;
 
   // GATE-1 option A (extruded sheet): CompactShell renders as a sibling of
   // CapsuleMenu, both absolutely positioned via the same offsets App.tsx
@@ -382,51 +442,26 @@ export default function PillOverlay({
   // wrapper replaces the flex-centered layout for exactly the panel-open
   // lifetime, matching how the window itself stopped being pill-sized.
   const zone = panelZone ?? "top";
-  // Middle zone: bar floats over the panel's vertical midpoint rather than
-  // its top edge, so panel content needs top padding to clear the bar.
-  const bodyTopPad = zone === "middle"
-    ? Math.max(0, panelGeom.barOffsetY + CAPSULE_H - panelGeom.panelOffsetY)
-    : undefined;
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
-      <div style={{ position: "absolute", left: panelGeom.panelOffsetX, top: panelGeom.panelOffsetY, zIndex: zone === "middle" ? 1 : 2 }}>
+      <div style={{ position: "absolute", left: panelGeom.panelOffsetX, top: panelGeom.panelOffsetY, zIndex: 2 }}>
         <CompactShell
-          target={compactPanel}
+          target={capsuleTarget}
           corner={corner}
           zone={zone}
           open={panelReady ?? false}
           onClose={() => onClosePanel?.()}
-          bodyTopPad={bodyTopPad}
+          showClose={false}
+          headerActions={panelHeaderActions}
+          onPanelError={onPanelError}
         >
-          {renderPanelBody(compactPanel)}
+          {renderPanelBody(capsuleTarget)}
         </CompactShell>
       </div>
-      <div style={{ position: "absolute", left: panelGeom.barOffsetX, top: panelGeom.barOffsetY, zIndex: 2 }}>
+      <div style={{ position: "absolute", left: panelGeom.barOffsetX, top: panelGeom.barOffsetY, zIndex: 2, width: CAPSULE_OPEN_W, height: CAPSULE_H }}>
         {capsuleMenu}
       </div>
-      {(() => {
-        // GATE-1 option A: keep the capsule-slider pinned under the selected
-        // icon while its panel is open. CapsuleMenu's own slider is
-        // imperative DOM-ref state driven by hover — it gets wiped by its
-        // `useEffect(() => { if (!open) hideSlider(); }, [open])` the moment
-        // menuOpen flips false for the panel-open transition. Rather than
-        // touch CapsuleMenu, render a second `.capsule-slider`-styled
-        // element here, on top of it, pinned to the selected icon's rect
-        // (same math CapsuleMenu uses for hover).
-        const idx = ALL_TARGETS.indexOf(compactPanel);
-        if (idx < 0) return null;
-        const { left, width } = sliderRect(CAPSULE_PAD_X + idx * CAPSULE_ICON_W, CAPSULE_ICON_W, idx, ALL_TARGETS.length);
-        return (
-          <div style={{ position: "absolute", left: panelGeom.barOffsetX, top: panelGeom.barOffsetY, zIndex: 3, pointerEvents: "none" }}>
-            <span
-              aria-hidden="true"
-              className="capsule-slider"
-              style={{ transform: `translateX(${left}px)`, width, opacity: 1 }}
-            />
-          </div>
-        );
-      })()}
     </div>
   );
 }

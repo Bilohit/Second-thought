@@ -25,16 +25,16 @@ import { ANCHOR_ORDER } from "../lib/pillAnchor";
 import type { MonitorInfo } from "../lib/monitor";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
-  INPUT_STYLE, BTN_SECONDARY, BTN_PRIMARY,
+  INPUT_STYLE, BTN_SECONDARY,
   focusRing, blurRing,
 } from "./ui/styles";
 import { Tabs } from "./ui/Tabs";
+import { SaveIcon } from "./PillMenu/icons";
 
 interface Props {
   visible:      boolean;
   onClose:      () => void;
   theme?:       Theme;
-  themeLabel?:  string;
   onSelectTheme?: (theme: Theme) => void;
   measureRef?:  (el: HTMLDivElement | null) => void;
 
@@ -305,7 +305,7 @@ function HotkeyRecorder({
 // ── Main settings panel ──────────────────────────────────────────────────────
 
 export default function SettingsPanel({
-  visible, onClose, theme, themeLabel, onSelectTheme, measureRef,
+  visible, onClose, theme, onSelectTheme, measureRef,
   displayMode, onSelectDisplayMode,
   pillCorner, onSelectPillCorner,
   pillPinned, onTogglePillPinned,
@@ -322,8 +322,8 @@ export default function SettingsPanel({
   // capsule width, so compact stacks them one-per-row instead. No control is
   // dropped, no business logic forks on this.
   const optionRowStyle: CSSProperties = compact
-    ? { display: "grid", gridTemplateColumns: "1fr", gap: 4 }
-    : { display: "flex", gap: 4 };
+    ? { display: "grid", gridTemplateColumns: "1fr", gap: 8 }
+    : { display: "flex", gap: 8 };
   const [vaultRoot, setVaultRoot] = useState("");
   const [model, setModel] = useState("llama3.2");
   const [hotkey, setHotkey] = useState(DEFAULT_HOTKEY);
@@ -534,12 +534,13 @@ export default function SettingsPanel({
         tabs={[{ id: "form", label: "Form" }, { id: "function", label: "Function" }]}
         active={tab}
         onChange={setTab}
+        dense={compact}
       />
 
       {/* Body */}
       <div
         className="no-drag"
-        style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: compact ? "10px 10px 12px" : "16px 16px 14px", display: "flex", flexDirection: "column", gap: compact ? 12 : 16 }}
+        style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", padding: compact ? "10px 10px 12px" : "16px 16px 14px", display: "flex", flexDirection: "column", gap: compact ? 12 : 16 }}
       >
         {tab === "form" && (
           <>
@@ -547,9 +548,6 @@ export default function SettingsPanel({
             {onSelectTheme && theme && (
               <Field label="Theme">
                 <ThemeSwatchPicker theme={theme} onSelectTheme={onSelectTheme} />
-                <span style={{ fontSize: 10, color: "var(--text-3)", marginTop: 4 }}>
-                  {themeLabel ?? theme}
-                </span>
               </Field>
             )}
 
@@ -582,9 +580,6 @@ export default function SettingsPanel({
                     );
                   })}
                 </div>
-                <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                  Full is the current overlay. Capsule/Minimal shrink to a small pill that shows the live pipeline stage — click it (or the hotkey) to expand.
-                </span>
               </Field>
             )}
 
@@ -612,9 +607,6 @@ export default function SettingsPanel({
                     );
                   })}
                 </div>
-                <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                  Rounded softens the pill (Capsule/Minimal) and full-window panels; the settings tab stays sharp.
-                </span>
               </Field>
             )}
 
@@ -642,24 +634,12 @@ export default function SettingsPanel({
                     );
                   })}
                 </div>
-                <span style={{ fontSize: 10, color: "var(--text-3)", display: "block" }}>
-                  On: stays on screen until you choose Hide (menu or tray).
-                </span>
-                <span style={{ fontSize: 10, color: "var(--text-3)", display: "block" }}>
-                  Off: hides itself after a capture and when you close a panel.
-                </span>
               </Field>
             )}
 
             {onSelectPillAnchor && pillAnchor && (
               <Field label="Placement">
                 <AnchorGrid anchor={pillAnchor} onSelect={(a) => onSelectPillAnchor?.(a)} />
-                <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                  Pick a corner/edge to snap there always, or leave on Custom (center) for wherever you last positioned it.
-                </span>
-                <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                  Center ("Custom") keeps the pill wherever you drag it.
-                </span>
               </Field>
             )}
 
@@ -689,9 +669,6 @@ export default function SettingsPanel({
                     );
                   })}
                 </div>
-                <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                  Moves the pill there immediately and remembers the choice.
-                </span>
               </Field>
             )}
 
@@ -722,9 +699,6 @@ export default function SettingsPanel({
                     );
                   })}
                 </div>
-                <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                  Spread lets the radial menu open as wide as the screen allows. Capped keeps spoke spacing tight and even, even when more room is available.
-                </span>
               </Field>
             )}
 
@@ -756,11 +730,6 @@ export default function SettingsPanel({
                       );
                     })}
                   </div>
-                  <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                    {snapApplicable
-                      ? "Releasing the pill near a screen edge or corner snaps it there."
-                      : "Edge-snapping only applies to the Custom position."}
-                  </span>
                 </Field>
               );
             })()}
@@ -830,9 +799,6 @@ export default function SettingsPanel({
                   {confidence.toFixed(2)}
                 </span>
               </div>
-              <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                Higher = more captures sent to the inbox for review.
-              </span>
             </Field>
 
             {/* Classification strictness (llm_scrutiny) */}
@@ -886,9 +852,6 @@ export default function SettingsPanel({
                   );
                 })}
               </div>
-              <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                Generates a routing description automatically when a new folder is created.
-              </span>
             </Field>
 
             {/* Reminder delivery */}
@@ -907,6 +870,8 @@ export default function SettingsPanel({
                       style={{
                         ...BTN_SECONDARY,
                         textAlign: "left",
+                        whiteSpace: "normal",
+                        minWidth: 0,
                         background: active ? "var(--accent)" : (BTN_SECONDARY.background as string),
                         color: active ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
                         borderColor: active ? "var(--accent)" : "var(--border)",
@@ -964,9 +929,6 @@ export default function SettingsPanel({
                   );
                 })}
               </div>
-              <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                Logs pill window/monitor geometry (scope "geo") to the log file for diagnosing drag/boundary bugs.
-              </span>
             </Field>
 
             {onSelectLookChatPersist && lookChatPersist && (
@@ -996,56 +958,60 @@ export default function SettingsPanel({
                     );
                   })}
                 </div>
-                <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                  Preserve keeps your chat when you close the Look panel. Clear on close starts fresh each time.
-                </span>
               </Field>
             )}
 
+            {/* Look chat system prompt is the one field that does NOT
+                auto-save on keystroke — explicit commit via the save icon
+                only, so a half-written prompt is never persisted mid-edit. */}
             <Field label="Look chat system prompt">
-              <textarea
-                value={chatSystemPrompt}
-                onChange={(e) => { setChatSystemPrompt(e.target.value); markDirty(); }}
-                rows={5}
-                placeholder={DEFAULT_CHAT_SYSTEM_PROMPT}
-                spellCheck={false}
-                style={{
-                  ...INPUT_STYLE,
-                  resize: "vertical",
-                  minHeight: 96,
-                  lineHeight: 1.45,
-                  fontFamily: "inherit",
-                }}
-              />
-              <span style={{ fontSize: 10, color: "var(--text-3)" }}>
-                Custom instructions for Look chat. When empty, a robust default is used. Vault context is appended automatically when relevant notes are found.
-              </span>
+              <div style={{ position: "relative" }}>
+                <textarea
+                  value={chatSystemPrompt}
+                  onChange={(e) => { setChatSystemPrompt(e.target.value); }}
+                  rows={5}
+                  placeholder={DEFAULT_CHAT_SYSTEM_PROMPT}
+                  spellCheck={false}
+                  style={{
+                    ...INPUT_STYLE,
+                    resize: "vertical",
+                    minHeight: 96,
+                    lineHeight: 1.45,
+                    fontFamily: "inherit",
+                    paddingRight: 30,
+                  }}
+                />
+                <button
+                  className="btn-hover"
+                  onClick={handleSave}
+                  disabled={saving}
+                  title={saved ? "Saved" : "Save system prompt"}
+                  aria-label="Save system prompt"
+                  style={{
+                    position: "absolute",
+                    right: 6,
+                    bottom: 6,
+                    width: 22,
+                    height: 22,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: 0,
+                    border: "none",
+                    borderRadius: 4,
+                    background: "transparent",
+                    color: saved ? "var(--green)" : "var(--text-2)",
+                    cursor: saving ? "not-allowed" : "pointer",
+                    opacity: saving ? 0.6 : 1,
+                  }}
+                >
+                  <SaveIcon size={14} />
+                </button>
+              </div>
             </Field>
           </>
         )}
       </div>
-
-      {/* Save button — momentary var(--green) on success is the one
-          documented exception to "no colored CTAs" (DESIGN.md §5 Components,
-          Buttons/Primary): green here is semantic success state, not button
-          branding, and it reverts to --accent after the 2s timeout below.
-          Only shown on Function — Form's settings are client-only/instant. */}
-      {tab === "function" && (
-        <div style={{ padding: "0 16px 16px", display: "flex", justifyContent: "flex-end" }}>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            style={{
-              ...BTN_PRIMARY,
-              background: saved ? "var(--green)" : "var(--accent)",
-              cursor: saving ? "not-allowed" : "pointer",
-              opacity: saving ? 0.6 : 1,
-            }}
-          >
-            {saving ? "Saving…" : saved ? "Saved ✓" : "Save"}
-          </button>
-        </div>
-      )}
     </div>
   );
 }

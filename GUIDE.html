@@ -784,9 +784,29 @@
             border-color: var(--accent);
             box-shadow: 0 0 20px var(--glow-color);
         }
+
+        @media (prefers-reduced-motion: reduce) {
+            html {
+                scroll-behavior: auto;
+            }
+            * {
+                animation-duration: 0.001ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.001ms !important;
+                transition-delay: 0ms !important;
+                scroll-behavior: auto !important;
+            }
+            .anim-fade-up,
+            .anim-scale-in {
+                opacity: 1;
+                transform: none;
+            }
+        }
     </style>
 </head>
 <body>
+
+    <noscript><style>.anim-fade-up,.anim-scale-in{opacity:1!important;transform:none!important;}</style></noscript>
 
     <button class="theme-toggle" id="themeToggle" aria-label="Toggle light/dark theme" title="Toggle theme">◐</button>
     <button class="scroll-top-btn" id="scrollTopBtn" title="Back to top">↑</button>
@@ -827,16 +847,19 @@
 
         <section>
             <div class="section-num anim-fade-up">01 — THE SURFACE</div>
-            <h2 class="anim-fade-up delay-1">Omnipresent capture UI.</h2>
+            <h2 class="anim-fade-up delay-1">One window, three shapes.</h2>
             <p class="dim anim-fade-up delay-2">
-                A minimalist, always-on-top window built on a Tauri desktop shell using Rust and React/TypeScript. The floating "pill" stays above all other windows, waiting for a global hotkey (<code>Ctrl+Shift+Space</code> by default). It accepts plain text, clipboard content, dragged URLs, and voice memos. A subtle radial menu fans out when you hold the capture icon, offering quick actions without leaving your current workspace. Designed to be unobtrusive, it respects your focus and prevents cross‑monitor DPI jumps by using two separate windows — one for the pill, one for the menu overlay.
+                A single always-on-top window built on a Tauri desktop shell using Rust and React/TypeScript — deliberately <em>one</em> window, not a pill-plus-menu pair, so it never suffers the cross‑monitor <code>WM_DPICHANGED</code> jump a second window would introduce. That one window morphs between three display modes: a tiny <strong>minimal</strong> pill, a wider <strong>capsule</strong> pill, and a <strong>full</strong> window for heavier work. It waits for a global hotkey (<code>Ctrl+Shift+Space</code> by default) and accepts plain text, clipboard content, dragged URLs, and voice memos.
+            </p>
+            <p class="dim anim-fade-up delay-3" style="margin-top:1rem;">
+                The menu itself is never a separate window either — it's an overlay rendered inside the same one. In minimal mode, holding the pill fans out a radial menu. In capsule mode, the pill morphs into a horizontal capsule bar with the same actions laid out inline. Either way you land in the same set of in‑window compact panels.
             </p>
 
             <!-- ── CSS Screen Mockup (replaces ASCII art) ── -->
             <div class="screen-mockup anim-fade-up delay-3">
-                <div class="mock-label">your screen — pill always on top</div>
+                <div class="mock-label">your screen — one window, minimal mode shown</div>
                 <div class="mock-desktop">
-                    <div class="mock-overlay-hint">(panels open centered when an action is chosen)</div>
+                    <div class="mock-overlay-hint">(radial fan shown here; capsule mode morphs the same pill into a bar instead)</div>
                     <div class="mock-pill-container">
                         <span class="mock-pill-tag">← always on top</span>
                         <div class="mock-pill">PILL</div>
@@ -859,7 +882,7 @@
             </div>
 
             <p class="dim anim-fade-up delay-3" style="margin-top:1rem;">
-                <strong>Pill mechanics:</strong> drag to reposition (snaps to screen edges, clamps within bounds so it never goes off-screen even when monitors change), click to capture clipboard, click-and-hold for the radial menu. The pill remembers its position across launches. A system tray icon provides show/hide and quit controls.
+                <strong>Pill mechanics:</strong> drag to reposition (snaps to screen edges, clamps within bounds so it never goes off-screen even when monitors change), click to capture clipboard, click-and-hold to open the menu. <strong>Right-click to record a voice memo</strong> — local Whisper transcribes it after you stop, with a 10‑minute cap per recording. The pill remembers its position across launches. A system tray icon provides show/hide and quit controls.
             </p>
         </section>
 
@@ -867,19 +890,19 @@
             <div class="section-num anim-fade-up">02 — NAVIGATION</div>
             <h2 class="anim-fade-up delay-1">Access your vault instantly.</h2>
             <p class="dim anim-fade-up delay-2">
-                Hold the capture UI and five actions arc out toward the screen interior. Each opens a compact overlay panel, letting you search, browse, or configure without breaking your flow.
+                Open the menu and five actions appear — Look, Inbox, Vault, History, Settings. Each opens as a compact panel inside the same pill window, all sharing one lightweight frame (<code>CompactShell</code>) so switching between them never feels like opening a new app.
             </p>
 
             <div class="grid grid-3" style="margin-top:1.5rem">
                 <div class="card anim-fade-up delay-1">
                     <div class="feature-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg></div>
                     <p class="feature-title">Look</p>
-                    <p class="feature-desc">Keyword + semantic embedding search across your entire vault. Finds notes by meaning, even when you forget exact words.</p>
+                    <p class="feature-desc">Two modes in one panel. <strong>Search</strong> blends FTS5 full‑text matching with semantic embeddings, fused by reciprocal rank. <strong>Chat</strong> is RAG over your vault — it cites the source notes it drew from and only answers from what's actually in your vault, never from outside knowledge.</p>
                 </div>
                 <div class="card anim-fade-up delay-2">
                     <div class="feature-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg></div>
                     <p class="feature-title">Inbox</p>
-                    <p class="feature-desc">Review recent captures and triage unresolved scratchpad items. Process or delete in a single keystroke.</p>
+                    <p class="feature-desc">Every low-confidence capture lands here instead of being silently mis‑filed — routed to the scratchpad for you to review. Process or delete in a single keystroke.</p>
                 </div>
                 <div class="card anim-fade-up delay-3">
                     <div class="feature-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg></div>
@@ -902,6 +925,10 @@
                     <p class="feature-desc">Show/hide the primary UI, or terminate the background daemon. Lives quietly in your system tray.</p>
                 </div>
             </div>
+            <div class="protip anim-fade-up delay-7" style="margin-top:1.5rem;">
+                <span class="label">Reminders</span>
+                <p class="dim">When the LLM notices a future date in something you capture — "renew the passport by August," "follow up next Tuesday" — it offers to set a reminder. Accept it and delivery happens either in‑app or, on Windows, through the native Task Scheduler, so it still fires even if Second Thought isn't running.</p>
+            </div>
         </section>
 
         <section>
@@ -913,15 +940,15 @@
             <div class="pipeline" style="margin-top:1.75rem">
                 <div class="pstep anim-fade-up delay-4"><span class="n">1</span><div><div class="t">Intercept</div><div class="d">Normalizes clipboard / CLI input via <code>interceptor.py</code>. Handles text, URLs, images, and file paths uniformly into a single <code>InputPayload</code>.</div></div></div>
                 <div class="parrow anim-fade-up delay-4">↓</div>
-                <div class="pstep anim-fade-up delay-5"><span class="n">2</span><div><div class="t">Pre‑resolve</div><div class="d">Heuristically detects content shape (plain text / URL / GitHub / YouTube / image / audio) and suggests a category hint before the LLM is invoked.</div></div></div>
+                <div class="pstep anim-fade-up delay-5"><span class="n">2</span><div><div class="t">Enrich</div><div class="d">Dispatches to specific handlers: web scraper + readability extraction for URLs, YouTube transcript fetch, local Whisper for audio, vision model for images. Fail‑soft for most types; fail‑fast for vision when required.</div></div></div>
                 <div class="parrow anim-fade-up delay-5">↓</div>
-                <div class="pstep anim-fade-up delay-6"><span class="n">3</span><div><div class="t">Enrich</div><div class="d">Dispatches to specific handlers: web scraper + readability extraction for URLs, YouTube transcript fetch, local Whisper for audio, vision model for images. Fail‑soft for most types; fail‑fast for vision when required.</div></div></div>
+                <div class="pstep anim-fade-up delay-6"><span class="n">3</span><div><div class="t">Decide</div><div class="d">A heuristic pass over the now-enriched text suggests a category hint, then the LLM generates a title, tags, backlinks, and picks the best folder based on your vault's existing organization. Two‑pass retry on parse failure.</div></div></div>
                 <div class="parrow anim-fade-up delay-6">↓</div>
-                <div class="pstep anim-fade-up delay-7"><span class="n">4</span><div><div class="t">Structure + Store</div><div class="d">LLM generates a title, tags, backlinks, and picks the best folder based on your vault's existing organization. Two‑pass retry on parse failure. Dedup check against existing notes; merges or writes, or routes to scratchpad.</div></div></div>
+                <div class="pstep anim-fade-up delay-7"><span class="n">4</span><div><div class="t">Write</div><div class="d">Dedup check against existing notes; merges into an existing note, writes a new one, or routes to the scratchpad when confidence is too low.</div></div></div>
             </div>
             <div class="protip anim-fade-up delay-7" style="margin-top:2rem">
                 <span class="label">Pro tip</span>
-                <p class="dim">Customize the pipeline by editing <code>pipeline.yml</code>. Add your own handlers for PDFs, emails, or any domain‑specific data. The enrichment router is designed for extensibility — each handler is a drop‑in module.</p>
+                <p class="dim">Tune pipeline behavior in <code>config.toml</code> — vault path, Ollama model, confidence thresholds. New content shapes are added as handlers inside <code>enrichment_router.py</code>, which dispatches by input type — no core pipeline changes needed to support a new one.</p>
             </div>
             <p class="dim anim-fade-up delay-7" style="margin-top:1.25rem;">
                 <strong>Categories are never hardcoded.</strong> The <code>category</code> enum is rebuilt from your vault's current folder names on every single capture. Rename a folder, add a new one, or reorganize your vault — categorization adapts instantly, with zero configuration.
@@ -955,7 +982,7 @@
             </div>
             <div class="protip anim-fade-up delay-4" style="margin-top:1.5rem;">
                 <span class="label">Design principle</span>
-                <p class="dim"><strong>Write before summarize.</strong> For YouTube captures, the raw transcript is written to the vault immediately upon fetch. Summarization runs in the background afterward. Even if the summarizer crashes, your transcript is safe. The pill is free to use again right away — no waiting for long‑form processing.</p>
+                <p class="dim"><strong>Write before summarize.</strong> Slow captures — YouTube videos and voice memos — hand off to a background job the moment their raw content lands: the transcript is written to the vault first, then summarization/structuring runs afterward. Even if that later step crashes, the transcript is already safe. The pill is free to use again right away — no waiting for long‑form processing.</p>
             </div>
         </section>
 
@@ -1093,7 +1120,7 @@
                 <div class="card anim-fade-up delay-3">
                     <div class="feature-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg></div>
                     <p class="feature-title">Voice Memos</p>
-                    <p class="feature-desc">Speak an idea, record a meeting takeaway, or dictate a reminder. Local Whisper transcribes offline, and the LLM structures it into a clean, tagged note. Perfect for walks, drives, or whenever typing isn't practical.</p>
+                    <p class="feature-desc">Right-click the pill to start recording — up to 10 minutes. Local Whisper transcribes offline, and the LLM structures the result into a clean, tagged note in the background. Perfect for walks, drives, or whenever typing isn't practical.</p>
                 </div>
                 <div class="card anim-fade-up delay-4">
                     <div class="feature-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg></div>
@@ -1182,7 +1209,8 @@
 
         (function() {
             var els = document.querySelectorAll('.anim-fade-up, .anim-scale-in');
-            if (!('IntersectionObserver' in window)) {
+            var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            if (!('IntersectionObserver' in window) || reduceMotion) {
                 els.forEach(function(el) { el.classList.add('in'); });
                 return;
             }

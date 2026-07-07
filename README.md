@@ -2,10 +2,6 @@
 
 *Offload to offline, snap-to-store pipeline. Keep thinking; we handle the rest.*
 
-## Development Tools
-
-This project uses Claude Code with several installed skills for enhanced development workflows. See [SKILLS.md](SKILLS.md) for the full list of installed skills and how to use them.
-
 ## What is it?
 
 Most tools force you to categorize the moment inspiration strikes. Second Thought removes that friction by automating filing, organization, and linking via a local reasoning pipeline. Capture raw input — text, URLs, voice, images, code snippets — and the system intelligently routes it into your markdown knowledge base. No flow interruption. No folder navigation. No naming conventions. Think of it as a personal librarian that never asks where to put things.
@@ -29,6 +25,8 @@ The entire system runs on your machine. The only network access is to your local
 - **Vault sync** — index orphan cleanup and reconciliation on startup.
 - **Fail-safe storage** — uncertain captures route to scratchpad, transcripts land before summaries, derived indexes stay derived.
 
+
+
 ## Architecture
 
 Second Thought has three cooperating layers:
@@ -41,19 +39,18 @@ Second Thought has three cooperating layers:
 [clipboard / CLI / browser extension / GUI]
         |
         v
-interceptor.py -> InputPayload
+1. intercept -- interceptor.py -> InputPayload
         |
         v
-pre_resolver.py -> category hint
+2. enrich    -- enrichment_router.py -> EnrichedPayload
+        |         (long/expensive jobs -- YouTube, long voice memos --
+        |          hand off here to a background job; GUI polls
+        |          GET /jobs/{id} instead of waiting on the SSE stream)
+        v
+3. decide    -- pre_resolver.py category hint + llm_engine.py -> CaptureOutput
         |
         v
-enrichment_router.py -> EnrichedPayload
-        |
-        v
-llm_engine.py -> CaptureOutput
-        |
-        v
-storage_engine.py
+4. write     -- storage_engine.py
         |
         +-- write new note
         +-- merge into existing note
@@ -62,6 +59,8 @@ storage_engine.py
         v
 index_writer.py + vector_store.py + link_resolver.py
 ```
+
+
 
 ## Repository Layout
 
@@ -80,7 +79,7 @@ Key backend modules:
 - `main.py` — CLI entry point and synchronous pipeline runner.
 - `server.py` — FastAPI server, SSE capture stream, settings, search, stats, inbox, vault sync, and vault management endpoints.
 - `interceptor.py` — converts clipboard, text, URL, and audio input into normalized payloads.
-- `pre_resolver.py` — detects content shape (text, URL, GitHub, YouTube, image, audio) before LLM routing.
+- `pre_resolver.py` — heuristic category hint computed during the decide stage on enriched text.
 - `enrichment_router.py` — dispatches URL fetches, GitHub metadata, YouTube transcripts, audio transcription, image OCR, and long-form summarization.
 - `llm_engine.py` — calls Ollama via structured output parsing with two-pass retry on parse failures.
 - `storage_engine.py` — deduplicates, merges, writes notes, or routes low-confidence captures to scratchpad.
@@ -93,18 +92,24 @@ Key backend modules:
 - `daily_digest.py` — generates daily journal entries summarizing captures by category (CLI or cron).
 - `frontmatter.py` — YAML frontmatter parsing helpers.
 
-Key frontend modules:
+Key frontend modules (single-window design — there is no separate menu window; the menu
+renders as an overlay inside the same Tauri window):
 
 - `src-tauri/` — Rust shell: spawns Python backend, global hotkey, tray, window lifecycle.
-- `App.tsx` — pill window controller: dragging, snapping, clamping, menu toggle.
-- `FullWindow.tsx` — full-screen app: rails navigation between Dashboard, Look, Library, and Settings.
-- `DashboardView.tsx` — capture status, recent activity, health indicators, inbox tile.
-- `LibraryView.tsx` — vault browser, category breakdown, daily capture rhythm sparkline.
+- `App.tsx` — pill window controller: dragging, snapping, clamping, display-mode/panel state.
+- `PillOverlay.tsx` — pill chrome, voice-record gesture, hosts the radial/capsule menu overlay.
+- `PillMenu/RadialMenu.tsx` / `PillMenu/CapsuleMenu.tsx` — the two menu presentations (minimal vs capsule display mode).
+- `FullWindow/FullWindow.tsx` — full-window app: rail navigation between Dashboard, Look, Library, and Settings.
+- `FullWindow/DashboardView.tsx` — capture status, recent activity, health indicators, inbox tile.
+- `FullWindow/LibraryView.tsx` — vault browser, category breakdown, daily capture rhythm sparkline.
 - `LookPanel.tsx` — dual-mode search and RAG chat over vault with source attribution.
 - `InboxPanel.tsx` — review, approve, discard, and auto-categorize captures before vault write.
-- `MenuWindow.tsx` — radial/capsule menu overlay for quick actions.
+- `CompactPanels/` — in-pill compact panels for capsule/minimal display modes: `CompactShell` (header + body chrome) hosting `CompactLook`, `CompactInbox`, `CompactVault`, `CompactHistory`, and `CompactSettings`.
+- `ErrorBoundary.tsx` — crash containment for panel content; compact panels collapse to the pill on error, full-window views show an inline retry.
 - `hooks/useCapture.ts` — capture lifecycle state machine and SSE polling.
 - `lib/*.ts` — pure geometry, monitor, API, config, and layout helpers with sibling tests.
+
+
 
 ## Requirements
 
@@ -124,7 +129,11 @@ Optional capabilities:
 - `openai-whisper` and `torch` for local audio transcription.
 - `rapidocr-onnxruntime` for OCR-assisted image capture.
 
+
+
 ## Quick Start
+
+
 
 ### 1. Start Ollama
 
@@ -150,6 +159,8 @@ pip install -r requirements.txt
 python main.py --self-check
 ```
 
+
+
 ### 3. Run the desktop app in development
 
 ```bash
@@ -157,6 +168,8 @@ cd gui
 npm install
 npm run dev
 ```
+
+
 
 ### 4. Run the full Windows app
 
@@ -191,15 +204,19 @@ Common workflows:
 - Inspect pipeline stages with `--verbose`.
 - Tail or summarize the audit log with `--log`.
 
+
+
 ## Desktop App
 
-The Tauri app provides an always-on-top pill window and full-window dashboard with rail navigation. Split-window design avoids cross-monitor DPI jumps; geometry stays stable.
+The Tauri app is a single window that switches between three display modes — `full` (dashboard with rail navigation), `capsule` (pill with an expanded menu strip), and `minimal` (bare pill, radial menu). The menu overlay renders inside the same window rather than a second window, which avoids cross-monitor `WM_DPICHANGED` jumps; geometry stays stable.
 
-**Pill window:**
+**Pill (capsule/minimal modes):**
 
 - Global hotkey trigger (default `Ctrl+Shift+Space`).
 - Drag-snap-clamp behavior; follows screen edges and respects multiple monitors.
-- Radial/capsule menu for quick capture actions.
+- Radial menu (minimal) or capsule menu (capsule) for quick capture actions.
+- Voice memo recording: right-click the pill to start recording, left-click to stop and send, Esc to cancel.
+- In capsule/minimal mode, opening Look, Inbox, Vault, History, or Settings expands the pill into an in-place compact panel instead of switching to the full window.
 
 **Full-window dashboard:**
 
@@ -232,17 +249,15 @@ The extension follows the same SSE capture protocol as the desktop GUI.
 
 ## Capture Pipeline
 
-Each capture follows the same four-stage sequence in both CLI and GUI paths.
+Each capture follows the same four-stage sequence in both CLI and GUI paths — the GUI's SSE
+stream emits a `step` event (`intercept|enrich|decide|write`, each `active`/`done`/`error`) for
+each one.
 
 ### 1. Intercept
 
 `interceptor.py` reads clipboard, injected text, file drag-drop, or API input and normalizes it into an `InputPayload`.
 
-### 2. Pre-resolve
-
-`pre_resolver.py` detects content shape (plain text, URL, GitHub, YouTube, image, audio file) and emits a category hint for the LLM.
-
-### 3. Enrich
+### 2. Enrich
 
 `enrichment_router.py` dispatches content-specific enrichment:
 
@@ -255,18 +270,30 @@ Each capture follows the same four-stage sequence in both CLI and GUI paths.
 
 Most enrichment paths fail softly: if web fetch fails, raw URL is preserved. Vision capture is stricter: if image understanding is required but unavailable, the pipeline marks the capture and routes it away from confident LLM processing.
 
-### 4. Structure and Store
+YouTube transcripts and voice memos long enough to need map-reduce summarization are handed off
+to a background job instead of blocking this stage: the server emits a `job` SSE event
+(`job_id`, `kind: "youtube"|"voice"`) and closes the stream, and the GUI polls
+`GET /jobs/{job_id}` until the job completes.
 
-`llm_engine.py` calls Ollama to produce structured `CaptureOutput` (category, title, tags, body). On parse failure, engine retries with stricter instructions (two-pass retry). `storage_engine.py` then decides: write new note, merge into existing via content similarity, or route uncertain captures to scratchpad. `index_writer.py` updates SQLite FTS5 and audit log. `vector_store.py` embeds and indexes for semantic search.
+### 3. Decide
+
+`pre_resolver.py` detects content shape (plain text, URL, GitHub, YouTube, image, audio file) and emits a category hint from the *enriched* text, then `llm_engine.py` calls Ollama to produce structured `CaptureOutput` (category, title, tags, body). On parse failure, the engine retries with stricter instructions (two-pass retry).
+
+### 4. Write
+
+`storage_engine.py` decides: write new note, merge into existing via content similarity, or route uncertain captures to scratchpad. `index_writer.py` updates SQLite FTS5 and audit log. `vector_store.py` embeds and indexes for semantic search.
 
 ### Voice Capture
 
-The GUI pill window supports voice memo recording via right-click gesture. Click the red record button to start, click again to stop, or press Esc to cancel. Recordings are limited to 10 minutes. Captured audio is transcribed via local `openai-whisper` and automatically routed to the enrichment pipeline.
+The GUI pill supports voice memo recording: right-click the pill to start recording, left-click to stop and send, or press Esc to cancel. Recordings are limited to 10 minutes. Captured audio is transcribed via local `openai-whisper` and automatically routed to the enrichment pipeline.
 
 **Requirement:** `ffmpeg` must be on your PATH for webm/opus decoding. Install via:
+
 ```bash
 winget install Gyan.FFmpeg
 ```
+
+
 
 ### Reminders
 
@@ -283,6 +310,8 @@ The vault is a folder of Markdown files with YAML frontmatter. It's portable, co
 - Frontmatter aliases and tags power wikilink resolution and dedup matching.
 - Full-text and vector indexes are continuously rebuilt as files change.
 - `vault_sync.py` runs on startup: removes orphan index rows, reconciles file changes.
+
+
 
 ## Privacy
 
@@ -306,6 +335,10 @@ The pipeline is designed to avoid losing data and avoid inventing certainty.
 - Low-confidence captures are routed to scratchpad.
 - YouTube transcripts are written before summarization so a failed summary does not lose the transcript.
 - Merge and dedup decisions read actual Markdown files, not only derived indexes.
+
+Known gap: a total LLM failure (Ollama unreachable, both structured-output passes fail) currently
+drops the capture with no scratchpad fallback — tracked as a P0 item in `docs/ROADMAP.md`; this
+line will be removed once that fallback ships.
 
 ## Inbox Workflow
 
@@ -365,7 +398,11 @@ Orphan cleanup is fast (no LLM calls) and safe for every startup. Use it to reco
 python -c "from vault_sync import purge_orphan_index_entries; purge_orphan_index_entries(vault_root)"
 ```
 
+
+
 ## Development Commands
+
+
 
 ### Python
 
@@ -375,6 +412,8 @@ pytest
 python main.py --self-check
 python main.py --verbose --dry-run --text "Test capture"
 ```
+
+
 
 ### GUI
 
@@ -386,6 +425,8 @@ npm run build
 npm test
 ```
 
+
+
 ### Rust
 
 ```bash
@@ -393,6 +434,8 @@ cd gui/src-tauri
 cargo check
 cargo build
 ```
+
+
 
 ## Testing
 
@@ -413,16 +456,18 @@ These are load-bearing decisions. Violating them causes real regressions:
 - **Files are authoritative.** Never let a database row override file-based decisions for dedup, merge, or category routing.
 - **Vision failures are fail-fast.** When `image_required = true` and vision unavailable, mark it and route away from confident LLM processing; don't silently become a text capture.
 - **CLI and FastAPI paths duplicate intentionally.** Same four-stage sequence in `main.py:run_pipeline()` and `server.py:_run_pipeline_blocking()`. Any change (retry logic, context assembly, index updates) must be mirrored in both by hand — don't collapse into a callback to avoid inverting control flow over the hottest code path.
-- **Tauri geometry uses `LogicalPosition`/`LogicalSize`.** All monitor reads go through `gui/src/lib/monitor.ts` (divides by `scaleFactor`). Never write physical coordinates into `Logical`* calls.
+- **Tauri geometry uses** `LogicalPosition`**/**`LogicalSize`**.** All monitor reads go through `gui/src/lib/monitor.ts` (divides by `scaleFactor`). Never write physical coordinates into `Logical`* calls.
 - **Vault categories are never hardcoded.** Live folder names define the enum at runtime via `models.py:build_capture_model()`.
+
+
 
 ## Workflows
 
 **Capturing:**
 
-- Hit `Ctrl+Shift+Space`, capture from clipboard or open menu for text/URL/audio input.
+- Hit `Ctrl+Shift+Space`, capture from clipboard or open the menu for text/URL/audio input.
 - Pill follows you across monitors; snaps to edges; drag to move.
-- Hotkey triggers full-window dashboard if you want to monitor progress, review inbox, or search.
+- Switch to the full window (Dashboard) if you want to monitor progress, review inbox, or search.
 
 **Filing:**
 
@@ -445,5 +490,5 @@ These are load-bearing decisions. Violating them causes real regressions:
 **Result:** A growing Markdown knowledge base searchable, linkable, synced, backed up, and edited with normal tools. Zero lock-in.
 
 **Stop deciding where things go.**
-Copy data. Click capture. Let the pipeline file it. 
+Copy data. Click capture. Let the pipeline file it.
 Your first thought is the idea — the second thought, is yours

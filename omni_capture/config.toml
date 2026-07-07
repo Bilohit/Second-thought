@@ -15,6 +15,11 @@ vision_prompt = "Describe this image in detail. If it contains code, a UI screen
 # If true, image capture hard-fails (raises) when the vision model is missing/unreachable.
 # If false (default), capture degrades gracefully and writes a placeholder note instead.
 image_required = false
+# Client-side timeout (seconds) on the structured chat-completion call to Ollama.
+# Guards against a hang (model swap, GPU contention, model loading) blocking the
+# pipeline forever; a timeout raises and is caught by the pipeline's LLM-stage
+# except block, routing the capture to the scratchpad.
+request_timeout_s = 60
 
 [whisper]
 model = "base"

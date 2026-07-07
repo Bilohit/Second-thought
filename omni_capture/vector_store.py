@@ -33,6 +33,8 @@ from typing import Iterator, Optional
 
 import numpy as np
 
+import index_health
+
 # Indian Standard Time (UTC+05:30). Prefer the tz database via zoneinfo so the
 # offset stays correct if the rules ever change; fall back to a fixed offset
 # (IST has no DST) when tzdata is unavailable.
@@ -83,6 +85,12 @@ def _db_path(vault_root: Path) -> Path:
 
 def _get_conn(vault_root: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(_db_path(vault_root)))
+    # WAL is a persistent on-disk setting (re-issuing is a no-op) so readers
+    # and the writer don't block each other; busy_timeout is per-connection
+    # and must be set on every open so a lock contention window is waited
+    # out instead of raising "database is locked".
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute(_CREATE_TABLE)
     conn.commit()
     return conn
@@ -338,10 +346,12 @@ def index_note(
                         (f"{rel}::c{i}", vec_bytes, snippet, category),
                     )
         print(f"[VectorStore] indexed: {rel}", flush=True)
+        index_health.record_ok("vectors")
 
     except Exception as exc:
         print(f"[{_ist_now()}] [VectorStore] non-fatal index error: {exc}",
               file=sys.stderr, flush=True)
+        index_health.record_failure("vectors", exc)
 
 
 def remove_from_index(vault_root: Path, note_path: Path) -> None:
@@ -357,9 +367,11 @@ def remove_from_index(vault_root: Path, note_path: Path) -> None:
                 (rel, rel + "::c%"),
             )
         print(f"[VectorStore] removed: {rel}", flush=True)
+        index_health.record_ok("vectors")
     except Exception as exc:
         print(f"[{_ist_now()}] [VectorStore] remove_from_index error: {exc}",
               file=sys.stderr, flush=True)
+        index_health.record_failure("vectors", exc)
 
 
 def retrieve_related(

@@ -86,6 +86,13 @@ interface Props {
   /** False hides the bar for one origin-shift resize frame (WebView2
    *  stale-frame mask, see CAPSULE_OPEN_FLICKER_PLAN.md). Default true. */
   shown?: boolean;
+  /** Which vertical third the fused compact panel grows from — drives square
+   *  seam corners on the bar when a panel is open (GATE-1 option A). */
+  panelZone?: "top" | "middle" | "bottom";
+  /** The compact panel target currently open (Task 2.1 step 6), or null when
+   *  no panel is out. The matching icon gets the `active` class (color
+   *  flip only — the indicator element itself is Task 2.4/M2). */
+  activeTarget?: MenuTarget | null;
   onToggle: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
   onSelect: (target: Exclude<MenuTarget, "hide">) => void;
@@ -99,7 +106,7 @@ interface Props {
   sampleRate?: number;
 }
 
-export default function CapsuleMenu({ open, corner, label, dotColor, isActive, llmStatus, inboxCount, draggable, dragging, onDragPointerDown, nearEdge, exiting = false, shown = true, onToggle, onContextMenu, onSelect, onHide, voicePhase, voiceElapsedMs, readWaveform, readSpectrum, sampleRate }: Props) {
+export default function CapsuleMenu({ open, corner, label, dotColor, isActive, llmStatus, inboxCount, draggable, dragging, onDragPointerDown, nearEdge, exiting = false, shown = true, panelZone, activeTarget = null, onToggle, onContextMenu, onSelect, onHide, voicePhase, voiceElapsedMs, readWaveform, readSpectrum, sampleRate }: Props) {
   const isRecording = voicePhase === "recording";
   const sliderRef = useRef<HTMLSpanElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -120,6 +127,12 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
   // Closing the menu shrinks every item back to width 0 — drop the slider
   // immediately so it doesn't visibly collapse with them.
   useEffect(() => { if (!open) hideSlider(); }, [open]);
+
+  // Task 2.4/M2 (pick c — sliding background pill): index of the icon whose
+  // compact panel is currently open, or -1 while none is. Icon slots are
+  // fixed 44px flex items (index.css:1035) so `activeIndex * 44` is exact —
+  // no measuring needed, same discipline as the rail-slider pattern.
+  const activeIndex = activeTarget ? ALL_TARGETS.indexOf(activeTarget) : -1;
 
   // Icons reveal from the screen-near (pinned) edge inward (§4.3.3): when
   // the bar hugs the right edge, the rightmost icon enters first. DOM order
@@ -148,6 +161,7 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
       className={`capsule-menu${open ? " open" : ""}${exiting ? " exiting" : ""}${draggable ? " pill-drag-handle" : ""}${dragging ? " pill-grabbed" : ""}`}
       data-corner={corner}
       data-near={nearEdge}
+      data-panel-zone={panelZone}
       style={{ width: open ? CAPSULE_OPEN_W : CAPSULE_CLOSED_W, height: CAPSULE_H, visibility: shown ? "visible" : "hidden" }}
       onPointerDown={draggable ? onDragPointerDown : undefined}
       onClick={onToggle}
@@ -187,10 +201,26 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
         )}
       </button>
       <span ref={sliderRef} className="capsule-slider" aria-hidden="true" />
+      {activeIndex >= 0 && (
+        // Persistent "which panel is open" indicator — distinct from
+        // .capsule-slider above (that one is imperative, hover-driven, and
+        // gets wiped on close). Mounts fresh on null->target (fades in via
+        // the compactSwapIn-style keyframe below, no slide since there's no
+        // prior transform to animate from); subsequent target->target
+        // switches just update the transform prop in place, so only the
+        // already-mounted element's `transition: transform` plays (slide,
+        // no re-fade).
+        <span
+          className="capsule-active-ind"
+          aria-hidden="true"
+          style={{ transform: `translateX(${activeIndex * CAPSULE_ICON_W}px)` }}
+        />
+      )}
       <div role="menu" aria-label="Second Thought actions" className="capsule-items">
         {ALL_TARGETS.map((id, i) => {
           const isHide = id === "hide";
           const showBadge = id === "inbox" && inboxCount > 0;
+          const activate = () => { isHide ? onHide() : onSelect(id); };
           return (
             <button
               key={id}
@@ -198,14 +228,14 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
               ref={(el) => { itemRefs.current[i] = el; }}
               role="menuitem"
               tabIndex={open ? 0 : -1}
-              className={`capsule-item no-drag${isHide ? " capsule-item-hide" : ""}`}
+              className={`capsule-item no-drag${isHide ? " capsule-item-hide" : ""}${activeTarget === id ? " active" : ""}`}
               style={{ transitionDelay: `${delays[i]}ms` }}
               aria-label={showBadge ? `${MENU_LABELS[id]}, ${inboxCount} item${inboxCount === 1 ? "" : "s"} need review` : MENU_LABELS[id]}
               title={MENU_LABELS[id]}
-              onClick={(e) => { e.stopPropagation(); isHide ? onHide() : onSelect(id); }}
+              onClick={(e) => { e.stopPropagation(); activate(); }}
               onMouseEnter={() => showSliderAt(itemRefs.current[i])}
               onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); isHide ? onHide() : onSelect(id); }
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); activate(); }
               }}
             >
               <MenuIcon target={id} size={16} />

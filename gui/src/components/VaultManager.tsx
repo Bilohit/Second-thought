@@ -44,6 +44,19 @@ interface Props {
   onConsumeOpenResult?: () => void;
   measureRef?: (el: HTMLDivElement | null) => void;
   embedded?: boolean;
+  /** Compact Mode Menu Decoupling (B3): distinct from `embedded` — Full's
+   *  LibraryView also passes `embedded`, so this is the flag that actually
+   *  means "hosted inside a CompactShell panel." Hides the vault-root path
+   *  string and moves the top-level action buttons (open folder / refresh /
+   *  new category) out of this component's own header via
+   *  `onHeaderActionsChange`, so CompactShell's header can render them
+   *  instead of duplicating a second header row. Full-window usage never
+   *  sets this, so its render is unaffected. */
+  compactHeader?: boolean;
+  /** Only consulted while `compactHeader` is true — receives the current
+   *  action-button cluster (or `null` on unmount/target switch) so the
+   *  caller can forward it into `CompactShell`'s `headerActions` slot. */
+  onHeaderActionsChange?: (actions: React.ReactNode | null) => void;
 }
 
 // ── Category card ─────────────────────────────────────────────────────────────
@@ -393,7 +406,7 @@ type ModalState =
   | { kind: "rename"; name: string }
   | { kind: "editDescription"; name: string; current: string | null };
 
-export default function VaultManager({ visible, onClose, openResult, onConsumeOpenResult, measureRef, embedded = false }: Props) {
+export default function VaultManager({ visible, onClose, openResult, onConsumeOpenResult, measureRef, embedded = false, compactHeader = false, onHeaderActionsChange }: Props) {
   // Mounted+visible pattern (mirrors SettingsPanel): the panel stays mounted
   // while transitioning out so it can animate, but is removed from the DOM
   // once fully hidden so it can't eat clicks meant for the capture card.
@@ -540,6 +553,61 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
     }
   };
 
+  // Top-level action buttons — Full mode renders these inline in this
+  // component's own header (unchanged below); compactHeader mode instead
+  // forwards them to the caller so CompactShell's header can render them,
+  // in place of this component's own (now-suppressed) duplicate row.
+  const headerActionButtons = (
+    <>
+      {!drillCat && vaultRoot && (
+        <button
+          className="btn-hover"
+          style={BTN_GHOST}
+          title="Open vault folder"
+          onClick={handleOpenVaultFolder}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            <path d="M2 10h20" />
+          </svg>
+        </button>
+      )}
+      <button
+        className="btn-hover"
+        style={BTN_GHOST}
+        title="Refresh"
+        onClick={() => drillCat ? drillInto(drillCat) : load()}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="23 4 23 10 17 10" />
+          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+        </svg>
+      </button>
+      {!drillCat && (
+        <button
+          className="btn-hover"
+          style={{ ...BTN_GHOST, color: "var(--accent)" }}
+          title="New category"
+          onClick={() => { setActionError(null); setModal({ kind: "create" }); }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+        </button>
+      )}
+    </>
+  );
+
+  useEffect(() => {
+    if (!compactHeader) return;
+    onHeaderActionsChange?.(headerActionButtons);
+    return () => onHeaderActionsChange?.(null);
+    // headerActionButtons is rebuilt every render from these same values —
+    // listing it would just be noise, and its closures (handleOpenVaultFolder
+    // etc.) are always current at call time regardless of this array.
+  }, [compactHeader, drillCat, vaultRoot, onHeaderActionsChange]);
+
   if (!mounted) return null;
 
   return (
@@ -556,104 +624,83 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
       onTransitionEnd={handleTransitionEnd}
     >
       {/* ── Header ───────────────────────────────────────────────────────── */}
-      <div className={embedded ? "" : "drag-region"} style={PANEL_HEADER}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {drillCat ? (
-            <button
-              className="no-drag btn-hover"
-              style={BTN_GHOST}
-              onClick={() => setDrillCat(null)}
-              title="Back"
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="15 18 9 12 15 6" />
-              </svg>
-            </button>
-          ) : (
-            !embedded && (
-              <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
-                <MenuIcon target="vault" size={14} />
+      {/* compactHeader: this header div is otherwise empty (icon/title/vaultRoot
+          and the close button all gate off in that mode, and the top-level
+          action buttons are forwarded to CompactShell's headerActions slot
+          instead) — render it only for the drill-in back button + category
+          title, which live only here and aren't lifted anywhere else. */}
+      {(!compactHeader || drillCat) && (
+        <div className={embedded ? "" : "drag-region"} style={PANEL_HEADER}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {drillCat ? (
+              <button
+                className="no-drag btn-hover"
+                style={BTN_GHOST}
+                onClick={() => setDrillCat(null)}
+                title="Back"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="15 18 9 12 15 6" />
+                </svg>
+              </button>
+            ) : (
+              !embedded && (
+                <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
+                  <MenuIcon target="vault" size={14} />
+                </span>
+              )
+            )}
+            {(drillCat || !embedded) && (
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
+                {drillCat ? drillCat : "Vault"}
               </span>
-            )
-          )}
-          {(drillCat || !embedded) && (
-            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
-              {drillCat ? drillCat : "Vault"}
-            </span>
-          )}
-          {!drillCat && vaultRoot && (
-            <span style={{
-              fontSize: 10, color: "var(--text-3)", fontFamily: "monospace",
-              ...(embedded
-                ? { flex: 1, wordBreak: "break-all" }
-                : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }),
-            }}>
-              {vaultRoot}
-            </span>
-          )}
-        </div>
+            )}
+            {!compactHeader && !drillCat && vaultRoot && (
+              <span style={{
+                fontSize: 10, color: "var(--text-3)", fontFamily: "monospace",
+                ...(embedded
+                  ? { flex: 1, wordBreak: "break-all" }
+                  : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }),
+              }}>
+                {vaultRoot}
+              </span>
+            )}
+          </div>
 
-        <div className="no-drag" style={{ display: "flex", gap: 4 }}>
-          {/* Open vault folder (only on top-level view, once we know the path) */}
-          {!drillCat && vaultRoot && (
-            <button
-              className="btn-hover"
-              style={BTN_GHOST}
-              title="Open vault folder"
-              onClick={handleOpenVaultFolder}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                <path d="M2 10h20" />
-              </svg>
-            </button>
-          )}
-          {/* Refresh */}
-          <button
-            className="btn-hover"
-            style={BTN_GHOST}
-            title="Refresh"
-            onClick={() => drillCat ? drillInto(drillCat) : load()}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="23 4 23 10 17 10" />
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-            </svg>
-          </button>
-          {/* New folder (only on top-level view) */}
-          {!drillCat && (
-            <button
-              className="btn-hover"
-              style={{ ...BTN_GHOST, color: "var(--accent)" }}
-              title="New category"
-              onClick={() => { setActionError(null); setModal({ kind: "create" }); }}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-            </button>
-          )}
-          {/* Close */}
-          {!embedded && (
-            <button
-              className="icon-close-btn"
-              title="Close"
-              onClick={onClose}
-            >
-              <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="2" y1="2" x2="12" y2="12" />
-                <line x1="12" y1="2" x2="2" y2="12" />
-              </svg>
-            </button>
-          )}
+          <div className="no-drag" style={{ display: "flex", gap: 4 }}>
+            {/* Top-level action buttons: rendered inline here in Full mode;
+                compactHeader mode forwards the same buttons up via the effect
+                above instead (CompactShell's headerActions slot). */}
+            {!compactHeader && headerActionButtons}
+            {/* Close */}
+            {!embedded && (
+              <button
+                className="icon-close-btn"
+                title="Close"
+                onClick={onClose}
+              >
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <line x1="2" y1="2" x2="12" y2="12" />
+                  <line x1="12" y1="2" x2="2" y2="12" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* ── Body ─────────────────────────────────────────────────────────── */}
       <div
         className="no-drag"
-        style={{ flex: 1, overflow: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 6 }}
+        style={{
+          flex: 1,
+          overflow: "auto",
+          padding: "12px 16px",
+          paddingTop: compactHeader ? 4 : undefined,   // 4px, user-approved
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+        }}
       >
         {/* Inline modal: create or rename */}
         {(modal.kind === "create" || modal.kind === "rename") && (

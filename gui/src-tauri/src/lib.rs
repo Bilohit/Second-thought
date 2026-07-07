@@ -634,6 +634,140 @@ mod noactivate {
     }
 }
 
+// ── Job Object: reap the Python child on an UNGRACEFUL parent death ──────────
+//
+// The RunEvent::Exit hook (see run()) and the tray "quit" arm both kill the
+// child on a *graceful* exit. Neither runs if the parent is force-killed
+// (Task Manager "End task", a crash with no unwind, SIGKILL-equivalent). On
+// Windows the only OS-level guarantee is a Job Object with
+// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: every handle to the job closes when the
+// parent process dies for ANY reason, and Windows then terminates every
+// process assigned to that job. So we create one job, set the kill-on-close
+// limit, assign the freshly-spawned child to it, and deliberately LEAK the
+// job handle for the life of the process (storing it in a OnceLock) — closing
+// it early would trip the same kill limit and take the child down with it.
+//
+// This is raw Win32 FFI (matches the `mod noactivate` commenting style). We
+// get the child's process HANDLE from `Child::as_raw_handle()`, avoiding an
+// OpenProcess round-trip. (windows-sys still gates the extended-limit struct
+// itself behind Win32_System_Threading, so that feature is enabled too.)
+#[cfg(windows)]
+mod jobkill {
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Child;
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    // A Win32 HANDLE is an opaque, raw-pointer-shaped value we only ever hand
+    // back to Win32 (never dereference), so it's safe to hold in a static. The
+    // field is never read: it exists solely so the job handle is NOT dropped
+    // (dropping it would fire KILL_ON_JOB_CLOSE and kill the child early).
+    #[allow(dead_code)]
+    struct SendHandle(HANDLE);
+    unsafe impl Send for SendHandle {}
+    unsafe impl Sync for SendHandle {}
+
+    // Keeps the job handle alive for the whole process. Never closed on
+    // purpose — dropping/closing it would fire KILL_ON_JOB_CLOSE early.
+    static JOB: OnceLock<SendHandle> = OnceLock::new();
+
+    /// The single job-limit flag we set. Exposed so a unit test can assert the
+    /// intended (non-zero) kill-on-close semantics without a live child.
+    #[allow(dead_code)] // referenced only from the #[cfg(test)] module below
+    pub fn kill_on_close_flag() -> u32 {
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    }
+
+    /// Create a kill-on-job-close Job Object and assign `child` to it. On
+    /// success the OS will terminate the child whenever this (parent) process
+    /// dies, even without any Rust hook running. Best-effort: errors are
+    /// returned for the caller to log, never fatal to startup.
+    pub fn assign_child_to_kill_on_close_job(child: &Child) -> Result<(), String> {
+        // Only one job for the process lifetime; a second spawn (there isn't
+        // one today) would need its own job rather than reusing this slot.
+        if JOB.get().is_some() {
+            return Err("job object already created".to_string());
+        }
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return Err("CreateJobObjectW returned null".to_string());
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let set_ok = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if set_ok == 0 {
+                return Err("SetInformationJobObject failed".to_string());
+            }
+            let child_handle = child.as_raw_handle() as HANDLE;
+            if AssignProcessToJobObject(job, child_handle) == 0 {
+                return Err("AssignProcessToJobObject failed".to_string());
+            }
+            // Leak the handle into the static so it outlives this function.
+            let _ = JOB.set(SendHandle(job));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        // Decidable part of the FFI path: the limit flag we hand to Windows is
+        // the kill-on-close flag and is non-zero (0 would be a silent no-op).
+        #[test]
+        fn flag_is_kill_on_job_close() {
+            assert_eq!(kill_on_close_flag(), JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE);
+            assert_ne!(kill_on_close_flag(), 0);
+        }
+    }
+}
+
+// ponytail: no Job Object equivalent needed off-Windows yet — the POSIX
+// analogue (prctl PR_SET_PDEATHSIG or a process group + kill) is only worth
+// adding when a non-Windows target actually ships. No-op keeps the call site
+// cfg-free.
+#[cfg(not(windows))]
+mod jobkill {
+    use std::process::Child;
+
+    #[allow(dead_code)] // referenced only from tests; parity with the windows path
+    pub fn kill_on_close_flag() -> u32 {
+        0
+    }
+
+    pub fn assign_child_to_kill_on_close_job(_child: &Child) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+// ── Python child lifecycle ──────────────────────────────────────────────────
+
+/// Kill the tracked Python child, if one is still alive. Idempotent — takes
+/// the child out of the shared slot, so a second call (e.g. the RunEvent::Exit
+/// hook firing right after the tray "quit" arm already killed it) is a no-op.
+/// This is the ONE kill implementation; both the tray "quit" arm and the
+/// app-level exit hook call it so there's never a divergent second copy.
+fn kill_python_child<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(mut guard) = state.python_child.lock() {
+            if let Some(mut child) = guard.take() {
+                let _ = child.kill();
+            }
+        }
+    }
+}
+
 // ── Tray icon setup ─────────────────────────────────────────────────────────
 
 fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
@@ -656,14 +790,10 @@ fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "quit" => {
-                // Kill Python child before exiting
-                if let Some(state) = app.try_state::<AppState>() {
-                    if let Ok(mut guard) = state.python_child.lock() {
-                        if let Some(mut child) = guard.take() {
-                            let _ = child.kill();
-                        }
-                    }
-                }
+                // Kill Python child before exiting. app.exit(0) below also
+                // fires RunEvent::Exit -> kill_python_child again, but that's a
+                // no-op once the child has been taken out of the slot here.
+                kill_python_child(app);
                 app.exit(0);
             }
             "settings" => {
@@ -775,6 +905,18 @@ pub fn run() {
     log_line(LVL_INFO, "INFO", "boot", "Second Thought starting up");
 
     tauri::Builder::default()
+        // Must be registered FIRST: on a second launch this callback fires in
+        // the ALREADY-RUNNING first instance and the second process exits
+        // before setup() runs — so no second Python child ever spawns to fight
+        // over port 7070 / disagree on X-Omni-Secret. We just surface the
+        // existing window (show + unminimize + focus; no coordinates touched).
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
@@ -838,6 +980,15 @@ pub fn run() {
             match child {
                 Ok(mut c) => {
                     log_line(LVL_INFO, "INFO", "server", &format!("Python server spawned (pid {})", c.id()));
+
+                    // Assign the child to a kill-on-job-close Job Object so an
+                    // ungraceful parent death (crash / Task Manager kill, where
+                    // no Rust hook runs) still reaps it — the OS-level backstop
+                    // to the RunEvent::Exit hook. No-op on non-Windows.
+                    match jobkill::assign_child_to_kill_on_close_job(&c) {
+                        Ok(()) => log_line(LVL_INFO, "INFO", "server", "child assigned to kill-on-close job object"),
+                        Err(e) => log_line(LVL_WARN, "WARN", "server", &format!("job object assignment failed (child may orphan on crash): {e}")),
+                    }
 
                     // uvicorn/server.py write to stdout/stderr; pipe both into the
                     // same unified log file instead of letting them vanish into the
@@ -908,6 +1059,16 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Second Thought");
+        .build(tauri::generate_context!())
+        .expect("error while building Second Thought")
+        // App-level exit hook: kill the Python child on ANY graceful exit path
+        // (app.exit(), last-window logic, OS shutdown) — not just the tray
+        // "quit" menu item. The Job Object above covers the ungraceful paths
+        // where this closure never runs. Both routes share kill_python_child,
+        // so there's no divergent second kill implementation.
+        .run(|app_handle, event| {
+            if matches!(event, tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }) {
+                kill_python_child(app_handle);
+            }
+        });
 }

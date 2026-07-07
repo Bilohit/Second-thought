@@ -141,3 +141,28 @@ export function resolveTargetMonitor(monitors: MonitorInfo[], selectedId: string
   const chosen = selectedId ? monitors.find((m) => m.id === selectedId) : undefined;
   return chosen ?? monitors.find((m) => m.isPrimary) ?? monitors[0];
 }
+
+/**
+ * Converts a logical rect (`pos`+`size`) to physical px at `scale`, rounding
+ * the right/bottom edge from the absolute logical coordinate instead of
+ * rounding x/w (or y/h) independently. `round(x·s) + round(w·s)` can drift
+ * 1px from `round((x+w)·s)` at fractional scale factors (125%/150% DPI),
+ * which shivers a pinned edge across a morph (T4). This is the ONE
+ * sanctioned physical-coordinate conversion, consumed by
+ * `tauri.ts:setWindowBoundsAtomic` — every other call site stays
+ * `Logical*` only.
+ */
+export function logicalToPhysicalRect(
+  pos: { x: number; y: number },
+  size: { w: number; h: number },
+  scale: number,
+): { x: number; y: number; w: number; h: number } {
+  const x = Math.round(pos.x * scale);
+  const y = Math.round(pos.y * scale);
+  return {
+    x,
+    y,
+    w: Math.round((pos.x + size.w) * scale) - x,
+    h: Math.round((pos.y + size.h) * scale) - y,
+  };
+}

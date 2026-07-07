@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Optional
 
 from frontmatter import strip_frontmatter
+import index_health
 
 # ponytail: 64k cap; raise or chunk FTS if vault notes routinely exceed this
 _BODY_EXCERPT_MAX_CHARS = 65536
@@ -348,8 +349,10 @@ def log_capture_db(entry: dict, vault_root: Path) -> None:
         )
         conn.commit()
         conn.close()
+        index_health.record_ok("captures")
     except Exception as exc:
         print(f"[IndexWriter] Non-fatal DB error: {exc}", file=sys.stderr)
+        index_health.record_failure("captures", exc)
 
 
 # ── One-time body reindex ───────────────────────────────────────────────────
@@ -390,9 +393,11 @@ def reindex_bodies(vault_root: Path) -> int:
         )
         conn.commit()
         conn.close()
+        index_health.record_ok("captures")
         return updated
     except Exception as exc:
         print(f"[IndexWriter] Non-fatal reindex error: {exc}", file=sys.stderr)
+        index_health.record_failure("captures", exc)
         return 0
 
 
@@ -474,8 +479,10 @@ def remove_capture_by_path(vault_root: Path, abs_path: Path) -> None:
         conn.commit()
         conn.close()
         print(f"[IndexWriter] removed: {abs_path}", flush=True)
+        index_health.record_ok("captures")
     except Exception as exc:
         print(f"[IndexWriter] remove_capture_by_path error: {exc}", file=sys.stderr)
+        index_health.record_failure("captures", exc)
 
 
 def upsert_capture_from_file(vault_root: Path, abs_path: Path) -> None:
@@ -506,8 +513,10 @@ def upsert_capture_from_file(vault_root: Path, abs_path: Path) -> None:
         conn.commit()
         conn.close()
         print(f"[IndexWriter] upserted: {p}", flush=True)
+        index_health.record_ok("captures")
     except Exception as exc:
         print(f"[IndexWriter] upsert_capture_from_file error: {exc}", file=sys.stderr)
+        index_health.record_failure("captures", exc)
 
 
 # ── Search ────────────────────────────────────────────────────────────────────

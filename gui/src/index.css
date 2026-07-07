@@ -507,6 +507,20 @@ html, body, #root {
   60%      { opacity: 1; }
 }
 
+/* C2: one-shot red tint after a compact panel's ErrorBoundary auto-collapses
+   it back to the pill (App applies `.pill-error` for ~1.2s via setTimeout,
+   matching pillPulseGlow's animated box-shadow mechanism but non-repeating
+   and in `--red`). The wrapper this class lands on is sized to exactly the
+   pill's OS window, so the ring reads as a glow around the pill itself. */
+@keyframes pillErrorGlow {
+  0%   { box-shadow: 0 0 0 0 var(--red); }
+  35%  { box-shadow: 0 0 0 6px var(--red); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.pill-error {
+  animation: pillErrorGlow 1.2s ease-out;
+}
+
 /* Full-mode nav icon — base color handled here so .btn-hover:hover override works */
 .nav-btn { color: var(--text-3); }
 .nav-btn[aria-pressed="true"] { color: var(--accent); }
@@ -603,6 +617,19 @@ html, body, #root {
   animation: fwViewIn 240ms var(--hover-ease-out) both;
 }
 
+/* SegmentedToggle content swap — directional slide + fade (entrance-only,
+   the same keyed-remount pattern as fwViewIn / compactSwapIn, not a
+   simultaneous two-panel slide). `--swap-dir` ∈ {-1,0,1} (set inline from
+   lib/segmentedToggle.ts:slideDirection) picks which side the new content
+   enters from; 0 (first mount / no change) collapses to a plain fade. */
+@keyframes segSwapIn {
+  from { opacity: 0; transform: translateX(calc(var(--swap-dir, 0) * 24px)); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.seg-swap-panel {
+  animation: segSwapIn 220ms var(--menu-travel-ease) both;
+}
+
 /* Reduced motion: collapse everything to a plain fade */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -635,6 +662,12 @@ html, body, #root {
   }
 
   @keyframes fwViewIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  /* Drop the horizontal travel — instant opacity swap only. */
+  @keyframes segSwapIn {
     from { opacity: 0; }
     to   { opacity: 1; }
   }
@@ -912,6 +945,22 @@ html, body, #root {
   border-radius: 0;
 }
 
+/* Task 2.4/M4 (pick b — overlapped stagger, COMBINED close only): delays
+   only the width shrink (first item in the base `.capsule-menu` transition
+   list above — width, transform, border-radius, in that order) by 100ms so
+   the panel's clip-exit (starts immediately, see App.tsx's `closingPanel`
+   branch) and the bar's width collapse read as one overlapped stagger:
+   100 + 260 = 360ms = PANEL_EXIT_MS, the JS settle timer already covers it
+   exactly — never raise that constant instead of this delay.
+   `data-panel-closing` (App.tsx, armed by closeCompactPanel, cleared by the
+   reconcile effect's closingPanel branch after that same PANEL_EXIT_MS wait)
+   is deliberately NOT `.capsule-menu:not(.open)` — that selector would also
+   lag a stage-1-only close (bar-open -> closed, no panel), which must keep
+   its immediate 260ms shrink untouched. */
+[data-panel-closing="true"] .capsule-menu {
+  transition-delay: 100ms, 0ms, 0ms;
+}
+
 /* Width collapse must shrink FROM the pinned screen edge inward, mirroring the
    open grow — otherwise the bar collapses toward its center mid-exit. */
 .capsule-menu[data-near="right"]  { transform-origin: right center; }
@@ -1071,6 +1120,13 @@ html, body, #root {
   transform: scale(1.06) translateY(-1px);
 }
 
+/* Task 2.1 step 6: the icon matching the currently-open compact panel gets
+   the "active" color flip (color only — the indicator element itself is
+   Task 2.4/M2). Inactive icons stay --text-3 (base .capsule-item rule). */
+.capsule-menu.open .capsule-item.active {
+  color: var(--text-1);
+}
+
 /* Shared sliding highlight (mockups/capsule-hover-slide.html, "smooth
    glide"): one element repositioned via JS on item mouseenter, so the tint
    glides from the previously hovered icon to the new one instead of each
@@ -1092,6 +1148,48 @@ html, body, #root {
 }
 
 .capsule-menu:not([data-corner="sharp"]) .capsule-slider { border-radius: 17px; }
+
+/* Task 2.4/M2 (pick c — sliding background pill): persistent indicator for
+   "which compact panel is open", distinct from .capsule-slider above (that
+   one is imperative/hover-driven and gets wiped the instant the bar closes).
+   Sits behind the icon row (.capsule-item is position:relative; z-index:1
+   already, index.css:1035-1037). 4px left offset centers the 36px visual
+   hitbox inside each 44px icon slot (CAPSULE_ICON_W). First appearance
+   (null -> target) plays `capsuleActiveIndIn` once on mount (fade only, no
+   slide — there's no prior transform to animate from); subsequent
+   target -> target switches only update the `transform` style prop in
+   place, so the persisted element's own `transition: transform` plays
+   (slide, no re-fade, since `animation` doesn't replay on prop-only
+   updates). Disappearance (combined close) isn't separately choreographed —
+   it fades out with the rest of the bar's own collapse (M4). */
+@keyframes capsuleActiveIndIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.capsule-active-ind {
+  position: absolute;
+  top: 4px;
+  left: calc(var(--space-3) + 4px); /* bar pad + (44-36)/2 — slot 0 starts at the bar padding */
+  z-index: 0;
+  width: 36px;
+  height: 28px;
+  background: var(--accent-d);
+  border-radius: 7px;
+  pointer-events: none;
+  transition: transform 240ms var(--hover-ease-out);
+  animation: capsuleActiveIndIn 160ms ease-out both;
+}
+
+/* Fused compact panel (GATE-1 option A): square the bar edge that touches
+   the panel so the shared seam reads sharp/continuous in rounded mode. */
+.capsule-menu[data-corner="rounded"][data-panel-zone="top"] {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.capsule-menu[data-corner="rounded"][data-panel-zone="bottom"] {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
 
 .capsule-item:focus-visible,
 .capsule-toggle:focus-visible {
@@ -1128,12 +1226,18 @@ html, body, #root {
   .spoke,
   .capsule-menu,
   .capsule-label,
-  .capsule-item {
+  .capsule-item,
+  .capsule-active-ind {
     transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
   }
   .spoke,
-  .capsule-item {
-    transition-delay: 0ms !important;   /* cancel the staggered fan-in */
+  .capsule-item,
+  .capsule-menu {
+    /* Cancels the staggered fan-in AND Task 2.4/M4's panel-closing width
+       delay ([data-panel-closing] .capsule-menu above) — reduced motion
+       collapses everything to an instant snap. */
+    transition-delay: 0ms !important;
   }
 }
 
@@ -1163,22 +1267,26 @@ html, body, #root {
   color: var(--text-1);
   clip-path: inset(0 0 100% 0);
   opacity: 0;
-  transition: clip-path 300ms cubic-bezier(0.16, 1, 0.3, 1), opacity 300ms;
+  transition: clip-path 300ms cubic-bezier(0.16, 1, 0.3, 1), opacity 300ms,
+              transform 300ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .compact-panel[data-corner="rounded"] { border-radius: 12px; }
 .compact-panel[data-corner="sharp"]   { border-radius: 0; }
 
+/* Fused seam (GATE-1 option A): square off the edge that touches the bar so
+   bar+panel read as one continuous sheet — only the outer corners stay rounded. */
+.compact-panel[data-corner="rounded"][data-zone="top"]    { border-radius: 0 0 12px 12px; }
+.compact-panel[data-corner="rounded"][data-zone="bottom"] { border-radius: 12px 12px 0 0; }
+
 .compact-panel[data-zone="top"]    { clip-path: inset(0 0 100% 0); }
 .compact-panel[data-zone="bottom"] { clip-path: inset(100% 0 0 0); }
-.compact-panel[data-zone="middle"] { clip-path: inset(50% 0 50% 0); }
 
 /* GATE-1 option A (extruded sheet, Task 2.2): the edge touching the bar is
    suppressed so bar+panel read as one fused surface instead of two bordered
    boxes stacked with a visible seam. */
 .compact-panel[data-zone="top"]    { border-top: none; }
 .compact-panel[data-zone="bottom"] { border-bottom: none; }
-.compact-panel[data-zone="middle"] { border-top: none; border-bottom: none; }
 
 /* Height mirrors PANEL_H in lib/compactPanel.ts (kept in sync with the
    already-hardcoded PANEL_W == 288px above), so the panel's rendered box
@@ -1190,13 +1298,30 @@ html, body, #root {
   opacity: 1;
 }
 
+/* Task 1.4 (RC-6, one content gate not two): the island has no separate
+   JS-driven "content ready" gate anymore — CompactShell's `open` prop is
+   driven by `panelReady` alone (App.tsx/PillOverlay.tsx). The extra wait for
+   the rect-morph to settle (PANEL_ANIM_MS = 300ms, lib/compactPanel.ts)
+   before the clip-path/opacity reveal starts is expressed declaratively here
+   instead, so it can never be stranded by an unmounted timer. Closing
+   reverses immediately (no delay), matching the capsule's own
+   content-fades-immediately-on-close contract. */
+.island-panel .compact-panel.open {
+  transition-delay: 300ms;
+}
+.island-panel .compact-panel:not(.open) {
+  transition-delay: 0ms;
+}
+
 .compact-panel-header {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  height: 32px;
+  box-sizing: border-box;
+  padding: 0 var(--space-3);
   border-bottom: 1px solid var(--border);
 }
 
@@ -1233,11 +1358,72 @@ html, body, #root {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Task 2.4/M1 (content-swap animation): keyed remount in
+   PillOverlay.renderPanelBody restarts this on every target switch, mirroring
+   FullWindow's `key={view}` + `fwViewIn` pattern — a drift+fade entrance,
+   never an exit animation (the new content simply replaces the old). */
+@keyframes compactSwapIn {
+  from { opacity: 0; transform: translateX(10px); }
+}
+.compact-swap {
+  animation: compactSwapIn 240ms var(--menu-travel-ease) both;
+}
+
+/* Task 2.4/M3 (pick b — layered stage-2 entry): capsule zones only, NOT the
+   minimal-mode island (see the `.island-panel` override below) — the clip
+   sweep opens the surface first, then content fades+rises in starting
+   140ms later. `:not(.open)` (the base rule) resets the delay to 0 so the
+   exit reverses instantly, matching the capsule's existing close contract. */
+.compact-panel .compact-swap {
+  /* Fill the scroll body and pass height through so panels whose root is
+     `height:100%` (CompactLook's chat: transcript grows, composer pins to
+     the bottom edge) fill instead of shrink-wrapping mid-body. Without this
+     the wrapper is auto-height and the composer floats in the middle. */
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 200ms ease, transform 240ms var(--menu-travel-ease);
+  transition-delay: 0ms;
+}
+.compact-panel.open .compact-swap {
+  opacity: 1;
+  transform: translateY(0);
+  transition-delay: 140ms;
+}
+/* Island already gates its own reveal at the .island-panel level
+   (`.island-panel .compact-panel.open { transition-delay: 300ms; }` below,
+   settling the rect morph first) — the extra M3 lift+140ms-delay is a
+   capsule-only choreography, so cancel it here for island content. */
+.island-panel .compact-panel .compact-swap,
+.island-panel .compact-panel.open .compact-swap {
+  opacity: 1;
+  transform: none;
+  transition-delay: 0ms;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .compact-panel {
+  .compact-panel,
+  .compact-swap {
     transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    animation-duration: 0.01ms !important;
+  }
+
+  /* Task 3.2: keep opacity at 80ms for visual continuity; snap geometry */
+  .compact-panel {
+    transition: clip-path 0.01ms cubic-bezier(0.16, 1, 0.3, 1),
+                opacity 80ms,
+                transform 0.01ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+  }
+
+  .compact-panel .compact-swap {
+    transition: opacity 80ms ease,
+                transform 0.01ms var(--menu-travel-ease) !important;
   }
 }
 
@@ -1261,45 +1447,13 @@ html, body, #root {
   }
 }
 
-/* Header icon tab strip (Task 3.1's CompactShell `tabs` variant) — replaces
-   the static icon+title header only for the minimal-mode island; capsule
-   keeps the plain title. Switching tabs never replays the morph or resizes
-   the window (App.tsx routes it through the same handleMenuSelect used for
-   opening, but openingPanel only fires on null -> target, not target ->
-   target). */
-.compact-panel-tabs {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-width: 0;
+/* ── Compact panel list row styling (Task 2.3 — GATE-C density guardrails) ──
+   Separators via single border-top on adjacent rows; no double borders.
+   Title ellipsis and gap >= 10px enforced in component inline styles. */
+.compact-recent-row + .compact-recent-row {
+  border-top: 1px solid var(--border);
 }
 
-.compact-panel-tab {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--text-2);
-  opacity: 0.7;
-  cursor: pointer;
-  box-shadow: inset 0 -1px 0 transparent;
-  transition: opacity 160ms cubic-bezier(0.16, 1, 0.3, 1), color 160ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.compact-panel-tab:hover { opacity: 1; }
-
-.compact-panel-tab.active {
-  color: var(--text-1);
-  opacity: 1;
-  box-shadow: inset 0 -1px 0 var(--text-1);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .compact-panel-tab {
-    transition-duration: 0.01ms !important;
-  }
-}
+/* Header icon tab strip (formerly CompactShell's `tabs` variant) was
+   retired in Task 2.2 (GATE-B=A) — the bar itself is the only target
+   switcher now; see CompactShell.tsx's header comment. */

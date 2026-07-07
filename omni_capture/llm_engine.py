@@ -284,8 +284,10 @@ def run_llm_engine(
     """
     from datetime import date
     from models import EnrichedPayload  # local import to keep top-level clean
+    from config import get_config  # local import to keep top-level clean
 
     today_str = today or date.today().isoformat()
+    request_timeout_s = get_config().ollama.request_timeout_s
 
     if not category_descriptions:
         raise ValueError(
@@ -325,6 +327,7 @@ def run_llm_engine(
         max_retries=max_retries if max_retries is not None else 3,
         temperature=temperature if temperature is not None else 0.1,
         extra_body={"keep_alive": keep_alive},
+        timeout=request_timeout_s,
     )
     return response
 

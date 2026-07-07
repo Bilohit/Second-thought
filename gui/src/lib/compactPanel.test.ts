@@ -8,7 +8,11 @@ import {
   resolveVerticalZone,
   computeCapsulePanelGeometry,
   computeIslandMorphRects,
+  computePanelWindowBox,
+  type Point,
+  type MonitorBounds,
 } from "./compactPanel";
+import { CAPSULE_OPEN_W } from "../components/PillMenu/CapsuleMenu";
 
 describe("constants", () => {
   it("exports the agreed panel constants", () => {
@@ -17,6 +21,10 @@ describe("constants", () => {
     expect(PANEL_GAP).toBe(0);
     expect(PANEL_ANIM_MS).toBe(300);
     expect(PANEL_EXIT_MS).toBe(360);
+  });
+
+  it("PANEL_W equals CAPSULE_OPEN_W", () => {
+    expect(PANEL_W).toBe(CAPSULE_OPEN_W);
   });
 });
 
@@ -62,6 +70,11 @@ describe("computeCapsulePanelGeometry", () => {
     gap: PANEL_GAP,
     margin: 8,
     monitorBounds,
+    // These pre-existing cases test the vertical/clamp mechanics generically,
+    // not RC-2's near-edge pinning — "left" reproduces the prior unconditional
+    // windowX = idleTopLeftLogical.x behavior (see the two horizontal-clamp
+    // cases below, updated for the corrected — no-margin-inset — bar offset).
+    nearEdge: "left" as const,
   };
 
   it("top zone: keeps the bar at its idle on-screen Y and grows downward", () => {
@@ -77,6 +90,7 @@ describe("computeCapsulePanelGeometry", () => {
     expect(barScreenY).toBe(idleBarY);
     expect(result.windowH).toBe(base.margin + base.barH + base.gap + base.panelH + base.margin);
     expect(result.panelOffsetY).toBe(base.margin + base.barH + base.gap);
+    expect(result.panelOffsetX).toBe(result.barOffsetX);
   });
 
   it("bottom zone: window bottom equals bar bottom + margin", () => {
@@ -94,18 +108,25 @@ describe("computeCapsulePanelGeometry", () => {
 
     const barScreenY = result.windowTopLeftLogical.y + result.barOffsetY;
     expect(barScreenY).toBe(idleBarY);
+    expect(result.panelOffsetX).toBe(result.barOffsetX);
   });
 
-  it("middle zone: bar center coincides with window center", () => {
+  it("middle zone (Task 2.2): the middle-float variant is deleted — resolveVerticalZone's "
+    + "\"middle\" classification maps to top-zone geometry at the call site, not a distinct shape",
+  () => {
     const idleTopLeftLogical = { x: 500, y: 500 };
-    const result = computeCapsulePanelGeometry({
-      ...base,
-      idleTopLeftLogical,
-      zone: "middle",
-    });
+    // A pill at the work area's vertical midpoint resolves to "middle"...
+    const resolved = resolveVerticalZone(500, { y: 0, h: 1000 });
+    expect(resolved).toBe("middle");
 
-    const barCenterInWindow = result.barOffsetY + base.barH / 2;
-    expect(barCenterInWindow).toBeCloseTo(result.windowH / 2, 5);
+    // ...which the caller maps to "top" before calling
+    // computeCapsulePanelGeometry (its `zone` param no longer accepts
+    // "middle" at all — see PanelExtrudeZone).
+    const mapped = resolved === "middle" ? "top" : resolved;
+    const middleMappedResult = computeCapsulePanelGeometry({ ...base, idleTopLeftLogical, zone: mapped });
+    const topResult = computeCapsulePanelGeometry({ ...base, idleTopLeftLogical, zone: "top" });
+
+    expect(middleMappedResult).toEqual(topResult);
   });
 
   it("top zone clamped at screen bottom: window pulled up, barOffsetY grows by the same delta", () => {
@@ -149,7 +170,10 @@ describe("computeCapsulePanelGeometry", () => {
     const overhang = unclampedWindowX + result.windowW - (monitorBounds.x + monitorBounds.w);
     expect(overhang).toBeGreaterThan(0);
 
-    const idleBarX = idleTopLeftLogical.x + base.margin;
+    // RC-2 fix: "left" nearEdge pins the bar flush at the window's x (offset
+    // 0), not inset by `margin` — the old margin inset here was itself the
+    // latent 6px left-zone jump RC-2 documents, not a real invariant.
+    const idleBarX = idleTopLeftLogical.x;
     const barScreenX = result.windowTopLeftLogical.x + result.barOffsetX;
     expect(barScreenX).toBe(idleBarX);
   });
@@ -164,9 +188,140 @@ describe("computeCapsulePanelGeometry", () => {
 
     expect(idleTopLeftLogical.x).toBeLessThan(monitorBounds.x);
 
-    const idleBarX = idleTopLeftLogical.x + base.margin;
+    const idleBarX = idleTopLeftLogical.x;
     const barScreenX = result.windowTopLeftLogical.x + result.barOffsetX;
     expect(barScreenX).toBe(idleBarX);
+  });
+});
+
+describe("computeCapsulePanelGeometry near-edge pinning (RC-2)", () => {
+  const base = {
+    idlePillBoxW: 166, idlePillBoxH: 48, barH: 36,
+    panelW: 288, panelH: 320, gap: 0, margin: 6,
+    zone: "top" as const, minW: 364,
+    monitorBounds: { x: 0, y: 0, w: 1920, h: 1080 },
+  };
+  const menuWinW = 364; // CAPSULE_OPEN_W + 2*margin + CLOSE_PAD_W
+
+  it("right zone: bar keeps its menu-open screen x (no +128px jump)", () => {
+    const idle = { x: 1400, y: 200 };
+    const menuWinX = idle.x + 166 - menuWinW;            // 1202
+    const barScreenXOpen = menuWinX + (menuWinW - 288);  // 1278 (flex-end)
+    const g = computeCapsulePanelGeometry({ ...base, idleTopLeftLogical: idle, nearEdge: "right" });
+    expect(g.windowTopLeftLogical.x + g.barOffsetX).toBe(barScreenXOpen);
+    expect(g.windowTopLeftLogical.x + g.panelOffsetX).toBe(barScreenXOpen); // panel under bar
+    expect(g.windowW).toBe(364);
+  });
+
+  it("center zone: bar keeps its centered menu-open screen x (no +99px window jump)", () => {
+    const idle = { x: 800, y: 500 };
+    const menuWinX = idle.x + 166 / 2 - menuWinW / 2;         // 701
+    const barScreenXOpen = menuWinX + (menuWinW - 288) / 2;   // 739
+    const g = computeCapsulePanelGeometry({ ...base, idleTopLeftLogical: idle, nearEdge: "center" });
+    expect(g.windowTopLeftLogical.x + g.barOffsetX).toBe(barScreenXOpen);
+  });
+
+  it("left zone: bar sits flush at the window edge, matching flex-start (kills latent 6px jump)", () => {
+    const idle = { x: 100, y: 200 };
+    const g = computeCapsulePanelGeometry({ ...base, idleTopLeftLogical: idle, nearEdge: "left" });
+    expect(g.windowTopLeftLogical.x).toBe(100);
+    expect(g.barOffsetX).toBe(0);
+  });
+
+  it("bottom zone + right edge: vertical formula unchanged, bar screen y preserved", () => {
+    const idle = { x: 1400, y: 900 };
+    const g = computeCapsulePanelGeometry({ ...base, idleTopLeftLogical: idle, nearEdge: "right", zone: "bottom" });
+    expect(g.windowTopLeftLogical.y + g.barOffsetY).toBe(idle.y + 6); // barY invariant
+  });
+
+  it("monitor clamp still absorbs into offsets (bar fixed under clamp)", () => {
+    // idle near the LEFT monitor edge so the right-zone pinned window would
+    // overflow past x=0.
+    //
+    // Re-derivation note (per the brief's own flag): the brief's original
+    // fixture asserted the clamped bar offset via a formula whose two
+    // `(menuWinW - 288)` terms cancel unconditionally, so it happened to
+    // still evaluate to the right number — but that's an accident of
+    // arithmetic, not a derivation. Numerically re-checked here against the
+    // OLD implementation (windowX always = idleTopLeftLogical.x,
+    // barOffsetXUnclamped always = margin, no nearEdge concept): for
+    // idle=(10,200) the OLD code's windowX (10) never overhangs the monitor
+    // (windowW=364, monitor 1920 wide) so it never clamps at all — old
+    // result: windowX=10, barScreenX=10+6=16. That's a real, large
+    // divergence from the correct right-pinned value below (128px, matching
+    // RC-2's documented right-zone jump), so this fixture does certify the
+    // fix: it fails against the old code and passes against the new one.
+    const idle = { x: 10, y: 200 };
+    const menuWinX = idle.x + 166 - menuWinW; // -188 (would overhang left of the monitor)
+    const barScreenXOpen = menuWinX + (menuWinW - 288); // -112
+    const g = computeCapsulePanelGeometry({ ...base, idleTopLeftLogical: idle, nearEdge: "right" });
+    // window would sit at 10+166-364 = -188 → clamps to 0; bar offset absorbs the delta
+    expect(g.windowTopLeftLogical.x).toBe(0);
+    expect(g.windowTopLeftLogical.x + g.barOffsetX).toBe(barScreenXOpen);
+  });
+});
+
+describe("computePanelWindowBox (Task 0.1: single source of truth)", () => {
+  const capsuleMonitorBounds = { x: 0, y: 0, w: 1920, h: 1080 };
+  const capsuleBase = {
+    idlePillBoxW: 240,
+    idlePillBoxH: 44,
+    barH: 44,
+    panelW: PANEL_W,
+    panelH: PANEL_H,
+    gap: PANEL_GAP,
+    margin: 8,
+    monitorBounds: capsuleMonitorBounds,
+    nearEdge: "left" as const,
+  };
+
+  (["top", "bottom"] as const).forEach((zone) => {
+    it(`capsule mode, ${zone} zone: matches computeCapsulePanelGeometry's windowW/H (no clamping)`, () => {
+      const idleTopLeftLogical = { x: 500, y: 500 };
+      const geometry = computeCapsulePanelGeometry({
+        ...capsuleBase,
+        idleTopLeftLogical,
+        zone,
+      });
+
+      const box = computePanelWindowBox({
+        mode: "capsule",
+        zone,
+        pillBoxW: capsuleBase.idlePillBoxW,
+        pillBoxH: capsuleBase.idlePillBoxH,
+        barH: capsuleBase.barH,
+        margin: capsuleBase.margin,
+      });
+
+      expect(box.w).toBe(geometry.windowW);
+      expect(box.h).toBe(geometry.windowH);
+    });
+  });
+
+  it("minimal mode: matches computeIslandMorphRects's windowW/H (no clamping)", () => {
+    const minimalMonitorBounds = { x: 0, y: 0, w: 1920, h: 1080 };
+    const pillTopLeftLogical = { x: 942, y: 522 }; // roughly centered, no clamp
+    const morph = computeIslandMorphRects({
+      pillTopLeftLogical,
+      pillW: 36,
+      pillH: 36,
+      panelW: PANEL_W,
+      panelH: PANEL_H,
+      margin: 8,
+      monitorBounds: minimalMonitorBounds,
+    });
+
+    const box = computePanelWindowBox({
+      mode: "minimal",
+      zone: "top", // ignored for minimal
+      pillBoxW: 36,
+      pillBoxH: 36,
+      barH: 0,
+      margin: 8,
+    });
+
+    expect(box.w).toBe(morph.windowW);
+    expect(box.h).toBe(morph.windowH);
   });
 });
 
@@ -269,5 +424,160 @@ describe("computeIslandMorphRects", () => {
 
     expect(result.windowTopLeftLogical.x + result.pillOffset.x).toBeCloseTo(pillTopLeftLogical.x, 5);
     expect(result.windowTopLeftLogical.y + result.pillOffset.y).toBeCloseTo(pillTopLeftLogical.y, 5);
+  });
+
+  it("grown window stays fully inside monitorBounds (no margin overhang)", () => {
+    const pillTopLeftLogical = {
+      x: monitorBounds.x + monitorBounds.w - base.pillW,
+      y: monitorBounds.y + monitorBounds.h - base.pillH,
+    };
+    const result = computeIslandMorphRects({ ...base, pillTopLeftLogical });
+
+    expect(result.windowTopLeftLogical.x).toBeGreaterThanOrEqual(monitorBounds.x);
+    expect(result.windowTopLeftLogical.y).toBeGreaterThanOrEqual(monitorBounds.y);
+    expect(result.windowTopLeftLogical.x + result.windowW).toBeLessThanOrEqual(monitorBounds.x + monitorBounds.w);
+    expect(result.windowTopLeftLogical.y + result.windowH).toBeLessThanOrEqual(monitorBounds.y + monitorBounds.h);
+  });
+
+  it("pill flush at the true monitor LEFT edge (x = monitorBounds.x, zero margin gap): containment-expansion pass kicks in", () => {
+    // Task 3.1: distinct from the bottom-right/TRUE-corner case above — this
+    // exercises the containment-expansion pass (compactPanel.ts ~266-272) on
+    // the x axis specifically, anchored at the monitor's left edge rather
+    // than a corner, with a mid-screen y so only the x axis is forced.
+    const pillTopLeftLogical = { x: monitorBounds.x, y: 500 };
+    const result = computeIslandMorphRects({ ...base, pillTopLeftLogical });
+
+    // Without the expansion pass, the margin-inset clamp alone would place
+    // endRect.x at monitorBounds.x + margin, which would NOT contain a pill
+    // sitting flush at monitorBounds.x (zero margin gap) — confirm the
+    // expansion pulled endRect.x back to (or past) the pill's own x.
+    expect(result.endRect.x).toBeLessThanOrEqual(pillTopLeftLogical.x);
+
+    expect(result.startRect).toEqual({
+      x: pillTopLeftLogical.x,
+      y: pillTopLeftLogical.y,
+      w: base.pillW,
+      h: base.pillH,
+    });
+    expect(result.startRect.x).toBeGreaterThanOrEqual(result.endRect.x);
+    expect(result.startRect.y).toBeGreaterThanOrEqual(result.endRect.y);
+    expect(result.startRect.x + result.startRect.w).toBeLessThanOrEqual(result.endRect.x + result.endRect.w);
+    expect(result.startRect.y + result.startRect.h).toBeLessThanOrEqual(result.endRect.y + result.endRect.h);
+    expect(result.endRect.x).toBeGreaterThanOrEqual(monitorBounds.x);
+    expect(result.endRect.y).toBeGreaterThanOrEqual(monitorBounds.y);
+    expect(result.endRect.x + result.endRect.w).toBeLessThanOrEqual(monitorBounds.x + monitorBounds.w);
+    expect(result.endRect.y + result.endRect.h).toBeLessThanOrEqual(monitorBounds.y + monitorBounds.h);
+  });
+});
+
+describe("computeIslandMorphRects (Task 3.1: exhaustive edge-position invariants)", () => {
+  // Work area matches the plan's exact spec: 1920x1032, margin 6. Pill size
+  // is arbitrary (kept consistent with the rest of this file's 36x36 pill).
+  const monitorBounds = { x: 0, y: 0, w: 1920, h: 1032 };
+  const margin = 6;
+  const pillW = 36;
+  const pillH = 36;
+  const panelW = PANEL_W;
+  const panelH = PANEL_H;
+
+  /**
+   * The four GATE-2 invariants this whole task exists to pin down:
+   *  1. startRect strictly equals the input pill rect (zero-drift contract).
+   *  2. endRect fully inside monitorBounds.
+   *  3. startRect fully contained in endRect.
+   *  4. pillOffset consistency: windowTopLeft + pillOffset === startRect origin.
+   */
+  function assertInvariants(
+    result: ReturnType<typeof computeIslandMorphRects>,
+    pillTopLeftLogical: Point,
+    bounds: MonitorBounds
+  ) {
+    // 1. zero-drift contract
+    expect(result.startRect).toEqual({ x: pillTopLeftLogical.x, y: pillTopLeftLogical.y, w: pillW, h: pillH });
+
+    // 2. endRect fully inside monitorBounds
+    expect(result.endRect.x).toBeGreaterThanOrEqual(bounds.x);
+    expect(result.endRect.y).toBeGreaterThanOrEqual(bounds.y);
+    expect(result.endRect.x + result.endRect.w).toBeLessThanOrEqual(bounds.x + bounds.w);
+    expect(result.endRect.y + result.endRect.h).toBeLessThanOrEqual(bounds.y + bounds.h);
+
+    // 3. startRect fully contained in endRect
+    expect(result.startRect.x).toBeGreaterThanOrEqual(result.endRect.x);
+    expect(result.startRect.y).toBeGreaterThanOrEqual(result.endRect.y);
+    expect(result.startRect.x + result.startRect.w).toBeLessThanOrEqual(result.endRect.x + result.endRect.w);
+    expect(result.startRect.y + result.startRect.h).toBeLessThanOrEqual(result.endRect.y + result.endRect.h);
+
+    // 4. pillOffset consistency
+    expect(result.windowTopLeftLogical.x + result.pillOffset.x).toBeCloseTo(result.startRect.x, 5);
+    expect(result.windowTopLeftLogical.y + result.pillOffset.y).toBeCloseTo(result.startRect.y, 5);
+  }
+
+  const maxPillX = monitorBounds.x + monitorBounds.w - pillW;
+  const maxPillY = monitorBounds.y + monitorBounds.h - pillH;
+  const midPillX = monitorBounds.x + (monitorBounds.w - pillW) / 2;
+  const midPillY = monitorBounds.y + (monitorBounds.h - pillH) / 2;
+
+  const positions: Record<string, Point> = {
+    "top-left corner": { x: monitorBounds.x, y: monitorBounds.y },
+    "top-right corner": { x: maxPillX, y: monitorBounds.y },
+    "bottom-left corner": { x: monitorBounds.x, y: maxPillY },
+    "bottom-right corner": { x: maxPillX, y: maxPillY },
+    "top-edge midpoint": { x: midPillX, y: monitorBounds.y },
+    "bottom-edge midpoint": { x: midPillX, y: maxPillY },
+    "left-edge midpoint": { x: monitorBounds.x, y: midPillY },
+    "right-edge midpoint": { x: maxPillX, y: midPillY },
+    center: { x: midPillX, y: midPillY },
+  };
+
+  Object.entries(positions).forEach(([label, pillTopLeftLogical]) => {
+    it(`9-position matrix: ${label} satisfies all four invariants`, () => {
+      const result = computeIslandMorphRects({
+        pillTopLeftLogical,
+        pillW,
+        pillH,
+        panelW,
+        panelH,
+        margin,
+        monitorBounds,
+      });
+      assertInvariants(result, pillTopLeftLogical, monitorBounds);
+    });
+  });
+
+  /**
+   * Tiny inline LCG (Numerical Recipes constants) — no dependency, fixed
+   * seed so any failure reproduces deterministically. Returns floats in
+   * [0, 1), matching Math.random()'s contract closely enough for a uniform
+   * sweep over the work area.
+   */
+  function makeLcg(seed: number) {
+    let state = seed >>> 0;
+    return () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 0x100000000;
+    };
+  }
+
+  it("seeded pseudo-random sweep: 100 uniform pill positions all satisfy the four invariants", () => {
+    const rand = makeLcg(0xc0ffee);
+
+    for (let i = 0; i < 100; i++) {
+      const pillTopLeftLogical: Point = {
+        x: monitorBounds.x + rand() * (monitorBounds.w - pillW),
+        y: monitorBounds.y + rand() * (monitorBounds.h - pillH),
+      };
+
+      const result = computeIslandMorphRects({
+        pillTopLeftLogical,
+        pillW,
+        pillH,
+        panelW,
+        panelH,
+        margin,
+        monitorBounds,
+      });
+
+      assertInvariants(result, pillTopLeftLogical, monitorBounds);
+    }
   });
 });

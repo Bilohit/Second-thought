@@ -341,32 +341,68 @@ def run_pipeline(
         print(f"  total ctx chars  : {len(existing_context or '')}")
 
     t_llm0 = time.perf_counter()
-    with timer.stage("llm"):
-        output = run_llm_engine(
-            enriched,
-            category_descriptions=category_descriptions,
-            existing_context=existing_context,
-            max_retries=cfg.capture.llm_max_retries,
-            temperature=cfg.capture.llm_temperature,
-            scrutiny=cfg.capture.llm_scrutiny,
-        )
+    try:
+        with timer.stage("llm"):
+            output = run_llm_engine(
+                enriched,
+                category_descriptions=category_descriptions,
+                existing_context=existing_context,
+                max_retries=cfg.capture.llm_max_retries,
+                temperature=cfg.capture.llm_temperature,
+                scrutiny=cfg.capture.llm_scrutiny,
+            )
 
-        # Two-pass fallback: the pre-resolver was uncertain, but now that the LLM
-        # has picked a category we can check for an existing CRM/Finance file and
-        # re-run with that context loaded.
-        pass_count = 1
-        if resolved.certainty == "low" and output.category in ("CRM", "Finance"):
-            fallback_context = read_existing_context(output, vault_root=vault)
-            if fallback_context:
-                output = run_llm_engine(
-                    enriched,
-                    category_descriptions=category_descriptions,
-                    existing_context=fallback_context,
-                    max_retries=cfg.capture.llm_max_retries,
-                    temperature=cfg.capture.llm_temperature,
-                    scrutiny=cfg.capture.llm_scrutiny,
+            # Two-pass fallback: the pre-resolver was uncertain, but now that the LLM
+            # has picked a category we can check for an existing CRM/Finance file and
+            # re-run with that context loaded.
+            pass_count = 1
+            if resolved.certainty == "low" and output.category in ("CRM", "Finance"):
+                fallback_context = read_existing_context(output, vault_root=vault)
+                if fallback_context:
+                    output = run_llm_engine(
+                        enriched,
+                        category_descriptions=category_descriptions,
+                        existing_context=fallback_context,
+                        max_retries=cfg.capture.llm_max_retries,
+                        temperature=cfg.capture.llm_temperature,
+                        scrutiny=cfg.capture.llm_scrutiny,
+                    )
+                    pass_count = 2
+    except Exception as exc:
+        # LLM enrichment failed even after the two-pass retry (Ollama down,
+        # model error, or a parse failure) -- fail-soft like every other
+        # enrichment path (see CLAUDE.md): route the raw captured text to the
+        # scratchpad flagged for retry instead of losing it. Mirrors the
+        # vision-failure early return above; this except has no access to
+        # `enriched`/`vault` once it unwinds past run_pipeline(), so it must
+        # be handled here rather than in the __main__ top-level catch.
+        from storage_engine import route_failed_llm
+        print(f"\n[Second Thought] LLM enrichment failed: {exc}", file=sys.stderr)
+        result = {"category": "Unprocessed_Captures", "llm_failed": True}
+        if dry_run:
+            print("[Dry Run] LLM failed -- would route to scratchpad for retry.")
+            result["_written_to"] = None
+        else:
+            # Prefer the ORIGINAL full text for large-text captures -- enriched_text
+            # was overwritten above with chunk[0]+section summaries.
+            fail_text = _large_text_original if _large_text_original is not None else enriched.enriched_text
+            with timer.stage("write_scratchpad"):
+                written_path = route_failed_llm(
+                    fail_text,
+                    str(exc),
+                    vault_root=vault,
+                    scratchpad_folder=scratchpad_folder,
+                    source_url=enriched.source_url,
                 )
-                pass_count = 2
+            result["_written_to"] = str(written_path)
+            print(f"LLM enrichment failed -- saved for retry -> {written_path}")
+            if notify and cfg.notifications.enabled:
+                notify_capture_error(
+                    "LLM enrichment failed -- capture saved for retry.",
+                    title_prefix=cfg.notifications.title_prefix,
+                )
+        timer.log_summary()
+        return result
     t_llm1 = time.perf_counter()
 
     if verbose:
@@ -435,15 +471,23 @@ def run_pipeline(
             print(f"[events] {e.when_iso} — {e.label} (set reminders from the GUI)")
 
         if cfg.vector.enabled:
+            # Derived-index write is FAIL-SOFT: the vault .md is already written
+            # (source of truth), so an embeddings/index failure must never turn a
+            # successful capture into a hard error -- swallow + log, per CLAUDE.md
+            # "files are the source of truth, DBs are derived indexes". Mirrors
+            # the same guard in server.py:_run_pipeline_blocking.
             with timer.stage("index"):
-                note_text = Path(written_path).read_text(encoding="utf-8", errors="ignore")
-                index_note(
-                    vault,
-                    Path(written_path),
-                    note_text,
-                    cfg.ollama.base_url,
-                    cfg.vector.embed_model,
-                )
+                try:
+                    note_text = Path(written_path).read_text(encoding="utf-8", errors="ignore")
+                    index_note(
+                        vault,
+                        Path(written_path),
+                        note_text,
+                        cfg.ollama.base_url,
+                        cfg.vector.embed_model,
+                    )
+                except Exception as index_exc:
+                    print(f"[Second Thought] index write failed (note still saved): {index_exc}", file=sys.stderr)
 
         if notify and cfg.notifications.enabled:
             with timer.stage("notify"):
@@ -479,6 +523,7 @@ def run_self_check(config_path: str | None = None) -> bool:
       5. Vision model (LLaVA) available in Ollama
       6. Whisper package importable
       7. SQLite index directory writable
+      8. Index health (last captures.db / vectors.db write outcome, in-process)
 
     Returns True if all checks pass, False otherwise (exits non-zero in CLI).
     """
@@ -602,6 +647,26 @@ def run_self_check(config_path: str | None = None) -> bool:
     except Exception as exc:
         fail(f"Index directory not writable: {exc}")
         all_ok = False
+
+    # 8. Index health (last captures.db / vectors.db write outcome)
+    print("\n[8] Index health")
+    try:
+        import index_health
+        snap = index_health.snapshot()
+        if index_health.degraded():
+            # Non-fatal by design (see CLAUDE.md "Files are the source of
+            # truth" hard rule) -- a degraded index never blocked a capture,
+            # so it's surfaced as a WARN, not a FAIL, and doesn't flip all_ok.
+            for name, state in snap.items():
+                if not state.get("ok", True):
+                    warn(
+                        f"{name} index write failing: {state.get('error')} "
+                        f"(last attempt: {state.get('timestamp')})"
+                    )
+        else:
+            ok("all index writes healthy (or none attempted yet this process)")
+    except Exception as exc:
+        warn(f"Could not read index health: {exc}")
 
     print("\n" + "-" * 55)
     if all_ok:

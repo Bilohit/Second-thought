@@ -40,6 +40,17 @@ export interface MonitorBounds {
 export type VerticalZone = "top" | "middle" | "bottom";
 
 /**
+ * Task 2.2: the two zones the capsule-panel chrome/geometry actually
+ * renders. `resolveVerticalZone` still classifies three thirds of the work
+ * area (used to pick which side has room), but with bar-as-header the
+ * "middle" classification resolves to this same top-style downward
+ * extrusion — callers map `"middle" -> "top"` before calling
+ * `computeCapsulePanelGeometry`/`computePanelWindowBox` (capsule mode) or
+ * feeding `CompactShell`'s `zone` prop.
+ */
+export type PanelExtrudeZone = Exclude<VerticalZone, "middle">;
+
+/**
  * Viewport-thirds zone for the capsule panel, split by the capsule's own
  * center Y within the work area. Boundaries are inclusive on the lower
  * zone: exactly 1/3 is still "top", exactly 2/3 is still "middle".
@@ -56,6 +67,48 @@ export function resolveVerticalZone(
   return "bottom";
 }
 
+export interface PanelWindowBox {
+  w: number;
+  h: number;
+}
+
+/**
+ * Task 0.1: the OS window size when a compact panel is open. Sizes only —
+ * never positions — so this is a pure function of displayMode/panelZone and
+ * safe to read at render time (the clamp inside computeCapsulePanelGeometry/
+ * computeIslandMorphRects only ever adjusts the window's top-left, never its
+ * w/h, for a fixed zone). Single source of truth so the render-time
+ * targetWinW/H selection and the reconcile apply() geometry can never
+ * diverge (kills RC-5(a)).
+ */
+export function computePanelWindowBox(i: {
+  mode: "capsule" | "minimal";
+  /** Ignored: minimal mode doesn't use it; capsule mode's top/bottom
+   *  extrusions are the same total height (bar + gap + panel), so the zone
+   *  no longer changes the result (Task 2.2 deleted the middle-float
+   *  variant, which used to need a shorter, bar-overlapping height here). */
+  zone: VerticalZone;
+  pillBoxW: number;
+  pillBoxH: number;
+  barH: number; // capsule only
+  margin: number;
+  /**
+   * Task 0.3: floor for the computed width, fed in by the caller as the
+   * menu-open box width (menuBoxW) so the OS window's width is identical at
+   * the menuOpen -> compactPanel handoff — only height changes. Kept as an
+   * external input rather than duplicating the menu-box math here.
+   */
+  minW?: number;
+}): PanelWindowBox {
+  if (i.mode === "minimal") {
+    return { w: Math.max(PANEL_W + i.margin * 2, i.minW ?? 0), h: PANEL_H + i.margin * 2 };
+  }
+
+  const w = Math.max(i.pillBoxW, PANEL_W + i.margin * 2, i.minW ?? 0);
+  const h = i.margin + i.barH + PANEL_GAP + PANEL_H + i.margin;
+  return { w, h };
+}
+
 export interface CapsulePanelGeometryInput {
   /** Capsule window top-left at menu-open time (pillBoxBeforeMenuRef). */
   idleTopLeftLogical: Point;
@@ -68,8 +121,17 @@ export interface CapsulePanelGeometryInput {
   panelH: number;
   gap: number;
   margin: number;
-  zone: VerticalZone;
+  /** Middle-float variant deleted (Task 2.2) — callers map
+   *  `resolveVerticalZone`'s "middle" result to "top" before calling. */
+  zone: PanelExtrudeZone;
   monitorBounds: MonitorBounds;
+  /** Task 0.3: see computePanelWindowBox's minW — pass menuBoxW here so the
+   *  panel-open window is never narrower than the menu-open window. */
+  minW?: number;
+  /** RC-2: which screen edge the OPEN bar is pinned to (capsuleZone). The
+   *  panel-open window must keep the bar exactly where the menu-open window
+   *  put it — computeCapsuleMenuGeometry pins x by this same edge. */
+  nearEdge: "left" | "right" | "center";
 }
 
 export interface CapsulePanelGeometryResult {
@@ -109,61 +171,53 @@ function clampWindowToMonitor(
 export function computeCapsulePanelGeometry(
   i: CapsulePanelGeometryInput
 ): CapsulePanelGeometryResult {
-  const { idleTopLeftLogical, idlePillBoxW, barH, panelW, panelH, gap, margin, zone, monitorBounds } = i;
+  const { idleTopLeftLogical, idlePillBoxW, barH, panelW, panelH, gap, margin, zone, monitorBounds, minW, nearEdge } = i;
 
-  const windowW = Math.max(idlePillBoxW, panelW + margin * 2);
-  const windowH = margin + barH + gap + panelH + margin;
+  const { w: windowW, h: windowH } = computePanelWindowBox({
+    mode: "capsule",
+    zone,
+    pillBoxW: idlePillBoxW,
+    pillBoxH: 0, // unused for capsule mode
+    barH,
+    margin,
+    minW,
+  });
 
   // Bar's on-screen position before any growth: idle window top-left plus
   // the idle box's own margin inset.
   const barY = idleTopLeftLogical.y + margin;
 
-  let windowX: number;
   let windowY: number;
   let barOffsetY: number;
   let panelOffsetY: number;
 
-  // Bar's x within the window is always `margin` before any clamp — window's
-  // x is always idleTopLeftLogical.x, so the bar (which sits at
-  // idleTopLeftLogical.x + margin) is at offset `margin`. Panel is centered
-  // horizontally within whatever width the window ends up with.
-  const barOffsetXUnclamped = margin;
-  const panelOffsetXUnclamped = (windowW - panelW) / 2;
+  // RC-2: horizontal placement mirrors computeCapsuleMenuGeometry's pinning
+  // exactly, evaluated at the panel window's width. Bar offset mirrors the
+  // flex justify App uses while the menu is open (left: flex-start = 0,
+  // right: flex-end = windowW - barW, center: centered), so the bar's
+  // on-screen rect is bit-identical across the menuOpen -> panelOpen
+  // handoff. panelW === CAPSULE_OPEN_W (bar's open width) by design — see
+  // the PANEL_W comment at the top of this file.
+  const barW = panelW;
+  const windowX =
+    nearEdge === "right" ? idleTopLeftLogical.x + idlePillBoxW - windowW :
+    nearEdge === "center" ? idleTopLeftLogical.x + idlePillBoxW / 2 - windowW / 2 :
+    idleTopLeftLogical.x;
+  const barOffsetXUnclamped =
+    nearEdge === "right" ? windowW - barW :
+    nearEdge === "center" ? (windowW - barW) / 2 :
+    0;
+  const panelOffsetXUnclamped = barOffsetXUnclamped;
 
   if (zone === "top") {
-    windowX = idleTopLeftLogical.x;
     windowY = barY - margin;
     barOffsetY = margin;
     panelOffsetY = margin + barH + gap;
-  } else if (zone === "bottom") {
-    windowX = idleTopLeftLogical.x;
+  } else {
+    // bottom: bar sits below the panel — window grows upward.
     windowY = barY + barH + margin - windowH;
     panelOffsetY = margin;
     barOffsetY = margin + panelH + gap;
-  } else {
-    // middle: window centered on the bar's center line; bar floats over the
-    // panel (z-order handles overlap for option A/C).
-    const middleWindowH = margin * 2 + panelH;
-    const barCenterY = barY + barH / 2;
-    windowX = idleTopLeftLogical.x;
-    windowY = barCenterY - middleWindowH / 2;
-    barOffsetY = middleWindowH / 2 - barH / 2;
-    panelOffsetY = middleWindowH / 2 - panelH / 2;
-
-    const clamped = clampWindowToMonitor({ x: windowX, y: windowY }, windowW, middleWindowH, monitorBounds);
-    const deltaX = clamped.x - windowX;
-    const deltaY = clamped.y - windowY;
-    barOffsetY -= deltaY;
-
-    return {
-      windowTopLeftLogical: clamped,
-      windowW,
-      windowH: middleWindowH,
-      barOffsetX: barOffsetXUnclamped - deltaX,
-      barOffsetY,
-      panelOffsetX: panelOffsetXUnclamped - deltaX,
-      panelOffsetY,
-    };
   }
 
   const clamped = clampWindowToMonitor({ x: windowX, y: windowY }, windowW, windowH, monitorBounds);
@@ -272,9 +326,20 @@ export function computeIslandMorphRects(i: IslandMorphInput): IslandMorphResult 
 
   const endRect: Rect = { x: endX, y: endY, w: panelW, h: panelH };
 
-  const windowTopLeftLogical: Point = { x: endRect.x - margin, y: endRect.y - margin };
-  const windowW = endRect.w + margin * 2;
-  const windowH = endRect.h + margin * 2;
+  const { w: windowW, h: windowH } = computePanelWindowBox({
+    mode: "minimal",
+    zone: "top", // ignored for minimal
+    pillBoxW: 0, // unused for minimal mode
+    pillBoxH: 0, // unused for minimal mode
+    barH: 0, // unused for minimal mode
+    margin,
+  });
+  const windowTopLeftLogical = clampWindowToMonitor(
+    { x: endRect.x - margin, y: endRect.y - margin },
+    windowW,
+    windowH,
+    monitorBounds
+  );
 
   const pillOffset: Point = {
     x: startRect.x - windowTopLeftLogical.x,

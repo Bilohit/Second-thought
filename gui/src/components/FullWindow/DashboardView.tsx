@@ -311,7 +311,7 @@ function renderRemindersCard(reminders: Reminder[], onDelete: (id: number) => vo
 function renderInboxCard(inbox: InboxItem[], onApprove: (id: string) => void, onDiscard: (id: string) => void, onHeader: () => void) {
   return (
     <div style={cardStyle(true)}>
-      <div style={CLABEL}>{headerLink("Inbox", onHeader)}<span style={{ flex: 1 }} />{inbox.length > 0 && <span style={chipStyle(false)}>{inbox.length} need review</span>}</div>
+      <div style={CLABEL}>{headerLink("Review", onHeader)}<span style={{ flex: 1 }} />{inbox.length > 0 && <span style={chipStyle(false)}>{inbox.length} need review</span>}</div>
       <div style={{ overflowY: "auto", overflowX: "hidden", flex: 1, minWidth: 0 }}>
         {inbox.map((item) => (
           <div key={item.note_id} style={{ border: "1px solid var(--border-2)", borderRadius: "var(--radius-sm)", background: "var(--glass-bg)", padding: "8px 10px", marginBottom: 8 }}>

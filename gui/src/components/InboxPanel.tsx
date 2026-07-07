@@ -6,7 +6,8 @@
  * discarded outright. Mirrors SettingsPanel's slide-in frame.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { slideDirection } from "../lib/segmentedToggle";
 import {
   getInbox,
   approveInboxItem,
@@ -25,7 +26,7 @@ import {
   BTN_GHOST, BTN_PRIMARY, ROW_CARD, INPUT_STYLE,
   focusRing, blurRing,
 } from "./ui/styles";
-import { MenuIcon } from "./PillMenu/icons";
+import { MenuIcon, RefreshIcon, BellIcon } from "./PillMenu/icons";
 
 const NEW_FOLDER_SENTINEL = "__new_folder__";
 
@@ -40,6 +41,22 @@ interface Props {
   embedded?: boolean;
   /** Which tab to show on mount — full-window "Reminders" header jumps here. */
   initialTab?: InboxTab;
+  /** Compact Mode Menu Decoupling (B5): distinct from `embedded` — Full's
+   *  FullWindow also passes `embedded`, so this is the flag that actually
+   *  means "hosted inside a CompactShell panel." Suppresses this component's
+   *  entire header row; the Inbox/Reminders toggle + refresh move into
+   *  CompactShell's header via `onHeaderActionsChange`. Full-window usage
+   *  never sets this, so its render is unaffected. */
+  compactHeader?: boolean;
+  /** Only consulted while `compactHeader` is true — receives the current
+   *  tab-toggle + refresh cluster (or `null` on unmount) so the caller can
+   *  forward it into `CompactShell`'s `headerActions` slot. */
+  onHeaderActionsChange?: (actions: React.ReactNode | null) => void;
+  /** Hoists tab selection so an external header (CompactShell's
+   *  headerActions) can control it; uncontrolled local state is the
+   *  fallback, so Full-window (which never passes these) is unchanged. */
+  tab?: InboxTab;
+  onTabChange?: (tab: InboxTab) => void;
 }
 
 function InboxRow({
@@ -222,15 +239,27 @@ function InboxRow({
   );
 }
 
-export default function InboxPanel({ visible, onClose, onCountChange, measureRef, embedded = false, initialTab = "inbox" }: Props) {
+export default function InboxPanel({
+  visible, onClose, onCountChange, measureRef, embedded = false, initialTab = "inbox",
+  compactHeader = false, onHeaderActionsChange, tab: tabProp, onTabChange,
+}: Props) {
   const [mounted, setMounted] = useState(visible);
   const [items, setItems] = useState<InboxItem[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [leavingIds, setLeavingIds] = useState<Set<string>>(new Set());
-  const [tab, setTab] = useState<InboxTab>(initialTab);
+  const [internalTab, setInternalTab] = useState<InboxTab>(initialTab);
+  const tab = tabProp ?? internalTab;
+  const setTab = onTabChange ?? setInternalTab;
   const [reminders, setReminders] = useState<Reminder[]>([]);
+
+  // Directional content-swap: Inbox=0, Reminders=1. Slides by the toggle's
+  // index delta; the keyed swap panel replays its slide-in on tab change.
+  const tabIndex = tab === "reminders" ? 1 : 0;
+  const prevTabIndexRef = useRef(tabIndex);
+  const swapDir = slideDirection(prevTabIndexRef.current, tabIndex);
+  useEffect(() => { prevTabIndexRef.current = tabIndex; }, [tabIndex]);
 
   const loadReminders = useCallback(() => {
     listReminders().then(setReminders).catch(() => {});
@@ -300,6 +329,44 @@ export default function InboxPanel({ visible, onClose, onCountChange, measureRef
     }
   };
 
+  // Inbox/Reminders toggle + refresh — rendered inline in this component's
+  // own header in Full mode (unchanged below); compactHeader mode instead
+  // forwards them up so CompactShell's header can render them, in place of
+  // this component's own (now-suppressed) duplicate row. No count badge
+  // here (user decision) — that text lives only in the Full-mode header.
+  const headerActionButtons = (
+    <>
+      <SegmentedToggle
+        ariaLabel="Inbox view"
+        options={[
+          // Icons only in the compact/capsule header (mirrors the Look
+          // Search/Chat toggle); the full-window header keeps text labels.
+          { key: "inbox" as const, label: "Review", icon: compactHeader ? <MenuIcon target="inbox" size={14} /> : undefined },
+          { key: "reminders" as const, label: "Reminders", icon: compactHeader ? <BellIcon size={14} /> : undefined },
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
+      <button
+        className="btn-hover"
+        style={BTN_GHOST}
+        title="Refresh"
+        onClick={() => { load(); loadReminders(); }}
+      >
+        <RefreshIcon size={13} />
+      </button>
+    </>
+  );
+
+  useEffect(() => {
+    if (!compactHeader) return;
+    onHeaderActionsChange?.(headerActionButtons);
+    return () => onHeaderActionsChange?.(null);
+    // headerActionButtons is rebuilt every render from these same values —
+    // listing it would just be noise, and its closures (load/loadReminders
+    // etc.) are always current at call time regardless of this array.
+  }, [compactHeader, tab, onHeaderActionsChange]);
+
   if (!mounted) return null;
 
   const pending = reminders.filter((r) => r.status === "pending");
@@ -313,51 +380,41 @@ export default function InboxPanel({ visible, onClose, onCountChange, measureRef
           ? { position: "relative", width: "100%", height: "100%", border: "none", borderRadius: 0, background: "transparent" }
           : { ...PANEL_FRAME, ...panelTransform(visible) }),
         overflowY: "auto",
+        // Clip the content-swap's horizontal slide so it never spawns a
+        // bottom scrollbar (this is the panel's own scroll container).
+        overflowX: "hidden",
       }}
       onTransitionEnd={handleTransitionEnd}
     >
-      <div className={embedded ? undefined : "drag-region"} style={PANEL_HEADER}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
-            <MenuIcon target="inbox" size={14} />
-          </span>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
-            Inbox {tab === "inbox" && items.length > 0 && <span style={{ color: "var(--text-3)", fontWeight: 400 }}>({items.length})</span>}
-          </span>
+      {!compactHeader && (
+        <div className={embedded ? undefined : "drag-region"} style={PANEL_HEADER}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
+              <MenuIcon target="inbox" size={14} />
+            </span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
+              Inbox {tab === "inbox" && items.length > 0 && <span style={{ color: "var(--text-3)", fontWeight: 400 }}>({items.length})</span>}
+            </span>
+          </div>
+          <div className="no-drag" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {headerActionButtons}
+            {!embedded && (
+              <button
+                className="no-drag icon-close-btn"
+                onClick={onClose}
+                title="Close"
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <line x1="2" y1="2" x2="12" y2="12" />
+                  <line x1="12" y1="2" x2="2" y2="12" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
-        <div className="no-drag" style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <SegmentedToggle
-            ariaLabel="Inbox view"
-            options={[{ key: "inbox" as const, label: "Inbox" }, { key: "reminders" as const, label: "Reminders" }]}
-            value={tab}
-            onChange={setTab}
-          />
-          <button
-            className="btn-hover"
-            style={BTN_GHOST}
-            title="Refresh"
-            onClick={() => { load(); loadReminders(); }}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="23 4 23 10 17 10" />
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-            </svg>
-          </button>
-          {!embedded && (
-            <button
-              className="no-drag icon-close-btn"
-              onClick={onClose}
-              title="Close"
-            >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="2" y1="2" x2="12" y2="12" />
-                <line x1="12" y1="2" x2="2" y2="12" />
-              </svg>
-            </button>
-          )}
-        </div>
-      </div>
+      )}
 
+      <div key={tab} className="seg-swap-panel" style={{ "--swap-dir": swapDir } as CSSProperties}>
       {tab === "inbox" && (
         <div
           className="no-drag"
@@ -427,6 +484,7 @@ export default function InboxPanel({ visible, onClose, onCountChange, measureRef
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }

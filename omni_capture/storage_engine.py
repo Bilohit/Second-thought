@@ -23,8 +23,6 @@ with status: needs_review and a unique note_id for later manual review.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import re
 import sys
@@ -36,6 +34,48 @@ from typing import Dict, List, Optional
 from models import CaptureOutput
 from config import DEFAULT_VAULT_ROOT
 from frontmatter import strip_frontmatter
+
+# dedup.py / merge.py / scratchpad.py extraction (see docs/ROADMAP.md "Split
+# storage_engine.py into dedup.py / merge.py / scratchpad.py"). storage_engine.py
+# stays the orchestration entry point (write_to_vault) and re-exports these names
+# so existing `from storage_engine import route_failed_vision` etc. call sites
+# (main.py, server.py, tests) keep working unchanged.
+from dedup import (  # noqa: F401  (re-exported for backward-compatible imports)
+    _content_hash,
+    _dedup_index_path,
+    _dedup_lock_path,
+    _load_dedup_index,
+    _normalize_content,
+    _normalize_url,
+    _save_dedup_index,
+    _vault_lock,
+    check_duplicate,
+    register_in_dedup_index,
+)
+from merge import (  # noqa: F401  (re-exported for backward-compatible imports)
+    MERGE_MIN_SHARED_TAGS,
+    MERGE_MIN_TAG_JACCARD,
+    MERGE_SEMANTIC_THRESHOLD,
+    _append_general,
+    _is_same_topic,
+    _merge_lock_path,
+    _read_note_tags,
+    find_merge_target,
+)
+from scratchpad import (  # noqa: F401  (re-exported for backward-compatible imports)
+    _CATEGORY_DEFAULT_STATUS,
+    _extract_frontmatter_field,
+    _find_scratchpad_item,
+    _rewrite_frontmatter_for_approval,
+    _scratchpad_path,
+    approve_scratchpad_item,
+    discard_scratchpad_item,
+    get_scratchpad_item_text,
+    list_scratchpad,
+    route_failed_llm,
+    route_failed_vision,
+    route_to_scratchpad,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +95,6 @@ def _confidence_threshold() -> float:
         return float(get_config().capture.confidence_threshold)
     except Exception:
         return SCRATCHPAD_CONFIDENCE_THRESHOLD
-
-# Merge thresholds (unchanged from original)
-MERGE_MIN_SHARED_TAGS: int = 2
-MERGE_MIN_TAG_JACCARD: float = 0.5
-MERGE_SEMANTIC_THRESHOLD: float = 0.85
-
-# JSON index for deduplication (relative to vault root)
-_DEDUP_INDEX_NAME = ".omni_capture/dedup_index.json"
 
 # Folders that are ALWAYS excluded from the category list, regardless of name.
 # (The configured scratchpad folder is also excluded at runtime.)
@@ -306,87 +338,6 @@ def init_vault(
     (vault_root / scratchpad_folder).mkdir(exist_ok=True)
     # Hidden metadata dir (dedup index, vector index, etc.)
     (vault_root / ".omni_capture").mkdir(exist_ok=True)
-
-
-# ---------------------------------------------------------------------------
-# Deduplication helpers
-# ---------------------------------------------------------------------------
-
-def _dedup_index_path(vault_root: Path) -> Path:
-    return vault_root / _DEDUP_INDEX_NAME
-
-
-def _load_dedup_index(vault_root: Path) -> dict:
-    p = _dedup_index_path(vault_root)
-    if p.exists():
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    return {}
-
-
-def _save_dedup_index(vault_root: Path, index: dict) -> None:
-    p = _dedup_index_path(vault_root)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(index, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def _normalize_url(url: str) -> str:
-    import urllib.parse as _up
-    try:
-        p = _up.urlparse(url.strip())
-        netloc = p.netloc.lower()
-        path = p.path.rstrip("/")
-        params = "&".join(sorted(p.query.split("&"))) if p.query else ""
-        return _up.urlunparse((p.scheme.lower(), netloc, path, p.params, params, ""))
-    except Exception:
-        return url.strip().lower()
-
-
-def _normalize_content(text: str) -> str:
-    return re.sub(r"\s+", " ", text or "").strip().lower()
-
-
-def _content_hash(text: str, source_url: Optional[str] = None) -> str:
-    norm_text = _normalize_content(text)[:2000]
-    # Blank/whitespace-only content (and no URL) would otherwise hash to a single
-    # constant key, causing every empty capture to be treated as a duplicate of
-    # the first one ever stored. Give such captures a unique, never-matching key.
-    if not norm_text and not source_url:
-        return "blank-" + uuid.uuid4().hex[:26]
-    if source_url:
-        raw = _normalize_url(source_url) + "::" + norm_text
-    else:
-        raw = norm_text
-    return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:32]
-
-
-def check_duplicate(
-    text: str,
-    source_url: Optional[str],
-    vault_root: Path,
-) -> Optional[str]:
-    """Return vault-relative path of existing note if content is a duplicate."""
-    h = _content_hash(text, source_url)
-    idx = _load_dedup_index(vault_root)
-    return idx.get(h)
-
-
-def register_in_dedup_index(
-    text: str,
-    source_url: Optional[str],
-    vault_root: Path,
-    note_path: Path,
-) -> None:
-    h = _content_hash(text, source_url)
-    idx = _load_dedup_index(vault_root)
-    try:
-        rel = str(note_path.relative_to(vault_root))
-    except ValueError:
-        rel = str(note_path)
-    idx[h] = rel
-    _save_dedup_index(vault_root, idx)
 
 
 # ---------------------------------------------------------------------------
@@ -681,245 +632,6 @@ def _write_new_file(
     path.write_text(front + content, encoding="utf-8")
 
 
-def _append_general(path: Path, new_content: str) -> None:
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    sep = f"\n\n---\n*Captured: {ts}*\n\n"
-    existing = path.read_text(encoding="utf-8")
-    path.write_text(existing.rstrip() + sep + new_content + "\n", encoding="utf-8")
-
-
-# ---------------------------------------------------------------------------
-# Scratchpad helpers  (replaces the old _inbox)
-# ---------------------------------------------------------------------------
-
-def _scratchpad_path(vault_root: Path, scratchpad_folder: str) -> Path:
-    return vault_root / scratchpad_folder
-
-
-def route_to_scratchpad(
-    output: CaptureOutput,
-    source_url: Optional[str],
-    vault_root: Path,
-    scratchpad_folder: str = "_scratchpad",
-    body_content: Optional[str] = None,
-) -> Path:
-    """
-    Write a note to the scratchpad folder with status: needs_review and a
-    unique note_id so it can be located and approved/discarded later.
-    """
-    init_vault(vault_root, scratchpad_folder)
-    note_id = uuid.uuid4().hex[:12]
-    filename = _safe_stem(output.suggested_filename)
-    path = _scratchpad_path(vault_root, scratchpad_folder) / (filename + "-" + note_id + ".md")
-    _write_new_file(path, output, source_url,
-                    body_content=body_content, scratchpad=True, note_id=note_id,
-                    vault_root=vault_root)
-    print(f"[StorageEngine] routed to scratchpad (note_id={note_id}): {path}")
-    return path
-
-
-def route_failed_vision(
-    source_metadata: dict,
-    vault_root: Path,
-    scratchpad_folder: str = "_scratchpad",
-) -> Path:
-    """
-    Route an image capture whose vision step failed straight to the
-    scratchpad, flagged needs_vision_retry: true.
-
-    Deliberately bypasses the classifier and semantic retrieval entirely --
-    those must never run on the degraded-vision placeholder (see
-    _degraded_image_payload), since the placeholder's diagnostic keywords
-    were observed to deterministically anchor the classifier on an unrelated
-    existing note (e.g. "ollama"/"llava" matching coding/ollama-native.md).
-    """
-    init_vault(vault_root, scratchpad_folder)
-
-    reason = source_metadata.get("vision_failure_reason", "vision model unavailable")
-    image_embed = source_metadata.get("image_embed")
-
-    body_lines = [f"> [!warning] Vision recognition failed\n> {reason}"]
-    if image_embed:
-        body_lines.append(image_embed)
-    body = "\n\n".join(body_lines) + "\n"
-
-    placeholder = CaptureOutput(
-        category="Unprocessed_Images",
-        suggested_filename="unprocessed-image",
-        markdown_content=body,
-        rationale=reason,
-        key_signals=["vision-failed"],
-        confidence=0.0,
-        requires_new_category=False,
-    )
-
-    note_id = uuid.uuid4().hex[:12]
-    filename = _safe_stem(placeholder.suggested_filename)
-    path = _scratchpad_path(vault_root, scratchpad_folder) / (filename + "-" + note_id + ".md")
-    _write_new_file(
-        path, placeholder, source_url=None, body_content=body,
-        scratchpad=True, note_id=note_id,
-        extra_frontmatter={"needs_vision_retry": "true"},
-        vault_root=vault_root,
-    )
-    print(f"[StorageEngine] WARN vision failed (note_id={note_id}): {reason} -> {path}", flush=True)
-    return path
-
-
-def list_scratchpad(vault_root: Path, scratchpad_folder: str = "_scratchpad") -> list:
-    """Return metadata for all notes in the scratchpad folder."""
-    sp = _scratchpad_path(vault_root, scratchpad_folder)
-    if not sp.exists():
-        return []
-    items = []
-    for f in sorted(sp.iterdir()):
-        if f.is_file() and f.suffix == ".md":
-            text = f.read_text(encoding="utf-8", errors="ignore")
-            note_id = _extract_frontmatter_field(text, "note_id") or f.stem
-            category = _extract_frontmatter_field(text, "category") or "unknown"
-            items.append({
-                "note_id":  note_id,
-                "filename": f.name,
-                "path":     str(f),
-                "category": category,
-                "size":     f.stat().st_size,
-                "modified": f.stat().st_mtime,
-            })
-    return items
-
-
-def approve_scratchpad_item(
-    note_id: str,
-    vault_root: Path,
-    scratchpad_folder: str = "_scratchpad",
-    target_category: Optional[str] = None,
-) -> Path:
-    """
-    Move a scratchpad note to its final category directory.
-    Strips status: needs_review and note_id fields.
-    """
-    item = _find_scratchpad_item(note_id, vault_root, scratchpad_folder)
-    if item is None:
-        raise FileNotFoundError(f"Scratchpad item {note_id!r} not found.")
-
-    text = item.read_text(encoding="utf-8", errors="ignore")
-    category = target_category or _extract_frontmatter_field(text, "category") or "Uncategorised"
-
-    init_vault(vault_root, scratchpad_folder)
-    dest_dir = vault_root / category
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    base_filename = re.sub(r"-" + note_id + r"$", "", item.stem) + ".md"
-    dest_path = dest_dir / base_filename
-    if dest_path.exists():
-        dest_path = _unique_file_path(dest_path)
-
-    updated = _rewrite_frontmatter_for_approval(text, category)
-    dest_path.write_text(updated, encoding="utf-8")
-    item.unlink()
-    print(f"[StorageEngine] scratchpad approved {note_id} -> {dest_path}")
-
-    # Remove old scratchpad index entries; caller re-indexes the dest path.
-    try:
-        from vector_store import remove_from_index
-        from index_writer import remove_capture_by_path
-        remove_from_index(vault_root, item)
-        remove_capture_by_path(vault_root, item)
-    except Exception as exc:
-        print(f"[StorageEngine] index cleanup on approve error: {exc}", file=sys.stderr)
-
-    return dest_path
-
-
-def get_scratchpad_item_text(
-    note_id: str,
-    vault_root: Path,
-    scratchpad_folder: str = "_scratchpad",
-) -> Optional[str]:
-    """Return a scratchpad note's body text (frontmatter stripped), or None if not found."""
-    item = _find_scratchpad_item(note_id, vault_root, scratchpad_folder)
-    if item is None:
-        return None
-    text = item.read_text(encoding="utf-8", errors="ignore")
-    return strip_frontmatter(text).strip()
-
-
-def discard_scratchpad_item(
-    note_id: str,
-    vault_root: Path,
-    scratchpad_folder: str = "_scratchpad",
-) -> None:
-    """Permanently delete a scratchpad note."""
-    item = _find_scratchpad_item(note_id, vault_root, scratchpad_folder)
-    if item is None:
-        raise FileNotFoundError(f"Scratchpad item {note_id!r} not found.")
-    item.unlink()
-    print(f"[StorageEngine] scratchpad discarded {note_id}")
-
-    try:
-        from vector_store import remove_from_index
-        from index_writer import remove_capture_by_path
-        remove_from_index(vault_root, item)
-        remove_capture_by_path(vault_root, item)
-    except Exception as exc:
-        print(f"[StorageEngine] index cleanup on discard error: {exc}", file=sys.stderr)
-
-
-def _find_scratchpad_item(
-    note_id: str,
-    vault_root: Path,
-    scratchpad_folder: str,
-) -> Optional[Path]:
-    sp = _scratchpad_path(vault_root, scratchpad_folder)
-    if not sp.exists():
-        return None
-    for f in sp.iterdir():
-        if not (f.is_file() and f.suffix == ".md"):
-            continue
-        text = f.read_text(encoding="utf-8", errors="ignore")
-        if _extract_frontmatter_field(text, "note_id") == note_id:
-            return f
-        if note_id in f.stem:
-            return f
-    return None
-
-
-def _extract_frontmatter_field(text: str, field: str) -> Optional[str]:
-    fm_match = re.match(r"\A---\n(.*?)\n---\n", text, re.DOTALL)
-    block = fm_match.group(1) if fm_match else ""
-    m = re.search(r"^" + re.escape(field) + r":\s*(.+)$", block, re.MULTILINE)
-    if m:
-        return m.group(1).strip().strip('"').strip("'")
-    return None
-
-
-# Per-category status a note should carry once approved out of the
-# scratchpad, in place of the needs_review flag it had while pending.
-# Watch_Later items track read/unread state rather than review state.
-_CATEGORY_DEFAULT_STATUS: Dict[str, str] = {"Watch_Later": "unread"}
-
-
-def _rewrite_frontmatter_for_approval(text: str, category: str) -> str:
-    """
-    Remove status: needs_review and note_id from frontmatter.
-    If the target category defines a default post-approval status (see
-    _CATEGORY_DEFAULT_STATUS), insert it in place of the dropped status line.
-    """
-    default_status = _CATEGORY_DEFAULT_STATUS.get(category)
-    out = []
-    inserted = False
-    for line in text.split("\n"):
-        if re.match(r"^status:\s*needs_review", line):
-            continue  # drop
-        if re.match(r"^note_id:\s*", line):
-            continue  # drop
-        out.append(line)
-        if default_status and not inserted and re.match(r"^category:\s*", line):
-            out.append(f"status: {default_status}")
-            inserted = True
-    return "\n".join(out)
-
-
 # ---------------------------------------------------------------------------
 # Existing-context reader  (for read-before-write LLM pass)
 # ---------------------------------------------------------------------------
@@ -989,134 +701,6 @@ def _try_inject_wikilinks(
     except Exception as err:
         print(f"[StorageEngine] link resolver skipped: {err}", flush=True)
         return output.markdown_content
-
-
-# ---------------------------------------------------------------------------
-# Topic-collision guard
-# ---------------------------------------------------------------------------
-
-def _read_note_tags(path: Path) -> set:
-    """Extract frontmatter tags from a note (lower-cased)."""
-    try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
-        return set()
-
-    tags: set = set()
-
-    # Inline form
-    inline = re.search(r"^tags:[ \t]*(.+)$", text, re.MULTILINE)
-    if inline:
-        raw = inline.group(1).strip().strip("[]")
-        tags.update(
-            t.strip().strip("'\"").lower()
-            for t in raw.split(",") if t.strip()
-        )
-
-    # Block form
-    for t in re.findall(r"^[ \t]*-[ \t]+(.+)$", text[:1000], re.MULTILINE):
-        tags.add(t.strip().strip("'\"").lower())
-
-    return {t for t in tags if t and not t.startswith("-")}
-
-
-def _is_same_topic(existing_path: Path, new_signals: List[str], min_shared_tags: int = 1) -> bool:
-    """
-    min_shared_tags raises the bar above the default single-shared-tag match.
-    Used for image captures: a vision description sharing exactly one tag
-    with an unrelated note (e.g. both happen to mention "ollama") is too
-    weak a signal to silently append a photo into that note.
-    """
-    if not existing_path.exists() or not new_signals:
-        return True
-    existing_tags = _read_note_tags(existing_path)
-    if not existing_tags:
-        return True
-    normalised_new = set(_signals_to_tags(new_signals))
-    return len(existing_tags & normalised_new) >= min_shared_tags
-
-
-# ---------------------------------------------------------------------------
-# Smart context-aware merge-target finder
-# ---------------------------------------------------------------------------
-
-def find_merge_target(
-    output: CaptureOutput,
-    vault_root: Path,
-    enable_semantic_merge: bool = False,
-    embed_base_url: Optional[str] = None,
-    embed_model: str = "nomic-embed-text",
-) -> Optional[Path]:
-    """
-    Locate an existing note in the capture's category that this content
-    should be merged into, even when the LLM proposes a different filename.
-    Returns None to create a new file.
-    """
-    cat = _category_str(output)
-    new_tags = set(_signals_to_tags(output.key_signals))
-    if not new_tags:
-        return None
-
-    cat_dir = vault_root / cat
-    if not cat_dir.exists():
-        return None
-
-    candidates = [
-        f for f in cat_dir.iterdir()
-        if f.is_file() and f.suffix == ".md"
-    ]
-    if not candidates:
-        return None
-
-    semantic: dict = {}
-    if enable_semantic_merge and embed_base_url:
-        try:
-            from vector_store import best_match
-            match = best_match(
-                vault_root, output.markdown_content,
-                embed_base_url, embed_model, category=cat,
-            )
-            if match:
-                rel, sim = match
-                semantic[Path(rel).name] = sim
-        except Exception as exc:
-            print(f"[StorageEngine] semantic merge skipped: {exc}", flush=True)
-
-    best_path: Optional[Path] = None
-    best_score = 0.0
-
-    for cand in candidates:
-        cand_tags = _read_note_tags(cand)
-        if not cand_tags:
-            continue
-        shared = new_tags & cand_tags
-        if not shared:
-            continue
-        union = new_tags | cand_tags
-        jaccard = len(shared) / len(union) if union else 0.0
-        sim = semantic.get(cand.name, 0.0)
-
-        strong_tag_match = (
-            len(shared) >= MERGE_MIN_SHARED_TAGS and jaccard >= MERGE_MIN_TAG_JACCARD
-        )
-        semantic_confirmed = (
-            len(shared) >= 1 and sim >= MERGE_SEMANTIC_THRESHOLD
-        )
-        if not (strong_tag_match or semantic_confirmed):
-            continue
-
-        score = jaccard + sim
-        if score > best_score:
-            best_score = score
-            best_path = cand
-
-    if best_path is not None:
-        print(
-            f"[StorageEngine] smart-merge target found: {best_path.name} "
-            f"(score={round(best_score, 3)})",
-            flush=True,
-        )
-    return best_path
 
 
 # ---------------------------------------------------------------------------
@@ -1438,7 +1022,7 @@ def write_to_vault(
         )
         if merge_target is not None:
             path = merge_target
-            _append_general(path, linked_content)
+            _append_general(path, linked_content, vault_root)
             action = "appended (smart-merge)"
         else:
             _write_new_file(path, output, source_url, body_content=linked_content,
@@ -1454,7 +1038,7 @@ def write_to_vault(
         is_image = bool(source_metadata and (source_metadata.get("image_embed") or source_metadata.get("vision_model")))
         min_shared = 2 if is_image else 1
         if is_ledger or _is_same_topic(base_path, output.key_signals, min_shared_tags=min_shared):
-            _append_general(path, linked_content)
+            _append_general(path, linked_content, vault_root)
             action = "appended (general)"
         else:
             path = _unique_file_path(base_path)

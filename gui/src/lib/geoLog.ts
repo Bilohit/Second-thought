@@ -155,8 +155,7 @@ export async function geoSnapshot(tag: string, extra?: Record<string, unknown>):
  * Pure diagnostics, gated on the same geo-debug flag. No-op when disabled.
  */
 export function traceCapsuleMorph(zone: string, durationMs = 500): void {
-  // ponytail: TEMP always-on (not gated on geoEnabled) — right-zone morph
-  // investigation. Restore the `if (!geoEnabled()) return;` guard once fixed.
+  if (!geoEnabled()) return;
   const t0 = performance.now();
   const samples: Array<{ t: number; sx: number; winW: number; barW: number; barL: number; barR: number; items: string }> = [];
   const frame = (now: number) => {

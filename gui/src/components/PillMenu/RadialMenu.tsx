@@ -134,6 +134,7 @@ export default function RadialMenu({ open, corner, pillGeometry, fanStyle, inbox
         const label = MENU_LABELS[id];
         const isHide = id === "hide";
         const showBadge = id === "inbox" && inboxCount > 0;
+        const activate = () => { isHide ? onHide() : onSelect(id); };
         return (
           <button
             key={id}
@@ -158,7 +159,7 @@ export default function RadialMenu({ open, corner, pillGeometry, fanStyle, inbox
             tabIndex={open ? 0 : -1}
             title={label}
             aria-label={showBadge ? `${label}, ${inboxCount} item${inboxCount === 1 ? "" : "s"} need review` : label}
-            onClick={(e) => { e.stopPropagation(); isHide ? onHide() : onSelect(id); }}
+            onClick={(e) => { e.stopPropagation(); activate(); }}
             onKeyDown={(e) => handleKeyDown(e, id)}
           >
             <MenuIcon target={id} size={RADIAL_ICON_SIZE} />

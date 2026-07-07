@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { logger, LogLevel } from "./logger";
+import { logicalToPhysicalRect } from "./monitor";
 
 let cachedSecret: string | null = null;
 
@@ -92,10 +93,6 @@ export async function setWindowBoundsAtomic(
   size: { w: number; h: number },
   scale: number,
 ): Promise<void> {
-  await invoke("set_window_bounds", {
-    x: Math.round(pos.x * scale),
-    y: Math.round(pos.y * scale),
-    w: Math.round(size.w * scale),
-    h: Math.round(size.h * scale),
-  });
+  const { x, y, w, h } = logicalToPhysicalRect(pos, size, scale);
+  await invoke("set_window_bounds", { x, y, w, h });
 }

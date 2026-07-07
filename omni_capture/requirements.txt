@@ -35,3 +35,6 @@ plyer>=2.1.0                     # cross-platform fallback (macOS/Linux/Windows)
 
 # ── OCR (optional, gated behind [ocr] enabled=true in config.toml) ───────────
 rapidocr-onnxruntime>=1.2.3      # CPU-only OCR pass for verbatim text/code in image captures
+
+# ── Concurrency ───────────────────────────────────────────────────────────────
+filelock                         # cross-platform file locks (dedup-index + merge-append RMW cycles)

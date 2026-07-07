@@ -1,26 +1,36 @@
 """
-test_index_writer.py
---------------------
-Unit tests for index_writer.py — covers schema init, upsert, migration,
-full-text search, and stats aggregation.
+test_index_and_search.py
+------------------------
+Consolidated tests for index_writer.py (unit) and the /search and /stats
+FastAPI endpoints (integration).
+
+Merged from test_index_writer.py + test_search_endpoint.py.
 
 Run:
-    python -m pytest test_index_writer.py -v
+    python -m pytest test_index_and_search.py -v
     # or directly:
-    python test_index_writer.py
+    python test_index_and_search.py
 """
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import sys
 import tempfile
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
 
-# Adjust sys.path so we can import index_writer without installing the package
-import sys
 sys.path.insert(0, str(Path(__file__).parent))
+
+# Silence startup warnings for tests (must be set before importing server)
+os.environ.setdefault("OMNI_GUI_SECRET", "")
+
+try:
+    from fastapi.testclient import TestClient
+except ImportError:
+    raise ImportError("pip install httpx  (required by FastAPI TestClient)")
 
 from index_writer import (
     get_db_path,
@@ -30,6 +40,7 @@ from index_writer import (
     reindex_bodies,
     search,
     stats,
+    upsert_capture_from_file,
 )
 
 
@@ -42,7 +53,7 @@ def _vault(tmp: Path) -> Path:
     return vault
 
 
-def _entry(
+def _entry_index(
     category: str = "Tech_Notes",
     filepath: str = "/vault/Tech_Notes/test-note.md",
     filename: str = "test-note",
@@ -65,7 +76,27 @@ def _entry(
     }
 
 
-# ── Tests ─────────────────────────────────────────────────────────────────────
+def _entry_search(
+    category: str   = "Tech_Notes",
+    filepath: str   = "/v/T/note.md",
+    filename: str   = "note",
+    source_url: str = "",
+    timestamp: str  = "2025-06-17T10:00:00",
+) -> dict:
+    return {
+        "category":   category,
+        "filepath":   filepath,
+        "filename":   filename,
+        "source_url": source_url or None,
+        "confidence": 0.95,
+        "timestamp":  timestamp,
+        "input_type": "text",
+        "model":      "llama3.2",
+        "tags":       [],
+    }
+
+
+# ── index_writer unit tests ───────────────────────────────────────────────────
 
 class TestInitDb(unittest.TestCase):
     def test_creates_db_file(self):
@@ -101,7 +132,7 @@ class TestLogCaptureDb(unittest.TestCase):
     def test_inserts_row(self):
         with tempfile.TemporaryDirectory() as td:
             vault = _vault(Path(td))
-            e     = _entry()
+            e     = _entry_index()
             log_capture_db(e, vault)
             conn  = init_db(vault)
             row   = conn.execute("SELECT * FROM captures").fetchone()
@@ -114,7 +145,7 @@ class TestLogCaptureDb(unittest.TestCase):
         """Inserting same filepath twice should update, not duplicate."""
         with tempfile.TemporaryDirectory() as td:
             vault = _vault(Path(td))
-            e     = _entry(confidence=0.8)
+            e     = _entry_index(confidence=0.8)
             log_capture_db(e, vault)
             e2 = {**e, "confidence": 0.99}
             log_capture_db(e2, vault)
@@ -127,7 +158,7 @@ class TestLogCaptureDb(unittest.TestCase):
     def test_tags_stored_as_json(self):
         with tempfile.TemporaryDirectory() as td:
             vault = _vault(Path(td))
-            e     = {**_entry(), "tags": ["python", "async"]}
+            e     = {**_entry_index(), "tags": ["python", "async"]}
             log_capture_db(e, vault)
             conn  = init_db(vault)
             row   = conn.execute("SELECT tags FROM captures").fetchone()
@@ -153,7 +184,7 @@ class TestMigrateJsonl(unittest.TestCase):
             jpath    = vault / ".omni_capture" / "captures.jsonl"
             jpath.parent.mkdir(parents=True, exist_ok=True)
             entries  = [
-                _entry(category="CRM",       filepath=f"/vault/CRM/note-{i}.md", filename=f"note-{i}")
+                _entry_index(category="CRM",       filepath=f"/vault/CRM/note-{i}.md", filename=f"note-{i}")
                 for i in range(3)
             ]
             self._write_jsonl(jpath, entries)
@@ -169,7 +200,7 @@ class TestMigrateJsonl(unittest.TestCase):
             vault   = _vault(Path(td))
             jpath   = vault / ".omni_capture" / "captures.jsonl"
             jpath.parent.mkdir(parents=True, exist_ok=True)
-            e       = _entry(filepath="/vault/CRM/note-1.md")
+            e       = _entry_index(filepath="/vault/CRM/note-1.md")
             self._write_jsonl(jpath, [e])
             migrate_jsonl(jpath, vault)  # first run
             n2 = migrate_jsonl(jpath, vault)  # second run — should skip
@@ -191,10 +222,10 @@ class TestMigrateJsonl(unittest.TestCase):
 class TestSearch(unittest.TestCase):
     def _populate(self, vault: Path) -> None:
         entries = [
-            _entry(category="Tech_Notes",  filepath="/v/T/asyncio.md",  filename="asyncio",   source_url=None),
-            _entry(category="CRM",         filepath="/v/C/acme.md",      filename="acme",      source_url="https://acme.com"),
-            _entry(category="Finance",     filepath="/v/F/invoice.md",   filename="invoice",   timestamp="2025-01-15T08:00:00"),
-            _entry(category="Tech_Notes",  filepath="/v/T/docker.md",    filename="docker",    source_url="https://docs.docker.com"),
+            _entry_index(category="Tech_Notes",  filepath="/v/T/asyncio.md",  filename="asyncio",   source_url=None),
+            _entry_index(category="CRM",         filepath="/v/C/acme.md",      filename="acme",      source_url="https://acme.com"),
+            _entry_index(category="Finance",     filepath="/v/F/invoice.md",   filename="invoice",   timestamp="2025-01-15T08:00:00"),
+            _entry_index(category="Tech_Notes",  filepath="/v/T/docker.md",    filename="docker",    source_url="https://docs.docker.com"),
         ]
         for e in entries:
             log_capture_db(e, vault)
@@ -252,7 +283,7 @@ class TestStats(unittest.TestCase):
             ("Tech_Notes", "/v/T/note2.md"),
             ("CRM",        "/v/C/contact.md"),
         ]):
-            log_capture_db(_entry(category=cat, filepath=fp, filename=f"note{i}"), vault)
+            log_capture_db(_entry_index(category=cat, filepath=fp, filename=f"note{i}"), vault)
 
     def test_total(self):
         with tempfile.TemporaryDirectory() as td:
@@ -311,7 +342,7 @@ class TestBodyIndexing(unittest.TestCase):
             filepath = self._write_note(
                 vault, "garden-note", "Photosynthesis converts sunlight into energy."
             )
-            log_capture_db(_entry(filepath=filepath, filename="garden-note"), vault)
+            log_capture_db(_entry_index(filepath=filepath, filename="garden-note"), vault)
 
             results = search("Photosynthesis", vault)
             self.assertEqual(len(results), 1)
@@ -322,7 +353,7 @@ class TestBodyIndexing(unittest.TestCase):
             vault = Path(td) / "vault"
             vault.mkdir()
             filepath = self._write_note(vault, "long-note", "x" * 70000)
-            log_capture_db(_entry(filepath=filepath, filename="long-note"), vault)
+            log_capture_db(_entry_index(filepath=filepath, filename="long-note"), vault)
             conn = init_db(vault)
             row = conn.execute("SELECT body_excerpt FROM captures").fetchone()
             conn.close()
@@ -352,7 +383,7 @@ class TestBodyIndexing(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             vault = _vault(Path(td))
             filepath = self._write_note(vault, "note", "Some body text.")
-            log_capture_db(_entry(filepath=filepath, filename="note"), vault)
+            log_capture_db(_entry_index(filepath=filepath, filename="note"), vault)
 
             first = reindex_bodies(vault)
             second = reindex_bodies(vault)
@@ -388,6 +419,161 @@ def test_upsert_capture_from_file_uses_file_mtime():
         expected = datetime.fromtimestamp(old, tz=timezone.utc).isoformat(timespec="seconds")
         assert row is not None
         assert row["timestamp"] == expected, f"{row['timestamp']} != {expected}"
+
+
+# ── /search and /stats endpoint integration tests ─────────────────────────────
+
+class TestSearchEndpoint(unittest.TestCase):
+    """
+    Each test creates an isolated temporary vault, seeds the DB,
+    then monkeypatches server._get_vault_root to use that vault.
+    """
+
+    def _make_client(self, vault: Path) -> "TestClient":
+        import server
+        server._get_vault_root = lambda: vault   # type: ignore[attr-defined]
+        return TestClient(server.app)
+
+    def _seed(self, vault: Path, entries: list[dict]) -> None:
+        for e in entries:
+            log_capture_db(e, vault)
+
+    # GET /search — basic happy-path
+    def test_search_returns_200(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            client = self._make_client(vault)
+            r = client.get("/search")
+            self.assertEqual(r.status_code, 200)
+
+    def test_search_response_shape(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            self._seed(vault, [_entry_search()])
+            client = self._make_client(vault)
+            data = client.get("/search").json()
+            self.assertIn("results", data)
+            self.assertIn("count",   data)
+            self.assertIn("query",   data)
+
+    def test_search_query_param(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            self._seed(vault, [
+                _entry_search(category="Tech_Notes",  filepath="/v/T/docker.md",   filename="docker"),
+                _entry_search(category="CRM",         filepath="/v/C/acme.md",     filename="acme"),
+            ])
+            client  = self._make_client(vault)
+            data    = client.get("/search?q=docker").json()
+            paths   = [r["path"] for r in data["results"]]
+            self.assertTrue(any("docker" in p for p in paths))
+            self.assertFalse(any("acme" in p for p in paths))
+
+    def test_search_category_filter(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            self._seed(vault, [
+                _entry_search(category="Tech_Notes", filepath="/v/T/a.md"),
+                _entry_search(category="CRM",        filepath="/v/C/b.md"),
+            ])
+            client = self._make_client(vault)
+            data   = client.get("/search?category=CRM").json()
+            for r in data["results"]:
+                self.assertEqual(r["category"], "CRM")
+
+    def test_search_limit_capped_at_200(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            # Seed 10 entries
+            for i in range(10):
+                self._seed(vault, [_entry_search(filepath=f"/v/T/{i}.md", filename=str(i))])
+            client = self._make_client(vault)
+            # limit=5 → at most 5
+            data = client.get("/search?limit=5").json()
+            self.assertLessEqual(len(data["results"]), 5)
+            # limit=9999 → capped at 200, but only 10 rows so count ≤ 10
+            data = client.get("/search?limit=9999").json()
+            self.assertLessEqual(len(data["results"]), 200)
+
+    def test_search_empty_vault(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            client = self._make_client(vault)
+            data   = client.get("/search?q=anything").json()
+            self.assertEqual(data["count"],   0)
+            self.assertEqual(data["results"], [])
+
+
+class TestStatsEndpoint(unittest.TestCase):
+    def _make_client(self, vault: Path) -> "TestClient":
+        import server
+        server._get_vault_root = lambda: vault   # type: ignore[attr-defined]
+        return TestClient(server.app)
+
+    def _seed(self, vault: Path) -> None:
+        entries = [
+            _entry_search(category="Tech_Notes",  filepath="/v/T/note1.md", filename="note1"),
+            _entry_search(category="Tech_Notes",  filepath="/v/T/note2.md", filename="note2"),
+            _entry_search(category="CRM",         filepath="/v/C/contact.md", filename="contact"),
+            _entry_search(category="Finance",     filepath="/v/F/invoice.md",  filename="invoice", timestamp="2025-01-10T08:00:00"),
+        ]
+        for e in entries:
+            log_capture_db(e, vault)
+
+    def test_stats_returns_200(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            client = self._make_client(vault)
+            r = client.get("/stats")
+            self.assertEqual(r.status_code, 200)
+
+    def test_stats_response_shape(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            client = self._make_client(vault)
+            data   = client.get("/stats").json()
+            self.assertIn("total",       data)
+            self.assertIn("by_category", data)
+            self.assertIn("by_day",      data)
+            self.assertIn("recent",      data)
+
+    def test_stats_total(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            self._seed(vault)
+            client = self._make_client(vault)
+            data   = client.get("/stats").json()
+            self.assertEqual(data["total"], 4)
+
+    def test_stats_by_category(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            self._seed(vault)
+            client = self._make_client(vault)
+            data   = client.get("/stats").json()
+            cats   = {r["category"]: r["count"] for r in data["by_category"]}
+            self.assertEqual(cats["Tech_Notes"], 2)
+            self.assertEqual(cats["CRM"],        1)
+
+    def test_stats_empty_vault(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            client = self._make_client(vault)
+            data   = client.get("/stats").json()
+            self.assertEqual(data["total"],       0)
+            self.assertEqual(data["by_category"], [])
+            self.assertEqual(data["recent"],      [])
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────

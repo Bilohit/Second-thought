@@ -16,9 +16,11 @@ interface TabsProps<T extends string> {
   tabs: TabDef<T>[];
   active: T;
   onChange: (id: T) => void;
+  /** Compact-only dense variant: shrinks per-button vertical padding. Default false (unchanged). */
+  dense?: boolean;
 }
 
-export function Tabs<T extends string>({ tabs, active, onChange }: TabsProps<T>) {
+export function Tabs<T extends string>({ tabs, active, onChange, dense = false }: TabsProps<T>) {
   const [hovered, setHovered] = useState<T | null>(null);
   const activeIndex = tabs.findIndex((t) => t.id === active);
   const n = tabs.length;
@@ -48,7 +50,7 @@ export function Tabs<T extends string>({ tabs, active, onChange }: TabsProps<T>)
             onMouseLeave={() => setHovered(null)}
             style={{
               flex: 1,
-              padding: "10px 0",
+              padding: dense ? "6px 0" : "10px 0",
               background: isActive ? "var(--accent-d)" : "none",
               border: "none",
               cursor: "pointer",

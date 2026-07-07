@@ -6,8 +6,9 @@
  * survive panel close/reopen within the same session.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { searchCaptures, openFilePath, syncVaultIndex, type SearchResult } from "../lib/api";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { searchCaptures, openFilePath, syncVaultIndex, checkHealth, type SearchResult } from "../lib/api";
+import { slideDirection } from "../lib/segmentedToggle";
 import { parseCitations } from "../lib/citations";
 import type { ChatMessage } from "../hooks/useLookChat";
 import type { LookChatPersist } from "../App";
@@ -16,13 +17,14 @@ import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
   BTN_GHOST, BTN_SECONDARY, INPUT_STYLE,
 } from "./ui/styles";
-import { MenuIcon } from "./PillMenu/icons";
+import { RefreshIcon, SendIcon } from "./PillMenu/icons";
 
 interface LookChatHook {
   messages: ChatMessage[];
   streaming: boolean;
   ask: (q: string) => void;
   reset: () => void;
+  retry: (index: number) => void;
   ignoreHistory: boolean;
   setIgnoreHistory: (enabled: boolean) => void;
 }
@@ -41,6 +43,11 @@ interface Props {
   /** Full-window shell drives sync from its topbar button; use these instead of internal state. */
   externalSyncing?: boolean;
   externalSyncStatus?: string | null;
+  /** Rendered inside a compact panel: tightened search/chat density (B — tight),
+   *  compact-panel footer with 24px input snug to the bottom edge; Ignore history /
+   *  Clear as a slim row directly above it. Full-window keeps the inline row and
+   *  looser spacing. */
+  compact?: boolean;
 }
 
 function resultSnippet(r: SearchResult): string {
@@ -59,8 +66,16 @@ function tierLabel(tier: string | undefined): string {
   return "No vault match";
 }
 
-export default function LookPanel({ mode, onSelectMode, visible, onClose, measureRef, lookChat, lookChatPersist, hideToggle = false, embedded = false, externalSyncing, externalSyncStatus }: Props) {
+export default function LookPanel({ mode, onSelectMode, visible, onClose, measureRef, lookChat, lookChatPersist, hideToggle = false, embedded = false, externalSyncing, externalSyncStatus, compact = false }: Props) {
   const [mounted, setMounted] = useState(visible);
+
+  // Directional content-swap: Search↔Chat slides by the toggle's index delta
+  // (Search=0, Chat=1). Derived at render from the last-committed mode; the
+  // keyed swap panel replays its slide-in animation on every change.
+  const modeIndex = mode === "chat" ? 1 : 0;
+  const prevModeIndexRef = useRef(modeIndex);
+  const swapDir = slideDirection(prevModeIndexRef.current, modeIndex);
+  useEffect(() => { prevModeIndexRef.current = modeIndex; }, [modeIndex]);
 
   // Search state
   const [query, setQuery] = useState("");
@@ -73,7 +88,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Chat state (lifted — only composer is local)
-  const { messages, streaming, ask, reset, ignoreHistory, setIgnoreHistory } = lookChat;
+  const { messages, streaming, ask, reset, retry, ignoreHistory, setIgnoreHistory } = lookChat;
   const [composer, setComposer] = useState("");
   const transcriptRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLInputElement>(null);
@@ -82,6 +97,20 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
   const [syncing, setSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // LLM health — persistent offline banner (per-message ⚠ isn't enough signal)
+  const [llmOffline, setLlmOffline] = useState(false);
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    const poll = async () => {
+      const { llmStatus } = await checkHealth();
+      if (!cancelled) setLlmOffline(llmStatus === "disconnected");
+    };
+    poll();
+    const id = setInterval(poll, 15000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [visible]);
 
   useEffect(() => {
     if (visible) {
@@ -231,13 +260,12 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
       }}
       onTransitionEnd={handleTransitionEnd}
     >
-      {/* Header */}
+      {/* Header — text-only title (no magnifier glyph); one spacing step of
+          clear vertical space below via marginBottom, on top of the
+          existing border-bottom divider. */}
       {!embedded && (
-        <div className="drag-region" style={PANEL_HEADER}>
+        <div className="drag-region" style={{ ...PANEL_HEADER, marginBottom: "var(--space-2)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ color: "var(--text-2)", display: "flex" }} aria-hidden="true">
-              <MenuIcon target="search" size={14} />
-            </span>
             <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
               Look
             </span>
@@ -283,14 +311,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
               aria-label="Sync vault index"
               style={{ ...BTN_GHOST, opacity: syncing ? 0.5 : 1 }}
             >
-              <svg
-                width="13" height="13" viewBox="0 0 24 24"
-                fill="none" stroke="currentColor" strokeWidth="2"
-                strokeLinecap="round" strokeLinejoin="round"
-              >
-                <polyline points="23 4 23 10 17 10" />
-                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-              </svg>
+              <RefreshIcon size={13} />
             </button>
             <button className="no-drag icon-close-btn" onClick={onClose} title="Close">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -299,6 +320,13 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
               </svg>
             </button>
           </div>
+        </div>
+      )}
+
+      {/* LLM offline banner — persistent signal, not just per-message ⚠ */}
+      {llmOffline && (
+        <div style={{ fontSize: 12, color: "var(--red)", borderBottom: "1px solid var(--border)", textAlign: "center", padding: "6px 14px" }}>
+          ⚠ Model offline — Ollama unreachable
         </div>
       )}
 
@@ -324,10 +352,21 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
           transition: "opacity 0.15s",
         }}
       >
+        {/* Directional content-swap stage: clips the horizontal slide, keyed
+            per mode so the incoming branch replays its slide-in. */}
+        <div
+          className="seg-swap"
+          style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}
+        >
+        <div
+          key={mode}
+          className="seg-swap-panel"
+          style={{ "--swap-dir": swapDir, flex: 1, minHeight: 0, display: "flex", flexDirection: "column" } as CSSProperties}
+        >
         {mode === "search" ? (
-          <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+          <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
             {/* Search input row */}
-            <div style={{ display: "flex", alignItems: "center", padding: "12px 14px", gap: 10, borderBottom: "1px solid var(--border)" }}>
+            <div style={{ display: "flex", alignItems: "center", padding: compact ? "6px 12px" : "12px 14px", gap: 10, borderBottom: "1px solid var(--border)" }}>
               <svg
                 width="14" height="14" viewBox="0 0 24 24"
                 fill="none" stroke="var(--text-3)" strokeWidth="2"
@@ -434,33 +473,14 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                 );
               })}
             </div>
-
-            {/* Footer hint */}
-            <div
-              aria-hidden="true"
-              style={{ padding: "7px 14px", borderTop: "1px solid var(--border)", display: "flex", gap: 12, alignItems: "center", flexShrink: 0 }}
-            >
-              {[
-                { key: "↑↓", label: "navigate" },
-                { key: "↵", label: "open" },
-                { key: "esc", label: "close" },
-              ].map(({ key, label }) => (
-                <span key={key} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <kbd style={{ fontSize: 9, color: "var(--text-3)", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "1px 4px" }}>
-                    {key}
-                  </kbd>
-                  <span style={{ fontSize: 10, color: "var(--text-3)" }}>{label}</span>
-                </span>
-              ))}
-            </div>
           </div>
         ) : (
           /* Chat mode */
-          <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+          <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
             {/* Transcript */}
             <div
               ref={transcriptRef}
-              style={{ flex: 1, overflowY: "auto", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}
+              style={{ flex: 1, overflowY: "auto", padding: compact ? "8px 10px" : "12px 14px", display: "flex", flexDirection: "column", gap: compact ? 5 : 10 }}
             >
               {messages.length === 0 && (
                 <div style={{ textAlign: "center", fontSize: 13, color: "var(--text-3)", marginTop: 20 }}>
@@ -490,7 +510,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                     <div
                       style={{
                         maxWidth: "88%",
-                        padding: "8px 12px",
+                        padding: compact ? "5px 9px" : "8px 12px",
                         borderRadius: "var(--radius-xl)",
                         background: isUser
                           ? (isTalk ? "var(--surface)" : "var(--accent)")
@@ -499,7 +519,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                           ? (isTalk ? "var(--text-1)" : "var(--on-accent)")
                           : "var(--text-1)",
                         border: isUser && isTalk ? "1px dashed var(--border)" : "none",
-                        fontSize: 13,
+                        fontSize: compact ? 12 : 13,
                         lineHeight: 1.5,
                       }}
                     >
@@ -536,6 +556,31 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                         })
                       )}
                     </div>
+                    {/* Retry — failed (⚠) assistant messages only */}
+                    {!isUser && !isSearching && !isTyping && msg.content.startsWith("⚠") && msg.userQuery && (
+                      <button
+                        onClick={() => retry(i)}
+                        disabled={streaming}
+                        title="Retry"
+                        aria-label="Retry failed message"
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontSize: 10,
+                          color: "var(--text-3)",
+                          background: "none",
+                          border: "none",
+                          padding: "0 2px",
+                          cursor: streaming ? "default" : "pointer",
+                          opacity: streaming ? 0.5 : 1,
+                          fontFamily: "inherit",
+                        }}
+                      >
+                        <RefreshIcon size={11} />
+                        Retry
+                      </button>
+                    )}
                     {/* Confidence badge for assistant messages */}
                     {!isUser && !isSearching && msg.tier && msg.tier !== "none" && !isTyping && (
                       <div style={{
@@ -582,103 +627,197 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
             </div>
 
             {/* Composer */}
-            <div
-              style={{
-                padding: "10px 14px",
-                borderTop: "1px solid var(--border)",
-                display: "flex",
-                flexDirection: "column",
-                gap: 8,
-                flexShrink: 0,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <button
-                  type="button"
-                  onClick={() => setIgnoreHistory(!ignoreHistory)}
-                  aria-pressed={ignoreHistory}
-                  title="When on, each message is sent without prior conversation context"
-                  style={{
-                    ...BTN_SECONDARY,
-                    fontSize: 10,
-                    padding: "3px 8px",
-                    flexShrink: 0,
-                    background: ignoreHistory ? "var(--accent)" : (BTN_SECONDARY.background as string),
-                    color: ignoreHistory ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
-                    border: ignoreHistory ? "1px solid var(--accent)" : (BTN_SECONDARY.border as string),
-                    fontWeight: ignoreHistory ? 600 : 400,
-                  }}
-                >
-                  Ignore history
-                </button>
-                <span style={{ fontSize: 10, color: "var(--text-3)", flex: 1 }}>
-                  {ignoreHistory ? "Standalone query — prior turns skipped" : "Follow-ups use recent chat context"}
-                </span>
-                <button
-                  type="button"
-                  onClick={reset}
-                  disabled={messages.length === 0}
-                  title="Clear chat"
-                  aria-label="Clear chat"
-                  style={{
-                    ...BTN_SECONDARY,
-                    fontSize: 10,
-                    padding: "3px 8px",
-                    flexShrink: 0,
-                    opacity: messages.length === 0 ? 0.4 : 1,
-                    cursor: messages.length === 0 ? "default" : "pointer",
-                  }}
-                >
-                  Clear
-                </button>
+            {compact ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "3px 6px 4px", flexShrink: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <button
+                    type="button"
+                    onClick={() => setIgnoreHistory(!ignoreHistory)}
+                    aria-pressed={ignoreHistory}
+                    title="When on, each message is sent without prior conversation context"
+                    style={{
+                      ...BTN_SECONDARY,
+                      fontSize: 10,
+                      padding: "3px 8px",
+                      flexShrink: 0,
+                      background: ignoreHistory ? "var(--accent)" : (BTN_SECONDARY.background as string),
+                      color: ignoreHistory ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
+                      border: ignoreHistory ? "1px solid var(--accent)" : (BTN_SECONDARY.border as string),
+                      fontWeight: ignoreHistory ? 600 : 400,
+                    }}
+                  >
+                    Ignore history
+                  </button>
+                  <button
+                    type="button"
+                    onClick={reset}
+                    disabled={messages.length === 0}
+                    title="Clear chat"
+                    aria-label="Clear chat"
+                    style={{
+                      ...BTN_SECONDARY,
+                      fontSize: 10,
+                      padding: "3px 8px",
+                      flexShrink: 0,
+                      opacity: messages.length === 0 ? 0.4 : 1,
+                      cursor: messages.length === 0 ? "default" : "pointer",
+                    }}
+                  >
+                    Clear
+                  </button>
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input
+                    ref={composerInputRef}
+                    type="text"
+                    aria-label="Ask a question about your vault"
+                    value={composer}
+                    onChange={(e) => setComposer(e.target.value)}
+                    onKeyDown={handleComposerKey}
+                    placeholder="Ask your vault"
+                    disabled={streaming}
+                    style={{
+                      flex: 1,
+                      height: 24,
+                      boxSizing: "border-box",
+                      background: "var(--surface)",
+                      border: "1px solid var(--border)",
+                      borderRadius: "var(--radius)",
+                      outline: "none",
+                      color: "var(--text-1)",
+                      fontSize: 11,
+                      fontFamily: "inherit",
+                      padding: "0 10px",
+                      caretColor: "var(--accent)",
+                      opacity: streaming ? 0.5 : 1,
+                    }}
+                  />
+                  <button
+                    onClick={handleSend}
+                    disabled={streaming || !composer.trim()}
+                    aria-label="Send"
+                    style={{
+                      width: 24,
+                      height: 24,
+                      boxSizing: "border-box",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: "var(--accent)",
+                      color: "var(--on-accent)",
+                      border: "none",
+                      borderRadius: "var(--radius)",
+                      padding: 0,
+                      cursor: streaming || !composer.trim() ? "default" : "pointer",
+                      opacity: streaming || !composer.trim() ? 0.4 : 1,
+                      flexShrink: 0,
+                    }}
+                  >
+                    <SendIcon size={13} />
+                  </button>
+                </div>
               </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <input
-                ref={composerInputRef}
-                type="text"
-                aria-label="Ask a question about your vault"
-                value={composer}
-                onChange={(e) => setComposer(e.target.value)}
-                onKeyDown={handleComposerKey}
-                placeholder="Ask your vault"
-                disabled={streaming}
+            ) : (
+              <div
                 style={{
-                  flex: 1,
-                  background: "var(--surface)",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius)",
-                  outline: "none",
-                  color: "var(--text-1)",
-                  fontSize: 13,
-                  fontFamily: "inherit",
-                  padding: "7px 10px",
-                  caretColor: "var(--accent)",
-                  opacity: streaming ? 0.5 : 1,
-                }}
-              />
-              <button
-                onClick={handleSend}
-                disabled={streaming || !composer.trim()}
-                aria-label="Send"
-                style={{
-                  background: "var(--accent)",
-                  color: "var(--on-accent)",
-                  border: "none",
-                  borderRadius: "var(--radius)",
-                  padding: "7px 12px",
-                  fontSize: 12,
-                  fontFamily: "inherit",
-                  cursor: streaming || !composer.trim() ? "default" : "pointer",
-                  opacity: streaming || !composer.trim() ? 0.4 : 1,
+                  padding: "10px 14px",
+                  borderTop: "1px solid var(--border)",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 8,
                   flexShrink: 0,
                 }}
               >
-                Send
-              </button>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => setIgnoreHistory(!ignoreHistory)}
+                    aria-pressed={ignoreHistory}
+                    title="When on, each message is sent without prior conversation context"
+                    style={{
+                      ...BTN_SECONDARY,
+                      fontSize: 10,
+                      padding: "3px 8px",
+                      flexShrink: 0,
+                      background: ignoreHistory ? "var(--accent)" : (BTN_SECONDARY.background as string),
+                      color: ignoreHistory ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
+                      border: ignoreHistory ? "1px solid var(--accent)" : (BTN_SECONDARY.border as string),
+                      fontWeight: ignoreHistory ? 600 : 400,
+                    }}
+                  >
+                    Ignore history
+                  </button>
+                  <span style={{ fontSize: 10, color: "var(--text-3)", flex: 1 }}>
+                    {ignoreHistory ? "Standalone query — prior turns skipped" : "Follow-ups use recent chat context"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={reset}
+                    disabled={messages.length === 0}
+                    title="Clear chat"
+                    aria-label="Clear chat"
+                    style={{
+                      ...BTN_SECONDARY,
+                      fontSize: 10,
+                      padding: "3px 8px",
+                      flexShrink: 0,
+                      opacity: messages.length === 0 ? 0.4 : 1,
+                      cursor: messages.length === 0 ? "default" : "pointer",
+                    }}
+                  >
+                    Clear
+                  </button>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input
+                    ref={composerInputRef}
+                    type="text"
+                    aria-label="Ask a question about your vault"
+                    value={composer}
+                    onChange={(e) => setComposer(e.target.value)}
+                    onKeyDown={handleComposerKey}
+                    placeholder="Ask your vault"
+                    disabled={streaming}
+                    style={{
+                      flex: 1,
+                      background: "var(--surface)",
+                      border: "1px solid var(--border)",
+                      borderRadius: "var(--radius)",
+                      outline: "none",
+                      color: "var(--text-1)",
+                      fontSize: 13,
+                      fontFamily: "inherit",
+                      padding: "7px 10px",
+                      caretColor: "var(--accent)",
+                      opacity: streaming ? 0.5 : 1,
+                    }}
+                  />
+                  <button
+                    onClick={handleSend}
+                    disabled={streaming || !composer.trim()}
+                    aria-label="Send"
+                    style={{
+                      background: "var(--accent)",
+                      color: "var(--on-accent)",
+                      border: "none",
+                      borderRadius: "var(--radius)",
+                      padding: "7px 12px",
+                      fontSize: 12,
+                      fontFamily: "inherit",
+                      cursor: streaming || !composer.trim() ? "default" : "pointer",
+                      opacity: streaming || !composer.trim() ? 0.4 : 1,
+                      flexShrink: 0,
+                    }}
+                  >
+                    Send
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         )}
+        </div>
+        </div>
       </div>
     </div>
   );

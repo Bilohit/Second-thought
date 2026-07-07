@@ -41,6 +41,7 @@ class OllamaConfig:
     keep_alive: str     = "30m"   # how long Ollama keeps the model resident between calls
     vision_prompt: str  = _DEFAULT_VISION_PROMPT
     image_required: bool = False  # if True, hard-fail captures when the vision model is unavailable
+    request_timeout_s: float = 60  # client-side timeout (seconds) on the structured chat-completion call
 
 
 @dataclass
@@ -196,6 +197,7 @@ def load_config(config_path: Path | None = None) -> Config:
     cfg.ollama.keep_alive   = ollama_raw.get("keep_alive", "30m")
     cfg.ollama.vision_prompt = ollama_raw.get("vision_prompt", _DEFAULT_VISION_PROMPT)
     cfg.ollama.image_required = bool(ollama_raw.get("image_required", False))
+    cfg.ollama.request_timeout_s = float(ollama_raw.get("request_timeout_s", 60))
 
     whisper_raw = raw.get("whisper", {})
     cfg.whisper.model  = whisper_raw.get("model", "base")
