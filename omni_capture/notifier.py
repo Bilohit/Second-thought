@@ -8,7 +8,7 @@ notification must never crash the pipeline.
 
 Backends (by platform)
   macOS   → osascript (built-in, zero deps)
-  Windows → win10toast (pip install win10toast)  ← falls back to plyer
+  Windows → plyer (pip install plyer)
   Linux   → notify-send (system binary)          ← falls back to plyer
   Any OS  → plyer (pip install plyer)            ← universal fallback
 """
@@ -18,6 +18,7 @@ from __future__ import annotations
 import platform
 import subprocess
 import sys
+from pathlib import Path
 from typing import Optional
 
 
@@ -52,12 +53,6 @@ def _plyer_notify(full_title: str, message: str) -> None:
 
 
 def _notify_windows(full_title: str, message: str) -> None:
-    try:
-        from win10toast import ToastNotifier  # type: ignore
-        ToastNotifier().show_toast(full_title, message, duration=5, threaded=True)
-        return
-    except ImportError:
-        pass
     _plyer_notify(full_title, message)
 
 
@@ -106,8 +101,7 @@ def notify_capture_success(
     title_prefix: str = "Second Thought",
 ) -> None:
     """Convenience wrapper for a successful vault write."""
-    import os
-    short_path = os.path.basename(filepath)
+    short_path = Path(filepath).name
     send_notification(
         title=title_prefix,
         subtitle=category,

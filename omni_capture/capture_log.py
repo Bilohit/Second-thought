@@ -19,7 +19,17 @@ import sys
 from datetime import datetime
 
 from config import get_config
+from index_writer import log_capture_db, search, stats
 from models import CaptureOutput, EnrichedPayload
+
+
+def _log_or_warn(op: str, fn, *args, default=None, **kwargs):
+    """Run an index_writer op, printing a uniform stderr warning on failure."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:
+        print(f"[CaptureLog] {op} error: {exc}", file=sys.stderr)
+        return default
 
 
 # ── Write ─────────────────────────────────────────────────────────────────────
@@ -46,11 +56,7 @@ def log_capture(
         "new_category": True if output.requires_new_category else None,
     }
 
-    try:
-        from index_writer import log_capture_db
-        log_capture_db(entry, cfg.vault.root)
-    except Exception as exc:
-        print(f"[CaptureLog] SQLite write error: {exc}", file=sys.stderr)
+    _log_or_warn("SQLite write", log_capture_db, entry, cfg.vault.root)
 
 
 # ── Read / stats ──────────────────────────────────────────────────────────────
@@ -58,12 +64,7 @@ def log_capture(
 def read_log(n: int = 20) -> list[dict]:
     """Return the last n log entries, newest first."""
     cfg = get_config()
-    try:
-        from index_writer import search
-        return search("", cfg.vault.root, limit=n)
-    except Exception as exc:
-        print(f"[CaptureLog] read error: {exc}", file=sys.stderr)
-        return []
+    return _log_or_warn("read", search, "", cfg.vault.root, limit=n) or []
 
 
 def print_recent(n: int = 20) -> None:
@@ -84,11 +85,8 @@ def print_recent(n: int = 20) -> None:
 
 def print_stats() -> None:
     cfg = get_config()
-    try:
-        from index_writer import stats
-        s = stats(cfg.vault.root)
-    except Exception as exc:
-        print(f"[CaptureLog] stats error: {exc}", file=sys.stderr)
+    s = _log_or_warn("stats", stats, cfg.vault.root)
+    if s is None:
         return
 
     total = s.get("total", 0)

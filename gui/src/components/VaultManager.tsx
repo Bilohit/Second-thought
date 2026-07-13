@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openVaultPath } from "../lib/api";
+import { ClockIcon } from "./PillMenu/icons";
 import {
   getVaultCategories,
   createVaultCategory,
@@ -25,9 +26,12 @@ import {
   deleteVaultCategory,
   updateCategoryDescription,
   getVaultCategoryFiles,
+  getProvisional,
   type VaultCategory,
   type VaultFile,
+  type ProvisionalItem,
 } from "../lib/api";
+import { mergeProvisional, type CanonicalNoteRow } from "../lib/provisional";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
   INPUT_STYLE, BTN_GHOST, ROW_CARD, ROW_DIVIDER,
@@ -254,6 +258,55 @@ function FileRow({ file, highlighted }: { file: VaultFile; highlighted?: boolean
   );
 }
 
+// ── Provisional row (LAN overlay, contract §11) ────────────────────────────────
+//
+// Display-only, never-destructive: a provisional row is a staged copy of a
+// note received over the LAN accelerator that Drive hasn't confirmed as
+// canonical yet (see workspace CLAUDE.md "Shared locks" — LAN never writes
+// canonical state). It carries a quiet var(--yellow) badge and offers no
+// rename/delete affordance; it disappears on its own once the Drive-synced
+// canonical copy supersedes it (mergeProvisional in lib/provisional.ts).
+function ProvisionalRow({ item }: { item: ProvisionalItem }) {
+  const staged = new Date(item.staged_at * 1000).toLocaleString(undefined, {
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  });
+
+  return (
+    <div
+      style={{
+        ...ROW_DIVIDER,
+        margin: "0 -6px",
+        padding: "7px 6px",
+        borderRadius: "var(--radius-sm)",
+      }}
+    >
+      {/* Clock icon — "staged, unconfirmed" */}
+      <span style={{ display: "inline-flex", flexShrink: 0, color: "var(--yellow)" }}>
+        <ClockIcon size={12} />
+      </span>
+      <span style={{ flex: 1, fontSize: 12, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {item.note_id}
+      </span>
+      <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap" }}>{item.device || "LAN"}</span>
+      <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap" }}>{staged}</span>
+      <span
+        title="Staged from a LAN peer — not yet confirmed by Drive"
+        style={{
+          fontSize: 9, fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase",
+          color: "var(--yellow)",
+          background: "color-mix(in srgb, var(--yellow) 14%, transparent)",
+          border: "1px solid color-mix(in srgb, var(--yellow) 35%, var(--border))",
+          borderRadius: 2,
+          padding: "1px 5px",
+          flexShrink: 0,
+        }}
+      >
+        Pending
+      </span>
+    </div>
+  );
+}
+
 // ── Inline text input modal ───────────────────────────────────────────────────
 
 function InlinePrompt({
@@ -417,6 +470,13 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
   const [vaultRoot, setVaultRoot] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // LAN provisional overlay (contract §11) — display-only, never authoritative.
+  // ponytail: no canonical note_id set is threaded in here yet (VaultFile
+  // doesn't carry note_id), so mergeProvisional's dedup is a no-op today —
+  // every staged row shows until list_provisional's own supersede/sweep
+  // (LAN handler + TTL) clears it. Upgrade path: once a route surfaces
+  // note_id-tagged canonical rows, pass them as mergeProvisional's first arg.
+  const [provisionalItems, setProvisionalItems] = useState<ProvisionalItem[]>([]);
 
   const [drillCat, setDrillCat] = useState<string | null>(null);
   const [drillFiles, setDrillFiles] = useState<VaultFile[]>([]);
@@ -438,6 +498,15 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
       setError(e instanceof Error ? e.message : "Failed to load vault");
     } finally {
       setLoading(false);
+    }
+    // Provisional overlay is best-effort and non-blocking: a failure here
+    // (e.g. no LAN accelerator ever staged anything) must never surface as
+    // a vault-load error.
+    try {
+      const data = await getProvisional();
+      setProvisionalItems(data.provisional);
+    } catch {
+      setProvisionalItems([]);
     }
   }, []);
 
@@ -778,6 +847,15 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
                 onConfirmDelete={(name, count) => handleDelete(name, count > 0)}
               />
             ))}
+
+            {/* LAN provisional overlay — staged, unconfirmed rows (contract §11).
+                Quiet, non-destructive, always superseded by Drive canonical;
+                see mergeProvisional (lib/provisional.ts) for the dedup rule. */}
+            {mergeProvisional<CanonicalNoteRow>([], provisionalItems)
+              .filter((row): row is ProvisionalItem & { provisional: true } => row.provisional)
+              .map((row) => (
+                <ProvisionalRow key={row.op_id} item={row} />
+              ))}
           </>
         )}
 

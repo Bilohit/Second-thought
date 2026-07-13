@@ -216,6 +216,11 @@ const RADIAL_EXIT_DURATION_MS = exitDurationMs(ALL_TARGETS.length, RADIAL_ANIM_M
 // RC-2 watchdog ceiling: exceeds the worst legitimate open (instant move +
 // island double-rAF ≈ 32ms) so it can never pre-empt the morph reveal.
 const PANEL_READY_WATCHDOG_MS = 1000;
+// renderPill watchdog ceiling: setRenderPill(true) lives at the tail of the
+// deferred (220ms) + cancellable reconcile apply(); a superseding reconcile can
+// bail it before that line, stranding a blank window (showPill true, renderPill
+// false, full content hidden) until restart. Same rescue as PANEL_READY_WATCHDOG_MS.
+const RENDER_PILL_WATCHDOG_MS = 1000;
 
 // Menu open/close (for_sonnet.md "Problem 4") gets a single atomic, instant
 // resize+reposition instead of the rAF tween above — the tween's per-frame
@@ -660,6 +665,19 @@ export default function App() {
   // Gates the opacity of the full-size content box during exactly those two
   // crossings; false (visible) the rest of the time.
   const [contentHidden, setContentHidden] = useState(false);
+
+  // renderPill watchdog: renderPill is only set at the tail of the deferred,
+  // cancellable reconcile apply() (enteringPill edge). A superseding reconcile
+  // can bail apply() before that commit, stranding renderPill false while
+  // showPill is true (blank/dead window until restart — the full→pill "window
+  // disappears" bug). Mirrors the panelReady watchdog above: converge
+  // renderPill to showPill after a ceiling that exceeds the legit lag
+  // (220ms defer + ~260ms animate), so it never pre-empts a normal transition.
+  useEffect(() => {
+    if (renderPill === showPill) return;
+    const t = setTimeout(() => setRenderPill(showPill), RENDER_PILL_WATCHDOG_MS);
+    return () => clearTimeout(t);
+  }, [renderPill, showPill]);
 
   // Closing a tab opened from the pill (capsule/minimal) reverts to that
   // exact pill immediately — pinned shows the pill, unpinned hides to tray

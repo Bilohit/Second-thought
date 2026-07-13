@@ -96,3 +96,32 @@ export async function setWindowBoundsAtomic(
   const { x, y, w, h } = logicalToPhysicalRect(pos, size, scale);
   await invoke("set_window_bounds", { x, y, w, h });
 }
+
+export type PairingInfo = {
+  enabled: boolean;
+  host: string | null;
+  port: number;
+  secret: string;
+  key: string;
+  lan_ip?: string;
+};
+
+export async function getPairingInfo(): Promise<PairingInfo> {
+  return invoke<PairingInfo>("get_pairing_info");
+}
+
+export async function setPairingEnabled(enabled: boolean): Promise<PairingInfo> {
+  return invoke<PairingInfo>("set_pairing_enabled", { enabled });
+}
+
+export async function rotateSecret(): Promise<string> {
+  return invoke<string>("rotate_secret");
+}
+
+/** QR payload — MUST match phone/src/lib/pairing.ts parsePairingPayload (contract §9,
+ *  PairingPayload v2). LAN file-sync accelerator, not Tailscale chat: host is the
+ *  desktop's LAN IPv4, key is the base64 NaCl secretbox key. */
+export function buildPairingPayload(info: PairingInfo): string {
+  const host = info.lan_ip ?? info.host ?? "";
+  return JSON.stringify({ v: 2, host, port: info.port, key: info.key, secret: info.secret });
+}

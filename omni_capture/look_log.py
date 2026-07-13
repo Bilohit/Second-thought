@@ -29,22 +29,26 @@ def set_look_verbose(enabled: bool) -> None:
     _verbose.set(enabled)
 
 
+def _log(level: str, msg: str, gated: bool = True) -> None:
+    if gated and not _verbose.get():
+        return
+    print(f"[look] [{level}] {msg}", flush=True)
+
+
 def look_debug(msg: str) -> None:
-    if _verbose.get():
-        print(f"[look] [DEBUG] {msg}", flush=True)
+    _log("DEBUG", msg)
 
 
 def look_info(msg: str) -> None:
-    if _verbose.get():
-        print(f"[look] [INFO] {msg}", flush=True)
+    _log("INFO", msg)
 
 
 def look_warn(msg: str) -> None:
-    print(f"[look] [WARN] {msg}", flush=True)
+    _log("WARN", msg, gated=False)
 
 
 def look_error(msg: str) -> None:
-    print(f"[look] [ERROR] {msg}", flush=True)
+    _log("ERROR", msg, gated=False)
 
 
 if __name__ == "__main__":

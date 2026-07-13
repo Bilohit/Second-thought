@@ -38,3 +38,10 @@ rapidocr-onnxruntime>=1.2.3      # CPU-only OCR pass for verbatim text/code in i
 
 # ── Concurrency ───────────────────────────────────────────────────────────────
 filelock                         # cross-platform file locks (dedup-index + merge-append RMW cycles)
+
+# ── Mobile sync / pairing (Drive hub) ────────────────────────────────────────
+google-api-python-client>=2.100.0   # Drive v3 REST client
+google-auth-oauthlib>=1.2.0         # installed-app OAuth flow + token refresh
+
+# ── LAN accelerator transport ─────────────────────────────────────────────────
+pynacl>=1.5.0                       # app-layer secretbox encryption for /lan/* endpoints

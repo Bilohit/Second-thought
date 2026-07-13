@@ -22,3 +22,21 @@ def read_field(text: str, name: str) -> Optional[str]:
     if hit:
         return hit.group(1).strip().strip('"').strip("'")
     return None
+
+
+def read_all_fields(text: str) -> dict[str, str]:
+    """Return every top-level `key: value` pair in the frontmatter block.
+
+    Values are trimmed and surrounding quotes stripped (matching read_field).
+    List/nested YAML is returned as its raw one-line string. Empty dict if no
+    frontmatter block is present.
+    """
+    m = _FM_RE.match(text)
+    if not m:
+        return {}
+    fields: dict[str, str] = {}
+    for line in m.group(1).splitlines():
+        hit = re.match(r"^([A-Za-z0-9_]+):\s*(.*)$", line)
+        if hit:
+            fields[hit.group(1)] = hit.group(2).strip().strip('"').strip("'")
+    return fields

@@ -20,6 +20,10 @@ captures
   model         TEXT
   filename      TEXT
   body_excerpt  TEXT                   -- note body, frontmatter stripped, capped ~65536 chars
+  provisional   INTEGER DEFAULT 0      -- 1 = LAN provisional overlay row (contract §11); search/RAG
+                                        -- display ONLY, never dedup/merge/link authority (files are
+                                        -- the source of truth)
+  note_id       TEXT                   -- set only on provisional rows (LAN PushPlain.note_id)
 
 captures_fts   (FTS5 virtual table)
   rowid -> captures.id
@@ -77,7 +81,9 @@ CREATE TABLE IF NOT EXISTS captures (
     input_type    TEXT,
     model         TEXT,
     filename      TEXT,
-    body_excerpt  TEXT
+    body_excerpt  TEXT,
+    provisional   INTEGER NOT NULL DEFAULT 0,
+    note_id       TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_captures_timestamp ON captures(timestamp);
@@ -243,6 +249,10 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("PRAGMA table_info(captures)").fetchall()}
     if "body_excerpt" not in cols:
         conn.execute("ALTER TABLE captures ADD COLUMN body_excerpt TEXT")
+    if "provisional" not in cols:
+        conn.execute("ALTER TABLE captures ADD COLUMN provisional INTEGER NOT NULL DEFAULT 0")
+    if "note_id" not in cols:
+        conn.execute("ALTER TABLE captures ADD COLUMN note_id TEXT")
     _migrate_fts_internal(conn)
     conn.commit()
     conn.executescript(_TRIGGERS_DDL)
@@ -376,7 +386,7 @@ def reindex_bodies(vault_root: Path) -> int:
             conn.close()
             return 0
 
-        rows = cursor.execute("SELECT id, path FROM captures").fetchall()
+        rows = cursor.execute("SELECT id, path FROM captures WHERE provisional = 0").fetchall()
         updated = 0
         for row in rows:
             body = _read_body_excerpt(row["path"])
@@ -519,6 +529,68 @@ def upsert_capture_from_file(vault_root: Path, abs_path: Path) -> None:
         index_health.record_failure("captures", exc)
 
 
+# ── LAN provisional overlay (contract §11) ─────────────────────────────────────
+# ponytail: provisional rows indexed for search/RAG only; never authoritative — files remain source of truth
+#
+# Provisional rows live in the SAME captures table (so search/RAG sees them for
+# free) but are keyed by a synthetic `__lan_provisional__/<op_id>` path instead
+# of a real vault path, and flagged provisional=1. Every dedup/merge/link
+# authority query in this codebase (dedup.py's JSON index, merge.py's
+# find_merge_target -> vector_store.best_match) must exclude provisional=1 --
+# see vector_store.py's best_match() for the enforced exclusion. Plain
+# index_writer.search() intentionally does NOT exclude provisional -- that is
+# precisely where the LAN overlay is meant to surface. stats()/reindex_bodies()
+# DO exclude provisional=1: dashboard/digest counts and the FTS body backfill
+# are canonical-only (contract §11) -- provisional rows have no real vault
+# path to read a body from, and must not inflate stats.
+
+def _provisional_path(op_id: str) -> str:
+    return f"__lan_provisional__/{op_id}"
+
+
+def upsert_provisional(db: sqlite3.Connection, op_id: str, note_id: str, body: str, meta: dict) -> None:
+    """Index one LAN-provisional note body for search/RAG (contract §11).
+
+    *db* is an already-open connection (from init_db) -- the caller controls
+    its lifetime, unlike the other write helpers here which open/close their
+    own. Idempotent per op_id (ON CONFLICT upserts the same synthetic path).
+    """
+    body_excerpt = re.sub(r"\s+", " ", strip_frontmatter(body)).strip()[:_BODY_EXCERPT_MAX_CHARS]
+    timestamp = meta.get("modified") or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    db.execute(
+        """
+        INSERT INTO captures
+            (timestamp, category, path, tags, confidence,
+             input_type, filename, body_excerpt, provisional, note_id)
+        VALUES (?, ?, ?, '[]', 0.0, 'lan_provisional', ?, ?, 1, ?)
+        ON CONFLICT(path) DO UPDATE SET
+            body_excerpt = excluded.body_excerpt,
+            timestamp    = excluded.timestamp,
+            provisional  = 1,
+            note_id      = excluded.note_id
+        """,
+        (
+            timestamp,
+            meta.get("category", ""),
+            _provisional_path(op_id),
+            op_id,
+            body_excerpt,
+            note_id,
+        ),
+    )
+    db.commit()
+
+
+def clear_provisional(db: sqlite3.Connection, op_id: str) -> None:
+    """Drop a provisional row (and its FTS shadow via the existing AFTER DELETE
+    trigger) once the Drive canonical version of its note supersedes it."""
+    db.execute(
+        "DELETE FROM captures WHERE path = ? AND provisional = 1",
+        (_provisional_path(op_id),),
+    )
+    db.commit()
+
+
 # ── Search ────────────────────────────────────────────────────────────────────
 
 def search(
@@ -612,11 +684,11 @@ def stats(vault_root: Path) -> dict:
     conn   = init_db(vault_root)
     cursor = conn.cursor()
 
-    total_row = cursor.execute("SELECT COUNT(*) FROM captures").fetchone()
+    total_row = cursor.execute("SELECT COUNT(*) FROM captures WHERE provisional = 0").fetchone()
     total     = total_row[0] if total_row else 0
 
     cat_rows = cursor.execute(
-        "SELECT category, COUNT(*) AS cnt FROM captures GROUP BY category ORDER BY cnt DESC"
+        "SELECT category, COUNT(*) AS cnt FROM captures WHERE provisional = 0 GROUP BY category ORDER BY cnt DESC"
     ).fetchall()
     by_category = [
         {
@@ -631,7 +703,7 @@ def stats(vault_root: Path) -> dict:
         """
         SELECT substr(timestamp,1,10) AS date, COUNT(*) AS cnt
         FROM captures
-        WHERE timestamp >= date('now','-30 days')
+        WHERE timestamp >= date('now','-30 days') AND provisional = 0
         GROUP BY date
         ORDER BY date DESC
         """
@@ -639,7 +711,7 @@ def stats(vault_root: Path) -> dict:
     by_day = [{"date": r["date"], "count": r["cnt"]} for r in day_rows]
 
     recent_rows = cursor.execute(
-        "SELECT * FROM captures ORDER BY timestamp DESC LIMIT 10"
+        "SELECT * FROM captures WHERE provisional = 0 ORDER BY timestamp DESC LIMIT 10"
     ).fetchall()
     recent = [dict(r) for r in recent_rows]
 

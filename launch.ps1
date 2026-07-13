@@ -75,6 +75,22 @@ function Test-Preconditions {
     }
     Write-Launch "Python found: $($python.Source)" "ok"
 
+    # Rustup installs cargo to ~/.cargo/bin but doesn't always persist that on
+    # PATH for GUI/vbs-launched shells. Tauri build AND dev shell out to `cargo`
+    # (cargo metadata), so make it reachable here -- otherwise the build dies
+    # instantly with "cargo metadata ... program not found" and, under the
+    # hidden vbs console, nothing but a bare "exit 1" reaches the log.
+    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+        $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
+        if (Test-Path (Join-Path $cargoBin "cargo.exe")) {
+            $env:PATH = "$cargoBin;$env:PATH"
+            Write-Launch "Added $cargoBin to PATH (cargo was not visible)." "warn"
+        } else {
+            Write-Launch "cargo (Rust) not found on PATH and not at $cargoBin. Install Rust via rustup (https://rustup.rs) to build." "error"
+            exit 1
+        }
+    }
+
     $exeParent = Split-Path -Parent $exe
     if (-not (Test-Path $exeParent)) {
         Write-Launch "Expected build output directory is missing: $exeParent" "error"
@@ -133,12 +149,26 @@ function Invoke-BuildIfStale {
     if (-not $needsBuild) { return }
 
     Push-Location $gui
+    # Capture the build's stdout+stderr to a file via cmd's own redirection.
+    # Under launch.vbs the console is hidden, so without this a build failure
+    # leaves only a bare "exit 1" with no cause -- the gap that made the
+    # cargo/stale-cache failures hard to diagnose. cmd handles the redirect so
+    # PowerShell never wraps native stderr in NativeCommandError records (which,
+    # under the script-wide "Stop", would also flood the log with per-line
+    # boilerplate around cargo's hundreds of progress lines). $LASTEXITCODE from
+    # `cmd /c` is npx's own exit code.
+    $buildOut = Join-Path $logDir "build-last.log"
     try {
-        Write-Launch "Running: npx tauri build --no-bundle"
-        npx tauri build --no-bundle
+        Write-Launch "Running: npx tauri build --no-bundle (full output -> $buildOut)"
+        & cmd /c "npx tauri build --no-bundle > `"$buildOut`" 2>&1"
         $exitCode = $LASTEXITCODE
     } finally {
         Pop-Location
+    }
+    if (Test-Path $buildOut) {
+        $buildText = Get-Content $buildOut -Raw
+        Write-Host $buildText
+        Add-Content -Path $logFile -Value $buildText
     }
     if ($exitCode -ne 0) {
         Write-Launch "Build failed (exit $exitCode). Fix errors and retry." "error"

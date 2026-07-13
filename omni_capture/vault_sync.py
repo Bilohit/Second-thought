@@ -38,11 +38,18 @@ class SyncResult(TypedDict):
 
 
 def purge_orphan_index_entries(vault_root: Path) -> int:
-    """Delete captures/embedding rows whose file no longer exists on disk. No Ollama."""
+    """Delete captures/embedding rows whose file no longer exists on disk. No Ollama.
+
+    # ponytail: provisional=1 rows (LAN overlay, contract §11) use a synthetic
+    # path/id that never resolves to a real vault file by design -- their
+    # lifecycle is owned by clear_provisional/supersede + the TTL sweep, not
+    # this file-existence orphan sweep. Excluded here so this sweep never
+    # deletes a still-valid provisional row out from under the overlay.
+    """
     removed = 0
     try:
         conn = init_db(vault_root)
-        rows = conn.execute("SELECT path FROM captures").fetchall()
+        rows = conn.execute("SELECT path FROM captures WHERE provisional = 0").fetchall()
         conn.close()
         for row in rows:
             p = Path(row["path"])
@@ -56,7 +63,11 @@ def purge_orphan_index_entries(vault_root: Path) -> int:
         # parent file. Fetched AFTER the captures pass so rows it already
         # removed are not double-counted. Still no Ollama involved.
         with _connect(vault_root) as conn:
-            emb_ids = {r[0] for r in conn.execute("SELECT id FROM embeddings").fetchall()}
+            emb_ids = {
+                r[0] for r in conn.execute(
+                    "SELECT id FROM embeddings WHERE provisional = 0"
+                ).fetchall()
+            }
         for parent_rel in {i.split("::c")[0] for i in emb_ids}:
             if not (vault_root / parent_rel).exists():
                 remove_from_index(vault_root, vault_root / parent_rel)
@@ -71,8 +82,14 @@ def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> Syn
     result: SyncResult = {"added": 0, "removed": 0, "updated": 0, "skipped": 0}
     try:
         # --- purge orphans (captures table) ---
+        # ponytail: provisional=1 rows are excluded — their synthetic path never
+        # appears on disk by design (LAN overlay, contract §11); they are
+        # cleared by clear_provisional/supersede + the TTL sweep, not this diff.
         conn = init_db(vault_root)
-        indexed_paths = {row["path"] for row in conn.execute("SELECT path FROM captures").fetchall()}
+        indexed_paths = {
+            row["path"] for row in
+            conn.execute("SELECT path FROM captures WHERE provisional = 0").fetchall()
+        }
         conn.close()
 
         disk_paths = {str(p) for p in _iter_vault_md(vault_root)}
@@ -85,7 +102,10 @@ def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> Syn
         # --- purge orphans (embeddings only, not in captures) ---
         try:
             with _connect(vault_root) as conn:
-                emb_ids = {row[0] for row in conn.execute("SELECT id FROM embeddings").fetchall()}
+                emb_ids = {
+                    row[0] for row in
+                    conn.execute("SELECT id FROM embeddings WHERE provisional = 0").fetchall()
+                }
             # Chunk rows are keyed "<parent>::c<i>". Existence must be checked
             # against the PARENT file -- checking the raw chunk id never
             # matches a real path, which wrongly purged every chunked note's

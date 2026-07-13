@@ -146,6 +146,16 @@ class LookConfig:
 
 
 @dataclass
+class LanConfig:
+    """Same-WiFi LAN sync accelerator (contract §11). Never a dependency -- Drive
+    remains the sole canonical/version authority; see lan_sync.py / lan_server.py."""
+    enabled: bool = False
+    host: str     = ""
+    port: int     = 7071
+    key: str      = ""
+
+
+@dataclass
 class Config:
     vault: VaultConfig                = field(default_factory=VaultConfig)
     ollama: OllamaConfig              = field(default_factory=OllamaConfig)
@@ -158,6 +168,11 @@ class Config:
     vector: VectorConfig              = field(default_factory=VectorConfig)
     youtube: YouTubeConfig            = field(default_factory=YouTubeConfig)
     look: LookConfig                  = field(default_factory=LookConfig)
+    lan: LanConfig                    = field(default_factory=LanConfig)
+
+    def vault_sync_dir(self) -> str:
+        """<vault>/.sync -- durable staging root for LAN provisional overlay (contract §11)."""
+        return str(self.vault.root / ".sync")
 
 
 def _resolve_path(raw: str) -> Path | None:
@@ -280,6 +295,12 @@ def load_config(config_path: Path | None = None) -> Config:
 
     ocr_raw = raw.get("ocr", {})
     cfg.ocr.enabled = bool(ocr_raw.get("enabled", False))
+
+    lan_raw = raw.get("lan", {})
+    cfg.lan.enabled = bool(lan_raw.get("enabled", False))
+    cfg.lan.host    = str(lan_raw.get("host", ""))
+    cfg.lan.port    = int(lan_raw.get("port", 7071))
+    cfg.lan.key     = str(lan_raw.get("key", ""))
 
     look_raw = raw.get("look", {})
     cfg.look.chat_min_similarity_high   = float(look_raw.get("chat_min_similarity_high", 0.45))

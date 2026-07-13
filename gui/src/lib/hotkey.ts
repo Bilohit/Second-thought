@@ -1,15 +1,9 @@
 /**
- * config.ts
+ * hotkey.ts
  * ---------
- * Thin wrapper for reading and writing config preferences via the Python server.
- *
- * The hotkey string is stored in config.toml under [gui] hotkey = "..."
- * and re-registered in Rust at startup by reading it from disk.
+ * Hotkey display formatting. Split out of the old config.ts re-export shim
+ * (config access lives in lib/api.ts; this file is display-only helpers).
  */
-
-import { getConfig, patchConfig, type Config } from "./api";
-
-export { getConfig, patchConfig, type Config };
 
 /** Human-readable display label for a raw hotkey string like "ctrl+shift+space" */
 export function formatHotkey(raw: string): string {

@@ -297,6 +297,162 @@ fn get_gui_secret(state: tauri::State<AppState>) -> String {
     state.gui_secret.clone()
 }
 
+/// Pick the first private IPv4 address (RFC-1918: 10.0.0.0/8, 172.16.0.0/12,
+/// 192.168.0.0/16) found anywhere in `s`, skipping loopback (127.x) and APIPA
+/// (169.254.x) addresses. Hand-rolled scan — no regex/ip crate (desktop
+/// doctrine: hand-rolled parsing over a dependency for one narrow read).
+/// Pure — testable against raw `ipconfig` text.
+fn parse_lan_ip(s: &str) -> Option<String> {
+    // Rank private ranges instead of taking the first match: a multi-homed desktop (WiFi +
+    // Ethernet/VPN) lists NICs in an arbitrary order, and the phone almost always shares the
+    // home-router WiFi (192.168.x). Prefer 192.168 > 172.16-31 > 10 so the QR advertises the NIC
+    // the phone can actually reach. The listener itself binds 0.0.0.0 (server.py), so this only
+    // decides the *advertised* host.
+    // ponytail: home-WiFi heuristic. A phone on a 10.x/172.x LAN while the desktop also holds a
+    //           192.168 NIC would be mis-advertised — re-pair via the corrected QR, or add
+    //           subnet-match once the phone reports its own IP during pairing.
+    fn rank(o: &[u8; 4]) -> u8 {
+        if o[0] == 192 && o[1] == 168 { 3 }
+        else if o[0] == 172 && (16..=31).contains(&o[1]) { 2 }
+        else if o[0] == 10 { 1 }
+        else { 0 } // not RFC-1918
+    }
+    let mut best: Option<(u8, String)> = None;
+    for line in s.lines() {
+        for token in line.split(|c: char| c.is_whitespace() || c == ':') {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            let octets: Vec<&str> = token.split('.').collect();
+            if octets.len() != 4 {
+                continue;
+            }
+            let mut parsed = [0u8; 4];
+            let mut ok = true;
+            for (i, o) in octets.iter().enumerate() {
+                match o.parse::<u8>() {
+                    Ok(v) => parsed[i] = v,
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok {
+                continue;
+            }
+            if parsed[0] == 127 || (parsed[0] == 169 && parsed[1] == 254) {
+                continue; // loopback / APIPA — never a usable LAN address
+            }
+            let r = rank(&parsed);
+            if r == 0 {
+                continue; // not a private LAN address
+            }
+            if best.as_ref().map_or(true, |(br, _)| r > *br) {
+                best = Some((r, token.to_string()));
+            }
+        }
+    }
+    best.map(|(_, ip)| ip)
+}
+
+/// Primary LAN IPv4 (contract §11.4: the QR `host` field for same-WiFi pairing).
+/// ponytail: ipconfig-parse LAN IP; swap for a socket-connect trick or the
+/// `local-ip-address` crate if a multi-adapter box ever picks the wrong NIC.
+fn get_lan_ip() -> Option<String> {
+    let out = std::process::Command::new("ipconfig").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_lan_ip(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Minimal base64 (standard alphabet, `=` padding) — encode-only, no crate.
+/// Used only to persist a 32-byte NaCl secretbox key as a config string;
+/// desktop doctrine hand-rolls narrow-purpose parsing/encoding over pulling
+/// in a dependency (see `read_config_value`/`upsert_config_value`).
+fn base64_encode(bytes: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[((n >> 18) & 0x3F) as usize] as char);
+        out.push(CHARS[((n >> 12) & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 { CHARS[((n >> 6) & 0x3F) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { CHARS[(n & 0x3F) as usize] as char } else { '=' });
+    }
+    out
+}
+
+#[derive(serde::Serialize)]
+struct PairingInfo {
+    enabled: bool,
+    host: Option<String>,
+    port: u16,
+    secret: String,
+    key: String,
+    lan_ip: Option<String>,
+}
+
+fn config_path() -> PathBuf {
+    compute_project_root().join("omni_capture").join("config.toml")
+}
+
+#[tauri::command]
+fn get_pairing_info(state: tauri::State<AppState>) -> PairingInfo {
+    let cp = config_path();
+    let host = read_config_value(&cp, "gui", "host");
+    // `enabled` now reflects the LAN-sync toggle (contract §11.4), not the
+    // legacy Tailscale-chat `[gui] host` presence — set_pairing_enabled below
+    // writes `[lan] enabled`/`[lan] host`, this reads it back.
+    let enabled = read_config_value(&cp, "lan", "enabled").as_deref() == Some("true");
+    // The pairing QR must point the phone at the LAN listener's port, not the
+    // loopback GUI port (7070) — those are distinct servers (contract §11).
+    let port = read_config_value(&cp, "lan", "port")
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(7071);
+    PairingInfo {
+        enabled,
+        host,
+        port,
+        secret: state.gui_secret.clone(),
+        key: load_or_create_lan_key(&cp),
+        lan_ip: get_lan_ip(),
+    }
+}
+
+/// Toggle same-WiFi LAN sync (contract §11.4). Writes `[lan] enabled` +
+/// `[lan] host` (= `get_lan_ip()`) and ensures `[lan] key` exists so the
+/// pairing QR always has a usable payload once enabled. Repurposed from the
+/// old Tailscale-chat `set_pairing_enabled` (same command name kept to avoid
+/// churning the invoke_handler registration / frontend call site).
+#[tauri::command]
+fn set_pairing_enabled(state: tauri::State<AppState>, enabled: bool) -> Result<PairingInfo, String> {
+    let cp = config_path();
+    upsert_config_value(&cp, "lan", "enabled", Some(if enabled { "true" } else { "false" }))
+        .map_err(|e| e.to_string())?;
+    if enabled {
+        let ip = get_lan_ip()
+            .ok_or_else(|| "LAN IP not found — is this device connected to a network?".to_string())?;
+        upsert_config_value(&cp, "lan", "host", Some(&ip)).map_err(|e| e.to_string())?;
+    } else {
+        upsert_config_value(&cp, "lan", "host", None).map_err(|e| e.to_string())?;
+    }
+    let _ = load_or_create_lan_key(&cp); // ensure a key exists even before first enable
+    Ok(get_pairing_info(state))
+}
+
+#[tauri::command]
+fn rotate_secret() -> Result<String, String> {
+    let secret = generate_gui_secret();
+    upsert_config_value(&config_path(), "gui", "secret", Some(&secret)).map_err(|e| e.to_string())?;
+    Ok(secret)
+}
+
 /// Unregister the currently-active global shortcut and register `hotkey` in its
 /// place. Called from Settings on save so a new hotkey takes effect without an
 /// app restart. Unregister happens strictly before register; on registration
@@ -359,6 +515,134 @@ fn read_hotkey_from_config(config_path: &PathBuf) -> Option<String> {
         }
     }
     None
+}
+
+/// Read `[section] key = "..."` from a hand-rolled TOML config. Trailing
+/// inline comments are NOT stripped (config values here don't use them);
+/// quotes are trimmed. Returns None if absent or unreadable.
+fn read_config_value(config_path: &PathBuf, section: &str, key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(config_path).ok()?;
+    let header = format!("[{section}]");
+    let mut in_section = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_section = trimmed == header;
+            continue;
+        }
+        if in_section {
+            if let Some(rest) = trimmed.strip_prefix(key) {
+                let rest = rest.trim();
+                if let Some(rest) = rest.strip_prefix('=') {
+                    let v = rest.trim().trim_matches('"').trim_matches('\'');
+                    if !v.is_empty() {
+                        return Some(v.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Set (or remove, when `value` is None) `key` under `[section]`, preserving
+/// every other line. Creates the section at EOF if missing. Hand-rolled — no
+/// toml crate (desktop doctrine). ponytail: line-oriented rewrite, fine for a
+/// tiny app-owned config; switch to a real toml crate only if the file grows
+/// nested tables we must edit.
+fn upsert_config_value(
+    config_path: &PathBuf,
+    section: &str,
+    key: &str,
+    value: Option<&str>,
+) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(config_path).unwrap_or_default();
+    let header = format!("[{section}]");
+    let mut out: Vec<String> = Vec::new();
+    let mut in_section = false;
+    let mut wrote = false;
+    let mut section_seen = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let is_header = trimmed.starts_with('[');
+        if is_header {
+            // Leaving the target section without having written: append here.
+            if in_section && !wrote {
+                if let Some(v) = value {
+                    out.push(format!("{key} = \"{v}\""));
+                }
+                wrote = true;
+            }
+            in_section = trimmed == header;
+            if in_section {
+                section_seen = true;
+            }
+            out.push(line.to_string());
+            continue;
+        }
+        if in_section {
+            let is_target = trimmed.strip_prefix(key).map(|r| r.trim().starts_with('=')).unwrap_or(false);
+            if is_target {
+                match value {
+                    Some(v) => out.push(format!("{key} = \"{v}\"")),
+                    None => {} // drop the line
+                }
+                wrote = true;
+                continue;
+            }
+        }
+        out.push(line.to_string());
+    }
+
+    // Target section was the last section and key never appeared.
+    if in_section && !wrote {
+        if let Some(v) = value {
+            out.push(format!("{key} = \"{v}\""));
+        }
+        wrote = true;
+    }
+    // Section never existed at all — create it (only when setting a value).
+    if !section_seen {
+        if let Some(v) = value {
+            out.push(header);
+            out.push(format!("{key} = \"{v}\""));
+        }
+    }
+
+    let mut body = out.join("\n");
+    if !body.ends_with('\n') {
+        body.push('\n');
+    }
+    std::fs::write(config_path, body)
+}
+
+/// The X-Omni-Secret used for every chat request. Persisted in `[gui] secret`
+/// so a device pairs once and survives desktop restarts. Generated + written
+/// on first run.
+fn load_or_create_secret(config_path: &PathBuf) -> String {
+    if let Some(existing) = read_config_value(config_path, "gui", "secret") {
+        return existing;
+    }
+    let secret = generate_gui_secret();
+    let _ = upsert_config_value(config_path, "gui", "secret", Some(&secret));
+    secret
+}
+
+/// The base64 NaCl secretbox key shared via the pairing QR (contract
+/// §11.4/§11.5), persisted in `[lan] key` so re-pairing isn't required across
+/// desktop restarts. Mirrors `load_or_create_secret`, but the payload is 32
+/// RANDOM BYTES (a NaCl secretbox key), not the alphanumeric secret charset —
+/// it must interop byte-for-byte with tweetnacl-js on the phone.
+fn load_or_create_lan_key(config_path: &PathBuf) -> String {
+    if let Some(existing) = read_config_value(config_path, "lan", "key") {
+        return existing;
+    }
+    let mut rng = rand::thread_rng();
+    let bytes: [u8; 32] = std::array::from_fn(|_| rng.gen::<u8>());
+    let key = base64_encode(&bytes);
+    let _ = upsert_config_value(config_path, "lan", "key", Some(&key));
+    key
 }
 
 /// Convert a hotkey string like "ctrl+shift+space" into a Tauri Shortcut.
@@ -897,8 +1181,15 @@ fn show_window_emit_debounced<R: Runtime>(app: &AppHandle<R>, event: &str) {
 pub fn run() {
     let python_child: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
     let python_child_clone = python_child.clone();
-    let gui_secret = generate_gui_secret();
+
+    // Persistent secret: pair once, survive restart (D5). Config path mirrors
+    // the .setup() derivation (compute_project_root joins omni_capture/config.toml).
+    let boot_config_path = compute_project_root().join("omni_capture").join("config.toml");
+    let gui_secret = load_or_create_secret(&boot_config_path);
     let gui_secret_for_spawn = gui_secret.clone();
+    // Opt-in bind (P8): [gui] host present => bind it; absent => 127.0.0.1.
+    let bind_host = read_config_value(&boot_config_path, "gui", "host")
+        .unwrap_or_else(|| "127.0.0.1".to_string());
 
     // Install the file logger + panic hook before anything else can log or panic.
     init_logging();
@@ -925,7 +1216,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .manage(AppState { python_child, gui_secret, active_shortcut: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![
-            get_gui_secret, set_hotkey, append_log, log_file_path, get_log_level, set_log_level,
+            get_gui_secret, get_pairing_info, set_pairing_enabled, rotate_secret,
+            set_hotkey, append_log, log_file_path, get_log_level, set_log_level,
             noactivate::set_window_noactivate, noactivate::arm_menu_click_away, noactivate::disarm_menu_click_away,
             noactivate::set_window_bounds
         ])
@@ -937,10 +1229,15 @@ pub fn run() {
             // In release mode: walk up from the exe path.
             let project_root = compute_project_root();
 
-            // Try "python" first, fall back to "python3"
-            let server_args = [
+            log_line(LVL_INFO, "INFO", "server", &format!("uvicorn bind host = {bind_host}"));
+
+            // Try "python" first, fall back to "python3". Vec<&str> (not a
+            // fixed array) because bind_host is a runtime String (D5 P8 gate).
+            let bind_host_ref = bind_host.as_str();
+            let server_args: Vec<&str> = vec![
                 "-m", "uvicorn",
                 "omni_capture.server:app",
+                "--host", bind_host_ref,
                 "--port", "7070",
                 "--log-level", "error",
             ];
@@ -949,7 +1246,7 @@ pub fn run() {
             const CREATE_NO_WINDOW: u32 = 0x08000000;
 
             let mut cmd = std::process::Command::new("python");
-            cmd.args(server_args)
+            cmd.args(server_args.clone())
                 .current_dir(&project_root)
                 .env("OMNI_GUI_SECRET", &gui_secret_for_spawn)
                 .env("PYTHONPATH", &project_root)
@@ -1071,4 +1368,94 @@ pub fn run() {
                 kill_python_child(app_handle);
             }
         });
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn tmp_config(body: &str) -> std::path::PathBuf {
+        // Per-test-process unique name: body-derived salt (kept from the plan)
+        // PLUS a monotonic counter, since two tests here share an identical
+        // body string and would otherwise collide on the same file path when
+        // cargo runs tests in parallel threads (observed flake: a concurrent
+        // writer's value leaking into an unrelated test's read).
+        static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "st_d5_cfg_{}_{}_{}_{}.toml",
+            std::process::id(),
+            n,
+            body.len(),
+            body.bytes().map(|b| b as u32).sum::<u32>()
+        ));
+        let mut f = std::fs::File::create(&p).unwrap();
+        f.write_all(body.as_bytes()).unwrap();
+        p
+    }
+
+    #[test]
+    fn read_value_finds_key_in_section() {
+        let p = tmp_config("[gui]\nhotkey = \"ctrl+space\"\nsecret = \"abc123\"\n");
+        assert_eq!(read_config_value(&p, "gui", "secret"), Some("abc123".to_string()));
+        assert_eq!(read_config_value(&p, "gui", "missing"), None);
+    }
+
+    #[test]
+    fn upsert_adds_key_preserving_others() {
+        let p = tmp_config("[gui]\nhotkey = \"ctrl+space\"\n");
+        upsert_config_value(&p, "gui", "secret", Some("XYZ")).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("hotkey = \"ctrl+space\""));
+        assert_eq!(read_config_value(&p, "gui", "secret"), Some("XYZ".to_string()));
+    }
+
+    #[test]
+    fn upsert_creates_missing_section() {
+        let p = tmp_config("[vault]\nroot = \"~/x\"\n");
+        upsert_config_value(&p, "gui", "host", Some("100.1.2.3")).unwrap();
+        assert_eq!(read_config_value(&p, "gui", "host"), Some("100.1.2.3".to_string()));
+        assert!(std::fs::read_to_string(&p).unwrap().contains("root = \"~/x\""));
+    }
+
+    #[test]
+    fn upsert_none_removes_key() {
+        let p = tmp_config("[gui]\nhost = \"100.1.2.3\"\nhotkey = \"ctrl+space\"\n");
+        upsert_config_value(&p, "gui", "host", None).unwrap();
+        assert_eq!(read_config_value(&p, "gui", "host"), None);
+        assert_eq!(read_config_value(&p, "gui", "hotkey"), Some("ctrl+space".to_string()));
+    }
+
+    #[test]
+    fn load_or_create_persists_generated_secret() {
+        let p = tmp_config("[gui]\nhotkey = \"ctrl+space\"\n");
+        let s1 = load_or_create_secret(&p);
+        assert_eq!(s1.len(), 32);
+        let s2 = load_or_create_secret(&p); // second call reads the persisted one
+        assert_eq!(s1, s2);
+    }
+
+    #[test]
+    fn parse_lan_ip_picks_first_private_ipv4() {
+        // Given `ipconfig`/`ip addr`-style lines, pick the first RFC-1918 IPv4.
+        let sample = "   Link-local IPv6 Address . . . : fe80::1\n   IPv4 Address. . . . . . . . . . . : 192.168.1.42\n   Subnet Mask . . . . . . . . . . . : 255.255.255.0\n";
+        assert_eq!(parse_lan_ip(sample), Some("192.168.1.42".to_string()));
+    }
+
+    #[test]
+    fn parse_lan_ip_skips_loopback_and_apipa() {
+        let sample = "127.0.0.1\n169.254.1.1\n10.0.0.5\n";
+        assert_eq!(parse_lan_ip(sample), Some("10.0.0.5".to_string()));
+    }
+
+    #[test]
+    fn parse_lan_ip_prefers_192_168_over_10_regardless_of_order() {
+        // Regression: a multi-homed desktop (Ethernet 10.x listed BEFORE WiFi 192.168.x) must
+        // advertise the home-WiFi NIC the phone shares, not the first-listed private IP.
+        // (N2 live-QA bug 2026-07-12: QR advertised Ethernet 2 10.194.220.24, phone was on WiFi.)
+        let sample = "   IPv4 Address. . . : 10.194.220.24\n   IPv4 Address. . . : 192.168.1.6\n";
+        assert_eq!(parse_lan_ip(sample), Some("192.168.1.6".to_string()));
+    }
 }

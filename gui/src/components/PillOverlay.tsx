@@ -41,9 +41,8 @@ import type { PanelExtrudeZone } from "../lib/compactPanel";
 import type { useLookChat } from "../hooks/useLookChat";
 import type { LookChatPersist } from "../App";
 import type { SettingsForward } from "./FullWindow/FullWindow";
-
-export type PillMode = "capsule" | "minimal";
-export type PillCorner = "sharp" | "rounded";
+export type { PillMode, PillCorner } from "../lib/pillTypes";
+import type { PillMode, PillCorner } from "../lib/pillTypes";
 
 interface Props {
   mode: PillMode;

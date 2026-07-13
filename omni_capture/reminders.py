@@ -43,6 +43,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
+    # The DB is a derived, rebuildable cache — create its dir if a sync reaches
+    # reminders before any capture/enrich has made it (note with remind_at, empty vault).
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     _ensure_schema(conn)
     return conn
@@ -154,6 +157,39 @@ def delete_reminder(db_path: Path, reminder_id: int) -> None:
             ["schtasks", "/Delete", "/F", "/TN", f"SecondThought\\reminder-{reminder_id}"],
             capture_output=True,
         )
+
+
+def sync_reminders_from_notes(db_path: Path, notes: list[tuple[str, str]]) -> dict:
+    """Reconcile the reminders table against note `remind_at` frontmatter.
+
+    Files are the source of truth; this table is scheduling state only. For each
+    (note_path, raw_text): if the note has a remind_at, ensure exactly one pending
+    reminder with that fire_at (label from the note title); if not, drop any
+    pending reminder for that note. Idempotent. Never writes note files.
+    """
+    from note_model import parse_note
+
+    created = updated = removed = 0
+    existing = {r["note_path"]: r for r in list_reminders(db_path) if r["status"] == "pending"}
+
+    for note_path, raw in notes:
+        note = parse_note(raw)
+        want = note.remind_at
+        cur = existing.get(note_path)
+        if want:
+            label = note.title or Path(note_path).stem
+            if cur is None:
+                create_reminder(db_path, note_path=note_path, label=label, fire_at_iso=want)
+                created += 1
+            elif cur["fire_at"] != want:
+                delete_reminder(db_path, cur["id"])
+                create_reminder(db_path, note_path=note_path, label=label, fire_at_iso=want)
+                updated += 1
+        elif cur is not None:
+            delete_reminder(db_path, cur["id"])
+            removed += 1
+
+    return {"created": created, "updated": updated, "removed": removed}
 
 
 if __name__ == "__main__":

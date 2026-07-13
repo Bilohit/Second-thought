@@ -241,6 +241,28 @@ def _startup_reminders_thread() -> None:
                 print(f"[Reminders] due-check pass failed: {exc}", flush=True)
     threading.Thread(target=_loop, daemon=True).start()
 
+
+@app.on_event("startup")
+def _startup_lan_listener() -> None:
+    """Optional same-WiFi LAN sync accelerator (contract §11). Off by default --
+    only starts when [lan] enabled = true and a host is configured. This is a
+    SEPARATE listener/app (lan_server.build_lan_app()) exposing ONLY /lan/*; it
+    never touches this loopback GUI app or its routes.
+    # ponytail: LAN listener lifecycle rides the main process; a restart re-reads
+    # [lan] config -- no hot-reload of host/port."""
+    try:
+        import lan_server
+        enabled, host, port = lan_server.lan_config()
+        if enabled and host:
+            # Bind 0.0.0.0, not the single configured host: a multi-homed desktop can't know which
+            # NIC the phone shares, so listen on all of them (auth is unchanged — the NaCl key +
+            # in-envelope secret double-gate every /lan/push). `host` stays the advertised/QR IP only.
+            # ponytail: all-interfaces bind; the double-gate is the security boundary, not the bind addr.
+            lan_server.start_lan_listener("0.0.0.0", port)
+            print(f"[LAN] listener on 0.0.0.0:{port} (advertised {host})", flush=True)
+    except Exception as exc:
+        print(f"[LAN] listener startup skipped: {exc}", flush=True)
+
 # ---------------------------------------------------------------------------
 # Request-level dedup gate
 # ---------------------------------------------------------------------------
@@ -1071,6 +1093,20 @@ async def vault_sync_index(_: None = Depends(_require_secret)):
         lambda: sync_vault_indexes(cfg.vault.root, cfg.ollama.base_url, cfg.vector.embed_model)
     )
     return result
+
+
+# -- LAN provisional overlay endpoint (contract §11, desktop GUI read side) --
+
+@app.get("/provisional")
+async def list_provisional_items(_: None = Depends(_require_secret)):
+    """List staged LAN-provisional rows (display/index overlay only -- never
+    canonical; see provisional_store.py). Loopback-only, same secret guard
+    as every other GUI route -- this is NOT the separate LAN listener."""
+    from config import get_config
+    import provisional_store as ps
+    sync_dir = get_config().vault_sync_dir()
+    items = ps.list_provisional(sync_dir)
+    return {"provisional": items, "count": len(items)}
 
 
 # -- Inbox endpoints ----------------------------------------------------------

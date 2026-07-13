@@ -138,6 +138,7 @@ def _merge_large_text_tags(
 def run_pipeline(
     text: str | None = None,
     url:  str | None = None,
+    image: str | None = None,
     audio: str | None = None,
     vault_root: str | None = None,
     model: str | None = None,
@@ -200,6 +201,10 @@ def run_pipeline(
         payload = InputPayload(raw=text, input_type="text")
     elif url:
         payload = InputPayload(raw=url, input_type="url")
+    elif image:
+        payload = InputPayload(
+            raw=image, input_type="image_bytes", image_bytes=Path(image).read_bytes()
+        )
     elif audio:
         # Audio files bypass read_clipboard entirely; Stage 2 calls _enrich_audio
         # directly, so payload is only used for verbose logging here.

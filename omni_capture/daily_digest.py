@@ -93,7 +93,7 @@ def build_digest(target_date: date, vault_root: Path) -> str:
         """
         SELECT category, path, filename, source_url, input_type, timestamp, confidence
         FROM captures
-        WHERE timestamp >= ? AND timestamp < ?
+        WHERE timestamp >= ? AND timestamp < ? AND provisional = 0
         ORDER BY category, timestamp
         """,
         (date_str, date_next),

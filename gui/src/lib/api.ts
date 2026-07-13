@@ -411,6 +411,23 @@ export async function getInbox(): Promise<{ inbox: InboxItem[]; count: number }>
   return r.json();
 }
 
+/** LAN provisional overlay row (contract §11) -- mirrors provisional_store.list_provisional(). */
+export interface ProvisionalItem {
+  op_id: string;
+  note_id: string;
+  body_hash: string;
+  staged_at: number;
+  device: string;
+  modified: string;
+  path: string;
+}
+
+export async function getProvisional(): Promise<{ provisional: ProvisionalItem[]; count: number }> {
+  const r = await fetch(`${BASE}/provisional`, { headers: await authHeaders() });
+  if (!r.ok) throw new Error("Failed to fetch provisional items");
+  return r.json();
+}
+
 export async function approveInboxItem(noteId: string, targetCategory?: string): Promise<{ ok: boolean; path: string }> {
   const r = await fetch(`${BASE}/inbox/${encodeURIComponent(noteId)}/approve`, {
     method: "POST",

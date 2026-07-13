@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from models import CaptureOutput
-from config import DEFAULT_VAULT_ROOT
+from config import DEFAULT_VAULT_ROOT, get_config
 from frontmatter import strip_frontmatter
 
 # dedup.py / merge.py / scratchpad.py extraction (see docs/ROADMAP.md "Split
@@ -380,7 +380,6 @@ def _shorten_filename(raw: str, max_words: int = 2, max_chars: int = 40) -> str:
 def _safe_stem(raw_filename: str) -> str:
     """Shorten-then-sanitise: the single chokepoint for turning an LLM-suggested
     filename into a filesystem-safe stem."""
-    from config import get_config
     cfg = get_config()
     shortened = _shorten_filename(
         raw_filename,

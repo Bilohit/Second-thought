@@ -67,10 +67,11 @@ def _preview(text: str, n: int = 80) -> str:
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS embeddings (
-    id        TEXT PRIMARY KEY,
-    embedding BLOB NOT NULL,
-    document  TEXT NOT NULL,
-    category  TEXT NOT NULL DEFAULT ''
+    id          TEXT PRIMARY KEY,
+    embedding   BLOB NOT NULL,
+    document    TEXT NOT NULL,
+    category    TEXT NOT NULL DEFAULT '',
+    provisional INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -83,6 +84,15 @@ def _db_path(vault_root: Path) -> Path:
     return db_dir / _DB_NAME
 
 
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Migration-safe: add `provisional` to embeddings tables created before
+    the LAN overlay existed (contract §11). Additive column, default 0."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(embeddings)").fetchall()}
+    if "provisional" not in cols:
+        conn.execute("ALTER TABLE embeddings ADD COLUMN provisional INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+
+
 def _get_conn(vault_root: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(_db_path(vault_root)))
     # WAL is a persistent on-disk setting (re-issuing is a no-op) so readers
@@ -93,6 +103,7 @@ def _get_conn(vault_root: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute(_CREATE_TABLE)
     conn.commit()
+    _migrate_schema(conn)
     return conn
 
 
@@ -295,11 +306,19 @@ def index_note(
     content: str,
     base_url: str,
     embed_model: str = _DEFAULT_EMBED_MODEL,
+    provisional: bool = False,
 ) -> None:
     """
     Embed content and upsert it into the SQLite vector store.
     Keyed by vault-relative path so re-indexing is idempotent.
     Failures are swallowed so they never abort a capture.
+
+    provisional: tag the row as a LAN-overlay embedding (contract §11) --
+    # ponytail: provisional rows indexed for search/RAG only; never authoritative
+    -- files remain source of truth. Excluded from best_match() (merge.py's
+    semantic-merge authority); still visible to retrieve_related() (RAG display,
+    where the LAN overlay is meant to surface). No current pipeline calls this
+    with provisional=True yet -- exposed for the future embedder wiring.
     """
     try:
         if not (content or "").strip():
@@ -322,14 +341,15 @@ def index_note(
                 (rel, rel + "::c%"),
             )
 
+            prov = 1 if provisional else 0
             if len(content) <= _CHUNK_CHARS:
                 embedding = _embed(content, base_url, embed_model)
                 vec_bytes = np.array(embedding, dtype=np.float32).tobytes()
                 snippet = content[:_MAX_SNIPPET_CHARS]
                 conn.execute(
                     "INSERT OR REPLACE INTO embeddings "
-                    "(id, embedding, document, category) VALUES (?,?,?,?)",
-                    (rel, vec_bytes, snippet, category),
+                    "(id, embedding, document, category, provisional) VALUES (?,?,?,?,?)",
+                    (rel, vec_bytes, snippet, category, prov),
                 )
             else:
                 slices = [
@@ -342,8 +362,8 @@ def index_note(
                     snippet = slice_[:_MAX_SNIPPET_CHARS]
                     conn.execute(
                         "INSERT OR REPLACE INTO embeddings "
-                        "(id, embedding, document, category) VALUES (?,?,?,?)",
-                        (f"{rel}::c{i}", vec_bytes, snippet, category),
+                        "(id, embedding, document, category, provisional) VALUES (?,?,?,?,?)",
+                        (f"{rel}::c{i}", vec_bytes, snippet, category, prov),
                     )
         print(f"[VectorStore] indexed: {rel}", flush=True)
         index_health.record_ok("vectors")
@@ -393,6 +413,10 @@ def retrieve_related(
     an off-topic or low-signal query -- e.g. a degraded-vision placeholder --
     should inject zero context rather than the nearest noise). Returns []
     when the store is empty, nothing clears the floor, or any error occurs.
+
+    Intentionally does NOT exclude provisional=1 rows: this is RAG/context
+    display, exactly where the LAN overlay (contract §11) is meant to surface.
+    Only merge/dedup/link authority paths (best_match, above) must exclude it.
     """
     try:
         if not (query_text or "").strip():
@@ -438,6 +462,13 @@ def best_match(
     Returns None when the store is empty, embeddings are unavailable, or any
     error occurs -- callers must treat None as "no semantic signal" and fall
     back to deterministic logic.
+
+    This is the merge/dedup authority path: merge.py's find_merge_target calls
+    best_match to decide whether a new capture should be silently appended into
+    an existing note. provisional=1 rows (LAN overlay, contract §11) are
+    excluded -- a not-yet-Drive-confirmed body must never win a merge decision.
+    # ponytail: provisional rows indexed for search/RAG only; never authoritative
+    -- files remain source of truth.
     """
     try:
         if not (query_text or "").strip():
@@ -447,12 +478,13 @@ def best_match(
         with _connect(vault_root) as conn:
             if category:
                 rows = conn.execute(
-                    "SELECT id, embedding, document, category FROM embeddings WHERE category = ?",
+                    "SELECT id, embedding, document, category FROM embeddings "
+                    "WHERE category = ? AND provisional = 0",
                     (category,),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT id, embedding, document, category FROM embeddings"
+                    "SELECT id, embedding, document, category FROM embeddings WHERE provisional = 0"
                 ).fetchall()
 
         if not rows:

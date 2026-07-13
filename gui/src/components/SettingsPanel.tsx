@@ -12,14 +12,15 @@
 
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { getConfig, patchConfig, formatHotkey, DEFAULT_HOTKEY } from "../lib/config";
+import { getConfig, patchConfig } from "../lib/api";
+import { formatHotkey, DEFAULT_HOTKEY } from "../lib/hotkey";
 import { setHotkey as setHotkeyRust, setLogLevel } from "../lib/tauri";
 import { getVaultCategories } from "../lib/api";
 import { DEFAULT_CHAT_SYSTEM_PROMPT } from "../lib/lookChatDefaults";
 import { logger, LogLevel } from "../lib/logger";
 import { isGeoDebugEnabled, setGeoDebugEnabled } from "../lib/geoLog";
 import { THEMES, THEME_LABELS, type Theme, type LookChatPersist } from "../App";
-import type { PillMode, PillCorner } from "./PillOverlay";
+import type { PillMode, PillCorner } from "../lib/pillTypes";
 import type { PillAnchor } from "../lib/pillAnchor";
 import { ANCHOR_ORDER } from "../lib/pillAnchor";
 import type { MonitorInfo } from "../lib/monitor";
@@ -30,6 +31,7 @@ import {
 } from "./ui/styles";
 import { Tabs } from "./ui/Tabs";
 import { SaveIcon } from "./PillMenu/icons";
+import PairingPanel from "./PairingPanel";
 
 interface Props {
   visible:      boolean;
@@ -340,7 +342,7 @@ export default function SettingsPanel({
 
   // Form (look/placement) vs Function (behavior) tabs. Always reopens on
   // Form so returning to Settings doesn't strand the user on Function.
-  const [tab, setTab] = useState<"form" | "function">("form");
+  const [tab, setTab] = useState<"form" | "function" | "pairing">("form");
   useEffect(() => { if (visible) setTab("form"); }, [visible]);
 
   // Auto-save: any change to a server-persisted field marks the panel dirty;
@@ -531,7 +533,7 @@ export default function SettingsPanel({
 
       {/* Tabs */}
       <Tabs
-        tabs={[{ id: "form", label: "Form" }, { id: "function", label: "Function" }]}
+        tabs={[{ id: "form", label: "Form" }, { id: "function", label: "Function" }, { id: "pairing", label: "Pairing" }]}
         active={tab}
         onChange={setTab}
         dense={compact}
@@ -1011,6 +1013,8 @@ export default function SettingsPanel({
             </Field>
           </>
         )}
+
+        {tab === "pairing" && <PairingPanel compact={compact} />}
       </div>
     </div>
   );
