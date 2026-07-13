@@ -352,6 +352,35 @@ def test_get_hub_notes_walks_category_folders_and_normalizes_keys():
     assert notes["01ABC"]["headRevisionId"] == "r1"
 
 
+def test_get_hub_notes_scans_root_level_uncategorised_notes():
+    # B-5: an uncategorised note lives at the hub ROOT (category=None). It must be scanned + reconciled,
+    # not silently invisible. Dispatch: the root FILE query carries `mimeType!=folder`; the folder-list
+    # query carries `mimeType=folder`.
+    drive = MagicMock()
+
+    def _list(**kw):
+        q = kw.get("q", "")
+        resp = MagicMock()
+        if "'HUB' in parents" in q and f"mimeType!='{_FOLDER_MIME}'" in q:
+            resp.execute.return_value = {"files": [
+                {"id": "R1", "name": "01ROOT.md", "headRevisionId": "rr"}], "nextPageToken": None}
+        elif "'HUB' in parents" in q:  # folder-list (list_hub_tree)
+            resp.execute.return_value = {"files": [
+                {"id": "c1", "name": "personal", "mimeType": _FOLDER_MIME}], "nextPageToken": None}
+        elif "'c1' in parents" in q:
+            resp.execute.return_value = {"files": [
+                {"id": "F1", "name": "01CAT.md", "headRevisionId": "r1"}], "nextPageToken": None}
+        else:
+            resp.execute.return_value = {"files": [], "nextPageToken": None}
+        return resp
+
+    drive.files().list.side_effect = _list
+    notes = get_hub_notes(drive, "HUB")
+    assert set(notes) == {"01CAT", "01ROOT"}       # both the category note AND the root note
+    assert notes["01CAT"]["category"] == "personal"
+    assert notes["01ROOT"]["category"] is None      # uncategorised
+
+
 def test_read_vault_notes_category_from_frontmatter_then_folder(tmp_path):
     # note in a category subfolder, no category field → folder name is the category
     workd = tmp_path / "work"

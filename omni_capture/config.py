@@ -181,6 +181,19 @@ def _resolve_path(raw: str) -> Path | None:
     return Path(raw).expanduser()
 
 
+def _parse_bool(v, default: bool = False) -> bool:
+    """Coerce a TOML value that may be a real bool, an int, or a quoted string ("true"/"false")
+    into a bool. `bool("false")` is True (non-empty string), so a bare `bool()` on a string config
+    value is a bug (B-3). Truthy strings: true/1/yes/on (case-insensitive)."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1", "yes", "on")
+    return default
+
+
 def load_config(config_path: Path | None = None) -> Config:
     path = (
         config_path
@@ -297,7 +310,11 @@ def load_config(config_path: Path | None = None) -> Config:
     cfg.ocr.enabled = bool(ocr_raw.get("enabled", False))
 
     lan_raw = raw.get("lan", {})
-    cfg.lan.enabled = bool(lan_raw.get("enabled", False))
+    # B-3: `[lan] enabled` may be a STRING ("true"/"false" — the GUI's hand-rolled TOML writer quotes
+    # it) or a real bool. `bool("false")` is True (non-empty string), so a user/GUI writing "false"
+    # still armed the 0.0.0.0 LAN listener. Parse explicitly. (The Rust writer/reader round-trip the
+    # quoted string on their own side; ponytail: emit a bare bool there too if that side is revisited.)
+    cfg.lan.enabled = _parse_bool(lan_raw.get("enabled", False))
     cfg.lan.host    = str(lan_raw.get("host", ""))
     cfg.lan.port    = int(lan_raw.get("port", 7071))
     cfg.lan.key     = str(lan_raw.get("key", ""))

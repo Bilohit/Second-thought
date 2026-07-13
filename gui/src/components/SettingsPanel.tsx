@@ -13,7 +13,7 @@
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getConfig, patchConfig } from "../lib/api";
-import { formatHotkey, DEFAULT_HOTKEY } from "../lib/hotkey";
+import { formatHotkey, DEFAULT_HOTKEY, canParseHotkey } from "../lib/hotkey";
 import { setHotkey as setHotkeyRust, setLogLevel } from "../lib/tauri";
 import { getVaultCategories } from "../lib/api";
 import { DEFAULT_CHAT_SYSTEM_PROMPT } from "../lib/lookChatDefaults";
@@ -451,6 +451,21 @@ export default function SettingsPanel({
   const flush = useCallback(async (opts: { silent: boolean }) => {
     setHotkeyError(null);
     if (!opts.silent) setSaving(true);
+
+    // A-2 (validate first): reject a hotkey Rust's `parse_shortcut` could
+    // never register BEFORE it's persisted anywhere — previously an
+    // unparsable hotkey (e.g. an F-key/arrow) reached `setHotkeyRust`,
+    // which fails there, but by then `patchConfig` had already written it
+    // to disk; the app then silently falls back to the default hotkey on
+    // next boot with no visible error. Catching it here means neither
+    // `patchConfig` nor `setHotkeyRust` is ever called with a bad value.
+    if (!canParseHotkey(hotkey)) {
+      setHotkeyError(`Could not parse hotkey '${hotkey}'`);
+      setHotkey(lastGoodRef.current.hotkey);
+      if (!opts.silent) setSaving(false);
+      return;
+    }
+
     try {
       await patchConfig({
         vault_root: vaultRoot,
@@ -462,7 +477,40 @@ export default function SettingsPanel({
         chat_system_prompt: chatSystemPrompt,
         reminders_delivery: reminderDelivery,
       });
-      await setHotkeyRust(hotkey);
+      try {
+        await setHotkeyRust(hotkey);
+      } catch (rustErr) {
+        // A-2 (scope the revert): `patchConfig` above already succeeded —
+        // every field including `hotkey` is persisted server-side. Only the
+        // Rust-side shortcut registration failed (e.g. combo claimed by
+        // another app), so reverting every field here (as previously done)
+        // would desync the UI from disk for fields that saved fine. Revert
+        // ONLY hotkey, then re-patch config with the reverted value so disk
+        // matches what's back on screen — never a bare "revert and leave
+        // the server holding a different value".
+        const goodHotkey = lastGoodRef.current.hotkey;
+        setHotkeyError(rustErr instanceof Error ? rustErr.message : String(rustErr));
+        setHotkey(goodHotkey);
+        try {
+          await patchConfig({
+            vault_root: vaultRoot,
+            ollama_model: model,
+            hotkey: goodHotkey,
+            confidence_threshold: confidence,
+            llm_scrutiny: scrutiny,
+            auto_describe_new_folders: autoDescribe,
+            chat_system_prompt: chatSystemPrompt,
+            reminders_delivery: reminderDelivery,
+          });
+        } catch {
+          // Best-effort re-patch; if this also fails there's no further
+          // client-side rollback that wouldn't risk clobbering the other
+          // fields that already saved successfully above.
+        }
+        lastGoodRef.current = { ...lastGoodRef.current, hotkey: goodHotkey };
+        setDirty(false);
+        return;
+      }
       lastGoodRef.current = { vaultRoot, model, hotkey, confidence, scrutiny, autoDescribe, chatSystemPrompt, reminderDelivery };
       setDirty(false);
       if (!opts.silent) {
@@ -471,8 +519,9 @@ export default function SettingsPanel({
       }
     } catch (err) {
       setHotkeyError(err instanceof Error ? err.message : String(err));
-      // Don't leave a rejected value live — revert to what the server last
-      // actually accepted.
+      // patchConfig itself failed (network/server down) — nothing was
+      // persisted, so it's safe to revert every field to the last
+      // confirmed state, as before.
       const g = lastGoodRef.current;
       setVaultRoot(g.vaultRoot);
       setModel(g.model);
@@ -505,6 +554,22 @@ export default function SettingsPanel({
       void flush({ silent: true });
     }
   }, [visible, flush]);
+
+  // A-1: some hosts (FullWindow, CompactSettings) hardcode `visible` and
+  // unmount this panel on close instead of ever flipping it to false — so
+  // the `!visible` effect above never runs there, and edits made <900ms
+  // before closing were silently dropped when the debounce timer's cleanup
+  // discarded the pending save. A ref-captured flush lets an unmount-only
+  // effect (empty deps, so its cleanup fires exactly once, on unmount) call
+  // whatever the latest flush closure is, regardless of which host owns the
+  // "visible" prop.
+  const flushRef = useRef(flush);
+  useEffect(() => { flushRef.current = flush; }, [flush]);
+  useEffect(() => {
+    return () => {
+      if (dirtyRef.current) void flushRef.current({ silent: true });
+    };
+  }, []);
 
   return (
     <div

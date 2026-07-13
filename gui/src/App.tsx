@@ -621,6 +621,23 @@ export default function App() {
   const closeCompactPanelRef = useRef(closeCompactPanel);
   useEffect(() => { closeCompactPanelRef.current = closeCompactPanel; }, [closeCompactPanel]);
 
+  // A-3 fix: "Clear chat on close" is a no-op inside LookPanel itself —
+  // its own visible-edge reset() needs a true->false prop transition, but
+  // every host (FullWindow, CompactLook) hardcodes `visible` and instead
+  // unmounts the whole Look surface on close (view leaving "look" /
+  // compactPanel leaving "search", the compact-panel target for Look — see
+  // PillOverlay.tsx's renderPanelBody). So the clear has to happen here,
+  // where the surface actually closes, not inside the panel that never sees
+  // the edge.
+  const lookSurfaceOpen = view === "look" || compactPanel === "search";
+  const prevLookSurfaceOpenRef = useRef(lookSurfaceOpen);
+  useEffect(() => {
+    if (prevLookSurfaceOpenRef.current && !lookSurfaceOpen && lookChatPersist === "clear") {
+      lookChat.reset();
+    }
+    prevLookSurfaceOpenRef.current = lookSurfaceOpen;
+  }, [lookSurfaceOpen, lookChatPersist, lookChat]);
+
   // The menu only ever exists while the pill is showing; leaving pill mode
   // for any reason (expand, view switch, display-mode switch) always closes it.
   useEffect(() => {

@@ -91,12 +91,12 @@ function Test-Preconditions {
         }
     }
 
-    $exeParent = Split-Path -Parent $exe
-    if (-not (Test-Path $exeParent)) {
-        Write-Launch "Expected build output directory is missing: $exeParent" "error"
-        exit 1
-    }
-
+    # NOTE: no longer checking $exeParent ("target/release/") existence here.
+    # On a fresh clone that directory does not exist yet -- it is CREATED by
+    # the `npx tauri build` step in Invoke-BuildIfStale below (which already
+    # handles the "no exe yet" case via its own `-not (Test-Path $exe)`
+    # check). Hard-exiting on a missing directory that only the build itself
+    # produces made a fresh clone unable to ever launch (B-6).
     $needsBuild = -not (Test-Path $exe)
     if ($needsBuild -and -not (Get-Command npx -ErrorAction SilentlyContinue)) {
         Write-Launch "No release binary found and 'npx' (Node.js) is missing -- cannot build. Install Node.js or run with OMNI_DEV=1." "error"

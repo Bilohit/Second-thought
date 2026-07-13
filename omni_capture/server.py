@@ -446,6 +446,12 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
     timer = StageTimer(run_id=run_id)
 
     def emit(event, **kwargs):
+        # Record the idempotency terminal event HERE, at emit time, not in
+        # _stream_capture's consumer loop -- a client disconnect before that
+        # loop reaches this event must not lose the record (see B-2 / the
+        # "Capture retry idempotency" comment block above _record_capture_terminal).
+        if run_id and event in ("done", "job"):
+            _record_capture_terminal(run_id, event, dict(kwargs))
         loop.call_soon_threadsafe(q.put_nowait, {"event": event, **kwargs})
 
     enriched = None  # set once Stage 2 (enrich) succeeds; checked in the except below
@@ -846,6 +852,13 @@ async def _stream_capture(content_type: str, content: str, run_id: Optional[str]
         if item is None:
             break
         event = item.pop("event")
+        # Primary recording point is _run_pipeline_blocking's `emit()` (B-2
+        # fix -- covers a client disconnect before this loop ever sees the
+        # terminal item). This second write is now just a redundant, harmless
+        # overwrite with the same data for the normal (consumer-attached)
+        # case, and is the ONLY recording point for callers that replace
+        # _run_pipeline_blocking wholesale (e.g. test doubles) instead of
+        # going through its real emit().
         if run_id and event in ("done", "job"):
             _record_capture_terminal(run_id, event, dict(item))
         yield _sse(event, **item)

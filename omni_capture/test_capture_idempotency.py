@@ -108,8 +108,70 @@ def test_no_run_id_behaves_as_before():
     assert call_counter["n"] == 2
 
 
+# ============================================================================
+# B-2 regression: terminal event must be recorded at EMIT time, not only
+# when the SSE consumer loop (_stream_capture's `while True: item = await
+# q.get()`) is still attached to drain the queue. A client disconnect before
+# the 'done' event reaches that loop used to mean the idempotency map was
+# never written -- a GUI retry with the same X-Capture-Run-Id would then
+# re-run the whole pipeline (and, since dedup keys on the LLM's
+# markdown_content which differs per run, write a second, duplicate note).
+#
+# Reproduced here by calling _run_pipeline_blocking directly and NEVER
+# draining `q` afterwards -- i.e. simulating the exact "consumer walked
+# away" scenario the docstring above describes -- then asserting the
+# idempotency record exists anyway.
+# ============================================================================
+def test_terminal_event_recorded_even_when_consumer_never_drains_queue(tmp_path):
+    import asyncio
+    import os
+
+    import config as cfg_mod
+    cfg_mod._cfg = None
+    os.environ["OMNI_VAULT_ROOT"] = str(tmp_path)
+    os.environ.setdefault("OLLAMA_MODEL", "llama3.2")
+    os.environ.setdefault("OLLAMA_BASE_URL", "http://localhost:11434")
+
+    from models import CaptureOutput
+
+    server._capture_results.clear()
+
+    fake_out = CaptureOutput(
+        category="Tech_Notes",
+        suggested_filename="never-drained-note",
+        markdown_content="## Never drained\n\nContent.",
+        key_signals=[],
+        confidence=0.9,
+        requires_new_category=False,
+    )
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    q: asyncio.Queue = asyncio.Queue()
+
+    with mock.patch("llm_engine.run_llm_engine", return_value=fake_out), \
+         mock.patch("vector_store.retrieve_related", return_value=[]), \
+         mock.patch("vector_store.index_note"):
+        server._run_pipeline_blocking(
+            "text", "hello world, never drained", q, loop, run_id="disconnect-test-id",
+        )
+
+    # Nothing ever called q.get() -- simulating the SSE client disconnecting
+    # before the consumer loop in _stream_capture reached the 'done' event.
+    recorded = server._get_capture_terminal("disconnect-test-id")
+    assert recorded is not None, (
+        "terminal event must be recorded the moment _run_pipeline_blocking "
+        "emits it, regardless of whether a consumer ever drains the queue "
+        "-- otherwise a post-disconnect retry re-runs the whole pipeline "
+        "and writes a duplicate note"
+    )
+    assert recorded["event"] == "done"
+    assert recorded["payload"]["category"] == "Tech_Notes"
+
+
 if __name__ == "__main__":
     test_retry_with_same_run_id_short_circuits_pipeline()
     test_different_run_id_is_not_deduped()
     test_no_run_id_behaves_as_before()
+    test_terminal_event_recorded_even_when_consumer_never_drains_queue()
     print("OK")

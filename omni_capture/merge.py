@@ -75,6 +75,28 @@ def _read_note_tags(path: Path) -> set:
     return {t for t in tags if t and not t.startswith("-")}
 
 
+def _is_synced_note(path: Path) -> bool:
+    """
+    True if `path` is a synced NOTE (origin: note, or carries an `id:` — a phone/desktop note whose
+    body is sacred), as opposed to a pipeline capture. B-1: such a file must NEVER be a smart-merge
+    append target. A phone note filed under a category folder shares tags with same-topic captures;
+    appending a capture below its frontmatter is a body-sacred violation, and the next sync pass reads
+    the appended bytes as a local body edit. Only the leading frontmatter block is inspected.
+    """
+    import re
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return False
+    m = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
+    fm = m.group(1) if m else text[:500]
+    if re.search(r"^origin:[ \t]*note[ \t]*$", fm, re.MULTILINE):
+        return True
+    if re.search(r"^id:[ \t]*\S", fm, re.MULTILINE):
+        return True
+    return False
+
+
 def _is_same_topic(existing_path: Path, new_signals: List[str], min_shared_tags: int = 1) -> bool:
     """
     min_shared_tags raises the bar above the default single-shared-tag match.
@@ -84,6 +106,9 @@ def _is_same_topic(existing_path: Path, new_signals: List[str], min_shared_tags:
     """
     if not existing_path.exists() or not new_signals:
         return True
+    # B-1: never append a capture into a synced note's body (body-sacred). Not "same topic" for merge.
+    if _is_synced_note(existing_path):
+        return False
     existing_tags = _read_note_tags(existing_path)
     if not existing_tags:
         return True
@@ -121,7 +146,8 @@ def find_merge_target(
 
     candidates = [
         f for f in cat_dir.iterdir()
-        if f.is_file() and f.suffix == ".md"
+        # B-1: exclude synced notes (origin: note / id:) — a capture must never merge into a note body.
+        if f.is_file() and f.suffix == ".md" and not _is_synced_note(f)
     ]
     if not candidates:
         return None
@@ -229,5 +255,20 @@ if __name__ == "__main__":
         assert "original body" in text and "new content" in text
         assert "*Captured:" in text
         print("[T5] _append_general  PASS")
+
+        # T6 (B-1): a synced NOTE (origin: note / id:) filed in a category is NEVER a merge target,
+        # even with a strong tag overlap — body-sacred. It must be skipped as a candidate AND rejected
+        # by _is_same_topic, so a same-topic capture creates its own file instead of appending.
+        synced = cat_dir / "phone-note.md"
+        synced.write_text(
+            "---\nid: 01ABC\norigin: note\ntags:\n  - python\n  - async\n---\n\nUser's sacred body.\n",
+            encoding="utf-8",
+        )
+        assert find_merge_target(out2, vault) == match_note  # picks the capture note, not the synced note
+        # even if the synced note were the only same-topic candidate, it's excluded:
+        match_note.unlink()
+        assert find_merge_target(out2, vault) is None
+        assert _is_same_topic(synced, ["python", "async"], min_shared_tags=1) is False
+        print("[T6] B-1 synced note never a merge target  PASS")
 
     print("\nAll merge.py smoke tests passed.")

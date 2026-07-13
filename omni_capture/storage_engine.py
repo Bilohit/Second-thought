@@ -33,7 +33,6 @@ from typing import Dict, List, Optional
 
 from models import CaptureOutput
 from config import DEFAULT_VAULT_ROOT, get_config
-from frontmatter import strip_frontmatter
 
 # dedup.py / merge.py / scratchpad.py extraction (see docs/ROADMAP.md "Split
 # storage_engine.py into dedup.py / merge.py / scratchpad.py"). storage_engine.py

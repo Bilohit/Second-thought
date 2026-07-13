@@ -197,7 +197,16 @@ def get_hub_notes(drive, hub_folder_id: str) -> Dict[str, Dict]:
             # id stem across category folders would collide here, last-wins; add a warn/dedup pass
             # only if a corrupted hub ever produces duplicate ids.
             files[key] = f
-    # ponytail: root-level .md notes are not scanned; add a root pass if a pre-D3 flat hub ever needs migrating.
+    # B-5: also scan root-level .md notes. `_resolve_dest_folder` uploads uncategorised notes to the
+    # hub ROOT; without this pass get_hub_notes never saw them → invisible to the phone AND never
+    # reconciled (remote edits to an uncategorised note were silently never pulled). category=None marks
+    # uncategorised. setdefault so a category-folder note always wins a same-id root duplicate.
+    for f in _list_children(drive, hub_folder_id, mime_is_folder=False):
+        if not f["name"].endswith(".md"):
+            continue
+        key = (f.get("appProperties") or {}).get("noteId") or Path(f["name"]).stem
+        f["category"] = None
+        files.setdefault(key, f)
     return files
 
 
@@ -802,7 +811,13 @@ def main():
 
     cfg = get_config()
     vault_path = os.environ.get("OMNI_VAULT", str(cfg.vault.root))
-    state_path = os.environ.get("OMNI_SYNC_STATE", ".mobile_sync_state.json")
+    # B-4: default the sync-state sidecar under <vault>/.omni_capture/ — NOT a CWD-relative path.
+    # A CWD-relative default meant running the agent from a different directory lost every note's
+    # base_rev, turning the next pass into blind uploads over advanced hub heads (remote edits lost
+    # from the head, recoverable only via Drive revisions). The vault is a stable, single anchor.
+    _default_state = Path(vault_path) / ".omni_capture" / "mobile_sync_state.json"
+    _default_state.parent.mkdir(parents=True, exist_ok=True)
+    state_path = os.environ.get("OMNI_SYNC_STATE", str(_default_state))
     drive = get_drive_service()
 
     # Captures ingest into the SAME vault we sync (route_and_enrich writes via run_pipeline).
