@@ -26,7 +26,7 @@ import {
   BTN_GHOST, BTN_PRIMARY, ROW_CARD, INPUT_STYLE,
   focusRing, blurRing,
 } from "./ui/styles";
-import { MenuIcon, RefreshIcon, BellIcon } from "./PillMenu/icons";
+import { MenuIcon, RefreshIcon, BellIcon, CloseIcon } from "./PillMenu/icons";
 
 const NEW_FOLDER_SENTINEL = "__new_folder__";
 
@@ -461,9 +461,9 @@ export default function InboxPanel({
                 onClick={() => handleDeleteReminder(r.id)}
                 aria-label="Delete reminder"
                 className="btn-hover hover-danger"
-                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", fontSize: 12, padding: "2px 4px", flexShrink: 0 }}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", fontSize: 12, padding: "2px 4px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}
               >
-                ✕
+                <CloseIcon />
               </button>
             </div>
           ))}

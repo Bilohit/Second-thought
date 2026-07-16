@@ -13,6 +13,20 @@ def strip_frontmatter(text: str) -> str:
     return _FM_RE.sub("", text, count=1)
 
 
+def add_fields(text: str, fields: dict[str, str]) -> str:
+    """Insert additional top-level `key: value` lines into the frontmatter block, appended just
+    before the closing `---`. Frontmatter-ONLY edit: everything outside the matched block (the
+    body, and any frontmatter fields already present) is left byte-for-byte untouched. No-op
+    (returns *text* unchanged) if there is no frontmatter block to insert into."""
+    m = _FM_RE.match(text)
+    if not m:
+        return text
+    block = m.group(1)
+    insert = "\n".join(f"{k}: {v}" for k, v in fields.items())
+    new_block = (block + "\n" + insert) if block else insert
+    return text[: m.start(1)] + new_block + text[m.end(1):]
+
+
 def read_all_fields(text: str) -> dict[str, str]:
     """Return every top-level `key: value` pair in the frontmatter block.
 

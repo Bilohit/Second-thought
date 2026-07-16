@@ -11,8 +11,13 @@ export interface ChatMessage {
   confidence?: number;
   tier?: LookTier;
   searching?: boolean;  // true while waiting for first meta/sources event
+  /** Assistant messages only: set when this reply is a failure (SSE error
+   *  event or transport-level throw) rather than a real answer — drives the
+   *  Retry affordance. A real field, not a string-prefix sentinel, so a
+   *  vault answer can never accidentally look like a failure. */
+  failed?: boolean;
   /** Assistant messages only: the raw user query that produced this reply,
-   *  so a failed (⚠-prefixed) message can be retried without re-typing. */
+   *  so a failed message can be retried without re-typing. */
   userQuery?: string;
 }
 
@@ -31,9 +36,10 @@ export function setIgnoreHistoryPref(enabled: boolean): void {
   } catch { /* ignore */ }
 }
 
-/** Mirrors the sibling "error" SSE-event convention (`⚠ ${message}`) for transport-level failures. */
+/** Message text for a transport-level failure (network drop, aborted fetch, etc).
+ *  Bare text — failure state itself lives on `ChatMessage.failed`, not in this string. */
 export function formatChatFailure(err: unknown): string {
-  return `⚠ Chat failed: ${err instanceof Error ? err.message : "connection lost"}`;
+  return `Chat failed: ${err instanceof Error ? err.message : "connection lost"}`;
 }
 
 /** Pure: resolves what `retry(index)` should do — the stored query to re-ask,
@@ -105,7 +111,7 @@ export function useLookChat() {
             });
           } else if (ev.kind === "error") {
             logger.warn("look", "chat assistant error shown to user", { message: ev.message });
-            updateLast({ content: `⚠ ${ev.message}`, searching: false });
+            updateLast({ content: ev.message, searching: false, failed: true });
           }
         }
       } catch (err) {
@@ -113,7 +119,7 @@ export function useLookChat() {
           logger.debug("look", "chat aborted");
         } else {
           logger.error("look", "chat failed", err);
-          updateLast({ content: formatChatFailure(err), searching: false });
+          updateLast({ content: formatChatFailure(err), searching: false, failed: true });
         }
       } finally { setStreaming(false); abortRef.current = null; }
     })();
@@ -130,7 +136,7 @@ export function useLookChat() {
     logger.debug("look", "chat reset");
   }, []);
 
-  /** Re-sends the user query stored on a failed (⚠) assistant message. */
+  /** Re-sends the user query stored on a failed assistant message. */
   const retry = useCallback((index: number) => {
     const target = getRetryTarget(messages, index);
     if (!target) return;

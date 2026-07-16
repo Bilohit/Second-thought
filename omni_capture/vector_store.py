@@ -18,6 +18,10 @@ index_note(vault_root, note_path, content, base_url, embed_model)
 retrieve_related(vault_root, query_text, base_url, embed_model, top_k) -> list[str]
     Return up to top_k formatted excerpt strings. Returns [] on any failure.
 
+semantic_search(vault_root, query_text, base_url, embed_model, top_k) -> list[dict]
+    F-10: structured {path, similarity, excerpt, category} rows for the Look
+    "Semantic" results band. Same ranking as retrieve_related. [] on failure.
+
 _embed(text, base_url, model) -> list[float]
     Call Ollama. Exposed for mocking in tests.
 """
@@ -444,6 +448,54 @@ def retrieve_related(
 
     except Exception as exc:
         print(f"[{_ist_now()}] [VectorStore] non-fatal retrieve error: {exc}",
+              file=sys.stderr, flush=True)
+        return []
+
+
+def semantic_search(
+    vault_root: Path,
+    query_text: str,
+    base_url: str,
+    embed_model: str = _DEFAULT_EMBED_MODEL,
+    top_k: int = 5,
+    min_similarity: float = 0.0,
+) -> list[dict]:
+    """F-10: structured counterpart to retrieve_related() for the Look
+    "Semantic" results band -- same ranking (_cosine_top_k + _dedupe_to_parent
+    over the same `embeddings` table) but returns machine-shaped rows
+    (path/similarity/excerpt/category) instead of a pre-formatted prompt
+    string, so the GUI can render + dedupe them against FTS hits by path.
+
+    Returns [] on an empty store, a blank query, or any error -- same
+    fail-soft contract as retrieve_related/best_match.
+    """
+    try:
+        if not (query_text or "").strip():
+            return []
+        with _connect(vault_root) as conn:
+            rows = conn.execute(
+                "SELECT id, embedding, document, category FROM embeddings"
+            ).fetchall()
+        if not rows:
+            return []
+
+        embedding = _embed(query_text, base_url, embed_model)
+        candidates = _cosine_top_k(embedding, rows, top_k * 3)
+        ranked = _dedupe_to_parent(candidates, top_k)
+        cat_by_id = {r[0].split("::c")[0]: r[3] for r in rows}
+
+        return [
+            {
+                "path": doc_id,
+                "similarity": round(sim, 4),
+                "excerpt": doc[:280],
+                "category": cat_by_id.get(doc_id),
+            }
+            for sim, doc_id, doc in ranked
+            if sim >= min_similarity
+        ]
+    except Exception as exc:
+        print(f"[{_ist_now()}] [VectorStore] non-fatal semantic_search error: {exc}",
               file=sys.stderr, flush=True)
         return []
 

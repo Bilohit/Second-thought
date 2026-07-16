@@ -18,14 +18,16 @@ import re
 import tempfile
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from googleapiclient.http import MediaInMemoryUpload
 
-from frontmatter import read_all_fields, strip_frontmatter
+from frontmatter import add_fields, read_all_fields, strip_frontmatter
 from note_model import parse_note, serialize_note
 from reconcile import reconcile
+from sync_ignore import filter_ignored_notes
 
 # D4 note-enrichment seam collaborators (patched as module attributes in tests).
 from llm_engine import run_llm_engine
@@ -40,13 +42,59 @@ HUB_FOLDER_NAME = "SecondThoughtVault"
 _FOLDER_MIME = "application/vnd.google-apps.folder"
 _RESERVED_FOLDERS = {"_trash", "_mobile_inbox", "_attachments", "_templates", ".sync"}
 
+# Stand-in body for "the common ancestor is UNKNOWN" (see reconcile_changes' adopt path).
+# reconcile() derives body_changed_local/body_changed_remote by comparing against base.body, so a
+# base body equal to NEITHER side is exactly a 2-way merge: identical bodies merge, divergent ones
+# are a body-vs-body conflict → keep-both. It is never chosen as a merged body, so it never reaches
+# disk or the hub.
+# ponytail: a NUL-wrapped marker no editor can type stands in for a real "no base" sentinel type;
+# swap for an Optional[Note] base parameter in reconcile() only if a body could ever hold these bytes.
+_NO_BASE_BODY = "\x00<no common base — sidecar lost>\x00"
+
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def read_vault_notes(vault_path: str) -> Dict[str, Dict]:
-    """Scan the vault, return {frontmatter-id: note}. Files without an id are skipped."""
+def _atomic_write_note(path: str, content: str) -> None:
+    """Write a SYNC-OWNED vault note atomically: temp sibling + os.replace (save_state's /
+    provisional_store._save_state's idiom). Path.write_text truncates the target and streams, so a
+    kill mid-write used to leave a valid-parsing note with a TRUNCATED body — the next scan cannot
+    tell that from a real edit (the hash differs → local_changed), so reconcile treated the mangled
+    body as authoritative and UPLOADED it: a body no editor ever authored became the note's
+    canonical hub head (body-sacred violation, S4-1). The rename is atomic — the note is either its
+    last complete bytes or the new ones, never a torn one.
+
+    Sync-owned writes only: note_editor.py is the user's sanctioned body writer and owns its path.
+    newline="" is load-bearing (the s23 CRLF fix) — default translation rewrites a hub \\r\\n body
+    as \\r\\r\\n on Windows (body-sacred violation + spurious re-upload loop). The temp is a
+    SIBLING: os.replace is only atomic within a filesystem, and a cross-device rename fails.
+    """
+    tmp = path + ".tmp"   # sibling, and not *.md — read_vault_notes' rglob never picks it up
+    Path(tmp).write_text(content, encoding="utf-8", newline="")
+    os.replace(tmp, path)   # atomic
+
+
+def _mint_capture_id() -> str:
+    # ponytail: uuid4-hex id (opaque sync identity, only needs uniqueness), matching the same
+    # ULID-substitute convention already used for conflicted-copy ids in reconcile_changes().
+    # Swap for a real ULID minter if lexical time-ordering of capture ids ever matters.
+    return uuid.uuid4().hex[:26]
+
+
+def read_vault_notes(vault_path: str, mirror_captures: bool = False) -> Dict[str, Dict]:
+    """Scan the vault, return {frontmatter-id: note}.
+
+    A file is a NOTE iff frontmatter `origin == "note"`; otherwise it is a desktop CAPTURE
+    (origin absent or == "capture") — data-model-and-contracts.md §2 "Desktop captures (K-2)".
+
+    - mirror_captures=False (default): capture files are skipped entirely (unchanged prior
+      behaviour) — they never reach the hub while the user hasn't opted in.
+    - mirror_captures=True: capture files ARE included. A capture that has no `id` yet gets one
+      minted (ULID-style) and `id`/`origin: capture` written back as a FRONTMATTER-ONLY edit
+      (body byte-identical — enforced below) so it gains a stable sync identity (closes B-15).
+
+    Notes (origin: note) are always included when they have an id, regardless of the flag."""
     notes: Dict[str, Dict] = {}
     vault_dir = Path(vault_path)
     if not vault_dir.exists():
@@ -56,12 +104,33 @@ def read_vault_notes(vault_path: str) -> Dict[str, Dict]:
         if any(part in _RESERVED_FOLDERS for part in md_file.relative_to(vault_dir).parts[:-1]):
             continue  # e.g. .sync/provisional/<op_id>.md — LAN staging, not a real vault note
         try:
-            content = md_file.read_text(encoding="utf-8")
+            # newline="" → byte-verbatim read: universal-newline translation would turn \r\n
+            # into \n, making `hash` disagree with disk/hub bytes (body-sacred, spurious re-upload).
+            content = md_file.read_text(encoding="utf-8", newline="")
         except Exception as e:  # unreadable file — skip, never crash the mirror
             print(f"[mobile_sync_agent] skip {md_file}: {e}")
             continue
         fields = read_all_fields(content)
+        is_capture = fields.get("origin") != "note"
+        if is_capture and not mirror_captures:
+            continue  # opt-in mirroring off (default) — captures stay desktop-local
+
         note_id = fields.get("id")
+        if is_capture and mirror_captures and not note_id:
+            new_id = _mint_capture_id()
+            new_content = add_fields(content, {"id": new_id, "origin": "capture"})
+            if strip_frontmatter(new_content) != strip_frontmatter(content):
+                print(f"[mobile_sync_agent] mint-id would alter body, skip {md_file}")
+                continue
+            try:
+                _atomic_write_note(str(md_file), new_content)   # atomic: never a torn note
+            except Exception as e:
+                print(f"[mobile_sync_agent] mint-id write failed {md_file}: {e}")
+                continue
+            content = new_content
+            fields = read_all_fields(content)
+            note_id = new_id
+
         if not note_id:
             print(f"[mobile_sync_agent] no id, skip {md_file}")
             continue
@@ -85,13 +154,23 @@ def load_state(state_path: str) -> Dict[str, Dict]:
     try:
         with open(state_path, encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (ValueError, OSError):
+        # ValueError is the shared base of json.JSONDecodeError AND
+        # UnicodeDecodeError -- a byte-flip in the sidecar raises the latter, which
+        # used to escape and park the sync pass in `error` forever (and crash
+        # note_history._sync_entry, the other caller).
         return {}  # derived cache — safe to rebuild from files
 
 
 def save_state(state_path: str, state: Dict[str, Dict]) -> None:
-    with open(state_path, "w", encoding="utf-8") as f:
+    """Write the sidecar atomically: temp sibling + os.replace (provisional_store._save_state's
+    idiom). A crash mid-write used to truncate the live file; load_state rebuilds from empty, so
+    the next pass re-uploaded every note blind. The rename is atomic — the sidecar is either the
+    old state or the new one, never a half-written one."""
+    tmp = state_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, sort_keys=True)
+    os.replace(tmp, state_path)   # atomic
 
 
 def ensure_hub_folder(drive, name: str = HUB_FOLDER_NAME) -> str:
@@ -164,6 +243,26 @@ def _find_or_create_subfolder(drive, parent_id: str, name: str) -> str:
         .execute()
     )
     return created["id"]
+
+
+def upload_sync_file(drive, hub_folder_id: str, filename: str, content: str,
+                     mimetype: str = "application/json") -> None:
+    """Upload/overwrite ONE advisory file in the hub's `.sync/` folder (contract §11.8-B:
+    `lan_endpoint.json`). The rest of `.sync/` stays device-local — this is the single `.sync/`
+    file the phone reads for LAN discovery. Not a note (no id/appProperties); matched by name.
+    Best-effort, accelerator-only: a failure here never affects canonical Drive sync."""
+    sync_id = _find_or_create_subfolder(drive, hub_folder_id, ".sync")
+    media = MediaInMemoryUpload(content.encode("utf-8"), mimetype=mimetype)
+    existing = next(
+        (f for f in _list_children(drive, sync_id, mime_is_folder=False) if f["name"] == filename),
+        None,
+    )
+    if existing:
+        drive.files().update(fileId=existing["id"], media_body=media).execute()
+    else:
+        drive.files().create(
+            body={"name": filename, "parents": [sync_id]}, media_body=media, fields="id"
+        ).execute()
 
 
 def _download_bytes(drive, file_id: str) -> bytes:
@@ -288,6 +387,8 @@ def reconcile_changes(
       - remote advanced, local unchanged   → PULL: overwrite local with remote bytes verbatim
       - remote advanced AND local changed   → three-way reconcile() → write merged locally, upload it,
                                               and spin off a conflicted copy on a body-vs-body conflict
+      - sidecar has NO record but the hub holds the note → ADOPT: no base_rev was ever observed for
+                                              it, so reconcile against an unknown base (2-way)
 
     Body-sacred: reconcile() guarantees the merged body is a verbatim copy of one input — never
     fabricated. Returns (reconciled, conflicts, failed, new_state).
@@ -295,8 +396,9 @@ def reconcile_changes(
     write_file / new_id are injected so the merge logic is unit-testable without disk or randomness.
     """
     if write_file is None:
-        def write_file(path: str, content: str) -> None:
-            Path(path).write_text(content, encoding="utf-8")
+        # Atomic + byte-verbatim (_atomic_write_note owns both): a kill mid-write must never leave
+        # a torn body the next scan mistakes for a local edit and pushes to the hub (S4-1).
+        write_file = _atomic_write_note
     if new_id is None:
         # ponytail: uuid4-hex conflicted-copy id (opaque sync identity, only needs uniqueness).
         # Swap for a real ULID minter if lexical time-ordering of conflicted copies ever matters.
@@ -310,9 +412,21 @@ def reconcile_changes(
 
     for note_id, local in vault_notes.items():
         prior = state.get(note_id)
-        if not prior or not prior.get("drive_file_id"):
-            continue  # never synced → not a remote-advance case (mirror_to_hub creates it)
         hub_file = hub_files.get(note_id)
+        adopted = False
+        if not prior or not prior.get("drive_file_id"):
+            if not hub_file:
+                continue  # never synced, not on the hub → mirror_to_hub creates it
+            # F-1: the sidecar (a derived cache) is absent/corrupt/stale for this note, but the
+            # hub already holds it. Adopt the hub FILE ID so the note is updated in place and
+            # never re-created as a duplicate orphan — but we have observed NO sync for it, so
+            # there is no revision we may call the base: base_rev stays unset (it may only ever
+            # hold a head we actually synced at) and the note falls through to the reconcile
+            # below with an unknown ancestor. Claiming base_rev = the CURRENT head here made
+            # mirror_to_hub's advanced-head guard compare the head against itself, so the
+            # desktop blind-uploaded its stale body over a peer's un-pulled edit.
+            prior = {"drive_file_id": hub_file["id"], "base_rev": None, "local_hash": None}
+            adopted = True
         if not hub_file:
             continue  # not on the hub (or trashed) → nothing to pull
         remote_rev = hub_file.get("headRevisionId")
@@ -322,6 +436,17 @@ def reconcile_changes(
         file_id = prior["drive_file_id"]
         try:
             remote_text = _download_content(drive, file_id)
+            if adopted and remote_text == local["content"]:
+                # Already in sync, we just could not prove it: the head IS our bytes, so this is
+                # a head we have now observed a sync at — record it and skip. Without the byte
+                # compare the sidecar rebuild re-uploads identical content and burns a
+                # headRevisionId (which makes every peer re-pull an unchanged note).
+                new_state[note_id] = {
+                    "drive_file_id": file_id,
+                    "base_rev": remote_rev,
+                    "local_hash": local["hash"],
+                }
+                continue
             if not local_changed:
                 # PULL: remote-only change. Verbatim propagation of the other device's edit.
                 write_file(local["path"], remote_text)
@@ -334,9 +459,19 @@ def reconcile_changes(
                 continue
 
             # BOTH changed → three-way field-aware reconcile.
-            base = parse_note(_download_revision(drive, file_id, prior["base_rev"]))
+            local_note = parse_note(local["content"])
+            if adopted:
+                # No base: nothing ever recorded a sync for this note, so there is no revision
+                # that is the common ancestor. Reconcile against a base whose body matches
+                # NEITHER side (_NO_BASE_BODY) — a 2-way merge: equal bodies merge cleanly,
+                # divergent bodies are a body-vs-body conflict → conflicted copy, both intact.
+                # Everything else on the base is the local note, so a frontmatter divergence
+                # falls to the hub — the canonical side — since we cannot tell who edited what.
+                base = replace(local_note, body=_NO_BASE_BODY)
+            else:
+                base = parse_note(_download_revision(drive, file_id, prior["base_rev"]))
             merged_result = reconcile(
-                base, parse_note(local["content"]), parse_note(remote_text), new_id()
+                base, local_note, parse_note(remote_text), new_id()
             )
             merged_text = serialize_note(merged_result.merged)
             write_file(local["path"], merged_text)
@@ -388,7 +523,9 @@ def mirror_to_hub(
     """Upload notes that are new or whose local content changed since last sync.
 
     Upload decision is local-content-hash vs the sidecar's last-synced hash — NEVER
-    modifiedTime. Returns (uploaded, failed, new_state).
+    modifiedTime. A note the sidecar has no record of is only CREATED here (hub-absent);
+    if the hub already holds it, no sync was ever observed for it and reconcile_changes
+    owns it. Returns (uploaded, failed, new_state).
     """
     uploaded = 0
     failed = 0
@@ -401,16 +538,24 @@ def mirror_to_hub(
         if prior and prior.get("local_hash") == note["hash"] and prior.get("drive_file_id"):
             continue
         if not prior or not prior.get("drive_file_id"):
-            # Sidecar absent/corrupt/stale for this note — files/Drive are the
-            # source of truth. Fall back to the hub listing so an existing hub
-            # file is updated, never re-created as a duplicate orphan.
-            hub_file = hub_files.get(note_id)
-            if hub_file:
-                prior = {
-                    "drive_file_id": hub_file["id"],
-                    "base_rev": hub_file.get("headRevisionId"),
-                    "local_hash": None,
-                }
+            # F-1: sidecar absent/corrupt/stale for this note. If the hub already holds it we
+            # have observed NO sync for it — no base_rev, so no evidence our body is newer than
+            # the head — and uploading here would silently revert a peer's un-pulled edit.
+            # reconcile_changes owns this case: it adopts the hub file id (so the note is still
+            # updated in place, never re-created as a duplicate orphan) and resolves a body
+            # divergence into a conflicted copy. Only a note the hub does NOT have is created here.
+            if note_id in hub_files:
+                continue
+        hub_file = hub_files.get(note_id)
+        if (
+            prior
+            and prior.get("base_rev")
+            and hub_file
+            and hub_file.get("headRevisionId") != prior.get("base_rev")
+        ):
+            # Hub head advanced past our base — a blind upload would discard the remote edit
+            # from the canonical head. Leave it for the next reconcile pass.
+            continue
         try:
             dest = _resolve_dest_folder(drive, hub_folder_id, note.get("category"), folder_cache)
             result = _upload_note(drive, note, dest, prior)
@@ -425,6 +570,14 @@ def mirror_to_hub(
             failed += 1
 
     return uploaded, failed, new_state
+
+
+def _safe_path_component(name: str) -> str:
+    """Reject a hub-supplied value that is unsafe as a single vault path component
+    (separator, traversal, drive colon) — mirrors provisional_store's B-12 guard."""
+    if not name or name in (".", "..") or any(c in name for c in ("/", "\\", ":")):
+        raise ValueError(f"unsafe hub path component: {name!r}")
+    return name
 
 
 def pull_new_hub_notes(
@@ -446,9 +599,8 @@ def pull_new_hub_notes(
     """
     if write_file is None:
         def write_file(path: str, content: str) -> None:
-            p = Path(path)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(content, encoding="utf-8")
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_note(path, content)  # atomic + byte-verbatim (body-sacred)
     if download is None:
         def download(file_id: str) -> str:
             return _download_content(drive, file_id)
@@ -468,6 +620,10 @@ def pull_new_hub_notes(
                 continue  # id-level dedupe (key may have been a filename stem)
             category = fields.get("category")
             sub = category if category else scratchpad_folder
+            # Hub frontmatter is untrusted input — `id`/`category` become path components (B-12
+            # class). Reject anything that could step outside vault/<category>/<id>.md.
+            _safe_path_component(note_id)
+            _safe_path_component(sub)
             dest = str(Path(vault_root) / sub / f"{note_id}.md")
             write_file(dest, content)
             new_state[note_id] = {
@@ -619,7 +775,7 @@ def enrich_notes(
             # BODY SACRED — refuse to write if the body changed by a single byte.
             if strip_frontmatter(new_content) != note.body:
                 raise RuntimeError(f"enrich would alter body of {note_id}")
-            Path(entry["path"]).write_text(new_content, encoding="utf-8")
+            _atomic_write_note(entry["path"], new_content)   # atomic: never a torn note
         except Exception as e:
             print(f"[mobile_sync_agent] enrich failed {note_id}: {e}")
             failed += 1
@@ -653,6 +809,7 @@ def run_once(
     enrich_fn: Optional[Callable[[Dict, str], Tuple[int, int]]] = None,
     reminders_fn: Optional[Callable[[Dict], dict]] = None,
     provisional_fn: Optional[Callable[[str], None]] = None,
+    mirror_captures: bool = False,
 ) -> Tuple[int, int, int, int, int, int, int]:
     """One full bidirectional pass:
       1. reconcile notes changed on both sides (three-way merge / conflicted copy),
@@ -667,7 +824,7 @@ def run_once(
     (uploaded, failed, reconciled, conflicts, pulled, ingested, enriched)."""
     hub_id = ensure_hub_folder(drive)
     _categories, reserved = list_hub_tree(drive, hub_id)
-    vault_notes = read_vault_notes(vault_path)
+    vault_notes = read_vault_notes(vault_path, mirror_captures)
     hub_files = get_hub_notes(drive, hub_id)
     state = load_state(state_path)
     # Snapshot per-note base_rev so we can tell which notes reached canonical this pass
@@ -675,8 +832,10 @@ def run_once(
     pre_revs = {nid: s.get("base_rev") for nid, s in state.items()}
     vault_root = vault_root or vault_path
 
+    # F-5: local-only sync-ignore -- ignored notes never leave this machine
+    # in either direction of outbound sync (see sync_ignore.py docstring).
     reconciled, conflicts, r_failed, state = reconcile_changes(
-        vault_notes, hub_files, state, drive, hub_id
+        filter_ignored_notes(vault_notes, Path(vault_root)), hub_files, state, drive, hub_id
     )
     pulled, p_failed, state = pull_new_hub_notes(
         vault_notes, hub_files, state, drive, vault_root, scratchpad_folder
@@ -688,7 +847,7 @@ def run_once(
         ingested, _skipped, i_failed = intake_mobile_inbox(drive, inbox_id, run_pipeline)
 
     # Re-read: reconcile/pull wrote merged/pulled bodies; the pipeline wrote captures.
-    vault_notes = read_vault_notes(vault_path)
+    vault_notes = read_vault_notes(vault_path, mirror_captures)
 
     # Enrich AFTER the re-read (so pulled/ingested notes are visible) and BEFORE mirror
     # (so enriched frontmatter is in vault_notes when mirror computes uploads). enrich_notes
@@ -708,7 +867,9 @@ def run_once(
         except Exception as exc:
             print(f"[mobile_sync_agent] reminders reconcile failed: {exc}")
 
-    uploaded, u_failed, new_state = mirror_to_hub(vault_notes, hub_files, state, drive, hub_id)
+    uploaded, u_failed, new_state = mirror_to_hub(
+        filter_ignored_notes(vault_notes, Path(vault_root)), hub_files, state, drive, hub_id
+    )
     save_state(state_path, new_state)
 
     # A note reached canonical this pass iff its Drive base_rev advanced (pull/reconcile/mirror
@@ -802,33 +963,32 @@ def _build_provisional_fn(vault_path: str) -> Callable[[str], None]:
     return provisional_fn
 
 
-def main():
-    """One bidirectional sync pass. Wires real Drive auth, config, capture pipeline, enrichment."""
+def run_pass() -> dict:
+    """One bidirectional sync pass, wired with real Drive auth/config/pipeline/enrichment, returning
+    a summary dict for the in-server scheduler (sync_scheduler.py) AND the CLI. Raises on auth/Drive
+    failure — the caller (scheduler) surfaces it as a 'paused/error' status; Drive stays the sole
+    canonical authority, this only schedules the existing run_once()."""
     from functools import partial
     from drive_auth import get_drive_service
-    from config import get_config
+    from config import reload_config
     from main import run_pipeline
 
-    cfg = get_config()
+    cfg = reload_config()  # pick up GUI [sync]/[lan] toggles each pass
     vault_path = os.environ.get("OMNI_VAULT", str(cfg.vault.root))
     # B-4: default the sync-state sidecar under <vault>/.omni_capture/ — NOT a CWD-relative path.
-    # A CWD-relative default meant running the agent from a different directory lost every note's
-    # base_rev, turning the next pass into blind uploads over advanced hub heads (remote edits lost
-    # from the head, recoverable only via Drive revisions). The vault is a stable, single anchor.
+    # A CWD-relative default lost every note's base_rev when run from another dir, turning the next
+    # pass into blind uploads over advanced hub heads. The vault is a stable, single anchor.
     _default_state = Path(vault_path) / ".omni_capture" / "mobile_sync_state.json"
     _default_state.parent.mkdir(parents=True, exist_ok=True)
     state_path = os.environ.get("OMNI_SYNC_STATE", str(_default_state))
     drive = get_drive_service()
 
-    # Captures ingest into the SAME vault we sync (route_and_enrich writes via run_pipeline).
     bound_pipeline = partial(run_pipeline, vault_root=vault_path)
     enrich_fn = _build_enrich_fn(cfg, vault_path)
     reminders_fn = _build_reminders_fn(vault_path)
-
-    # LAN accelerator (contract §11) is fully additive and gated on `[lan] enabled` -- when
-    # disabled, provisional_fn stays None and run_once's 7-tuple/behavior is exactly as before.
     lan_enabled = bool(cfg.lan.enabled)
     provisional_fn = _build_provisional_fn(vault_path) if lan_enabled else None
+    mirror_captures = bool(cfg.sync.mirror_captures)
 
     uploaded, failed, reconciled, conflicts, pulled, ingested, enriched = run_once(
         vault_path, state_path, drive,
@@ -838,6 +998,7 @@ def main():
         enrich_fn=enrich_fn,
         reminders_fn=reminders_fn,
         provisional_fn=provisional_fn,
+        mirror_captures=mirror_captures,
     )
     print(
         f"[mobile_sync_agent] synced: {uploaded} uploaded, {reconciled} reconciled, "
@@ -853,15 +1014,39 @@ def main():
             refresh_outbound(vault_path)
         except Exception as e:
             print(f"[mobile_sync_agent] lan refresh_outbound failed: {e}")
-
-        # ponytail: no dedicated [lan] sync-interval knob exists yet (this is a single-shot
-        # per-invocation script, not an internal loop) -- fixed 24h TTL as a sane default
-        # backstop for orphaned provisionals; revisit if a configurable cadence is added.
         try:
             import provisional_store as ps
             ps.sweep(os.path.join(vault_path, ".sync"), now_ts=time.time(), ttl_seconds=86400.0)
         except Exception as e:
             print(f"[mobile_sync_agent] lan provisional sweep failed: {e}")
+        try:
+            # Hub endpoint hint (contract §11.8-B) — piggyback the LAN host:port onto each sync
+            # pass so the phone can refresh a paired desktop's drifting LAN IP from the hub.
+            import lan_discovery
+            device_id = lan_discovery.get_or_create_device_id(vault_path)
+            ep_path = lan_discovery.write_lan_endpoint(vault_path, device_id, cfg.lan.host, cfg.lan.port)
+            # Upload that single `.sync/` file to the hub so the phone (Option B) can read the paired
+            # desktop's current LAN host:port. ONLY this one file uploads; the rest of `.sync/` stays
+            # device-local. Skip when write returned None (no LAN host configured yet).
+            if ep_path:
+                upload_sync_file(
+                    drive, ensure_hub_folder(drive), "lan_endpoint.json",
+                    Path(ep_path).read_text(encoding="utf-8"),
+                )
+        except Exception as e:
+            print(f"[mobile_sync_agent] lan endpoint hint write failed: {e}")
+
+    return {
+        "uploaded": uploaded, "pushed": uploaded, "reconciled": reconciled,
+        "conflicts": conflicts, "pulled": pulled, "inbox_ingested": ingested,
+        "enriched": enriched, "errors": failed,
+    }
+
+
+def main():
+    """CLI single-shot pass (unchanged behaviour) — delegates to run_pass()."""
+    run_pass()
+    return
 
 
 if __name__ == "__main__":

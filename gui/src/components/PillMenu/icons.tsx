@@ -174,3 +174,81 @@ export function ClockIcon({ size = 16 }: { size?: number }): JSX.Element {
     </svg>
   );
 }
+
+// ── Sync tab (E6) ───────────────────────────────────────────────────────────
+// Added here rather than inline per the shared-icon-module convention. Nothing
+// in the existing set fits: RefreshIcon is the vault-index/rotate glyph and is
+// reused as-is for "Sync now" and "Rotate secret", but the Sync tab also needs
+// a disclosure chevron, the two ladder node states, and one glyph per plane.
+
+/** Disclosure chevron — rung heads and history expanders. Rotates 90deg when open. */
+export function ChevronRightIcon({ size = 12 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  );
+}
+
+/** Check glyph — a ladder node that is genuinely done (never drawn for an unknown state). */
+export function CheckIcon({ size = 14 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="4 12 9 17 20 6" />
+    </svg>
+  );
+}
+
+/** Alert glyph — a failed pass, a missing client_secret.json, a stopped scheduler. */
+export function AlertIcon({ size = 14 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 8v5" />
+      <path d="M12 16.5v.01" />
+    </svg>
+  );
+}
+
+/** Cloud glyph — Google Drive, the canonical sync plane. */
+export function CloudIcon({ size = 16 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M17.5 19H7a5 5 0 0 1-.6-9.96A6.5 6.5 0 0 1 18.9 8.4 4.3 4.3 0 0 1 17.5 19Z" />
+    </svg>
+  );
+}
+
+/** WiFi glyph — the same-WiFi accelerator. */
+export function WifiIcon({ size = 16 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 12.5a10 10 0 0 1 14 0" />
+      <path d="M8.5 16a5 5 0 0 1 7 0" />
+      <path d="M12 19.5v.01" />
+    </svg>
+  );
+}
+
+/** X / close glyph — dismiss buttons (toasts, reminder rows, panel headers). */
+export function CloseIcon({ size = 14 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M18 6 6 18" />
+      <path d="M6 6l12 12" />
+    </svg>
+  );
+}
+
+/** Grid/panes glyph — FullWindow's Dashboard rail button (sits beside
+ *  MenuIcon target="search"/"vault" at 18px). */
+export function DashboardIcon({ size = 18 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="3" width="8" height="8" rx="1" />
+      <rect x="13" y="3" width="8" height="8" rx="1" />
+      <rect x="3" y="13" width="8" height="8" rx="1" />
+      <rect x="13" y="13" width="8" height="8" rx="1" />
+    </svg>
+  );
+}

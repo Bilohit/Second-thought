@@ -45,3 +45,4 @@ google-auth-oauthlib>=1.2.0         # installed-app OAuth flow + token refresh
 
 # ── LAN accelerator transport ─────────────────────────────────────────────────
 pynacl>=1.5.0                       # app-layer secretbox encryption for /lan/* endpoints
+zeroconf>=0.132.0                   # mDNS advertise/browse for LAN discovery (contract §11.8-A)

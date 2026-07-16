@@ -82,7 +82,10 @@ def _union(a: list[str], b: list[str]) -> list[str]:
 def _instant(iso: str) -> float:
     """Parse an ISO-8601 UTC timestamp to a comparable instant. Peers emit mixed precision
     ("…:00Z" vs "…:00.000Z") where lexicographic order lies — compare as instants (§6.3)."""
-    return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0  # empty/invalid stamp → epoch, so reconcile never crashes on a bad `modified`
 
 
 def reconcile(
@@ -109,12 +112,34 @@ def reconcile(
     # Only the desktop LLM pass sets enriched:true, so `enriched` is the authority for category.
     remote_auth = remote.enriched
     local_auth = local.enriched
-    if remote_auth:
+    # K-1: a user re-categorization (either device) beats the machine value and is never reverted.
+    # `category_source` rides in `extra` (unknown-key preservation); absent → "machine" (legacy).
+    # Parsed extras keep the raw text after ":" (leading space included) — strip before comparing.
+    local_cat_user = local.extra.get("category_source", "machine").strip() == "user"
+    remote_cat_user = remote.extra.get("category_source", "machine").strip() == "user"
+    if local_cat_user and not remote_cat_user:
+        category = local.category
+        category_source = "user"
+    elif remote_cat_user and not local_cat_user:
         category = remote.category
+        category_source = "user"
+    elif local_cat_user and remote_cat_user:
+        # both user-set → newest edit wins (note-level modified, instants), tie → remote
+        category = (
+            local.category
+            if _instant(local.modified) > _instant(remote.modified)
+            else remote.category
+        )
+        category_source = "user"
+    elif remote_auth:
+        category = remote.category
+        category_source = "machine"
     elif local_auth:
         category = local.category
+        category_source = "machine"
     else:
         category = _lww(base.category, local.category, remote.category)
+        category_source = "machine"
     enriched = remote_auth or local_auth
     if enriched:
         enrich_source: Optional[str] = "desktop-llm"
@@ -154,7 +179,8 @@ def reconcile(
         modified=local.modified if local.modified > remote.modified else remote.modified,
         device=local.device,  # the reconciling device stamps; informational only
         attachments=_union(local.attachments, remote.attachments),  # additive; never lose one
-        extra={**remote.extra, **local.extra},  # preserve both; local wins collisions
+        # preserve both (local wins collisions); K-1 category_source follows the category winner
+        extra={**remote.extra, **local.extra, "category_source": category_source},
         body=merged_body,
     )
 

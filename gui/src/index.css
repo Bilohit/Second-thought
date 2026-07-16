@@ -598,8 +598,8 @@ html, body, #root {
 }
 
 .rail-btn--footer {
-  flex: none;
-  height: 36px;
+  flex: 1 1 0;
+  min-height: 28px;
   font-size: 16px;
 }
 
@@ -628,6 +628,33 @@ html, body, #root {
 }
 .seg-swap-panel {
   animation: segSwapIn 220ms var(--menu-travel-ease) both;
+}
+
+/* Sync tab (E6) — keyed-remount content swap for the wizard's ladder rungs and
+   the dashboard's readout/history rows. One vocabulary: travel curve, 260ms
+   standard, ease-out only, no bounce. The 45ms stagger is applied per-row via
+   an inline animation-delay, the same way segSwapIn takes --swap-dir. */
+@keyframes syncRiseIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.sync-rise {
+  animation: syncRiseIn 260ms var(--menu-travel-ease) both;
+}
+
+/* Progressive disclosure (rung bodies, LAN body): 0fr -> 1fr grid rather than a
+   guessed max-height, so a rung of any content height opens to exactly its size. */
+.sync-disclose {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 260ms var(--menu-travel-ease);
+}
+.sync-disclose[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+.sync-disclose > * {
+  overflow: hidden;
+  min-height: 0;
 }
 
 /* Reduced motion: collapse everything to a plain fade */
@@ -668,6 +695,13 @@ html, body, #root {
 
   /* Drop the horizontal travel — instant opacity swap only. */
   @keyframes segSwapIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  /* Drop the vertical travel — instant opacity swap only. The disclosure grid
+     transition is already neutralised by the blanket transition-duration above. */
+  @keyframes syncRiseIn {
     from { opacity: 0; }
     to   { opacity: 1; }
   }

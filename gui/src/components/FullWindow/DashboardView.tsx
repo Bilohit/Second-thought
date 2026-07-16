@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import StepIndicator from "../StepIndicator";
 import FluidVisualizer from "../PillMenu/FluidVisualizer";
-import { MicIcon } from "../PillMenu/icons";
+import { MicIcon, CloseIcon, ChevronRightIcon } from "../PillMenu/icons";
 import { formatElapsed } from "../../lib/voiceLimits";
 import {
   getStats, getInbox, approveInboxItem, discardInboxItem,
@@ -284,9 +284,9 @@ function renderRemindersCard(reminders: Reminder[], onDelete: (id: number) => vo
             <button
               onClick={() => onDelete(r.id)}
               aria-label="Delete reminder"
-              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", fontSize: 12, padding: "2px 4px", flexShrink: 0 }}
+              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", fontSize: 12, padding: "2px 4px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}
             >
-              ✕
+              <CloseIcon />
             </button>
           </div>
         ))}
@@ -356,7 +356,7 @@ function headerLink(label: string, onClick: () => void) {
       }}
     >
       {label}
-      <span className="hdr-chev" aria-hidden="true">›</span>
+      <span className="hdr-chev" aria-hidden="true"><ChevronRightIcon size={10} /></span>
     </button>
   );
 }

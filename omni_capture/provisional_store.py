@@ -6,10 +6,21 @@ Layout under <sync_dir>:
 """
 import json
 import os
+import re
 from note_hash import body_hash
 
 _STATE = "provisional_state.json"
 _DIR = "provisional"
+# B-12: a LAN-supplied op_id becomes `<op_id>.md` on disk (stage() below). A forged push with an
+# op_id like "../../evil" or an absolute path must never escape the staging dir — restrict to a
+# safe basename before it ever touches the filesystem.
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validate_op_id(op_id: str) -> str:
+    if not isinstance(op_id, str) or not _SAFE_ID_RE.match(op_id):
+        raise ValueError(f"unsafe op_id: {op_id!r}")
+    return op_id
 
 
 def _dir(sync_dir: str) -> str:
@@ -39,6 +50,7 @@ def _save_state(sync_dir: str, rows: list) -> None:
 
 
 def stage(sync_dir: str, op_id: str, note_id: str, body: str, meta: dict):
+    op_id = _validate_op_id(op_id)                    # B-12: reject a path-traversal/forged op_id
     bh = body_hash(body)
     rows = _load_state(sync_dir)
     if any(r["note_id"] == note_id and r["body_hash"] == bh for r in rows):
@@ -53,6 +65,29 @@ def stage(sync_dir: str, op_id: str, note_id: str, body: str, meta: dict):
         "device": meta.get("device", ""), "modified": meta.get("modified", ""),
     })
     _save_state(sync_dir, rows)
+
+    # B-10: index the provisional row into captures.db so a LAN-delivered note is chat/search
+    # visible BEFORE Drive confirms it (contract §11). The production call site for
+    # index_writer.upsert_provisional was missing (only the test fixture called it) — wire it in
+    # here, the nearest module boundary both stage() callers (the /lan/push handler and any future
+    # caller) share, rather than inside the POST/GET LAN handlers themselves. Best-effort: a
+    # failure here must never fail the (already-durable) staging above.
+    # sync_dir is `<vault_root>/.sync` (config.py:Config.vault_sync_dir()) — vault_root is its
+    # parent, which is where captures.db lives (index_writer.get_db_path).
+    try:
+        from pathlib import Path
+
+        import index_writer as iw
+
+        vault_root = Path(sync_dir).parent
+        db = iw.init_db(vault_root)
+        try:
+            iw.upsert_provisional(db, op_id, note_id, body, meta or {})
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"[provisional_store] upsert_provisional failed for {op_id}: {e}")
+
     return path
 
 

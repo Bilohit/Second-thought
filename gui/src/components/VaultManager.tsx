@@ -18,7 +18,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openVaultPath } from "../lib/api";
-import { ClockIcon } from "./PillMenu/icons";
+import { BellIcon, ClockIcon } from "./PillMenu/icons";
 import {
   getVaultCategories,
   createVaultCategory,
@@ -27,6 +27,10 @@ import {
   updateCategoryDescription,
   getVaultCategoryFiles,
   getProvisional,
+  getVaultConflicts,
+  createReminder,
+  getSyncIgnore,
+  setSyncIgnore,
   type VaultCategory,
   type VaultFile,
   type ProvisionalItem,
@@ -61,6 +65,10 @@ interface Props {
    *  action-button cluster (or `null` on unmount/target switch) so the
    *  caller can forward it into `CompactShell`'s `headerActions` slot. */
   onHeaderActionsChange?: (actions: React.ReactNode | null) => void;
+  /** F-7 follow-up: opens a file in the full-window NoteEditor. Full-window
+   *  only (FullWindow threads this from its own `setEditorPath`) — omitted
+   *  in compact-mode usage, where rows keep the external-open behaviour. */
+  onOpenNote?: (path: string) => void;
 }
 
 // ── Category card ─────────────────────────────────────────────────────────────
@@ -221,7 +229,47 @@ function CategoryCard({
 
 // ── File list row ─────────────────────────────────────────────────────────────
 
-function FileRow({ file, highlighted }: { file: VaultFile; highlighted?: boolean }) {
+// F-5: dashed ghost dot = local-only sync-ignore, matching the phone's visual
+// language exactly (NoteRow.tsx T4 "ghost dot": dashed text-3 ring, transparent
+// fill, 10px so the dashes stay legible) -- a filled state color would lie
+// about a note that never syncs.
+function GhostDot({ ignored, onClick }: { ignored: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      title={ignored ? "Sync-ignored — local only. Click to re-enable sync." : "Synced. Click to make this note local-only."}
+      aria-pressed={ignored}
+      style={{
+        width: 14, height: 14, flexShrink: 0, padding: 0,
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        background: "none", border: "none", cursor: "pointer",
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          width: 10, height: 10, borderRadius: "50%",
+          border: `1.3px dashed var(--text-3)`,
+          background: "transparent",
+          opacity: ignored ? 1 : 0.3,
+          transition: "opacity 0.15s",
+        }}
+      />
+    </button>
+  );
+}
+
+function FileRow({
+  file, highlighted, hasConflict, ignored, onOpen, onRemind, onToggleIgnore,
+}: {
+  file: VaultFile;
+  highlighted?: boolean;
+  hasConflict?: boolean;
+  ignored?: boolean;
+  onOpen?: (path: string) => void;
+  onRemind?: (file: VaultFile) => void;
+  onToggleIgnore?: (file: VaultFile) => void;
+}) {
   const kb = (file.size_bytes / 1024).toFixed(1);
   const date = new Date(file.modified * 1000).toLocaleDateString(undefined, {
     month: "short", day: "numeric", year: "numeric",
@@ -230,11 +278,13 @@ function FileRow({ file, highlighted }: { file: VaultFile; highlighted?: boolean
   return (
     <div
       className="row-hover-flat"
+      onClick={onOpen ? () => onOpen(file.path) : undefined}
       style={{
         ...ROW_DIVIDER,
         margin: "0 -6px",
         padding: "7px 6px",
         borderRadius: "var(--radius-sm)",
+        cursor: onOpen ? "pointer" : undefined,
         // The highlight flash owns `background`/`transition` inline (and
         // therefore wins over the hover class's CSS) only while it's
         // actually playing — at rest those properties are left to
@@ -252,8 +302,59 @@ function FileRow({ file, highlighted }: { file: VaultFile; highlighted?: boolean
       <span style={{ flex: 1, fontSize: 12, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {file.name}
       </span>
+      {hasConflict && (
+        <span title="Conflicted copy exists" style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--red)", flexShrink: 0 }} />
+      )}
+      {onToggleIgnore && (
+        <GhostDot ignored={!!ignored} onClick={() => onToggleIgnore(file)} />
+      )}
       <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap" }}>{kb} KB</span>
       <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap" }}>{date}</span>
+      {onRemind && (
+        <button
+          className="btn-hover"
+          style={{ ...BTN_GHOST, flexShrink: 0 }}
+          title="Remind me"
+          onClick={(e) => { e.stopPropagation(); onRemind(file); }}
+        >
+          <BellIcon size={12} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── F-6: inline "Remind me" prompt on a vault file row ────────────────────────
+
+function RemindMePrompt({ file, onConfirm, onCancel }: { file: VaultFile; onConfirm: (whenIso: string) => void; onCancel: () => void }) {
+  const [when, setWhen] = useState("");
+  return (
+    <div style={{
+      background: "var(--surface-2)", border: "1px solid color-mix(in srgb, var(--accent) 30%, var(--border))",
+      borderRadius: "var(--radius)", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8,
+    }}>
+      <span style={{ fontSize: 11, color: "var(--text-2)", letterSpacing: "0.04em" }}>
+        Remind me about <strong style={{ color: "var(--text-1)" }}>{file.name}</strong>
+      </span>
+      <input
+        autoFocus type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)}
+        style={{ ...INPUT_STYLE, width: "100%", boxSizing: "border-box" }}
+        onFocus={focusRing} onBlur={blurRing}
+      />
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
+        <button onClick={onCancel} className="btn-hover" style={{ ...BTN_GHOST, color: "var(--text-2)", fontSize: 12, padding: "5px 10px" }}>Cancel</button>
+        <button
+          onClick={() => when && onConfirm(when)}
+          disabled={!when}
+          style={{
+            padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: "var(--radius)",
+            border: "none", background: "var(--accent)", color: "var(--on-accent)",
+            cursor: when ? "pointer" : "not-allowed", opacity: when ? 1 : 0.4,
+          }}
+        >
+          Set reminder
+        </button>
+      </div>
     </div>
   );
 }
@@ -459,7 +560,7 @@ type ModalState =
   | { kind: "rename"; name: string }
   | { kind: "editDescription"; name: string; current: string | null };
 
-export default function VaultManager({ visible, onClose, openResult, onConsumeOpenResult, measureRef, embedded = false, compactHeader = false, onHeaderActionsChange }: Props) {
+export default function VaultManager({ visible, onClose, openResult, onConsumeOpenResult, measureRef, embedded = false, compactHeader = false, onHeaderActionsChange, onOpenNote }: Props) {
   // Mounted+visible pattern (mirrors SettingsPanel): the panel stays mounted
   // while transitioning out so it can animate, but is removed from the DOM
   // once fully hidden so it can't eat clicks meant for the capture card.
@@ -486,6 +587,13 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
   const [modal, setModal] = useState<ModalState>({ kind: "none" });
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmingDeleteName, setConfirmingDeleteName] = useState<string | null>(null);
+  // F-1: bulk conflict badge set (one request instead of one per row).
+  const [conflictPaths, setConflictPaths] = useState<Set<string>>(new Set());
+  // F-5: local-only sync-ignore set (vault-relative posix paths).
+  const [ignoredRelPaths, setIgnoredRelPaths] = useState<Set<string>>(new Set());
+  // F-6: inline "Remind me" prompt target for the currently drilled-in file list.
+  const [remindTarget, setRemindTarget] = useState<VaultFile | null>(null);
+  const [remindDone, setRemindDone] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -508,7 +616,47 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
     } catch {
       setProvisionalItems([]);
     }
+    // F-1: same best-effort/non-blocking contract as the provisional overlay.
+    try {
+      const conflicts = await getVaultConflicts();
+      setConflictPaths(new Set(conflicts.map((c) => c.path)));
+    } catch {
+      setConflictPaths(new Set());
+    }
+    // F-5: same best-effort/non-blocking contract.
+    try {
+      const ignored = await getSyncIgnore();
+      setIgnoredRelPaths(new Set(ignored));
+    } catch {
+      setIgnoredRelPaths(new Set());
+    }
   }, []);
+
+  // Vault-relative posix path for a file, matching sync_ignore.py's own
+  // normalization (strip the vault-root prefix, forward slashes).
+  const toRelPath = useCallback((absPath: string): string => {
+    const normAbs = absPath.replace(/\\/g, "/");
+    const normRoot = vaultRoot.replace(/\\/g, "/").replace(/\/$/, "");
+    return normAbs.startsWith(normRoot + "/") ? normAbs.slice(normRoot.length + 1) : normAbs;
+  }, [vaultRoot]);
+
+  const handleToggleIgnore = useCallback((file: VaultFile) => {
+    const rel = toRelPath(file.path);
+    const nextIgnored = !ignoredRelPaths.has(rel);
+    setIgnoredRelPaths((cur) => {
+      const next = new Set(cur);
+      if (nextIgnored) next.add(rel); else next.delete(rel);
+      return next;
+    });
+    setSyncIgnore(file.path, nextIgnored).catch(() => {
+      // best-effort: revert local optimism on failure
+      setIgnoredRelPaths((cur) => {
+        const next = new Set(cur);
+        if (nextIgnored) next.delete(rel); else next.add(rel);
+        return next;
+      });
+    });
+  }, [ignoredRelPaths, toRelPath]);
 
   const drillInto = useCallback(async (name: string, highlightPath?: string) => {
     setDrillCat(name);
@@ -544,6 +692,8 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
       setActionError(null);
       setHighlightFile(null);
       setConfirmingDeleteName(null);
+      setRemindTarget(null);
+      setRemindDone(null);
     }
     wasVisible.current = visible;
   }, [visible]);
@@ -872,9 +1022,32 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
                 No notes here yet.
               </span>
             )}
+            {remindTarget && (
+              <RemindMePrompt
+                file={remindTarget}
+                onCancel={() => setRemindTarget(null)}
+                onConfirm={(whenIso) => {
+                  createReminder(remindTarget.path, remindTarget.name, whenIso)
+                    .then(() => { setRemindDone(remindTarget.filename); setRemindTarget(null); setTimeout(() => setRemindDone(null), 2200); })
+                    .catch((e) => setActionError(e instanceof Error ? e.message : "Failed to set reminder"));
+                }}
+              />
+            )}
             {drillFiles.map((f) => (
-              <FileRow key={f.filename} file={f} highlighted={highlightFile === f.filename} />
+              <FileRow
+                key={f.filename}
+                file={f}
+                highlighted={highlightFile === f.filename}
+                hasConflict={conflictPaths.has(f.path)}
+                ignored={ignoredRelPaths.has(toRelPath(f.path))}
+                onOpen={onOpenNote}
+                onRemind={(file) => { setActionError(null); setRemindTarget(file); }}
+                onToggleIgnore={handleToggleIgnore}
+              />
             ))}
+            {remindDone && (
+              <span style={{ fontSize: 11, color: "var(--green)", padding: "2px 2px" }}>Reminder set for {remindDone}</span>
+            )}
           </>
         )}
       </div>

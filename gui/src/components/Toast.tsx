@@ -1,4 +1,5 @@
 import type { ToastItem } from "../hooks/useToasts";
+import { CloseIcon } from "./PillMenu/icons";
 
 const TONE_COLOR: Record<ToastItem["tone"], string> = {
   success: "var(--green)",
@@ -67,9 +68,12 @@ export default function Toast({ toast, onDismiss }: Props) {
             lineHeight: 1,
             padding: "2px 4px",
             flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
           }}
         >
-          ✕
+          <CloseIcon />
         </button>
       </div>
     </div>

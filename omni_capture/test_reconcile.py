@@ -88,6 +88,36 @@ def test_neither_enriched_category_lww():
     assert r.merged.category == "b"
 
 
+# --- K-1: user category override beats machine, never reverted (mirrors reconcile.test.ts) ---
+def test_k1_user_override_beats_enriched():
+    base = mk(category="work", enriched=True, enrich_source="desktop-llm")
+    local = mk(category="personal", extra={"category_source": "user"})
+    remote = mk(category="work", enriched=True, enrich_source="desktop-llm")
+    r = reconcile(base, local, remote)
+    assert r.merged.category == "personal"
+    assert r.merged.extra["category_source"] == "user"
+
+
+def test_k1_user_override_on_remote_wins():
+    base = mk(category="work")
+    local = mk(category="work", enriched=True, enrich_source="desktop-llm")
+    remote = mk(category="ideas", extra={"category_source": "user"})
+    assert reconcile(base, local, remote).merged.category == "ideas"
+
+
+def test_k1_both_user_newest_modified_wins():
+    local = mk(category="L", modified="2026-07-09T12:00:00Z", extra={"category_source": "user"})
+    remote = mk(category="R", modified="2026-07-09T08:00:00Z", extra={"category_source": "user"})
+    r = reconcile(mk(category="b"), local, remote)
+    assert r.merged.category == "L"
+    assert r.merged.extra["category_source"] == "user"
+
+
+def test_k1_legacy_absent_source_machine_path():
+    r = reconcile(mk(category="a"), mk(category="b"), mk(category="a"))
+    assert r.merged.extra["category_source"] == "machine"
+
+
 # --- title, remind_at, identity ---
 def test_c6_retitle_id_immutable():
     r = reconcile(mk(title="Old"), mk(title="New"), mk(title="Old"))

@@ -5,6 +5,8 @@ this listener has no header middleware; the encrypted envelope both authenticate
 import hmac
 import json
 import os
+import secrets
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -19,6 +21,40 @@ router = APIRouter()
 
 # Outbound feed (desktop's own changed notes since a cursor). Filled by refresh_outbound() below.
 _outbound: list = []
+
+# Nonce challenge store (contract §11.9): authenticates + de-replays GET /lan/changes.
+# {nonce_hex: expiry_epoch}. In-memory, single-process, thread-locked (uvicorn serves polls
+# concurrently), single-use (consumed on redeem), size-capped so an unauthenticated /lan/nonce
+# caller can't grow it unboundedly.
+# ponytail: in-memory dict is right for one LAN listener — nonces are volatile op-state, lost on
+# restart (phone just re-fetches). Only revisit if the LAN server ever goes multi-process.
+_NONCE_TTL = 30.0          # seconds
+_NONCE_CAP = 256           # max outstanding; oldest-by-expiry evicted when full
+_nonces: dict = {}
+_nonce_lock = threading.Lock()
+
+
+def _issue_nonce() -> tuple:
+    """Mint + record a single-use nonce, returning (nonce_hex, exp_epoch)."""
+    now = time.time()
+    nonce = secrets.token_hex(16)
+    exp = now + _NONCE_TTL
+    with _nonce_lock:
+        # Drop expired first, then bound size (evict soonest-to-expire = oldest).
+        for n in [n for n, e in _nonces.items() if e <= now]:
+            _nonces.pop(n, None)
+        while len(_nonces) >= _NONCE_CAP:
+            _nonces.pop(min(_nonces, key=_nonces.get), None)
+        _nonces[nonce] = exp
+    return nonce, exp
+
+
+def _consume_nonce(nonce: str) -> bool:
+    """True iff nonce is known + unexpired; deletes it (single-use) either way it's found."""
+    now = time.time()
+    with _nonce_lock:
+        exp = _nonces.pop(nonce, None)
+    return exp is not None and exp > now
 
 
 def set_outbound(changes: list) -> None:
@@ -80,6 +116,18 @@ def _vault_path() -> str:
     return str(get_config().vault.root)
 
 
+def _check_secret(plain: dict) -> None:
+    """Shared auth gate for both LAN endpoints (contract §11.3). Raises 403 on failure.
+    An empty server secret must never degrade to key-only auth: this listener is
+    network-exposed, and hmac.compare_digest("", "") would otherwise accept secret:"" from
+    anyone holding the shared key but not the secret."""
+    lan_secret = _lan_secret()
+    if not lan_secret:
+        raise HTTPException(status_code=403, detail="lan secret not configured")
+    if not hmac.compare_digest(plain.get("secret", ""), lan_secret):
+        raise HTTPException(status_code=403, detail="bad secret")
+
+
 @router.post("/lan/push")
 async def lan_push(request: Request):
     env = await request.json()
@@ -87,32 +135,42 @@ async def lan_push(request: Request):
         plain = json.loads(lan_crypto.open_envelope(env, _lan_key()))
     except Exception:
         raise HTTPException(status_code=400, detail="undecryptable envelope")
-    lan_secret = _lan_secret()
-    if not lan_secret:
-        # An empty server secret must never degrade to key-only auth: unlike the
-        # loopback dev server, this listener is network-exposed, and
-        # hmac.compare_digest("", "") would otherwise accept secret:"" from anyone.
-        raise HTTPException(status_code=403, detail="lan secret not configured")
-    if not hmac.compare_digest(plain.get("secret", ""), lan_secret):
-        raise HTTPException(status_code=403, detail="bad secret")
+    _check_secret(plain)
     ps.stage(_sync_dir(), plain["op_id"], plain["note_id"], plain["body"],
              {"device": plain.get("device", ""), "modified": plain.get("modified", ""),
               "staged_at": time.time()})               # epoch seconds -> TTL sweep
     return {"ok": True}
 
 
+@router.get("/lan/nonce")
+async def lan_nonce():
+    # First handshake step (contract §11.9): mint a single-use, short-TTL challenge the phone
+    # must seal back into GET /lan/changes. Unauthenticated by design — a nonce is useless
+    # without the shared key + secret. Sealed for wire consistency (every LAN body is an envelope).
+    nonce, exp = _issue_nonce()
+    return lan_crypto.seal(json.dumps({"nonce": nonce, "exp": exp}), _lan_key())
+
+
 @router.get("/lan/changes")
-async def lan_changes(since: str = "0"):
-    # Populate the outbound feed in THIS (serving) process. refresh_outbound's only other
-    # caller is the single-shot mobile_sync_agent, whose _outbound lives in a separate
-    # process and never reaches the running LAN server -- so without this the desktop->phone
-    # accelerator (contract §11.3) always served an empty feed. Scan for notes changed since
-    # the phone's cursor so we serve only this peer's recent edits (best-effort; Drive stays
-    # the sole canonical/version authority).
+async def lan_changes(auth: str = ""):
+    # AUTH BEFORE SCAN (contract §11.3/§11.9): the fix for the pre-B11 gap where an
+    # unauthenticated same-WiFi caller forced a full-vault refresh_outbound() and received the
+    # key-sealed feed. `auth` is a sealed {secret, nonce, since} envelope; verify secret + a
+    # server-issued single-use nonce BEFORE touching the vault. Any failure 403/400s with no scan.
     try:
-        since_ts = float(since)
+        req = json.loads(lan_crypto.open_envelope(json.loads(auth), _lan_key()))
+    except Exception:
+        raise HTTPException(status_code=400, detail="undecryptable auth envelope")
+    _check_secret(req)
+    if not _consume_nonce(req.get("nonce", "")):
+        raise HTTPException(status_code=403, detail="bad or expired nonce")
+    try:
+        since_ts = float(req.get("since", 0))
     except (TypeError, ValueError):
         since_ts = 0.0
+    # Populate the outbound feed in THIS (serving) process (refresh_outbound's other caller is the
+    # single-shot mobile_sync_agent in a separate process). Scan for notes changed since the
+    # phone's cursor (best-effort; Drive stays the sole canonical/version authority).
     # ponytail: re-scans the vault per poll (5s while the phone is foregrounded). Fine for a
     # same-WiFi accelerator; add an mtime-keyed cache if a vault ever holds thousands of notes.
     refresh_outbound(_vault_path(), since_ts=since_ts)

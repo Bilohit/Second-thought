@@ -31,7 +31,7 @@ import {
 } from "./ui/styles";
 import { Tabs } from "./ui/Tabs";
 import { SaveIcon } from "./PillMenu/icons";
-import PairingPanel from "./PairingPanel";
+import SyncPanel from "./Sync/SyncPanel";
 
 interface Props {
   visible:      boolean;
@@ -340,9 +340,10 @@ export default function SettingsPanel({
   const [chatSystemPrompt, setChatSystemPrompt] = useState("");
   const [reminderDelivery, setReminderDelivery] = useState<"app" | "os">("app");
 
-  // Form (look/placement) vs Function (behavior) tabs. Always reopens on
-  // Form so returning to Settings doesn't strand the user on Function.
-  const [tab, setTab] = useState<"form" | "function" | "pairing">("form");
+  // Form (look/placement) vs Function (behavior) vs Sync (Drive + the same-WiFi
+  // shortcut, which absorbed the old "Pairing" tab). Always reopens on Form so
+  // returning to Settings doesn't strand the user on another tab.
+  const [tab, setTab] = useState<"form" | "function" | "sync">("form");
   useEffect(() => { if (visible) setTab("form"); }, [visible]);
 
   // Auto-save: any change to a server-persisted field marks the panel dirty;
@@ -598,7 +599,7 @@ export default function SettingsPanel({
 
       {/* Tabs */}
       <Tabs
-        tabs={[{ id: "form", label: "Form" }, { id: "function", label: "Function" }, { id: "pairing", label: "Pairing" }]}
+        tabs={[{ id: "form", label: "Form" }, { id: "function", label: "Function" }, { id: "sync", label: "Sync" }]}
         active={tab}
         onChange={setTab}
         dense={compact}
@@ -1079,7 +1080,7 @@ export default function SettingsPanel({
           </>
         )}
 
-        {tab === "pairing" && <PairingPanel compact={compact} />}
+        {tab === "sync" && <SyncPanel compact={compact} />}
       </div>
     </div>
   );

@@ -156,6 +156,17 @@ class LanConfig:
 
 
 @dataclass
+class SyncConfig:
+    """Drive batched-sync scheduler (phase-5 §1.1). Interval config is a per-device LOCAL
+    preference — deliberately NOT synced. Off by default until OAuth is configured."""
+    enabled: bool            = False
+    interval_minutes: int    = 60     # min 5 (clamped on read); 0 = never auto-sync (sentinel)
+    sync_on_launch: bool     = True
+    sync_after_capture: bool = False  # a capture burst shouldn't thrash Drive; interval covers it
+    mirror_captures: bool    = False  # K-2: opt-in — mirror origin:capture files to the hub
+
+
+@dataclass
 class Config:
     vault: VaultConfig                = field(default_factory=VaultConfig)
     ollama: OllamaConfig              = field(default_factory=OllamaConfig)
@@ -169,6 +180,7 @@ class Config:
     youtube: YouTubeConfig            = field(default_factory=YouTubeConfig)
     look: LookConfig                  = field(default_factory=LookConfig)
     lan: LanConfig                    = field(default_factory=LanConfig)
+    sync: SyncConfig                  = field(default_factory=SyncConfig)
 
     def vault_sync_dir(self) -> str:
         """<vault>/.sync -- durable staging root for LAN provisional overlay (contract §11)."""
@@ -318,6 +330,18 @@ def load_config(config_path: Path | None = None) -> Config:
     cfg.lan.host    = str(lan_raw.get("host", ""))
     cfg.lan.port    = int(lan_raw.get("port", 7071))
     cfg.lan.key     = str(lan_raw.get("key", ""))
+
+    sync_raw = raw.get("sync", {})
+    # Same string-vs-bool hazard as [lan] (GUI's hand-rolled TOML writer may quote bools) — parse
+    # explicitly so a quoted "false" never arms the scheduler. Interval clamped to >=5 min, EXCEPT
+    # 0 — the "never auto-sync" sentinel (sync_scheduler.AUTO_SYNC_NEVER). Clamping here would
+    # silently turn "never" into "every 5 minutes", so the sentinel passes through unclamped.
+    _interval = int(sync_raw.get("interval_minutes", 60))
+    cfg.sync.enabled            = _parse_bool(sync_raw.get("enabled", False))
+    cfg.sync.interval_minutes   = 0 if _interval <= 0 else max(5, _interval)
+    cfg.sync.sync_on_launch     = _parse_bool(sync_raw.get("sync_on_launch", True))
+    cfg.sync.sync_after_capture = _parse_bool(sync_raw.get("sync_after_capture", False))
+    cfg.sync.mirror_captures    = _parse_bool(sync_raw.get("mirror_captures", False))
 
     look_raw = raw.get("look", {})
     cfg.look.chat_min_similarity_high   = float(look_raw.get("chat_min_similarity_high", 0.45))

@@ -189,6 +189,22 @@ async def list_category_files(name: str):
 
 # -- Search & stats endpoints -------------------------------------------------
 
+_TAG_TOKEN_RE = re.compile(r"(?:^|\s)tag:(\S+)")
+
+
+def _extract_tag_filter(q: str) -> tuple[str, Optional[str]]:
+    """F-4: pull a leading/embedded `tag:xxx` token out of a free-text query
+    string (Library's tags browser hands off exactly this shape). Returns
+    (remaining_query, tag) -- remaining_query has the token stripped so it
+    doesn't also get FTS-matched as literal text."""
+    m = _TAG_TOKEN_RE.search(q)
+    if not m:
+        return q, None
+    tag = m.group(1)
+    remaining = (q[: m.start()] + q[m.end():]).strip()
+    return remaining, tag
+
+
 @router.get("/search")
 async def search_captures(
     q: str = "",
@@ -197,13 +213,16 @@ async def search_captures(
     limit: int = 25,
     x_log_level: Optional[str] = Header(None, alias="X-Log-Level"),
 ):
-    """Full-text search over captured notes via the SQLite FTS5 index."""
+    """Full-text search over captured notes via the SQLite FTS5 index.
+    `q` may embed a `tag:<value>` token (F-4 tags browser hand-off) -- it is
+    stripped from the free-text match and applied as an exact-tag filter."""
     from index_writer import search as idx_search
     from look_log import debug_logging_from_level, set_look_verbose, look_debug, look_info
     set_look_verbose(debug_logging_from_level(x_log_level))
     limit = min(max(1, limit), 200)
-    look_debug(f"GET /search q={q!r} category={category} since={since} limit={limit}")
-    results = idx_search(q, _srv()._get_vault_root(), category=category, since=since, limit=limit)
+    free_q, tag = _extract_tag_filter(q)
+    look_debug(f"GET /search q={q!r} category={category} since={since} limit={limit} tag={tag}")
+    results = idx_search(free_q, _srv()._get_vault_root(), category=category, since=since, limit=limit, tag=tag)
     look_info(f"GET /search returned {len(results)} result(s) for q={q!r}")
     return {"results": results, "count": len(results), "query": q}
 
@@ -213,6 +232,138 @@ async def capture_stats():
     """Aggregated capture statistics backed by SQLite."""
     from index_writer import stats as idx_stats
     return idx_stats(_srv()._get_vault_root())
+
+
+# -- F-10: semantic search band ------------------------------------------------
+
+@router.get("/search/semantic")
+async def search_semantic(q: str = "", limit: int = 5):
+    """Top-k semantically related notes for the Look "Semantic" band beneath
+    FTS results. Reuses the same embeddings store/ranking as retrieve_related
+    (RAG context) -- just returns structured rows instead of a prompt string.
+    Empty query or a disabled/empty vector store both resolve to []."""
+    from config import get_config
+    from vector_store import semantic_search
+    cfg = get_config()
+    if not q.strip() or not cfg.vector.enabled:
+        return {"results": []}
+    root = _srv()._get_vault_root()
+    results = await anyio.to_thread.run_sync(
+        lambda: semantic_search(
+            root, q, cfg.ollama.base_url, cfg.vector.embed_model,
+            top_k=min(max(1, limit), 25), min_similarity=cfg.vector.min_similarity,
+        )
+    )
+    return {"results": results}
+
+
+# -- F-4: Tags browser ----------------------------------------------------
+
+def _build_tag_tree(index: dict[str, dict[str, str]]) -> list[dict]:
+    """One level of `namespace/leaf` nesting (matches mock 05-desktop-tags.html:
+    `project/` groups `project/alpha`, `project/beta`; a bare tag like `reading`
+    has no children). *index* is tag_index.scan_tag_paths' `tag -> {path: label}`.
+
+    Every count is a number of DISTINCT notes -- `len` of the tag's path set --
+    and a namespace row unions its children rather than summing their counts, so
+    a note tagged both `project/alpha` and `project/beta` counts once under
+    `project/`. That is exactly the set `/search?q=tag:project/` lists, which is
+    the whole point of both sides resolving through the same scan.
+
+    ponytail: deeper nesting (`a/b/c`) still collapses into the first-segment
+    namespace bucket for DISPLAY -- upgrade to a real N-level tree only if a
+    vault's tag vocabulary actually grows that deep. Counts and listing agree
+    either way: both resolve a namespace by prefix.
+    """
+    top: list[dict] = []
+    ns_index: dict[str, int] = {}
+    ns_paths: dict[str, set[str]] = {}
+    for t in sorted(index):
+        paths = index[t]
+        recent = list(dict.fromkeys(paths.values()))[:2]
+        if "/" in t:
+            ns = t.split("/", 1)[0] + "/"
+            if ns not in ns_index:
+                ns_index[ns] = len(top)
+                ns_paths[ns] = set()
+                top.append({"tag": ns, "count": 0, "recent": [], "children": []})
+            node = top[ns_index[ns]]
+            node["children"].append({"tag": t, "count": len(paths), "recent": recent})
+            ns_paths[ns].update(paths)
+            node["count"] = len(ns_paths[ns])
+        else:
+            top.append({"tag": t, "count": len(paths), "recent": recent, "children": []})
+    return top
+
+
+@router.get("/tags")
+async def list_tags():
+    """Tag tree for Library's Tags view, read from the vault files -- the same
+    scan `/search?q=tag:<x>` resolves through (tag_index.py), so a row's count
+    always matches the number of notes its click lists.
+
+    This used to union the captures.db `tags` column (captures) with a
+    frontmatter scan (`origin: note` only), while the listing side saw the DB
+    column alone -- the two halves disagreed by construction. tag_index reads
+    both frontmatter shapes off disk instead, so captures need no DB half."""
+    from tag_index import scan_tag_paths
+    return {"tags": _build_tag_tree(scan_tag_paths(_srv()._get_vault_root()))}
+
+
+# -- F-1: Conflict resolver (desktop) --------------------------------------
+
+@router.get("/vault/conflicts")
+async def list_vault_conflicts_endpoint():
+    """Bulk conflict scan so VaultManager/Library can badge affected rows
+    with ONE request instead of one /note/conflict round trip per file."""
+    from conflict_resolver import list_vault_conflicts
+    return {"conflicts": list_vault_conflicts(_srv()._get_vault_root())}
+
+
+# -- F-2: Trash (desktop) ---------------------------------------------------
+
+@router.get("/trash")
+async def list_trash_endpoint():
+    """List of notes currently sitting in `_trash/` for Library's Trash view."""
+    from trash import list_trash
+    return {"items": list_trash(_srv()._get_vault_root())}
+
+
+class TrashRestore(BaseModel):
+    filename: str
+
+
+@router.post("/trash/restore")
+async def restore_trash_endpoint(body: TrashRestore):
+    """Move a trashed note back to its original category folder."""
+    from trash import restore_from_trash
+    root = _srv()._get_vault_root()
+    try:
+        return restore_from_trash(root, body.filename)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"'{body.filename}' not found in trash.")
+
+
+# -- F-5: Per-note sync-ignore (desktop-local, no contract change) ----------
+
+@router.get("/sync/ignore")
+async def list_sync_ignore():
+    """Vault-relative paths currently excluded from Drive sync (local-only)."""
+    from sync_ignore import load_ignored
+    return {"ignored": sorted(load_ignored(_srv()._get_vault_root()))}
+
+
+class SyncIgnorePatch(BaseModel):
+    path: str
+    ignored: bool
+
+
+@router.post("/sync/ignore")
+async def set_sync_ignore(body: SyncIgnorePatch):
+    from sync_ignore import set_ignored
+    root = _srv()._get_vault_root()
+    updated = set_ignored(root, body.path, body.ignored)
+    return {"ok": True, "ignored": sorted(updated)}
 
 
 if __name__ == "__main__":

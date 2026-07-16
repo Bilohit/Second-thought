@@ -139,6 +139,16 @@ export interface Config {
   reminders?: {
     delivery?: "app" | "os";
   };
+  // GET /config returns the raw TOML document, so the whole section is absent until
+  // something writes it — every field here is optional and the caller falls back to
+  // omni_capture/config.py:SyncConfig's defaults, never to a guess.
+  sync?: {
+    enabled?: boolean;
+    interval_minutes?: number;   // 0 = the `Never` sentinel; >0 clamps to >= 5
+    sync_on_launch?: boolean;
+    sync_after_capture?: boolean;
+    mirror_captures?: boolean;
+  };
 }
 
 export interface InboxItem {
@@ -293,6 +303,103 @@ export async function getConfig(): Promise<Config> {
   return r.json();
 }
 
+/** Stable desktop device-id for the v3 pairing QR (contract §11.4). Matches what the desktop
+ *  advertises over mDNS + writes into .sync/lan_endpoint.json, so the phone can bind discovery to
+ *  this desktop. */
+// ── Sync + Drive auth (E6) ──────────────────────────────────────────────────
+//
+// Two planes, and the types keep them apart: Drive is the canonical one (nothing syncs without
+// it), LAN pairing is an accelerator handled separately in tauri.ts. Failure here is normal, not
+// exceptional — an un-authorized Drive makes every pass return ok:false — so the run/connect calls
+// return a discriminated outcome instead of throwing, and the caller must render each case.
+
+export type SyncPassRow = {
+  started: string;
+  finished: string;
+  duration_s: number;
+  ok: boolean;
+  error?: string;
+  // run_pass() merges its own summary counts in; they vary by pass and are display-only.
+  [k: string]: unknown;
+};
+
+export type SyncStatus = {
+  enabled: boolean;
+  running: boolean;
+  last_pass: SyncPassRow | null;
+  last_error: string | null;
+  history: SyncPassRow[];
+  // Absent when the scheduler never started — server.py returns a reduced literal in that case,
+  // so this is genuinely optional, not just nullable.
+  interval_minutes?: number;
+};
+
+export type DriveAuthStatus = {
+  connected: boolean;
+  client_secret_present: boolean;
+  connecting: boolean;
+};
+
+/** `ran` includes a FAILED pass — read `row.ok`, never assume the outcome means success. */
+export type SyncRunResult =
+  | { outcome: "ran"; row: SyncPassRow }
+  | { outcome: "busy" }          // 409: a pass is already running
+  | { outcome: "unavailable" }   // 503: scheduler not started
+  | { outcome: "disabled" };     // 403: [sync] enabled = false — the master switch is off
+
+export type DriveConnectResult =
+  | { outcome: "connected" }
+  | { outcome: "no_client_secret" }  // 400: setup problem, retrying cannot fix it
+  | { outcome: "busy" }              // 409: a consent is already open
+  | { outcome: "failed"; error: string };
+
+export async function getSyncStatus(): Promise<SyncStatus> {
+  const r = await fetch(`${BASE}/sync/status`, { headers: await authHeaders() });
+  if (!r.ok) throw new Error("Failed to fetch sync status");
+  return r.json();
+}
+
+export async function runSync(): Promise<SyncRunResult> {
+  const r = await fetch(`${BASE}/sync/run`, { method: "POST", headers: await authHeaders() });
+  // Three distinct codes, three distinct client states — the master kill is refused
+  // server-side (403), not merely hidden in the UI.
+  if (r.status === 403) return { outcome: "disabled" };
+  if (r.status === 409) return { outcome: "busy" };
+  if (r.status === 503) return { outcome: "unavailable" };
+  if (!r.ok) throw new Error("Failed to start a sync pass");
+  return { outcome: "ran", row: await r.json() };
+}
+
+export async function getDriveAuthStatus(): Promise<DriveAuthStatus> {
+  const r = await fetch(`${BASE}/drive/auth/status`, { headers: await authHeaders() });
+  if (!r.ok) throw new Error("Failed to fetch Drive auth status");
+  return r.json();
+}
+
+/** Opens a real browser consent window server-side; resolves only once the user finishes or
+ *  abandons it, so callers must keep a pending state up for as long as it takes. */
+export async function connectDrive(): Promise<DriveConnectResult> {
+  const r = await fetch(`${BASE}/drive/auth/connect`, { method: "POST", headers: await authHeaders() });
+  if (r.status === 400) return { outcome: "no_client_secret" };
+  if (r.status === 409) return { outcome: "busy" };
+  if (!r.ok) {
+    const detail = await r.json().then((b) => b?.detail).catch(() => null);
+    return { outcome: "failed", error: typeof detail === "string" ? detail : "Drive connect failed" };
+  }
+  return { outcome: "connected" };
+}
+
+export async function disconnectDrive(): Promise<void> {
+  const r = await fetch(`${BASE}/drive/auth/disconnect`, { method: "POST", headers: await authHeaders() });
+  if (!r.ok) throw new Error("Failed to disconnect Drive");
+}
+
+export async function getLanDeviceId(): Promise<string> {
+  const r = await fetch(`${BASE}/lan/device-id`, { headers: await authHeaders() });
+  if (!r.ok) throw new Error("Failed to fetch device id");
+  return (await r.json()).device as string;
+}
+
 export async function patchConfig(patch: {
   vault_root?: string;
   ollama_model?: string;
@@ -305,6 +412,13 @@ export async function patchConfig(patch: {
   auto_describe_new_folders?: boolean;
   chat_system_prompt?: string;
   reminders_delivery?: "app" | "os";
+  // [sync] — the server has accepted these since phase-5; the GUI had no consumer, which is why
+  // Drive sync was only enablable by hand-editing config.toml (E6).
+  sync_enabled?: boolean;
+  sync_interval_minutes?: number;   // server clamps to >= 5
+  sync_on_launch?: boolean;
+  sync_after_capture?: boolean;
+  sync_mirror_captures?: boolean;   // K-2: opt-in capture mirroring to the hub
 }): Promise<void> {
   const r = await fetch(`${BASE}/config`, {
     method: "PATCH",
@@ -408,6 +522,14 @@ export async function getStats(): Promise<Stats> {
 export async function getInbox(): Promise<{ inbox: InboxItem[]; count: number }> {
   const r = await fetch(`${BASE}/inbox`, { headers: await authHeaders() });
   if (!r.ok) throw new Error("Failed to fetch inbox");
+  return r.json();
+}
+
+export interface DigestStats { captured: number; touched: number; reminders_due: number; unrevisited: number; }
+
+export async function getDigestToday(): Promise<DigestStats> {
+  const r = await fetch(`${BASE}/digest/today`, { headers: await authHeaders() });
+  if (!r.ok) throw new Error("Failed to fetch digest");
   return r.json();
 }
 
@@ -569,4 +691,254 @@ export async function* streamLookChat(
       } catch { /* skip malformed */ }
     }
   }
+}
+
+// -- Full-window note editor (F-7) -------------------------------------------
+
+export interface NoteContent {
+  path: string;
+  title: string;
+  category: string;
+  status: string | null;
+  tags: string[];
+  body: string;
+  mtime: number;
+  has_frontmatter: boolean;
+}
+
+/** Thrown by saveNoteContent when the file changed on disk since it was
+ *  read (see note_editor.py's mtime-guard) -- the caller must surface this
+ *  and reload, never silently retry-clobber (body-sacred lock). */
+export class NoteConflictError extends Error {
+  currentMtime: number;
+  currentBody: string;
+  constructor(currentMtime: number, currentBody: string) {
+    super("Note changed on disk since it was opened.");
+    this.name = "NoteConflictError";
+    this.currentMtime = currentMtime;
+    this.currentBody = currentBody;
+  }
+}
+
+export async function getNoteContent(path: string): Promise<NoteContent> {
+  const r = await fetch(`${BASE}/note?${new URLSearchParams({ path }).toString()}`, {
+    headers: await authHeaders(),
+  });
+  await assertOk(r, "Failed to load note");
+  return r.json();
+}
+
+export async function saveNoteContent(path: string, body: string, expectedMtime: number): Promise<{ mtime: number }> {
+  const r = await fetch(`${BASE}/note`, {
+    method: "PUT",
+    headers: await authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ path, body, expected_mtime: expectedMtime }),
+  });
+  if (r.status === 409) {
+    const payload = await r.json().catch(() => ({} as { detail?: { current_mtime?: number; current_body?: string } }));
+    const detail = payload.detail ?? {};
+    throw new NoteConflictError(detail.current_mtime ?? expectedMtime, detail.current_body ?? "");
+  }
+  await assertOk(r, "Failed to save note");
+  return r.json();
+}
+
+// -- F-3: version history (Drive revisions) ----------------------------------
+
+export type NoteHistoryStatus = "ok" | "offline" | "not_synced";
+
+export interface NoteRevision {
+  id: string;
+  modified_time: string | null;
+  size: number;
+  author: string | null;
+  current: boolean;
+}
+
+export async function getNoteHistory(path: string): Promise<{ status: NoteHistoryStatus; revisions: NoteRevision[] }> {
+  const r = await fetch(`${BASE}/note/history?${new URLSearchParams({ path }).toString()}`, {
+    headers: await authHeaders(),
+  });
+  await assertOk(r, "Failed to load history");
+  return r.json();
+}
+
+export async function getNoteHistoryRevision(path: string, revisionId: string): Promise<{ body: string }> {
+  const r = await fetch(`${BASE}/note/history/revision?${new URLSearchParams({ path, revision_id: revisionId }).toString()}`, {
+    headers: await authHeaders(),
+  });
+  await assertOk(r, "Failed to load revision");
+  return r.json();
+}
+
+// -- F-4: tags browser --------------------------------------------------------
+
+export interface TagNode {
+  tag: string;
+  count: number;
+  recent: string[];
+  children: TagNode[];
+}
+
+export async function getTagTree(): Promise<{ tags: TagNode[] }> {
+  const r = await fetch(`${BASE}/tags`, { headers: await authHeaders() });
+  await assertOk(r, "Failed to load tags");
+  return r.json();
+}
+
+// -- F-1: conflict resolver (desktop) -----------------------------------------
+
+export interface NoteConflict {
+  conflict_path: string;
+  local_body: string;
+  remote_body: string;
+  remote_device: string | null;
+  remote_modified: string | null;
+  local_mtime: number;
+}
+
+export type ConflictResolveAction = "both" | "mine" | "theirs";
+
+export async function getNoteConflict(path: string): Promise<NoteConflict | null> {
+  const r = await fetch(`${BASE}/note/conflict?${new URLSearchParams({ path }).toString()}`, {
+    headers: await authHeaders(),
+  });
+  await assertOk(r, "Failed to check conflict");
+  const data = await r.json() as { conflict: NoteConflict | null };
+  return data.conflict;
+}
+
+// expectedMtime is the NoteConflict.local_mtime read when the diff was opened;
+// "theirs" overwrites the note body so the server guards on it and 409s
+// (NoteConflictError) if the note was edited on disk since — reload, don't clobber.
+export async function resolveNoteConflict(
+  path: string,
+  conflictPath: string,
+  action: ConflictResolveAction,
+  expectedMtime?: number,
+): Promise<void> {
+  const r = await fetch(`${BASE}/note/conflict/resolve`, {
+    method: "POST",
+    headers: await authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ path, conflict_path: conflictPath, action, expected_mtime: expectedMtime }),
+  });
+  if (r.status === 409) {
+    const detail = (await r.json().catch(() => ({}))).detail ?? {};
+    throw new NoteConflictError(detail.current_mtime ?? expectedMtime ?? 0, detail.current_body ?? "");
+  }
+  await assertOk(r, "Failed to resolve conflict");
+}
+
+export interface VaultConflictEntry { path: string; conflict_path: string; title: string; }
+
+export async function getVaultConflicts(): Promise<VaultConflictEntry[]> {
+  const r = await fetch(`${BASE}/vault/conflicts`, { headers: await authHeaders() });
+  await assertOk(r, "Failed to check vault conflicts");
+  const data = await r.json() as { conflicts: VaultConflictEntry[] };
+  return data.conflicts;
+}
+
+// -- F-2: Trash (desktop) ------------------------------------------------------
+
+export interface TrashItem {
+  filename: string;
+  title: string;
+  category: string;
+  deleted_at: number;
+  purge_at: number;
+}
+
+export async function getTrash(): Promise<TrashItem[]> {
+  const r = await fetch(`${BASE}/trash`, { headers: await authHeaders() });
+  await assertOk(r, "Failed to list trash");
+  const data = await r.json() as { items: TrashItem[] };
+  return data.items;
+}
+
+export async function restoreFromTrash(filename: string): Promise<{ ok: boolean; category: string; path: string }> {
+  const r = await fetch(`${BASE}/trash/restore`, {
+    method: "POST",
+    headers: await authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ filename }),
+  });
+  await assertOk(r, "Failed to restore note");
+  return r.json();
+}
+
+// -- F-5: per-note sync-ignore (desktop-local) ---------------------------------
+
+export async function getSyncIgnore(): Promise<string[]> {
+  const r = await fetch(`${BASE}/sync/ignore`, { headers: await authHeaders() });
+  await assertOk(r, "Failed to load sync-ignore list");
+  const data = await r.json() as { ignored: string[] };
+  return data.ignored;
+}
+
+export async function setSyncIgnore(path: string, ignored: boolean): Promise<string[]> {
+  const r = await fetch(`${BASE}/sync/ignore`, {
+    method: "POST",
+    headers: await authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ path, ignored }),
+  });
+  await assertOk(r, "Failed to update sync-ignore");
+  const data = await r.json() as { ignored: string[] };
+  return data.ignored;
+}
+
+// -- F-10: semantic search band ------------------------------------------------
+
+export interface SemanticResult {
+  path: string;
+  similarity: number;
+  excerpt: string;
+  category: string | null;
+}
+
+export async function getSemanticSearch(q: string, limit = 5): Promise<SemanticResult[]> {
+  const params = new URLSearchParams({ q, limit: String(limit) });
+  const r = await fetch(`${BASE}/search/semantic?${params.toString()}`, { headers: await authHeaders() });
+  if (!r.ok) return [];
+  const data = await r.json() as { results: SemanticResult[] };
+  return data.results;
+}
+
+// -- F-13 (desktop half): attachments ------------------------------------------
+
+/** URL for inline display (image `<img src>` / audio `<audio src>`) — the
+ *  browser/webview issues this GET itself, so no auth header is attached;
+ *  matches how other file surfaces (openFilePath) already work locally. */
+export function attachmentUrl(notePath: string, filename: string): string {
+  const params = new URLSearchParams({ path: notePath, filename });
+  return `${BASE}/note/attachment?${params.toString()}`;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+export async function addNoteAttachment(
+  path: string,
+  file: File,
+  expectedMtime: number,
+): Promise<{ filename: string; mtime: number }> {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const r = await fetch(`${BASE}/note/attachment`, {
+    method: "POST",
+    headers: await authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      path,
+      filename: file.name,
+      data_b64: bytesToBase64(buf),
+      expected_mtime: expectedMtime,
+    }),
+  });
+  if (r.status === 409) {
+    const payload = await r.json().catch(() => ({} as { detail?: { current_mtime?: number; current_body?: string } }));
+    const detail = payload.detail ?? {};
+    throw new NoteConflictError(detail.current_mtime ?? expectedMtime, detail.current_body ?? "");
+  }
+  await assertOk(r, "Failed to attach file");
+  return r.json();
 }

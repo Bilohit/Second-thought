@@ -10,16 +10,18 @@ from mobile_sync_agent import (
     save_state,
     mirror_to_hub,
     reconcile_changes,
+    enrich_notes,
     _sha256,
     _FOLDER_MIME,
 )
+from frontmatter import read_all_fields, strip_frontmatter
 
 FM = "---\nid: {id}\ntitle: {title}\norigin: note\n---\n{body}"
 
 
 def _write(dirpath: Path, fname: str, note_id: str, body: str) -> Path:
     p = dirpath / fname
-    p.write_text(FM.format(id=note_id, title="T", body=body), encoding="utf-8")
+    p.write_text(FM.format(id=note_id, title="T", body=body), encoding="utf-8", newline="")
     return p
 
 
@@ -32,7 +34,7 @@ def test_read_vault_notes_keys_by_frontmatter_id(tmp_path):
 
 
 def test_read_vault_notes_skips_files_without_id(tmp_path):
-    (tmp_path / "no_id.md").write_text("---\ntitle: X\n---\nBody", encoding="utf-8")
+    (tmp_path / "no_id.md").write_text("---\ntitle: X\n---\nBody", encoding="utf-8", newline="")
     assert read_vault_notes(str(tmp_path)) == {}
 
 
@@ -51,6 +53,123 @@ def test_read_vault_notes_ignores_sync_provisional_staging(tmp_path):
     assert notes["01ABC"]["body"] == "Real vault body"
 
 
+# ---------------------------------------------------------------------------
+# K-2 · opt-in capture mirroring
+# ---------------------------------------------------------------------------
+
+def _write_capture(dirpath: Path, fname: str, body: str, extra_fm: str = "") -> Path:
+    """A desktop capture as storage_engine._build_frontmatter actually writes one: no id,
+    no origin field at all (origin absent == capture, per contract §2 K-2)."""
+    p = dirpath / fname
+    p.write_text(f"---\ncategory: Tech_Notes\n{extra_fm}---\n{body}", encoding="utf-8", newline="")
+    return p
+
+
+def test_read_vault_notes_mirror_off_skips_idless_capture(tmp_path):
+    # (a) mirror_captures=False (default) -> an id-less capture is skipped, unchanged behaviour.
+    cap = _write_capture(tmp_path, "clip.md", "Some clipped text.\n")
+    before = cap.read_text(encoding="utf-8")
+
+    notes = read_vault_notes(str(tmp_path), mirror_captures=False)
+
+    assert notes == {}
+    assert cap.read_text(encoding="utf-8") == before   # untouched — no id minted while opted out
+
+
+def test_read_vault_notes_mirror_on_mints_id_and_origin(tmp_path):
+    # (b) mirror_captures=True -> the capture gets id+origin minted (frontmatter-only), body
+    # byte-identical, and it appears in the returned mirror set (closes B-15).
+    body = "Some clipped text.\n"
+    cap = _write_capture(tmp_path, "clip.md", body)
+
+    notes = read_vault_notes(str(tmp_path), mirror_captures=True)
+
+    written = cap.read_text(encoding="utf-8")
+    fields = read_all_fields(written)
+    assert fields["origin"] == "capture"
+    assert fields["id"]                                  # a ULID-style id was minted
+    assert strip_frontmatter(written) == body            # BODY SACRED — byte-identical
+    assert fields["id"] in notes
+    assert notes[fields["id"]]["body"] == body
+
+
+def test_read_vault_notes_mirror_on_id_stable_across_reads(tmp_path):
+    # Re-scanning after minting must not mint a second id (idempotent).
+    cap = _write_capture(tmp_path, "clip.md", "Body.\n")
+    notes1 = read_vault_notes(str(tmp_path), mirror_captures=True)
+    id1 = next(iter(notes1))
+    notes2 = read_vault_notes(str(tmp_path), mirror_captures=True)
+    assert list(notes2.keys()) == [id1]
+
+
+def test_read_vault_notes_note_with_id_unaffected_by_mirror_flag(tmp_path):
+    # (c) an already-id'd origin:note is unaffected either way.
+    _write(tmp_path, "n1.md", "01NOTE", "Note body")
+
+    off = read_vault_notes(str(tmp_path), mirror_captures=False)
+    on = read_vault_notes(str(tmp_path), mirror_captures=True)
+
+    assert off.keys() == {"01NOTE"} == on.keys()
+    assert off["01NOTE"]["body"] == on["01NOTE"]["body"] == "Note body"
+
+
+def test_read_vault_notes_mirror_off_still_skips_already_minted_capture(tmp_path):
+    # Turning mirror_captures back off must keep excluding a capture even if it was minted
+    # (has id+origin:capture) during an earlier opted-in pass — "OFF: captures stay
+    # desktop-local" applies regardless of a prior id.
+    _write_capture(tmp_path, "clip.md", "Body.\n", extra_fm="id: alreadymintedid\norigin: capture\n")
+    assert read_vault_notes(str(tmp_path), mirror_captures=False) == {}
+
+
+def test_mirrored_capture_never_reaches_enrich_fn(tmp_path):
+    # A mirrored capture must never be enriched via the note path (notes-are-not-captures).
+    cap = _write_capture(tmp_path, "clip.md", "Body.\n")
+    vault_notes = read_vault_notes(str(tmp_path), mirror_captures=True)
+    assert len(vault_notes) == 1   # sanity: the capture really is in the mirror set
+
+    def classify(text):
+        raise AssertionError("must not classify a mirrored capture")
+
+    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify, vocab={})
+    assert (enriched, failed) == (0, 0)
+
+
+def test_upload_sync_file_creates_then_updates():
+    # §11.8-B: the ONE `.sync/` file (lan_endpoint.json) uploads to the hub. First call creates,
+    # second (file now present) updates in place. Fake drive distinguishes the folder-lookup query
+    # (mimeType == folder) from the child-list query (mimeType != folder).
+    from mobile_sync_agent import upload_sync_file, _FOLDER_MIME
+
+    class _Exec:
+        def __init__(self, r): self.r = r
+        def execute(self): return self.r
+
+    state = {"children": []}
+    calls = {"create": 0, "update": 0}
+
+    class _Files:
+        def list(self, q=None, fields=None, pageToken=None):
+            if f"mimeType='{_FOLDER_MIME}'" in q:
+                return _Exec({"files": [{"id": "syncfolder"}]})   # find-or-create → exists
+            return _Exec({"files": list(state["children"])})       # _list_children (mime != folder)
+        def update(self, fileId=None, media_body=None):
+            calls["update"] += 1
+            return _Exec({"id": fileId})
+        def create(self, body=None, media_body=None, fields=None):
+            calls["create"] += 1
+            state["children"].append({"id": "newid", "name": body["name"]})
+            return _Exec({"id": "newid"})
+
+    class _Drive:
+        def files(self): return _Files()
+
+    drive = _Drive()
+    upload_sync_file(drive, "hub", "lan_endpoint.json", '{"device":"d"}')
+    assert (calls["create"], calls["update"]) == (1, 0)   # first → create
+    upload_sync_file(drive, "hub", "lan_endpoint.json", '{"device":"d2"}')
+    assert (calls["create"], calls["update"]) == (1, 1)   # second → update in place
+
+
 def test_state_roundtrip(tmp_path):
     sp = str(tmp_path / "state.json")
     assert load_state(sp) == {}                       # absent → empty
@@ -60,8 +179,32 @@ def test_state_roundtrip(tmp_path):
 
 def test_load_state_corrupt_returns_empty(tmp_path):
     sp = tmp_path / "state.json"
-    sp.write_text("{not json", encoding="utf-8")
+    sp.write_text("{not json", encoding="utf-8", newline="")
     assert load_state(str(sp)) == {}                  # derived cache, safe rebuild
+
+
+def test_load_state_non_utf8_returns_empty(tmp_path):
+    # A byte-flip (not just bad JSON) raises UnicodeDecodeError, which is neither
+    # JSONDecodeError nor OSError — it used to escape load_state and park the sync
+    # pass in `error` forever, contradicting the docstring's "Absent/corrupt → empty".
+    sp = tmp_path / "state.json"
+    sp.write_bytes(b'{"01ABC": {"local_hash": "\xff\xfe h"}}')
+    assert load_state(str(sp)) == {}                  # derived cache, safe rebuild
+
+
+def test_save_state_crash_mid_write_leaves_old_state_intact(tmp_path, monkeypatch):
+    # A3: the write is temp-sibling + os.replace, so a death between the two leaves the live
+    # sidecar untouched (never truncated) — no blind re-upload of the whole vault next pass.
+    sp = str(tmp_path / "state.json")
+    save_state(sp, {"01ABC": {"local_hash": "h", "drive_file_id": "f", "base_rev": "r"}})
+
+    def _boom(src, dst):
+        raise OSError("crash between write and rename")
+
+    monkeypatch.setattr("mobile_sync_agent.os.replace", _boom)
+    with pytest.raises(OSError):
+        save_state(sp, {"01ABC": {"local_hash": "h2", "drive_file_id": "f", "base_rev": "r2"}})
+    assert load_state(sp)["01ABC"]["base_rev"] == "r"  # old state, parseable — not half-written
 
 
 def _mock_drive(rev="rev1", file_id="F1"):
@@ -111,8 +254,13 @@ def test_mirror_reuploads_when_hash_changed():
     assert new_state["01ABC"]["local_hash"] == "hashB"
 
 
-def test_mirror_adopts_existing_hub_file_when_state_empty():
-    """Sidecar absent/corrupt but note already exists on hub -> update, not create."""
+def test_mirror_never_uploads_a_note_it_never_observed_a_sync_for():
+    """F-1: sidecar absent/corrupt but the note already exists on the hub -> mirror must NOT
+    upload. It has no base_rev for the note, so it cannot know its body is newer than the head;
+    uploading here reverted a peer's un-pulled edit. mirror used to adopt the hub listing with
+    base_rev = the CURRENT head, which made its own advanced-head guard below compare the head
+    against itself. reconcile_changes owns this case now (it adopts the file id, so the note is
+    still updated in place rather than duplicated — see the adopt tests below)."""
     vault_notes = {
         "01ABC": {"id": "01ABC", "path": "/x.md", "content": "---\nid: 01ABC\n---\nBody",
                   "body": "Body", "hash": "hashA"}
@@ -120,15 +268,28 @@ def test_mirror_adopts_existing_hub_file_when_state_empty():
     hub_files = {"01ABC": {"id": "HUBF1", "headRevisionId": "rev9"}}
     drive = _mock_drive(file_id="HUBF1")
     uploaded, failed, new_state = mirror_to_hub(vault_notes, hub_files, {}, drive, "hub")
-    assert uploaded == 1
-    assert failed == 0
+    assert (uploaded, failed) == (0, 0)
     # _mock_drive() itself calls create()/update() once during setup to wire
     # return values (but never .execute()), so assert on .execute (the real
     # invocation), not the top-level mock call count — mirrors the existing
     # convention in test_mirror_skips_unchanged_by_hash_not_mtime.
-    drive.files().update().execute.assert_called()
+    drive.files().update().execute.assert_not_called()
     drive.files().create().execute.assert_not_called()
-    assert new_state["01ABC"]["drive_file_id"] == "HUBF1"
+    assert new_state == {}, "no sync was observed — the sidecar must not claim one"
+
+
+def test_mirror_still_creates_a_note_the_hub_does_not_have_when_state_empty():
+    """The other half of the same branch: an empty sidecar is not a reason to skip a note the
+    hub has never seen — there is no head to clobber, so it is created normally."""
+    vault_notes = {
+        "01ABC": {"id": "01ABC", "path": "/x.md", "content": "---\nid: 01ABC\n---\nBody",
+                  "body": "Body", "hash": "hashA"}
+    }
+    drive = _mock_drive(rev="rev1")
+    uploaded, failed, new_state = mirror_to_hub(vault_notes, {"09OTHER": {"id": "F9"}}, {}, drive, "hub")
+    assert (uploaded, failed) == (1, 0)
+    drive.files().create().execute.assert_called()
+    assert new_state["01ABC"]["base_rev"] == "rev1"
 
 
 def test_upload_asserts_body_sacred():
@@ -232,6 +393,60 @@ def test_reconcile_body_conflict_writes_conflicted_copy():
     assert "id: CONFLICT1" in cc
     assert "conflicted copy desktop" in cc
     assert "CONFLICT1" in new_state                                   # copy tracked in state
+
+
+def test_reconcile_adopts_hub_file_when_state_empty_and_bytes_match():
+    """F-1 adopt, in-sync case: the sidecar has no record but our bytes ARE the hub head, so the
+    head is a revision we have now observed a sync at — record it and upload nothing. (The old
+    mirror-side fallback re-uploaded byte-identical content here and burned a headRevisionId.)"""
+    same_text = _note_text(body="body")
+    vault_notes = _vault_note(same_text, h="H1")
+    hub_files = {"01ABC": {"id": "HUBF1", "headRevisionId": "rev9"}}
+    drive = _recon_drive(same_text)
+    reconciled, conflicts, failed, new_state = reconcile_changes(
+        vault_notes, hub_files, {}, drive, "hub", write_file=lambda p, c: None,
+    )
+    assert (reconciled, conflicts, failed) == (0, 0, 0)   # nothing changed on either side
+    drive.files().update().execute.assert_not_called()
+    assert new_state["01ABC"] == {
+        "drive_file_id": "HUBF1", "base_rev": "rev9", "local_hash": "H1"
+    }
+
+
+def test_reconcile_adopt_with_no_base_keeps_both_bodies():
+    """F-1 adopt, divergent case: no sidecar record → no base_rev was ever observed, so there is
+    no common ancestor. The divergence must resolve as a body-vs-body conflict (keep-both) on the
+    note's EXISTING hub file — never a blind upload of the local body over the head."""
+    remote_text = _note_text(body="remote body", device="phone")
+    local_text = _note_text(body="local body")
+    vault_notes = _vault_note(local_text, h="NEW")
+    hub_files = {"01ABC": {"id": "HUBF1", "headRevisionId": "rev9"}}
+    drive = _recon_drive(remote_text, up_id="HUBF1")
+    written = {}
+    reconciled, conflicts, failed, new_state = reconcile_changes(
+        vault_notes, hub_files, {}, drive, "hub",
+        write_file=lambda p, c: written.__setitem__(p, c), new_id=lambda: "CONFLICT1",
+    )
+    assert (reconciled, conflicts, failed) == (1, 1, 0)
+    assert "local body" in written["/vault/x.md"]                  # local kept in place
+    cc = written[next(k for k in written if "CONFLICT1" in k)]
+    assert "remote body" in cc                                     # the head's body survives
+    drive.revisions().get_media().execute.assert_not_called()      # no base rev exists to fetch
+    assert new_state["01ABC"]["drive_file_id"] == "HUBF1"           # updated in place, no orphan
+    assert new_state["01ABC"]["base_rev"] == "rev2"                 # a head the hub really issued
+
+
+def test_reconcile_ignores_a_note_the_hub_does_not_have():
+    """The adopt path is hub-listing-driven: a never-synced note that is not on the hub is still
+    mirror_to_hub's to create, not reconcile's."""
+    vault_notes = _vault_note(_note_text(body="x"), h="NEW")
+    drive = _recon_drive(_note_text())
+    reconciled, conflicts, failed, new_state = reconcile_changes(
+        vault_notes, {}, {}, drive, "hub",
+    )
+    assert (reconciled, conflicts, failed) == (0, 0, 0)
+    assert new_state == {}
+    drive.files().get_media().execute.assert_not_called()
 
 
 def test_reconcile_skips_when_remote_unchanged():
@@ -385,10 +600,10 @@ def test_read_vault_notes_category_from_frontmatter_then_folder(tmp_path):
     # note in a category subfolder, no category field → folder name is the category
     workd = tmp_path / "work"
     workd.mkdir()
-    (workd / "a.md").write_text("---\nid: 01A\ntitle: T\norigin: note\n---\nB", encoding="utf-8")
+    (workd / "a.md").write_text("---\nid: 01A\ntitle: T\norigin: note\n---\nB", encoding="utf-8", newline="")
     # note with explicit category frontmatter → field wins
     (tmp_path / "b.md").write_text(
-        "---\nid: 01B\ntitle: T\norigin: note\ncategory: ideas\n---\nB", encoding="utf-8")
+        "---\nid: 01B\ntitle: T\norigin: note\ncategory: ideas\n---\nB", encoding="utf-8", newline="")
     notes = read_vault_notes(str(tmp_path))
     assert notes["01A"]["category"] == "work"
     assert notes["01B"]["category"] == "ideas"
@@ -674,6 +889,26 @@ def test_run_once_without_provisional_fn_is_unchanged(tmp_path, monkeypatch):
     assert result == (0, 0, 0, 0, 0, 0, 0)
 
 
+def test_run_once_threads_mirror_captures_into_both_reads(tmp_path, monkeypatch):
+    # run_once re-reads read_vault_notes twice (initial + post-intake/enrich); both calls must
+    # honour the mirror_captures flag it was given.
+    drive = _mock_empty_drive()
+    monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
+
+    seen = []
+    real_read = read_vault_notes
+
+    def spy(vault_path, mirror_captures=False):
+        seen.append(mirror_captures)
+        return real_read(vault_path, mirror_captures)
+
+    monkeypatch.setattr("mobile_sync_agent.read_vault_notes", spy)
+
+    run_once(str(tmp_path), str(tmp_path / "state.json"), drive, mirror_captures=True)
+
+    assert seen == [True, True]
+
+
 def test_provisional_supersede_never_edits_body(tmp_path, monkeypatch):
     import provisional_store as ps
     vault = tmp_path / "vault"
@@ -710,7 +945,7 @@ from mobile_sync_agent import enrich_notes
 
 def _note_file(dirpath: Path, name: str, frontmatter: str, body: str) -> Path:
     p = dirpath / name
-    p.write_text(f"---\n{frontmatter}\n---\n{body}", encoding="utf-8")
+    p.write_text(f"---\n{frontmatter}\n---\n{body}", encoding="utf-8", newline="")
     return p
 
 
@@ -1011,7 +1246,8 @@ def _fake_cfg(vault_root: Path, lan_enabled: bool):
     import types
     return types.SimpleNamespace(
         vault=types.SimpleNamespace(root=vault_root, scratchpad_folder="_scratchpad"),
-        lan=types.SimpleNamespace(enabled=lan_enabled),
+        lan=types.SimpleNamespace(enabled=lan_enabled, host="", port=7071),
+        sync=types.SimpleNamespace(mirror_captures=False),
     )
 
 
@@ -1019,7 +1255,10 @@ def _patch_main_seams(monkeypatch, vault: Path, lan_enabled: bool):
     """Stub every collaborator main() reaches out to (auth, config, pipeline, run_once)
     so the wiring itself — what gets passed to run_once, whether LAN work fires — can be
     asserted without touching real Drive/Ollama/DB services."""
+    # run_pass() calls reload_config() (fresh config every pass so a GUI toggle / manual sync-now
+    # picks up the latest [sync]/[lan]); get_config kept stubbed for any other caller.
     monkeypatch.setattr("config.get_config", lambda: _fake_cfg(vault, lan_enabled))
+    monkeypatch.setattr("config.reload_config", lambda *a, **k: _fake_cfg(vault, lan_enabled))
     monkeypatch.setattr("drive_auth.get_drive_service", lambda: MagicMock())
     monkeypatch.setattr("main.run_pipeline", lambda **kw: {})
 

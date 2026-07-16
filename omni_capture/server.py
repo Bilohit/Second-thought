@@ -28,6 +28,8 @@ Endpoints
   GET  /reminders
   POST /reminders
   DELETE /reminders/{reminder_id}
+  GET  /note?path=                          full-window editor: read body + read-only frontmatter (F-7)
+  PUT  /note                                 full-window editor: write body only, mtime-guarded (F-7)
   GET  /jobs/{job_id}                       background job status (e.g. YouTube)
   POST /look/chat                           streaming RAG chat (SSE)
   POST /vault/sync-index                    vault diff-sync (add/remove/update index rows)
@@ -107,7 +109,13 @@ app = FastAPI(title="Second Thought GUI Server", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(dict.fromkeys(_ALLOWED_ORIGINS)),  # dedupe, preserve order
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    # Must cover every verb the app actually routes (incl. the jobs/vault_admin
+    # routers) -- a missing verb makes the browser preflight fail with 400
+    # "Disallowed CORS method" and the route is unreachable from the GUI. PUT was
+    # missing while `PUT /note` was live, which killed note-editor save in the
+    # packaged build. Kept an explicit allowlist (not "*") on purpose: this is a
+    # secret-guarded localhost surface. test_api_surface.py locks it to the route table.
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -129,6 +137,10 @@ _executor = ThreadPoolExecutor(max_workers=2)
 # memory/disk exhaustion without affecting any real capture.
 _MAX_B64_LEN = 64 * 1024 * 1024
 CONFIG_PATH = Path(__file__).parent / "config.toml"
+
+# Single-flight for the Drive OAuth consent (E6). Two Connect clicks would otherwise race two
+# local callback servers and two browser windows; the second gets a 409 instead.
+_drive_connect_flight = threading.Lock()
 
 # Set True once warmup finishes (success or skip) — a skipped warmup
 # shouldn't pin /health at "never ready" forever, it just means the first
@@ -168,10 +180,24 @@ def _warm_model() -> None:
 
 @app.on_event("startup")
 def _startup_db_tasks() -> None:
-    """Best-effort startup DB maintenance: orphan purge then body-excerpt backfill.
-    Run sequentially in one task so they share one DB open and don't race."""
+    """Best-effort startup DB maintenance: corruption heal, then orphan purge, then
+    body-excerpt backfill. Run sequentially in one task so they share one DB open and
+    don't race."""
     def _run():
         root = _get_vault_root()
+        try:
+            # FIRST: purge and reindex below both assume a READABLE captures.db. A truncated /
+            # half-flushed / bad-sector file raises DatabaseError on their first real read, and
+            # each one's own `except` just prints and moves on — so a store corrupt at boot stayed
+            # dead until the user happened to POST /vault/sync-index (the only other caller of the
+            # heal). captures.db is a derived cache: discarding an unreadable one is the sanctioned
+            # recovery, and init_db re-creates it from the DDL.
+            from index_writer import heal_corrupt_db
+            if heal_corrupt_db(root):
+                print("[IndexWriter] startup discarded a corrupt captures.db "
+                      "— it rebuilds from the vault files", flush=True)
+        except Exception as exc:
+            print(f"[IndexWriter] startup heal skipped: {exc}", flush=True)
         try:
             from vault_sync import purge_orphan_index_entries
             n = purge_orphan_index_entries(root)
@@ -186,6 +212,17 @@ def _startup_db_tasks() -> None:
                 print(f"[Reindex] body_excerpt backfilled for {n} rows", flush=True)
         except Exception as exc:
             print(f"[Reindex] skipped: {exc}", flush=True)
+        try:
+            # R-1 finisher: the ledger was the one derived store nothing ever rebuilt -- the
+            # capability existed, no caller invoked it. Policy (missing/empty only, never over a
+            # live ledger) lives in dedup.py so this and the diff-sync reindex cannot drift.
+            from dedup import rebuild_dedup_index_if_missing
+            n = rebuild_dedup_index_if_missing(root)
+            if n is not None:
+                print(f"[Dedup] startup rebuilt a missing/empty dedup ledger — {n} keys "
+                      "recovered from the vault files", flush=True)
+        except Exception as exc:
+            print(f"[Dedup] startup ledger rebuild skipped: {exc}", flush=True)
     jobs._bg_executor.submit(_run)
 
 
@@ -243,6 +280,29 @@ def _startup_reminders_thread() -> None:
 
 
 @app.on_event("startup")
+def _startup_sync_scheduler() -> None:
+    """Drive batched-sync scheduler (phase-5 §1.1). Runs mobile_sync_agent.run_pass() on the
+    [sync] interval in a daemon thread with single-flight + backoff + a ring-buffer status feed.
+    Always started (cheap); it no-ops each tick while [sync] enabled = false, so flipping that
+    flag needs no restart. run_pass raising (e.g. OAuth missing) is recorded as a paused
+    status row, never crashes the loop or the server. Drive stays the sole canonical authority.
+
+    NOTE (E6, s25 device day): this used to say "toggling the GUI Sync tab" -- THERE IS NO GUI
+    SYNC TAB. `gui/src` has no consumer of /sync/status or /sync/run, so Drive sync is today
+    enablable only by hand-editing config.toml [sync] enabled. The no-restart property below is
+    real and the endpoints are real; only the GUI surface is missing. This blocked device-day
+    items 1 and 2-step-10. Building that tab is frontend-only work -- do not read this comment as
+    evidence it exists."""
+    try:
+        from sync_scheduler import start_scheduler
+        from mobile_sync_agent import run_pass
+        from config import reload_config
+        start_scheduler(pass_fn=run_pass, cfg_fn=lambda: reload_config().sync)
+    except Exception as exc:
+        print(f"[sync] scheduler start failed: {exc}", flush=True)
+
+
+@app.on_event("startup")
 def _startup_lan_listener() -> None:
     """Optional same-WiFi LAN sync accelerator (contract §11). Off by default --
     only starts when [lan] enabled = true and a host is configured. This is a
@@ -260,6 +320,16 @@ def _startup_lan_listener() -> None:
             # ponytail: all-interfaces bind; the double-gate is the security boundary, not the bind addr.
             lan_server.start_lan_listener("0.0.0.0", port)
             print(f"[LAN] listener on 0.0.0.0:{port} (advertised {host})", flush=True)
+            try:
+                # mDNS advertise (contract §11.8-A) — same gate as the listener itself
+                # ([lan] enabled + host configured); best-effort, never blocks startup.
+                import lan_discovery
+                from config import get_config
+                vault_path = str(get_config().vault.root)
+                device_id = lan_discovery.get_or_create_device_id(vault_path)
+                lan_discovery.start_advertising(device_id, port)
+            except Exception as exc:
+                print(f"[LAN] mDNS advertise startup skipped: {exc}", flush=True)
     except Exception as exc:
         print(f"[LAN] listener startup skipped: {exc}", flush=True)
 
@@ -327,7 +397,11 @@ def _get_capture_terminal(run_id: str) -> Optional[dict]:
 
 
 def _request_hash(content_type: str, content: str) -> str:
-    raw = f"{content_type}:{content[:2000]}"
+    # Hash the FULL content: truncating to a prefix made two distinct captures
+    # sharing that prefix (licence headers, templated docs, repeated article
+    # chrome) collide, and the second was silently dropped as a duplicate inside
+    # _DEDUP_WINDOW_S. The content is already in memory; sha256 over it is cheap.
+    raw = f"{content_type}:{content}"
     return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
@@ -411,6 +485,11 @@ class ConfigPatch(BaseModel):
     auto_describe_new_folders: Optional[bool] = None
     chat_system_prompt: Optional[str] = None
     reminders_delivery: Optional[str] = None
+    sync_enabled: Optional[bool] = None
+    sync_interval_minutes: Optional[int] = None
+    sync_on_launch: Optional[bool] = None
+    sync_after_capture: Optional[bool] = None
+    sync_mirror_captures: Optional[bool] = None
 
 class InboxApprove(BaseModel):
     target_category: Optional[str] = None
@@ -421,6 +500,23 @@ class ReminderCreate(BaseModel):
     when_iso: str
     delivery: Optional[str] = None
     notify: bool = False
+
+class NoteBodyUpdate(BaseModel):
+    path: str
+    body: str
+    expected_mtime: float
+
+class NoteAttachmentCreate(BaseModel):
+    path: str
+    filename: str
+    data_b64: str
+    expected_mtime: float
+
+class ConflictResolveRequest(BaseModel):
+    path: str
+    conflict_path: str
+    action: str  # "both" | "mine" | "theirs"
+    expected_mtime: Optional[float] = None  # required for "theirs" (concurrency guard)
 
 
 # -- Vault helpers -------------------------------------------------------------
@@ -861,6 +957,22 @@ async def _stream_capture(content_type: str, content: str, run_id: Optional[str]
         # going through its real emit().
         if run_id and event in ("done", "job"):
             _record_capture_terminal(run_id, event, dict(item))
+        # phase-5 §1.1: opt-in sync-after-capture. Off by default (batch interval covers it);
+        # when on, fire ONE best-effort background pass on the terminal event (single-flight in the
+        # scheduler swallows overlap). Never blocks the SSE stream; a missing scheduler is a no-op.
+        # E6: this is one of the three AUTOMATIC triggers, so interval_minutes = 0 ("never
+        # auto-sync") suppresses it too -- see sync_scheduler.auto_sync_disabled.
+        if event == "done":
+            try:
+                from sync_scheduler import get_scheduler, auto_sync_disabled
+                from config import get_config as _get_cfg
+                _sync = _get_cfg().sync
+                if _sync.sync_after_capture and _sync.enabled and not auto_sync_disabled(_sync):
+                    sch = get_scheduler()
+                    if sch is not None:
+                        loop.run_in_executor(_executor, sch._safe_pass)
+            except Exception:
+                pass
         yield _sse(event, **item)
 
 
@@ -920,6 +1032,123 @@ async def share(req: ShareRequest, _: None = Depends(_require_secret)):
     )
 
 
+@app.get("/sync/status")
+async def sync_status(_: None = Depends(_require_secret)):
+    """Scheduler state + last-20 pass summaries (phase-5 §1.1).
+
+    Built for a GUI Sync tab that does not exist yet (E6) -- this endpoint has no
+    consumer in gui/src today. It works; nothing calls it."""
+    from sync_scheduler import get_scheduler
+    sch = get_scheduler()
+    if sch is None:
+        return {"enabled": False, "running": False, "last_pass": None, "last_error": None, "history": []}
+    return sch.status()
+
+
+@app.post("/sync/run")
+async def sync_run(_: None = Depends(_require_secret)):
+    """Manual sync-now. Three distinct refusals, three distinct client states:
+      503 -- the scheduler never started (process-level failure)
+      403 -- [sync] enabled = false: the master switch is off, so the whole syncing system is off
+             and a manual pass is refused SERVER-SIDE, not merely hidden in the GUI
+      409 -- a pass is already running (single-flight)
+    [sync] interval_minutes = 0 ("never auto-sync") does NOT refuse here by design -- that sentinel
+    gates only the automatic triggers; an explicit Sync now still runs.
+
+    Runs off the event loop so the request never blocks; returns the pass summary row (ok:false if
+    the pass itself failed, e.g. no auth)."""
+    from sync_scheduler import get_scheduler, SyncBusy
+    from config import get_config as _get_cfg
+    sch = get_scheduler()
+    if sch is None:
+        raise HTTPException(status_code=503, detail="sync scheduler not started")
+    if not _get_cfg().sync.enabled:
+        raise HTTPException(status_code=403, detail="syncing is turned off in settings")
+    try:
+        return await asyncio.get_event_loop().run_in_executor(_executor, sch.run_now)
+    except SyncBusy:
+        raise HTTPException(status_code=409, detail="a sync pass is already running")
+
+
+@app.get("/drive/auth/status")
+async def drive_auth_status(_: None = Depends(_require_secret)):
+    """Is Drive connected? Answered WITHOUT ever opening a consent browser (E6).
+
+    The Sync tab's first question, and the one that explains an ok:false pass. `connecting` is
+    surfaced so a second tab/panel sees an in-flight consent rather than an idle disconnected
+    state."""
+    from drive_auth import has_cached_credentials, client_secret_present
+    return {
+        "connected": has_cached_credentials(),
+        "client_secret_present": client_secret_present(),
+        "connecting": _drive_connect_flight.locked(),
+    }
+
+
+@app.post("/drive/auth/connect")
+async def drive_auth_connect(_: None = Depends(_require_secret)):
+    """Run the installed-app OAuth flow: opens a browser once, caches the token.
+
+    409 if a consent is already in flight -- two clicks would otherwise race two local callback
+    servers and two browser windows. 400 when no client_secret.json exists, because the flow could
+    only raise FileNotFoundError; the GUI must fix setup instead of retrying.
+    # ponytail: no timeout -- google-auth-oauthlib's run_local_server blocks until the user
+    # consents or closes the browser, so an abandoned consent holds this request (and the flight
+    # lock) until the client disconnects. Bounded to one at a time and local-only. Pass
+    # timeout_seconds through if an abandoned consent ever actually wedges a session."""
+    from drive_auth import load_credentials, client_secret_present
+    if not client_secret_present():
+        raise HTTPException(
+            status_code=400,
+            detail="no client_secret.json next to omni_capture/ -- add a Google OAuth client first",
+        )
+    if not _drive_connect_flight.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="a Drive consent is already in progress")
+    try:
+        # NOT _executor: that pool is 2 workers shared with /capture and /sync/run, and a consent
+        # blocks for as long as the user takes. asyncio.to_thread gets its own thread instead, so
+        # an open browser window can never starve a capture.
+        await asyncio.to_thread(load_credentials)
+    except Exception as exc:  # consent declined/closed, bad client file, network -- never 500
+        raise HTTPException(status_code=502, detail=f"Drive connect failed: {exc}")
+    finally:
+        _drive_connect_flight.release()
+    return {"connected": True}
+
+
+@app.post("/drive/auth/disconnect")
+async def drive_auth_disconnect(_: None = Depends(_require_secret)):
+    """Forget the cached token on this device. Revokes nothing at Google."""
+    from drive_auth import forget_credentials
+    return {"connected": False, "removed": forget_credentials()}
+
+
+@app.get("/digest/today")
+async def digest_today(_: None = Depends(_require_secret)):
+    """F-14: the 4 counts for the ephemeral daily-digest pop-in (mock 06-daily-digest-v2) — captured /
+    touched / reminders_due / unrevisited for today. Ephemeral by contract: computed on demand, NEVER
+    written to the vault. The GUI owns 'show the pop-in once per day'; this endpoint just serves the
+    counts. Runs off the event loop — the vault mtime scan can be slow on a large vault.
+    # ponytail: recomputes per call (no memo). Fine because the pop-in fetches ~once/day; add a per-day
+    # cache only if something starts polling this."""
+    from datetime import date
+
+    from config import get_config
+    from daily_digest import digest_stats
+    vault_root = get_config().vault.root
+    return await asyncio.get_event_loop().run_in_executor(
+        _executor, lambda: digest_stats(date.today(), vault_root))
+
+
+@app.get("/lan/device-id")
+async def lan_device_id(_: None = Depends(_require_secret)):
+    """Stable desktop device-id (contract §11.4 pairing-payload `device` anchor). The GUI reads this
+    to build the v3 pairing QR so the phone can match mDNS/hub-hint discovery to THIS desktop. Same
+    value lan_discovery advertises + writes into `.sync/lan_endpoint.json`."""
+    import lan_discovery
+    return {"device": lan_discovery.get_or_create_device_id(str(_get_vault_root()))}
+
+
 @app.get("/config")
 async def get_config_endpoint(_: None = Depends(_require_secret)):
     if CONFIG_PATH.exists():
@@ -977,6 +1206,21 @@ async def patch_config(patch: ConfigPatch, _: None = Depends(_require_secret)):
         delivery = patch.reminders_delivery.strip().lower()
         if delivery in ("app", "os"):
             _set("reminders", "delivery", delivery)
+    if patch.sync_enabled is not None:
+        _set("sync", "enabled", bool(patch.sync_enabled))
+    if patch.sync_interval_minutes is not None:
+        mins = int(patch.sync_interval_minutes)
+        # 0 is the "never auto-sync" sentinel and must reach config.toml unclamped; every real
+        # interval still has a 5-minute floor. 1-4 is neither, so it stays a 400.
+        if mins != 0 and mins < 5:
+            raise HTTPException(status_code=400, detail="sync_interval_minutes must be 0 (never) or >= 5")
+        _set("sync", "interval_minutes", mins)
+    if patch.sync_on_launch is not None:
+        _set("sync", "sync_on_launch", bool(patch.sync_on_launch))
+    if patch.sync_after_capture is not None:
+        _set("sync", "sync_after_capture", bool(patch.sync_after_capture))
+    if patch.sync_mirror_captures is not None:
+        _set("sync", "mirror_captures", bool(patch.sync_mirror_captures))
 
     CONFIG_PATH.write_text(tomlkit.dumps(doc), encoding="utf-8")
 
@@ -1260,3 +1504,168 @@ async def delete_reminder_endpoint(reminder_id: int, _: None = Depends(_require_
     from reminders import delete_reminder
     db = get_db_path(get_config().vault.root)
     delete_reminder(db, reminder_id)
+
+
+# -- Full-window note editor (F-7) ---------------------------------------------
+
+@app.get("/note")
+async def get_note(path: str, _: None = Depends(_require_secret)):
+    """Read a note's body + read-only frontmatter fields for the in-app editor."""
+    from note_editor import read_note
+    root = _get_vault_root()
+    try:
+        return read_note(root, path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Note not found: {path!r}")
+
+
+@app.put("/note")
+async def put_note(body: NoteBodyUpdate, _: None = Depends(_require_secret)):
+    """Write a note's body only (frontmatter carried through byte-for-byte).
+    Optimistic-concurrency guarded on `expected_mtime`: a 409 means the file
+    changed on disk since the editor read it -- the caller must reload
+    rather than retry-clobber (body-sacred + files-are-source-of-truth)."""
+    from note_editor import read_note, write_note_body, NoteConflictError
+    root = _get_vault_root()
+    try:
+        result = write_note_body(root, body.path, body.body, body.expected_mtime)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Note not found: {body.path!r}")
+    except NoteConflictError as exc:
+        raise HTTPException(status_code=409, detail={
+            "message": "Note changed on disk since it was opened.",
+            "current_mtime": exc.current_mtime,
+            "current_body": exc.current_body,
+        })
+    return result
+
+
+# -- F-13 (desktop half): attachments -----------------------------------------
+
+@app.post("/note/attachment")
+async def add_note_attachment(body: NoteAttachmentCreate, _: None = Depends(_require_secret)):
+    """Write an uploaded file into `_attachments/<note-id>/`, record it in
+    the note's `attachments` frontmatter, and append a `[attachment: ...]`
+    link line to the body -- a normal user file-write through note_editor.py
+    (body-sacred, same mtime guard as PUT /note)."""
+    from note_editor import add_attachment, NoteConflictError
+    root = _get_vault_root()
+    try:
+        data = base64.b64decode(body.data_b64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 attachment data.")
+    try:
+        result = add_attachment(root, body.path, body.filename, data, body.expected_mtime)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Note not found: {body.path!r}")
+    except NoteConflictError as exc:
+        raise HTTPException(status_code=409, detail={
+            "message": "Note changed on disk since it was opened.",
+            "current_mtime": exc.current_mtime,
+            "current_body": exc.current_body,
+        })
+    return result
+
+
+@app.get("/note/attachment")
+async def get_note_attachment(path: str, filename: str, _: None = Depends(_require_secret)):
+    """Serve one attachment's raw bytes (image thumbnail / audio playback in
+    the NoteEditor viewer). Resolves via the same note-id folder convention
+    add_attachment writes into."""
+    import re as _re
+    from fastapi.responses import FileResponse
+    from frontmatter import read_all_fields as _read_fields
+    from note_editor import resolve_note_path
+    root = _get_vault_root()
+    try:
+        note_path = resolve_note_path(root, path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not note_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Note not found: {path!r}")
+    fields = _read_fields(note_path.read_text(encoding="utf-8", errors="ignore"))
+    note_id = fields.get("id")
+    if not note_id:
+        raise HTTPException(status_code=404, detail="Note has no id")
+    safe_name = _re.sub(r"[^\w.\-]", "_", filename) or "attachment"
+    file_path = root.resolve() / "_attachments" / note_id / safe_name
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    return FileResponse(str(file_path))
+
+
+# -- F-3: version history (Drive revisions) --------------------------------
+
+@app.get("/note/history")
+async def get_note_history_endpoint(path: str, _: None = Depends(_require_secret)):
+    """List Drive revisions for one note. Runs off the event loop -- Drive
+    calls are network I/O. status offline/not_synced are legitimate empty
+    states the GUI renders, never surfaced as an error."""
+    from note_history import get_note_history
+    root = _get_vault_root()
+    try:
+        return await asyncio.get_event_loop().run_in_executor(_executor, get_note_history, root, path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Note not found: {path!r}")
+
+
+@app.get("/note/history/revision")
+async def get_note_history_revision_endpoint(path: str, revision_id: str, _: None = Depends(_require_secret)):
+    """Fetch one past revision's body (frontmatter stripped) for preview or
+    as the source of a Restore, which the GUI performs via a normal PUT
+    /note write (body-sacred: restore is just another user edit)."""
+    from note_history import get_revision_body
+    root = _get_vault_root()
+    try:
+        body = await asyncio.get_event_loop().run_in_executor(_executor, get_revision_body, root, path, revision_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"body": body}
+
+
+# -- F-1: conflict resolver (desktop) --------------------------------------
+
+@app.get("/note/conflict")
+async def get_note_conflict_endpoint(path: str, _: None = Depends(_require_secret)):
+    """None-or-payload: whether *path*'s note currently has a conflicted-copy
+    sibling, and the two-sided diff data if so."""
+    from conflict_resolver import get_conflict
+    root = _get_vault_root()
+    try:
+        conflict = get_conflict(root, path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Note not found: {path!r}")
+    return {"conflict": conflict}
+
+
+@app.post("/note/conflict/resolve")
+async def resolve_note_conflict_endpoint(body: ConflictResolveRequest, _: None = Depends(_require_secret)):
+    """Apply "both" | "mine" | "theirs" -- all three are ordinary file
+    operations through paths this codebase already exercises elsewhere."""
+    from conflict_resolver import resolve_conflict
+    from note_editor import NoteConflictError
+    root = _get_vault_root()
+    try:
+        return resolve_conflict(root, body.path, body.conflict_path, body.action, body.expected_mtime)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except NoteConflictError as exc:
+        raise HTTPException(status_code=409, detail={
+            "message": "Note changed on disk since the conflict was opened.",
+            "current_mtime": exc.current_mtime,
+            "current_body": exc.current_body,
+        })

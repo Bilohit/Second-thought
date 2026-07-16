@@ -6,10 +6,12 @@ import SettingsPanel from "../SettingsPanel";
 import DashboardView from "./DashboardView";
 import LibraryView from "./LibraryView";
 import { railSliderFromElement } from "../../lib/railSelection";
-import { MenuIcon } from "../PillMenu/icons";
-import { syncVaultIndex, getStats, getInbox } from "../../lib/api";
+import { MenuIcon, DashboardIcon } from "../PillMenu/icons";
+import { syncVaultIndex, getStats, getInbox, getDigestToday, type DigestStats } from "../../lib/api";
 import InboxPanel, { type InboxTab } from "../InboxPanel";
 import ErrorBoundary from "../ErrorBoundary";
+import DailyDigest from "../DailyDigest";
+import NoteEditor from "../NoteEditor";
 import type { CaptureState, CaptureStep } from "../../hooks/useCapture";
 import type { LlmStatus } from "../../lib/api";
 import type { LookChatPersist } from "../../App";
@@ -146,6 +148,33 @@ export default function FullWindow(props: FullWindowProps) {
 
   useEffect(() => () => { if (syncTimerRef.current) clearTimeout(syncTimerRef.current); }, []);
 
+  // ponytail: full-window-mode only — pill modes + phone parity get their own
+  // digest surface later (F-14 remainder). Show-once keys off calendar day in
+  // localStorage; the frontend owns this trigger, no coupling to the sync
+  // scheduler (matches the backend's no-memo /digest/today design).
+  const [digest, setDigest] = useState<DigestStats | null>(null);
+  const [digestOpen, setDigestOpen] = useState(false);
+  useEffect(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    if (localStorage.getItem("omni-digest-shown") !== today) {
+      getDigestToday().then((d) => { setDigest(d); setDigestOpen(true); }).catch(() => {});
+    }
+  }, []);
+  const closeDigest = useCallback(() => {
+    setDigestOpen(false);
+    try { localStorage.setItem("omni-digest-shown", new Date().toISOString().slice(0, 10)); } catch { /* noop */ }
+  }, []);
+  const digestDateLabel = new Date().toLocaleString("en-US", { month: "short", day: "numeric" }).toUpperCase();
+
+  // F-7: full-window note editor overlay. FullWindow-exclusive entry point
+  // (recent-note row, dashboard-only) -- deliberately does NOT repoint
+  // props.onOpenFile itself, since that prop is shared with PillOverlay's
+  // compact-mode CompactHistory (external-open there stays untouched; F-7
+  // is full-window-mode only). NoteEditor's own "open in external editor"
+  // instrument button calls props.onOpenFile to reach the same OS-handler
+  // path compact mode already uses.
+  const [editorPath, setEditorPath] = useState<string | null>(null);
+
   return (
     <div
       className="fw-shell"
@@ -201,7 +230,7 @@ export default function FullWindow(props: FullWindowProps) {
               opacity: sliderRect ? 1 : 0,
             }}
           />
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
+          <div style={{ flex: "4 1 0", display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
             {MAIN_VIEWS.map((v) => (
               <button
                 key={v}
@@ -211,12 +240,12 @@ export default function FullWindow(props: FullWindowProps) {
                 title={TITLES[v][0]}
                 aria-pressed={view === v}
               >
-                {v === "dashboard" ? "⊞" : v === "look" ? <MenuIcon target="search" size={18} /> : <MenuIcon target="vault" size={18} />}
+                {v === "dashboard" ? <DashboardIcon size={18} /> : v === "look" ? <MenuIcon target="search" size={18} /> : <MenuIcon target="vault" size={18} />}
               </button>
             ))}
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: "none" }}>
-            <div style={{ height: 1, background: "var(--border)", margin: "0 2px 8px" }} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: "1 1 0", minHeight: 0 }}>
+            <div style={{ height: 1, background: "var(--border)", margin: "0 2px 8px", flex: "none" }} />
             <button
               ref={(el) => { railBtnRefs.current.settings = el; }}
               className="btn-hover rail-btn rail-btn--footer"
@@ -232,14 +261,14 @@ export default function FullWindow(props: FullWindowProps) {
               title="Hide to tray"
               aria-pressed={false}
             >
-              ⊝
+              <MenuIcon target="hide" size={16} />
             </button>
           </div>
         </div>
       </div>
 
       {/* Main content area */}
-      <div className="fw-chrome" data-corner={props.pillCorner} style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <div className="fw-chrome" data-corner={props.pillCorner} style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, position: "relative" }}>
         {/* Topbar */}
         <div className="drag-region" style={{ height: 46, borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10, padding: "0 14px", flex: "none" }}>
           <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-1)" }}>{title}</span>
@@ -285,7 +314,7 @@ export default function FullWindow(props: FullWindowProps) {
               visible
               captureState={props.captureState}
               stepDefs={props.stepDefs}
-              onOpenFile={props.onOpenFile}
+              onOpenFile={setEditorPath}
               onCaptureFile={props.onCaptureFile}
               llmStatus={props.llmStatus}
               onNavigate={(t) => {
@@ -321,7 +350,7 @@ export default function FullWindow(props: FullWindowProps) {
         )}
         {view === "library" && (
           <div key="library" className="fw-view-panel">
-            <LibraryView visible />
+            <LibraryView visible onOpenNote={setEditorPath} />
           </div>
         )}
         {view === "inbox" && (
@@ -335,6 +364,13 @@ export default function FullWindow(props: FullWindowProps) {
           </div>
         )}
         </ErrorBoundary>
+        <DailyDigest open={digestOpen} stats={digest} dateLabel={digestDateLabel} onClose={closeDigest} />
+        <NoteEditor
+          open={editorPath !== null}
+          path={editorPath}
+          onClose={() => setEditorPath(null)}
+          onOpenExternal={props.onOpenFile}
+        />
       </div>
     </div>
   );

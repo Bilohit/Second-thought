@@ -23,7 +23,7 @@
  * close island -> reopen fan -> pick; this is the accepted cost of GATE-B=A,
  * do not re-add tabs here.
  */
-import { MENU_LABELS, type MenuTarget } from "../PillMenu/icons";
+import { MENU_LABELS, CloseIcon, type MenuTarget } from "../PillMenu/icons";
 import type { PillCorner } from "../PillOverlay";
 import type { PanelExtrudeZone } from "../../lib/compactPanel";
 import ErrorBoundary from "../ErrorBoundary";
@@ -73,7 +73,7 @@ export default function CompactShell({ target, corner, zone, open, onClose, chil
               onClick={onClose}
               aria-label="Close"
             >
-              ✕
+              <CloseIcon />
             </button>
           )}
         </div>

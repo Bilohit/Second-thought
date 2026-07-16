@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import TypedDict
+from typing import Optional, TypedDict
 
 from index_writer import (
-    init_db, _file_hash, remove_capture_by_path, upsert_capture_from_file,
+    init_db, _file_hash, heal_corrupt_db, remove_capture_by_path, upsert_capture_from_file,
 )
 from vector_store import _connect, index_note, remove_from_index
 
@@ -35,6 +35,9 @@ class SyncResult(TypedDict):
     removed: int
     updated: int
     skipped: int
+    healed: bool          # a corrupt captures.db was discarded and rebuilt from files
+    dedup_rebuilt: bool   # a missing/empty dedup ledger was rebuilt from the vault files (R-1)
+    error: Optional[str]  # the pass did NOT complete; counts below are partial
 
 
 def purge_orphan_index_entries(vault_root: Path) -> int:
@@ -78,9 +81,32 @@ def purge_orphan_index_entries(vault_root: Path) -> int:
 
 
 def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> SyncResult:
-    """Full diff-sync: remove orphans, add/update changed files."""
-    result: SyncResult = {"added": 0, "removed": 0, "updated": 0, "skipped": 0}
+    """Full diff-sync: heal a corrupt index, remove orphans, add/update changed files."""
+    result: SyncResult = {"added": 0, "removed": 0, "updated": 0, "skipped": 0,
+                          "healed": False, "dedup_rebuilt": False, "error": None}
     try:
+        # --- heal a corrupt captures.db BEFORE anything reads it ---
+        # It is a derived cache; an unreadable one is discarded here so the
+        # add/update pass below re-creates it from the vault files. Without this
+        # the DatabaseError fell into the blanket `except` at the bottom and this
+        # function returned {"added": 0} -- indistinguishable from "nothing to do"
+        # -- while the index stayed dead until a human deleted the file.
+        result["healed"] = heal_corrupt_db(vault_root)
+
+        # --- rebuild a missing/empty dedup ledger (R-1 finisher) ---
+        # The ledger is a derived cache like the two DBs around it, but it was the only one with
+        # no automatic recovery: rebuild_dedup_index() existed and nothing called it. A user who
+        # reindexes to fix their stores reasonably expects ALL derived stores healed, not two of
+        # three. Missing/empty only -- the policy (and why it must never run over a live ledger)
+        # lives in dedup.rebuild_dedup_index_if_missing. Best-effort: a failed ledger rebuild must
+        # never abort the captures/vectors sync below.
+        try:
+            from dedup import rebuild_dedup_index_if_missing
+            if rebuild_dedup_index_if_missing(vault_root) is not None:
+                result["dedup_rebuilt"] = True
+        except Exception as exc:
+            print(f"[VaultSync] dedup ledger rebuild skipped: {exc}", file=sys.stderr)
+
         # --- purge orphans (captures table) ---
         # ponytail: provisional=1 rows are excluded — their synthetic path never
         # appears on disk by design (LAN overlay, contract §11); they are
@@ -146,7 +172,10 @@ def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> Syn
                 result["skipped"] += 1
 
     except Exception as exc:
+        # Still fail-soft (a broken index must never break capture), but the caller
+        # is told the pass aborted instead of reading the zeroed counts as success.
         print(f"[VaultSync] sync_vault_indexes error: {exc}", file=sys.stderr)
+        result["error"] = f"{type(exc).__name__}: {exc}"
 
     return result
 

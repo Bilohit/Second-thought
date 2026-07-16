@@ -155,6 +155,61 @@ def build_digest(target_date: date, vault_root: Path) -> str:
     return "\n".join(lines)
 
 
+def digest_stats(target_date: date, vault_root: Path) -> dict:
+    """The 4 numbers the ephemeral daily-digest pop-in shows (F-14, mock 06-daily-digest-v2):
+      captured      — captures recorded on target_date (canonical only, provisional excluded)
+      touched       — this peer's own notes whose file mtime falls on target_date
+      reminders_due — pending reminders due by end of target_date
+      unrevisited   — notes not touched in >30 days (mtime older than 30d before end of day)
+
+    Ephemeral by contract: the mockup-gate decision made the digest a pop-in PANEL, NOT a vault
+    note — so this returns counts for the GUI to render and never writes to the vault. (The legacy
+    build_digest/write_digest markdown-note path stays as a standalone CLI, unused by the surface.)
+
+    # ponytail: full-vault mtime scan per call (read_vault_notes walks + reads every note). Fine for
+    # a once-per-day scheduler tick; if a vault ever holds thousands of notes, cache mtimes or read
+    # them from captures.db instead of re-walking. Reminder-due compares ISO strings by prefix
+    # (best-effort for a glanceable count); switch to parsed datetimes if exactness ever matters.
+    """
+    from datetime import datetime, time as _time
+
+    import index_writer
+    import reminders as _rem
+    from mobile_sync_agent import read_vault_notes
+
+    date_str = _format_date_iso(target_date)
+    date_next = (target_date + timedelta(days=1)).isoformat()
+
+    conn = init_db(vault_root)
+    captured = conn.execute(
+        "SELECT COUNT(*) FROM captures WHERE timestamp >= ? AND timestamp < ? AND provisional = 0",
+        (date_str, date_next),
+    ).fetchone()[0]
+    conn.close()
+
+    day_start = datetime.combine(target_date, _time.min).timestamp()
+    day_end = datetime.combine(target_date + timedelta(days=1), _time.min).timestamp()
+    stale_before = day_end - 30 * 86400
+    touched = unrevisited = 0
+    for note in read_vault_notes(str(vault_root)).values():
+        try:
+            mtime = Path(note["path"]).stat().st_mtime
+        except OSError:
+            continue
+        if day_start <= mtime < day_end:
+            touched += 1
+        if mtime < stale_before:
+            unrevisited += 1
+
+    eod_iso = datetime.combine(target_date + timedelta(days=1), _time.min).isoformat(timespec="seconds")
+    db_path = index_writer.get_db_path(vault_root)
+    reminders_due = sum(1 for r in _rem.list_reminders(db_path)
+                        if (r.get("fire_at") or "")[:19] <= eod_iso)
+
+    return {"captured": captured, "touched": touched,
+            "reminders_due": reminders_due, "unrevisited": unrevisited}
+
+
 def write_digest(target_date: date, vault_root: Path) -> Path:
     """
     Write (or overwrite) the daily digest note and return its Path.

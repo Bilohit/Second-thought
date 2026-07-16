@@ -7,7 +7,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { searchCaptures, openFilePath, syncVaultIndex, checkHealth, type SearchResult } from "../lib/api";
+import { searchCaptures, getSemanticSearch, openFilePath, syncVaultIndex, checkHealth, type SearchResult, type SemanticResult } from "../lib/api";
 import { slideDirection } from "../lib/segmentedToggle";
 import { parseCitations } from "../lib/citations";
 import type { ChatMessage } from "../hooks/useLookChat";
@@ -17,7 +17,8 @@ import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
   BTN_GHOST, BTN_SECONDARY, INPUT_STYLE,
 } from "./ui/styles";
-import { RefreshIcon, SendIcon } from "./PillMenu/icons";
+import { RefreshIcon, SendIcon, AlertIcon } from "./PillMenu/icons";
+import { Toggle } from "./ui/Toggle";
 
 interface LookChatHook {
   messages: ChatMessage[];
@@ -83,6 +84,9 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  // F-10: semantic band beneath FTS results -- top-k related notes, deduped
+  // against `results` by path so nothing shows twice.
+  const [semanticResults, setSemanticResults] = useState<SemanticResult[]>([]);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -98,7 +102,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // LLM health — persistent offline banner (per-message ⚠ isn't enough signal)
+  // LLM health — persistent offline banner (a per-message failure marker isn't enough signal)
   const [llmOffline, setLlmOffline] = useState(false);
   useEffect(() => {
     if (!visible) return;
@@ -153,6 +157,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
     const q = query.trim();
     if (!q) {
       setResults([]);
+      setSemanticResults([]);
       setSearching(false);
       setSearchError(null);
       return;
@@ -169,9 +174,18 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
       } finally {
         setSearching(false);
       }
+      // Best-effort, never blocks/fails the FTS results above.
+      getSemanticSearch(q, 5).then(setSemanticResults).catch(() => setSemanticResults([]));
     }, 150);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [query, visible, mode]);
+
+  // Dedupe the semantic band against FTS hits by path (semantic paths are
+  // vault-relative; FTS paths are absolute) -- never show the same note twice.
+  const dedupedSemantic = semanticResults.filter((s) => {
+    const relNorm = s.path.replace(/\\/g, "/");
+    return !results.some((r) => r.path.replace(/\\/g, "/").endsWith(relNorm));
+  });
 
   // Auto-scroll transcript to bottom on new messages
   useEffect(() => {
@@ -323,10 +337,11 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
         </div>
       )}
 
-      {/* LLM offline banner — persistent signal, not just per-message ⚠ */}
+      {/* LLM offline banner — persistent signal, not just a per-message failure marker */}
       {llmOffline && (
-        <div style={{ fontSize: 12, color: "var(--red)", borderBottom: "1px solid var(--border)", textAlign: "center", padding: "6px 14px" }}>
-          ⚠ Model offline — Ollama unreachable
+        <div style={{ fontSize: 12, color: "var(--red)", borderBottom: "1px solid var(--border)", textAlign: "center", padding: "6px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+          <AlertIcon size={12} />
+          Model offline — Ollama unreachable
         </div>
       )}
 
@@ -472,6 +487,43 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                   </div>
                 );
               })}
+
+              {/* F-10: Semantic band beneath FTS results — retrieve_related
+                  top-k, deduped against the FTS hits above by path. */}
+              {query.trim() && dedupedSemantic.length > 0 && (
+                <div style={{ marginTop: 4 }}>
+                  <div style={{
+                    fontSize: 10, color: "var(--text-3)", textTransform: "uppercase",
+                    letterSpacing: "0.08em", padding: "8px 14px 4px",
+                    borderTop: "1px solid var(--border-2)",
+                  }}>
+                    Semantic
+                  </div>
+                  {dedupedSemantic.map((s) => (
+                    <div
+                      key={s.path}
+                      onClick={() => { openFilePath(s.path); onClose(); }}
+                      style={{
+                        display: "flex", alignItems: "flex-start", gap: 10,
+                        padding: "9px 14px", cursor: "pointer",
+                      }}
+                      className="row-hover-flat"
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {s.path.split(/[\\/]/).pop()}
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--text-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {s.excerpt}
+                        </div>
+                      </div>
+                      <span style={{ fontSize: 10, color: "var(--text-3)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
+                        {Math.round(s.similarity * 100)}%
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         ) : (
@@ -492,6 +544,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                 const isTalk = msg.chatMode === "talk";
                 const isTyping = !isUser && streaming && msg.content === "" && i === messages.length - 1;
                 const isSearching = !isUser && msg.searching && i === messages.length - 1;
+                const isFailed = !isUser && msg.failed === true;
                 return (
                   <div
                     key={i}
@@ -529,6 +582,11 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                         <span style={{ color: "var(--text-3)", fontSize: 16, letterSpacing: 2 }}>…</span>
                       ) : isUser ? (
                         msg.content
+                      ) : isFailed ? (
+                        <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <AlertIcon size={12} />
+                          {msg.content}
+                        </span>
                       ) : (
                         parseCitations(msg.content).map((seg, j) => {
                           if ("text" in seg) return <span key={j}>{seg.text}</span>;
@@ -556,8 +614,8 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                         })
                       )}
                     </div>
-                    {/* Retry — failed (⚠) assistant messages only */}
-                    {!isUser && !isSearching && !isTyping && msg.content.startsWith("⚠") && msg.userQuery && (
+                    {/* Retry — failed assistant messages only */}
+                    {isFailed && !isSearching && !isTyping && msg.userQuery && (
                       <button
                         onClick={() => retry(i)}
                         disabled={streaming}
@@ -630,24 +688,13 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
             {compact ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "3px 6px 4px", flexShrink: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <button
-                    type="button"
-                    onClick={() => setIgnoreHistory(!ignoreHistory)}
-                    aria-pressed={ignoreHistory}
+                  <div
                     title="When on, each message is sent without prior conversation context"
-                    style={{
-                      ...BTN_SECONDARY,
-                      fontSize: 10,
-                      padding: "3px 8px",
-                      flexShrink: 0,
-                      background: ignoreHistory ? "var(--accent)" : (BTN_SECONDARY.background as string),
-                      color: ignoreHistory ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
-                      border: ignoreHistory ? "1px solid var(--accent)" : (BTN_SECONDARY.border as string),
-                      fontWeight: ignoreHistory ? 600 : 400,
-                    }}
+                    style={{ display: "flex", alignItems: "center", gap: 6 }}
                   >
-                    Ignore history
-                  </button>
+                    <Toggle checked={ignoreHistory} onChange={setIgnoreHistory} label="Ignore history" />
+                    <span style={{ fontSize: 10, color: "var(--text-3)" }}>Ignore history</span>
+                  </div>
                   <button
                     type="button"
                     onClick={reset}
@@ -729,24 +776,13 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <button
-                    type="button"
-                    onClick={() => setIgnoreHistory(!ignoreHistory)}
-                    aria-pressed={ignoreHistory}
+                  <div
                     title="When on, each message is sent without prior conversation context"
-                    style={{
-                      ...BTN_SECONDARY,
-                      fontSize: 10,
-                      padding: "3px 8px",
-                      flexShrink: 0,
-                      background: ignoreHistory ? "var(--accent)" : (BTN_SECONDARY.background as string),
-                      color: ignoreHistory ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
-                      border: ignoreHistory ? "1px solid var(--accent)" : (BTN_SECONDARY.border as string),
-                      fontWeight: ignoreHistory ? 600 : 400,
-                    }}
+                    style={{ display: "flex", alignItems: "center", gap: 6 }}
                   >
-                    Ignore history
-                  </button>
+                    <Toggle checked={ignoreHistory} onChange={setIgnoreHistory} label="Ignore history" />
+                    <span style={{ fontSize: 10, color: "var(--text-3)" }}>Ignore history</span>
+                  </div>
                   <span style={{ fontSize: 10, color: "var(--text-3)", flex: 1 }}>
                     {ignoreHistory ? "Standalone query — prior turns skipped" : "Follow-ups use recent chat context"}
                   </span>

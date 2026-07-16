@@ -118,10 +118,12 @@ export async function rotateSecret(): Promise<string> {
   return invoke<string>("rotate_secret");
 }
 
-/** QR payload — MUST match phone/src/lib/pairing.ts parsePairingPayload (contract §9,
- *  PairingPayload v2). LAN file-sync accelerator, not Tailscale chat: host is the
- *  desktop's LAN IPv4, key is the base64 NaCl secretbox key. */
-export function buildPairingPayload(info: PairingInfo): string {
+/** QR payload — MUST match phone/src/lib/pairing.ts parsePairingPayload (contract §9/§11.4,
+ *  PairingPayload v3). LAN file-sync accelerator, not Tailscale chat: host is the desktop's LAN
+ *  IPv4, key is the base64 NaCl secretbox key. `device` is the desktop's stable device-id (from
+ *  GET /lan/device-id) — the anchor mDNS/hub-hint discovery matches against (§11.8). The phone
+ *  rejects v1/v2, so `device` is required. */
+export function buildPairingPayload(info: PairingInfo, device: string): string {
   const host = info.lan_ip ?? info.host ?? "";
-  return JSON.stringify({ v: 2, host, port: info.port, key: info.key, secret: info.secret });
+  return JSON.stringify({ v: 3, host, port: info.port, key: info.key, secret: info.secret, device });
 }

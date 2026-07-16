@@ -206,5 +206,9 @@ def serialize_note(note: Note) -> str:
             if note.remind_at is not None:
                 lines.append(f"remind_at: {_emit_scalar(note.remind_at)}")
     for k, raw in note.extra.items():
-        lines.append(f"{k}:{raw}")
+        # Parsed extras keep the raw text after ":" (leading space included) — emit verbatim for
+        # byte-stable round-trips. A programmatically-set value (e.g. reconcile's category_source)
+        # has no leading whitespace — add the YAML space so the output stays valid YAML.
+        sep = "" if raw == "" or raw[0] in (" ", "\t", "\n") else " "
+        lines.append(f"{k}:{sep}{raw}")
     return "---\n" + "\n".join(lines) + "\n---\n" + note.body

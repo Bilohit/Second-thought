@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 from frontmatter import strip_frontmatter
+from tag_index import parse_tags, resolve_paths
 import index_health
 
 # ponytail: 64k cap; raise or chunk FTS if vault notes routinely exceed this
@@ -285,6 +286,65 @@ def init_db(vault_root: Path) -> sqlite3.Connection:
     return conn
 
 
+def heal_corrupt_db(vault_root: Path) -> bool:
+    """Discard captures.db if it is unreadable, so the caller can re-create it.
+
+    captures.db is a derived cache — every byte of it is reconstructible from the
+    vault .md files — so deleting an unreadable one is the sanctioned recovery, not
+    data loss. A truncated/half-flushed/bad-sector file raises
+    sqlite3.DatabaseError("file is not a database") on the first real read; that used
+    to land in vault_sync.sync_vault_indexes' blanket `except Exception`, which
+    printed and returned a success-shaped {"added": 0}, leaving the index dead until
+    a human deleted the file by hand.
+
+    Returns True if a corrupt db was discarded. Detection must run BEFORE init_db.
+
+    OperationalError is deliberately caught FIRST and never heals. It is a subclass
+    of DatabaseError, but it is what a HEALTHY db raises when it is merely
+    unavailable -- SQLITE_BUSY/SQLITE_LOCKED under a concurrent writer, a
+    permissions fault, an unwritable temp dir. Corruption (SQLITE_NOTADB "file is
+    not a database", SQLITE_CORRUPT "database disk image is malformed") surfaces as
+    a plain DatabaseError, so the split is exact. Without it, "unreadable" meant
+    "unlink it" and a busy-but-intact index could be destroyed: today WAL
+    (init_db's journal_mode) keeps readers from ever blocking and the unlink's
+    OSError branch catches the rest, but both are incidental -- deleting a healthy
+    user index must not rest on an unstated invariant holding.
+    """
+    db_path = get_db_path(vault_root)
+    if not db_path.exists():
+        return False
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            # Touches the schema pages -- connect() alone does not read the file.
+            conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        finally:
+            conn.close()
+        return False
+    except sqlite3.OperationalError as exc:
+        # Unavailable, not corrupt -- stay fail-soft and leave the file alone. The
+        # caller proceeds to init_db, which surfaces the same condition honestly.
+        print(f"[IndexWriter] captures.db unavailable ({exc}) -- leaving it intact; "
+              "this is not corruption", file=sys.stderr, flush=True)
+        index_health.record_failure("captures", exc)
+        return False
+    except sqlite3.DatabaseError as exc:
+        print(f"[IndexWriter] captures.db unreadable ({exc}) -- discarding the corrupt "
+              "derived cache; it rebuilds from the vault files", file=sys.stderr, flush=True)
+        try:
+            db_path.unlink()
+            # A stale -wal/-shm can resurrect the pages we just destroyed.
+            for extra in db_path.parent.glob(db_path.name + "-*"):
+                extra.unlink()
+        except OSError as unlink_exc:   # locked by another process -- stay fail-soft
+            print(f"[IndexWriter] could not discard corrupt captures.db: {unlink_exc}",
+                  file=sys.stderr, flush=True)
+            index_health.record_failure("captures", exc)
+            return False
+        _INITIALIZED.discard(str(db_path))   # force init_db to re-apply the DDL
+        return True
+
+
 # ── Content hash ──────────────────────────────────────────────────────────────
 
 def _file_hash(path: str) -> Optional[str]:
@@ -310,6 +370,15 @@ def _read_body_excerpt(path: str) -> Optional[str]:
         return None
     text = re.sub(r"\s+", " ", strip_frontmatter(text)).strip()
     return text[:_BODY_EXCERPT_MAX_CHARS] if text else None
+
+
+def _read_file_tags(path: Path) -> list[str]:
+    """The note's frontmatter tags, or [] on any read error -- like
+    _read_body_excerpt, this must never raise (callers index best-effort)."""
+    try:
+        return parse_tags(Path(path).read_text(encoding="utf-8", errors="ignore"))
+    except OSError:
+        return []
 
 
 # ── Write ─────────────────────────────────────────────────────────────────────
@@ -504,6 +573,14 @@ def upsert_capture_from_file(vault_root: Path, abs_path: Path) -> None:
         category   = p.parent.name
         body       = _read_body_excerpt(str(p))
         h          = _file_hash(str(p))
+        # Tags come from the FILE's frontmatter -- the source of truth. This
+        # column used to be left unset here, so every row this path wrote (i.e.
+        # every `origin: note` file, and every row after a rebuild) had tags='[]'
+        # even though the tags were sitting in the frontmatter. tag_vocab reads
+        # this column as the vault's tag vocabulary, so a rebuild silently decayed
+        # it and the LLM re-forked tags it should have reused. parse_tags reads
+        # both frontmatter shapes (inline notes + the pipeline's block list).
+        tags = json.dumps(_read_file_tags(p))
         # File mtime, not wall-clock now: a bulk vault sync must not stamp
         # every pre-existing note as captured-today (it poisons Recent
         # activity and the 30-day by_day stats).
@@ -511,14 +588,15 @@ def upsert_capture_from_file(vault_root: Path, abs_path: Path) -> None:
         conn = init_db(vault_root)
         conn.execute(
             """
-            INSERT INTO captures (timestamp, category, path, hash, filename, body_excerpt)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO captures (timestamp, category, path, hash, filename, body_excerpt, tags)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 hash         = excluded.hash,
                 body_excerpt = excluded.body_excerpt,
-                timestamp    = excluded.timestamp
+                timestamp    = excluded.timestamp,
+                tags         = excluded.tags
             """,
-            (timestamp, category, str(p), h, p.name, body),
+            (timestamp, category, str(p), h, p.name, body, tags),
         )
         conn.commit()
         conn.close()
@@ -599,6 +677,7 @@ def search(
     category: Optional[str] = None,
     since: Optional[str]    = None,
     limit: int              = 25,
+    tag: Optional[str]      = None,
 ) -> list[dict]:
     """
     Full-text search over captures.  Returns up to *limit* rows, newest first.
@@ -609,8 +688,36 @@ def search(
     category  Optional category filter.
     since     ISO-8601 timestamp lower-bound (inclusive).
     limit     Max rows to return.
+    tag       F-4: tag filter -- the Library tags browser's "jump to filtered
+              search" hand-off. Membership is resolved from the vault FILES
+              (tag_index.resolve_paths), never from the `tags` column. The column
+              is a derived cache that lags every frontmatter edit made since the
+              note's last index pass, so a `tags LIKE` filter can disagree with
+              the counts the Tags view scanned off disk. (It used to be strictly
+              worse: the column was written only by log_capture_db, leaving every
+              `origin: note` file empty and the filter listing nothing at all.
+              upsert_capture_from_file now populates it from the file too, but the
+              files stay authoritative regardless.) Rows are then filtered by
+              path, keeping captures.db a cache in front of the files rather than
+              an authority over them. A namespace tag (`project/`) resolves by
+              prefix. See tag_index.py.
     """
-    conn   = init_db(vault_root)
+    # Resolved before the DB is touched: no path on disk carries the tag -> no
+    # row can legitimately match it, whatever captures.db still remembers.
+    tag_paths = resolve_paths(vault_root, tag) if tag else None
+    if tag and not tag_paths:
+        return []
+
+    # init_db is INSIDE the try: opening a corrupt db raises sqlite3.DatabaseError
+    # here, before any query runs. Reads mirror the write path (log_capture_db) and
+    # fail soft -- files are the source of truth and index_health is purely
+    # observational, so a corrupt cache must degrade to empty, never 500 /search.
+    try:
+        conn = init_db(vault_root)
+    except sqlite3.DatabaseError as exc:
+        print(f"[IndexWriter] Non-fatal DB error (search): {exc}", file=sys.stderr)
+        index_health.record_failure("captures", exc)
+        return []
     cursor = conn.cursor()
 
     if query.strip():
@@ -627,6 +734,9 @@ def search(
         if since:
             sql    += " AND c.timestamp >= ?"
             params.append(since)
+        if tag_paths:
+            sql    += f" AND c.path IN ({_binds(tag_paths)})"
+            params.extend(sorted(tag_paths))
     else:
         sql    = "SELECT * FROM captures WHERE 1=1"
         params = []
@@ -636,16 +746,34 @@ def search(
         if since:
             sql    += " AND timestamp >= ?"
             params.append(since)
+        if tag_paths:
+            sql    += f" AND path IN ({_binds(tag_paths)})"
+            params.extend(sorted(tag_paths))
 
     sql += " ORDER BY timestamp DESC LIMIT ?"
     params.append(limit)
 
     try:
         rows = cursor.execute(sql, params).fetchall()
-    except sqlite3.OperationalError:
+    except sqlite3.DatabaseError:
+        # DatabaseError, not OperationalError: it is the shared base of both the
+        # OperationalError the _binds ceiling below relies on AND the
+        # DatabaseError("file is not a database") a corrupt file raises.
         rows = []
     conn.close()
     return [dict(r) for r in rows]
+
+
+def _binds(values) -> str:
+    """`?,?,?` for an IN (...) clause.
+
+    ponytail: the tag filter binds one variable per matching path. SQLite's
+    variable cap (999 on builds older than 3.32) would reject a tag carried by
+    more notes than that -- search() already swallows the OperationalError and
+    returns [], so it degrades to empty rather than crashing. Chunk the IN list
+    or stage the paths in a temp table if a single tag ever spans that many.
+    """
+    return ",".join("?" * len(values))
 
 
 def _sanitize_fts_query(query: str) -> str:
@@ -681,41 +809,51 @@ def stats(vault_root: Path) -> dict:
       "recent": [<row dict>, ...]                      # last 10
     }
     """
-    conn   = init_db(vault_root)
-    cursor = conn.cursor()
+    # Fail-soft like search()/log_capture_db: a corrupt captures.db degrades to an
+    # empty dashboard rather than 500ing /stats. The vault files are unaffected, and
+    # index_health is purely observational -- it records, it does not gate. init_db is
+    # INSIDE the try (a corrupt file raises there, before any query) and so are the
+    # queries (init_db raises only while the per-process schema memo is cold).
+    try:
+        conn   = init_db(vault_root)
+        cursor = conn.cursor()
 
-    total_row = cursor.execute("SELECT COUNT(*) FROM captures WHERE provisional = 0").fetchone()
-    total     = total_row[0] if total_row else 0
+        total_row = cursor.execute("SELECT COUNT(*) FROM captures WHERE provisional = 0").fetchone()
+        total     = total_row[0] if total_row else 0
 
-    cat_rows = cursor.execute(
-        "SELECT category, COUNT(*) AS cnt FROM captures WHERE provisional = 0 GROUP BY category ORDER BY cnt DESC"
-    ).fetchall()
-    by_category = [
-        {
-            "category": r["category"],
-            "count":    r["cnt"],
-            "pct":      round(r["cnt"] / total * 100, 1) if total else 0,
-        }
-        for r in cat_rows
-    ]
+        cat_rows = cursor.execute(
+            "SELECT category, COUNT(*) AS cnt FROM captures WHERE provisional = 0 GROUP BY category ORDER BY cnt DESC"
+        ).fetchall()
+        by_category = [
+            {
+                "category": r["category"],
+                "count":    r["cnt"],
+                "pct":      round(r["cnt"] / total * 100, 1) if total else 0,
+            }
+            for r in cat_rows
+        ]
 
-    day_rows = cursor.execute(
-        """
-        SELECT substr(timestamp,1,10) AS date, COUNT(*) AS cnt
-        FROM captures
-        WHERE timestamp >= date('now','-30 days') AND provisional = 0
-        GROUP BY date
-        ORDER BY date DESC
-        """
-    ).fetchall()
-    by_day = [{"date": r["date"], "count": r["cnt"]} for r in day_rows]
+        day_rows = cursor.execute(
+            """
+            SELECT substr(timestamp,1,10) AS date, COUNT(*) AS cnt
+            FROM captures
+            WHERE timestamp >= date('now','-30 days') AND provisional = 0
+            GROUP BY date
+            ORDER BY date DESC
+            """
+        ).fetchall()
+        by_day = [{"date": r["date"], "count": r["cnt"]} for r in day_rows]
 
-    recent_rows = cursor.execute(
-        "SELECT * FROM captures WHERE provisional = 0 ORDER BY timestamp DESC LIMIT 10"
-    ).fetchall()
-    recent = [dict(r) for r in recent_rows]
+        recent_rows = cursor.execute(
+            "SELECT * FROM captures WHERE provisional = 0 ORDER BY timestamp DESC LIMIT 10"
+        ).fetchall()
+        recent = [dict(r) for r in recent_rows]
 
-    conn.close()
+        conn.close()
+    except sqlite3.DatabaseError as exc:
+        print(f"[IndexWriter] Non-fatal DB error (stats): {exc}", file=sys.stderr)
+        index_health.record_failure("captures", exc)
+        return {"total": 0, "by_category": [], "by_day": [], "recent": []}
     return {"total": total, "by_category": by_category, "by_day": by_day, "recent": recent}
 
 

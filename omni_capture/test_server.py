@@ -638,3 +638,297 @@ class TestWriteCategoryDescription(unittest.TestCase):
             text = (cat_dir / ".category.toml").read_text()
             self.assertIn("custom", text)
             self.assertNotIn("Plants and gardening", text)
+
+
+class TestDigestToday(unittest.TestCase):
+    """GET /digest/today (F-14). The route calls get_config(), which server.py only ever imports
+    function-locally -- without that local import every request 500s with a NameError, i.e. the
+    endpoint was 100% dead."""
+
+    def test_returns_the_four_counts(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            (vault / "n1.md").write_text(
+                "---\nid: 01DIGEST\ntitle: T\norigin: note\n---\nBody\n",
+                encoding="utf-8", newline="")
+
+            cfg = Config()
+            cfg.vault.root = vault
+            client = TestClient(server.app)
+            with mock.patch.object(server, "_GUI_SECRET", "s3cret"), \
+                 mock.patch("config.get_config", lambda: cfg):
+                r = client.get("/digest/today", headers={"X-Omni-Secret": "s3cret"})
+
+            self.assertEqual(r.status_code, 200)
+            body = r.json()
+            self.assertEqual(set(body), {"captured", "touched", "reminders_due", "unrevisited"})
+            for k, v in body.items():
+                self.assertIsInstance(v, int, k)
+            self.assertEqual(body["touched"], 1)      # the note was written today
+            self.assertEqual(body["unrevisited"], 0)  # ...so nothing is 30d stale
+
+
+# ============================================================================
+# E6 -- Drive auth routes (/drive/auth/{status,connect,disconnect})
+#
+# The Sync tab's first question is "is Drive connected?", and the answer must
+# never cost a browser window. Every test below therefore also asserts that
+# InstalledAppFlow was not touched on any path that isn't an explicit connect.
+# ============================================================================
+
+
+def _drive_client():
+    import server
+    importlib.reload(server)
+    from fastapi.testclient import TestClient
+    return TestClient(server.app), server
+
+
+def test_drive_auth_status_reports_both_causes_without_consent():
+    """'not connected' has two causes the user fixes differently -- no OAuth
+    client file (setup) vs never authorized (one click). Status must tell them
+    apart, and must not open consent to find out."""
+    client, _ = _drive_client()
+    with patch("drive_auth.has_cached_credentials", return_value=False) as cached, \
+         patch("drive_auth.client_secret_present", return_value=True), \
+         patch("drive_auth.InstalledAppFlow") as flow:
+        r = client.get("/drive/auth/status")
+    assert r.status_code == 200
+    assert r.json() == {"connected": False, "client_secret_present": True, "connecting": False}
+    cached.assert_called_once()
+    flow.from_client_secrets_file.assert_not_called()  # no browser from a status poll
+
+
+def test_drive_auth_connect_400s_when_no_client_secret():
+    """Offering Connect with no client file could only ever raise
+    FileNotFoundError -- 400 so the GUI shows a setup fix, not a retry."""
+    client, _ = _drive_client()
+    with patch("drive_auth.client_secret_present", return_value=False), \
+         patch("drive_auth.load_credentials") as load:
+        r = client.post("/drive/auth/connect")
+    assert r.status_code == 400
+    load.assert_not_called()
+
+
+def test_drive_auth_connect_409s_when_a_consent_is_already_in_flight():
+    """Two clicks would race two local callback servers and two browsers."""
+    client, srv = _drive_client()
+    srv._drive_connect_flight.acquire()
+    try:
+        with patch("drive_auth.client_secret_present", return_value=True), \
+             patch("drive_auth.load_credentials") as load:
+            r = client.post("/drive/auth/connect")
+    finally:
+        srv._drive_connect_flight.release()
+    assert r.status_code == 409
+    load.assert_not_called()
+
+
+def test_drive_auth_connect_502s_and_releases_the_flight_on_failure():
+    """A declined/closed consent must not wedge Connect forever -- the lock is
+    released even on the raising path, so the next click still works."""
+    client, srv = _drive_client()
+    with patch("drive_auth.client_secret_present", return_value=True), \
+         patch("drive_auth.load_credentials", side_effect=RuntimeError("user closed the window")):
+        r = client.post("/drive/auth/connect")
+    assert r.status_code == 502
+    assert not srv._drive_connect_flight.locked(), "flight lock leaked on the failure path"
+
+    with patch("drive_auth.client_secret_present", return_value=True), \
+         patch("drive_auth.load_credentials", return_value=object()):
+        r2 = client.post("/drive/auth/connect")
+    assert r2.status_code == 200 and r2.json() == {"connected": True}
+
+
+def test_drive_auth_disconnect_forgets_the_token():
+    client, _ = _drive_client()
+    with patch("drive_auth.forget_credentials", return_value=True) as forget:
+        r = client.post("/drive/auth/disconnect")
+    assert r.status_code == 200
+    assert r.json() == {"connected": False, "removed": True}
+    forget.assert_called_once()
+
+
+# ============================================================================
+# E6 -- the two sync switches
+#
+# They are DIFFERENT things and must stay distinguishable at the API:
+#   [sync] enabled = false      -> the whole syncing system is off: no automatic
+#                                  passes AND no manual Sync now (403).
+#   [sync] interval_minutes = 0 -> "never auto-sync": no automatic passes of any
+#                                  kind, but Sync now still runs (200).
+#
+# `enabled` is never injected here: each test writes a real config.toml and runs
+# it through the real load_config() -> config singleton the handler reads, so a
+# regression anywhere on that path (e.g. the sentinel being clamped away at
+# parse time) shows up as a red test rather than a passing fake.
+# ============================================================================
+
+
+def _sync_client(tmp_path, sync_toml: str, monkeypatch, pass_fn=None):
+    """TestClient + a real config.toml + a scheduler singleton, as if start_scheduler() had run.
+    Only Drive (pass_fn) and the vault root are fakes; the config path is the real one."""
+    import config as _config
+    import sync_scheduler as _ss
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        '[vault]\nroot = "' + str(vault).replace("\\", "/") + '"\n\n[sync]\n' + sync_toml,
+        encoding="utf-8",
+    )
+    # monkeypatch restores the previous singleton, so the rest of the suite is unaffected.
+    monkeypatch.setattr(_config, "_cfg", _config.load_config(cfg_path))
+    sch = _ss.SyncScheduler(
+        pass_fn=pass_fn or (lambda: {"uploaded": 0}),
+        cfg_fn=lambda: _config.get_config().sync,
+    )
+    monkeypatch.setattr(_ss, "_scheduler", sch)  # no thread: nothing here needs the loop
+    return TestClient(server.app), sch
+
+
+def test_sync_run_403_when_master_off(tmp_path, monkeypatch):
+    """Master OFF means off. Hiding the button in the GUI is not a kill switch -- the refusal has
+    to be server-side, and no Drive pass may run."""
+    ran = []
+    client, _ = _sync_client(tmp_path, "enabled = false\n", monkeypatch,
+                             pass_fn=lambda: ran.append(1) or {})
+    r = client.post("/sync/run")
+    assert r.status_code == 403
+    assert ran == [], "a refused Sync now still ran a Drive pass"
+
+
+def test_sync_run_200_when_master_on(tmp_path, monkeypatch):
+    """The positive control: the 403 must gate on `enabled`, not break Sync now outright."""
+    ran = []
+    client, _ = _sync_client(tmp_path, "enabled = true\n", monkeypatch,
+                             pass_fn=lambda: ran.append(1) or {"uploaded": 0})
+    r = client.post("/sync/run")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert ran == [1]
+
+
+def test_sync_run_409_stays_distinct_from_403(tmp_path, monkeypatch):
+    """Three refusals, three client states: busy is not disabled."""
+    client, sch = _sync_client(tmp_path, "enabled = true\n", monkeypatch)
+    assert sch._flight.acquire(blocking=False)  # simulate a pass already running
+    try:
+        r = client.post("/sync/run")
+    finally:
+        sch._flight.release()
+    assert r.status_code == 409
+
+
+def test_sync_run_503_stays_distinct_from_403(tmp_path, monkeypatch):
+    """503 must also WIN over 403: with no scheduler there is no pass to refuse, and the user's
+    fix is completely different (a broken server vs a setting they chose)."""
+    import sync_scheduler as _ss
+    client, _ = _sync_client(tmp_path, "enabled = false\n", monkeypatch)
+    monkeypatch.setattr(_ss, "_scheduler", None)
+    assert client.post("/sync/run").status_code == 503
+
+
+def test_sync_run_still_runs_under_the_never_sentinel(tmp_path, monkeypatch):
+    """The whole point of "Never" vs master-off: it gates AUTOMATIC passes only. If this 403s, the
+    two switches have collapsed into one and "Never" has become a second kill switch."""
+    ran = []
+    client, _ = _sync_client(tmp_path, "enabled = true\ninterval_minutes = 0\n", monkeypatch,
+                             pass_fn=lambda: ran.append(1) or {"uploaded": 0})
+    r = client.post("/sync/run")
+    assert r.status_code == 200 and ran == [1]
+
+
+# -- trigger 3: sync_after_capture (the other two live in test_sync_scheduler.py) --------------
+#
+# Driven through a real /capture with test_capture_idempotency.py's fake pipeline, because the
+# gate reads config inside `_stream_capture`'s terminal-event branch. This asserts ONLY whether a
+# sync pass fired; capture behaviour itself is covered elsewhere.
+
+
+def _capture_and_wait(client, content: str, fired, timeout: float):
+    from test_capture_idempotency import _fake_pipeline_factory
+    server._capture_results.clear()
+    with mock.patch.object(server, "_run_pipeline_blocking",
+                           side_effect=_fake_pipeline_factory({"n": 0})):
+        r = client.post("/capture", json={"content_type": "text", "content": content})
+    assert r.status_code == 200 and "event: done" in r.text
+    return fired.wait(timeout)
+
+
+def test_sentinel_blocks_sync_after_capture(tmp_path, monkeypatch):
+    """Trigger 3. `interval_minutes = 0` must suppress this too -- a user who asked for no
+    automatic syncing would otherwise sync on every single capture, the most frequent trigger
+    of the three."""
+    import threading
+    fired = threading.Event()
+    client, _ = _sync_client(
+        tmp_path, "enabled = true\nsync_after_capture = true\ninterval_minutes = 0\n", monkeypatch,
+        pass_fn=lambda: (fired.set(), {})[1],
+    )
+    assert _capture_and_wait(client, "e6 sentinel after-capture", fired, 0.5) is False, \
+        "a capture triggered an automatic sync pass despite interval_minutes = 0"
+
+
+def test_sync_after_capture_still_fires_for_a_real_interval(tmp_path, monkeypatch):
+    """The positive control: proves the test above observes the real trigger rather than a
+    trigger that never fires under this harness at all."""
+    import threading
+    fired = threading.Event()
+    client, _ = _sync_client(
+        tmp_path, "enabled = true\nsync_after_capture = true\ninterval_minutes = 60\n", monkeypatch,
+        pass_fn=lambda: (fired.set(), {})[1],
+    )
+    assert _capture_and_wait(client, "e6 real-interval after-capture", fired, 5.0) is True, \
+        "sync_after_capture did not fire for a normal interval"
+
+
+# -- the sentinel has to be REACHABLE end-to-end, not just honoured once set ---------------------
+#
+# Two places clamped it out of existence before the option could ever be chosen: POST /config
+# rejected anything < 5 (so the GUI could not set it) and load_config() ran max(5, ...) (so a
+# hand-edited config.toml still arrived as 5). Either one alone makes "Never" silently mean
+# "every 5 minutes" -- the loudest possible version of the bug.
+
+
+def _config_patch_client(tmp):
+    cfg = Path(tmp) / "config.toml"
+    cfg.write_text('[vault]\nroot = "' + tmp.replace("\\", "/") + '"\n', encoding="utf-8")
+    client, srv = _client_config(cfg)
+    return client, srv, cfg
+
+
+def test_patch_accepts_the_never_sentinel():
+    with tempfile.TemporaryDirectory() as tmp:
+        client, srv, cfg = _config_patch_client(tmp)
+        with mock.patch.object(srv, "reload_config", lambda *a, **k: None):
+            r = client.patch("/config", json={"sync_interval_minutes": 0})
+        assert r.status_code == 200
+        import tomlkit
+        doc = tomlkit.loads(cfg.read_text(encoding="utf-8"))
+        assert int(doc["sync"]["interval_minutes"]) == 0, "the GUI cannot select Never"
+
+
+def test_patch_still_rejects_a_real_interval_below_5():
+    """0 is a sentinel; 1-4 is just a bad interval and stays a 400."""
+    with tempfile.TemporaryDirectory() as tmp:
+        client, srv, _ = _config_patch_client(tmp)
+        with mock.patch.object(srv, "reload_config", lambda *a, **k: None):
+            for mins in (1, 4, -1):
+                assert client.patch("/config", json={"sync_interval_minutes": mins}).status_code == 400
+
+
+def test_load_config_preserves_the_sentinel_and_clamps_everything_else(tmp_path):
+    """The parse-time half. `max(5, 0)` here would swallow the sentinel before any trigger sees it."""
+    from config import load_config
+    for written, expected in [(0, 0), (1, 5), (4, 5), (5, 5), (15, 15), (60, 60)]:
+        cfg_path = tmp_path / f"config_{written}.toml"
+        cfg_path.write_text(
+            '[vault]\nroot = "' + str(tmp_path).replace("\\", "/") + '"\n\n'
+            f"[sync]\ninterval_minutes = {written}\n",
+            encoding="utf-8",
+        )
+        got = load_config(cfg_path).sync.interval_minutes
+        assert got == expected, f"interval_minutes = {written} parsed to {got}, expected {expected}"
