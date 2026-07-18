@@ -510,21 +510,6 @@ def test_concurrent_double_submit_of_same_capture_dedups(gui):
     assert len(duplicates) == 1, "exactly one of the two racing submits must be told 'duplicate'"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="FINDING (§3.7, MEDIUM -- duplicate vault write): the X-Capture-Run-Id "
-           "idempotency gate is check-then-act. _stream_capture reads "
-           "_get_capture_terminal(run_id) at server.py:886, but the map is only "
-           "written when the pipeline REACHES its terminal event (server.py:913 / "
-           "emit()). A retry issued while the first attempt is still in flight -- the "
-           "exact scenario the gate exists for, since a lost SSE connection does NOT "
-           "stop the server-side pipeline running in _executor -- therefore misses the "
-           "map and runs the pipeline a second time, writing a second note. The 0.5s "
-           "_DEDUP_WINDOW_S content-hash gate does not cover it (a reconnect is "
-           "typically slower than 0.5s, and dedup keys on LLM output that differs per "
-           "run). Would need an in-flight marker claimed BEFORE dispatch, not only a "
-           "terminal record. Test-only audit: no production fix applied.",
-)
 def test_concurrent_double_submit_with_same_run_id_dedups(gui):
     """The other dedup axis: the same X-Capture-Run-Id (a GUI retry after a lost
     SSE connection) while the first attempt is STILL RUNNING.
@@ -562,7 +547,8 @@ def test_concurrent_double_submit_with_same_run_id_dedups(gui):
         assert started.wait(timeout=10), "first pipeline never started"
         t2 = threading.Thread(target=_submit, args=("run id race two",))
         t2.start()
-        # Both attempts are now past their idempotency check; let them finish.
+        # #2 has now claimed its role (waiter -- #1 owns the in-flight run_id). Let #1
+        # finish; #1 releases the claim on completion, which wakes #2 to replay.
         time.sleep(0.2)
         release.set()
         t1.join(timeout=30)
@@ -572,6 +558,10 @@ def test_concurrent_double_submit_with_same_run_id_dedups(gui):
     assert counter["n"] == 1, (
         f"a retry sharing X-Capture-Run-Id, issued while the first attempt was still "
         f"in flight, ran the pipeline {counter['n']}x -- two notes for one capture"
+    )
+    assert all("event: done" in r.text for r in results), (
+        "the in-flight retry must WAIT and replay the first attempt's terminal 'done' "
+        "-- not run a second pipeline and not fall back to an error"
     )
 
 

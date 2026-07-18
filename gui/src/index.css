@@ -123,7 +123,7 @@
   --border-2:     #262626;
   --text-1:       #fafafa;
   --text-2:       #a1a1a1;
-  --text-3:       #737373;
+  --text-3:       #7a7a7a; /* OF-27: AA-for-text 4.5:1 (was #737373 ~4.2:1) */
   --accent:       #737373;
   --accent-d:     rgba(115, 115, 115, 0.18);
   --accent-glow:  rgba(115, 115, 115, 0.30);
@@ -176,7 +176,7 @@
   --text-1:       #28331f;
   --text-2:       #5c6b4c;
   --text-3:       #59604d;
-  --accent:       #7fa05f;
+  --accent:       #779659; /* OF-31: raised to 3:1 accent/bg (was #7fa05f 2.77:1) */
   --accent-d:     rgba(127, 160, 95, 0.12);
   --accent-glow:  rgba(127, 160, 95, 0.24);
   --recording:    #c07a5b;
@@ -202,7 +202,7 @@
   --text-1:       #122a36;
   --text-2:       #3c6b82;
   --text-3:       #49626f;
-  --accent:       #6eb8dd;
+  --accent:       #2f96ca; /* OF-31: raised to 3:1 accent/bg (was #6eb8dd 2.01:1) */
   --accent-d:     rgba(31, 127, 179, 0.12);
   --accent-glow:  rgba(31, 127, 179, 0.24);
   --recording:    #d06a5e;
@@ -227,7 +227,7 @@
   --border-2:     #f1dee5;
   --text-1:       #371b24;
   --text-2:       #7a4655;
-  --text-3:       #a8788a;
+  --text-3:       #966175; /* OF-27: AA-for-text 4.5:1 (was #a8788a ~3.4:1) */
   --accent:       #a2556f;
   --accent-d:     rgba(162, 85, 111, 0.12);
   --accent-glow:  rgba(162, 85, 111, 0.24);
@@ -332,7 +332,7 @@
   --border-2:     #2e171e;
   --text-1:       #f7e3e9;
   --text-2:       #c79aa7;
-  --text-3:       #8f6470;
+  --text-3:       #9a6e7a; /* OF-27: AA-for-text 4.5:1 (was #8f6470 ~3.9:1) */
   --accent:       #a8415f;
   --accent-d:     rgba(168, 65, 95, 0.18);
   --accent-glow:  rgba(168, 65, 95, 0.30);
@@ -345,6 +345,39 @@
   --glass-border: #43232d;
   --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.40);
   --palette-bg:   #241319;
+  --scrim:        rgba(0, 0, 0, 0.55);
+}
+
+/* ── Custom (Wave 3 T9, user-authored via Settings › Appearance) ──────────
+   Color-only, per lib/themeDerive.ts's deriveCustom(). The real values are
+   injected at runtime by App.tsx as a `[data-theme="custom"]` override
+   <style> tag (id="omni-custom-theme-vars"); this block only supplies Void
+   defaults so a half-applied custom theme (e.g. before the injected style
+   tag lands, or if it's ever removed) never flashes unstyled. Shape, type,
+   and motion stay locked — no radius or font override here, same as every
+   other theme. */
+[data-theme="custom"] {
+  color-scheme: dark;
+  --bg:           #0a0a0a;
+  --surface:      #262626;
+  --surface-2:    #404040;
+  --border:       #383838;
+  --border-2:     #262626;
+  --text-1:       #fafafa;
+  --text-2:       #a1a1a1;
+  --text-3:       #7a7a7a;
+  --accent:       #737373;
+  --accent-d:     rgba(115, 115, 115, 0.18);
+  --accent-glow:  rgba(115, 115, 115, 0.30);
+  --recording:    #c25b52;
+  --on-accent:    #fafafa;
+  --green:        #4ade80;
+  --yellow:       #facc15;
+  --red:          #ff6467;
+  --glass-bg:     #191919;
+  --glass-border: #383838;
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --palette-bg:   #262626;
   --scrim:        rgba(0, 0, 0, 0.55);
 }
 

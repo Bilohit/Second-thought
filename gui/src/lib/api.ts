@@ -611,7 +611,10 @@ export type LookChatEvent =
   | { kind: "done" }
   | { kind: "error"; message: string };
 
-export interface VaultSyncResult { added: number; removed: number; updated: number; skipped: number; }
+// Mirrors vault_sync.SyncResult (server /vault/sync-index). The heal/re-embed fields are
+// additive and currently ignored by the GUI; typed here so a future "index was corrupt and
+// rebuilt" surfacing has the shape available (OF-20). Optional so an older server still typechecks.
+export interface VaultSyncResult { added: number; removed: number; updated: number; skipped: number; reembedded?: number; healed?: boolean; vectors_healed?: boolean; dedup_rebuilt?: boolean; error?: string | null; }
 
 export async function syncVaultIndex(): Promise<VaultSyncResult> {
   const res = await fetch(`${BASE}/vault/sync-index`, {

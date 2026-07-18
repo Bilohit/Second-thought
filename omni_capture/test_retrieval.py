@@ -584,19 +584,23 @@ def test_sync_vault_indexes_adds_new_file_and_skips_unchanged():
         note.parent.mkdir(parents=True)
         note.write_text("# Fresh\nNew note body", encoding="utf-8")
 
-        with mock.patch("vault_sync.index_note") as mock_index:
+        # First pass runs index_note for real (fake _embed, no Ollama) so the vector
+        # store is actually populated — the skip decision now consults the store's
+        # own contents (OF-1), so a mocked no-op index_note would (correctly) look
+        # un-embedded and get re-embedded on the second pass.
+        with mock.patch.object(vs, "_embed", return_value=[0.1] * 8):
             result = sync_vault_indexes(vault, "http://localhost:11434", "all-minilm")
 
         assert result["added"] == 1
         assert result["removed"] == 0
-        assert mock_index.call_count == 1
+        assert vs.count(vault) == 1
 
-        with mock.patch("vault_sync.index_note") as mock_index:
+        with mock.patch.object(vs, "_embed", return_value=[0.1] * 8):
             result2 = sync_vault_indexes(vault, "http://localhost:11434", "all-minilm")
 
-        assert result2["skipped"] == 1
+        assert result2["skipped"] == 1, "unchanged, already-embedded note must be skipped"
         assert result2["added"] == 0
-        mock_index.assert_not_called()
+        assert result2["reembedded"] == 0, "an already-embedded note must not be re-embedded"
 
 
 def test_sync_vault_indexes_removes_orphan_on_disk_delete():

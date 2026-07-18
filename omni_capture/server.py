@@ -396,6 +396,48 @@ def _get_capture_terminal(run_id: str) -> Optional[dict]:
         return dict(entry) if entry is not None else None
 
 
+# ---------------------------------------------------------------------------
+# In-flight claim (API-2 / OF-2): the terminal map above is check-then-act --
+# it is only written when the pipeline REACHES its terminal. A retry issued
+# while the first attempt is still running (a lost SSE connection does NOT stop
+# the server-side pipeline in _executor) misses the map and would dispatch the
+# pipeline a SECOND time -> two notes for one capture. We close that window by
+# claiming the run_id BEFORE dispatch: a concurrent/subsequent attempt with the
+# same run_id becomes a WAITER on the owner's completion instead of a second run.
+#
+# The claim's lifetime is the PIPELINE, not the SSE generator: a client
+# disconnect cancels the generator while the pipeline keeps running, so release
+# lives in _run_pipeline_blocking's finally (disconnect-safe) AND, mirroring the
+# dual terminal-record design, in _stream_capture's owner loop after the pipeline
+# signals done (covers test doubles that replace _run_pipeline_blocking). pop is
+# idempotent, so releasing twice is harmless.
+_capture_inflight: dict[str, threading.Event] = {}  # run_id -> done signal, guarded by _capture_results_lock
+
+
+def _claim_capture_run(run_id: str) -> tuple[str, object]:
+    """Atomically resolve this attempt's role for run_id:
+      ("terminal", entry) -- pipeline already finished; replay entry (dict).
+      ("waiter", event)   -- another attempt is mid-pipeline; wait on the Event.
+      ("owner", None)     -- we claimed it; we must run the pipeline AND release.
+    """
+    with _capture_results_lock:
+        entry = _capture_results.get(run_id)
+        if entry is not None:
+            return "terminal", dict(entry)
+        ev = _capture_inflight.get(run_id)
+        if ev is not None:
+            return "waiter", ev
+        _capture_inflight[run_id] = threading.Event()
+        return "owner", None
+
+
+def _release_capture_run(run_id: str) -> None:
+    with _capture_results_lock:
+        ev = _capture_inflight.pop(run_id, None)
+    if ev is not None:
+        ev.set()  # wake waiters OUTSIDE the lock (never hold the lock across a wake)
+
+
 def _request_hash(content_type: str, content: str) -> str:
     # Hash the FULL content: truncating to a prefix made two distinct captures
     # sharing that prefix (licence headers, templated docs, repeated article
@@ -899,6 +941,13 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
             timer.log_summary()
         except Exception:
             pass
+        # Release the in-flight claim (OF-2). This runs even if the client
+        # disconnected mid-stream -- the pipeline finished here regardless -- so a
+        # retry that arrived while we were running gets the recorded terminal, not
+        # a second dispatch. Terminal for a successful run was already recorded by
+        # emit() above, so a woken waiter sees it.
+        if run_id:
+            _release_capture_run(run_id)
         loop.call_soon_threadsafe(q.put_nowait, None)
 
 
@@ -928,16 +977,42 @@ def _merge_large_text_tags(
 
 
 async def _stream_capture(content_type: str, content: str, run_id: Optional[str] = None) -> AsyncIterator[str]:
+    owner = False
     if run_id:
-        prior = _get_capture_terminal(run_id)
-        if prior is not None:
+        role, obj = _claim_capture_run(run_id)
+        if role == "terminal":
+            prior = obj  # already-recorded terminal event
             print(f"[server] [run:{run_id}] idempotent retry -- replaying prior "
                   f"'{prior['event']}' instead of re-running the pipeline", flush=True)
             yield _sse(prior["event"], **prior["payload"])
             return
+        if role == "waiter":
+            # Another attempt with this run_id is mid-pipeline (a retry after a lost
+            # SSE connection -- the server-side pipeline keeps running). Wait for it
+            # instead of dispatching a second run that would write the note twice.
+            print(f"[server] [run:{run_id}] retry while first attempt still in flight "
+                  f"-- waiting for it instead of re-running the pipeline", flush=True)
+            loop = asyncio.get_running_loop()
+            # ponytail: block a default-executor thread on the owner's completion,
+            # capped at the dedup TTL. The owner ALWAYS releases (finally), so this
+            # only nears the cap if the executor thread is killed -- then we time out.
+            await loop.run_in_executor(None, obj.wait, _CAPTURE_DEDUP_TTL_S)
+            prior = _get_capture_terminal(run_id)
+            if prior is not None:
+                yield _sse(prior["event"], **prior["payload"])
+            else:
+                # The in-flight attempt ended without a terminal (it errored or timed
+                # out). Surface an error, never a false 'done'/'duplicate' -- the GUI
+                # would otherwise drop a FAILED capture as if it had succeeded. A fresh
+                # attempt (new run_id) still runs the pipeline normally.
+                yield _sse("error", message="Capture attempt did not complete -- please retry.")
+            return
+        owner = True  # role == "owner": run the pipeline below, then release the claim.
 
     if _is_duplicate_request(content_type, content):
         yield _sse("duplicate")
+        if owner:
+            _release_capture_run(run_id)  # never leave a claim a waiter would hang on
         return
 
     loop = asyncio.get_running_loop()
@@ -974,6 +1049,15 @@ async def _stream_capture(content_type: str, content: str, run_id: Optional[str]
             except Exception:
                 pass
         yield _sse(event, **item)
+    # Release the claim on NORMAL completion only (None received). Deliberately not
+    # in a finally: a client disconnect raises GeneratorExit before None arrives, and
+    # releasing then -- while the real pipeline is still running in _executor -- would
+    # let the retry dispatch a second run (the exact double-write this fix closes).
+    # _run_pipeline_blocking's own finally holds the claim until the run truly ends;
+    # this line is the fallback for test doubles that replace it (no finally). pop is
+    # idempotent, so the real path releasing in both places is harmless.
+    if owner:
+        _release_capture_run(run_id)
 
 
 # -- Core endpoints -----------------------------------------------------------

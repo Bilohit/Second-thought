@@ -138,7 +138,7 @@ host = "192.168.1.6"
 # sync pass every `interval_minutes` while `enabled`. Off by default until Google OAuth is set up.
 # Interval config is a per-device local preference — deliberately NOT synced.
 enabled = true
-interval_minutes = 15        # minimum 5 (clamped on read)
+interval_minutes = 0        # minimum 5 (clamped on read)
 sync_on_launch = true
 sync_after_capture = false   # a capture burst shouldn't thrash Drive; the interval covers it
 mirror_captures = false      # K-2: opt-in — mirror origin:capture files to the hub for phone RAG

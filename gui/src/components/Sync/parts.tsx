@@ -102,6 +102,38 @@ export function SettingRow({
   );
 }
 
+/**
+ * A labeled settings group — the Sync tab's port of SettingsPanel's `Field`, so
+ * the Sync tab speaks the SAME dialect as the Form/Function tabs: an uppercase
+ * micro-label over content, laid flat on the panel surface — no card, no fill
+ * darker than the panel. The label style is deliberately identical to
+ * SettingsPanel.Field's; kept here (not imported) so the Sync views own their
+ * primitives. `delay` staggers the mount reveal via the shared `.sync-rise`.
+ */
+export function Group({
+  label, children, gap = 8, delay = 0,
+}: {
+  label: string;
+  children: ReactNode;
+  gap?: number;
+  delay?: number;
+}) {
+  return (
+    <section
+      className="sync-rise"
+      style={{ display: "flex", flexDirection: "column", gap, animationDelay: `${delay}ms` }}
+    >
+      <label style={{
+        fontSize: 10, fontWeight: 600, letterSpacing: "0.08em",
+        textTransform: "uppercase", color: "var(--text-3)",
+      }}>
+        {label}
+      </label>
+      {children}
+    </section>
+  );
+}
+
 /** Explanatory copy. `tone` tints it only when the copy is genuinely about a state. */
 export function Note({
   children, tone, style,

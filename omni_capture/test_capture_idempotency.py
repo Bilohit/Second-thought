@@ -170,8 +170,13 @@ def test_terminal_event_recorded_even_when_consumer_never_drains_queue(tmp_path)
 
 
 if __name__ == "__main__":
+    import tempfile
+
     test_retry_with_same_run_id_short_circuits_pipeline()
     test_different_run_id_is_not_deduped()
     test_no_run_id_behaves_as_before()
-    test_terminal_event_recorded_even_when_consumer_never_drains_queue()
+    # This one takes pytest's tmp_path fixture (used as OMNI_VAULT_ROOT); supply a real
+    # temp dir so `python test_capture_idempotency.py` runs standalone (OF-24).
+    with tempfile.TemporaryDirectory() as _td:
+        test_terminal_event_recorded_even_when_consumer_never_drains_queue(Path(_td))
     print("OK")

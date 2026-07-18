@@ -592,43 +592,46 @@ def test_busy_captures_db_is_not_mistaken_for_a_corrupt_one(vault: Path):
     assert db_path.read_bytes() == before, "healthy captures.db was modified"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING (HIGH): a corrupt vectors.db is never healed, and the hash-diff makes it "
-        "PERMANENT. vault_sync.sync_vault_indexes classifies a file as `skipped` when "
-        "captures.hash still matches the file on disk (vault_sync.py:145-146) — so with an intact "
-        "captures.db and a destroyed vectors.db, every note is skipped and NOTHING is ever "
-        "re-embedded. Semantic search / merge-target lookup silently return nothing forever "
-        "(both fail soft to []/None), with no error surfaced to the user. The re-embed decision "
-        "must consult the vector store's own contents, not captures.hash. (The name says "
-        "`rebuild path` — sync_vault_indexes — deliberately: the boot path proper never "
-        "re-embeds at all, so it is not even a candidate to heal this.)"
-    ),
-)
 def test_corrupt_vectors_db_is_rebuilt_by_the_rebuild_path(vault: Path):
+    """FIXED (OF-1): a corrupt/emptied vectors.db is now healed and re-embedded by the
+    rebuild path. vault_sync.sync_vault_indexes discards an unreadable vectors.db
+    (vector_store.heal_corrupt_db) and — the load-bearing half — makes the re-embed
+    decision from the vector store's OWN contents (vector_store.embedded_parents), not
+    captures.hash. So an intact captures.db no longer classifies every note `skipped`
+    and strands the store empty forever; each note absent from the store is re-embedded.
+    It used to fail soft to [] on every read with no signal to the user."""
     oracle = _oracle(vault)
     _truncate(_store_paths(vault)["vectors.db"])
 
-    _rebuild(vault)
+    result = _rebuild(vault)
 
     assert vector_store.count(vault) == oracle["count"], "corrupt vectors.db not rebuilt"
+    assert result["vectors_healed"] is True, "corruption healed but not reported to the caller"
+    assert result["reembedded"] == oracle["count"], "every note must be re-embedded, not skipped"
+    assert result["error"] is None, "heal path must not report the pass as failed"
 
 
-def test_corrupt_vectors_db_leaves_semantic_search_silently_dead(vault: Path):
-    """Passing counterpart to the xfail above — evidences the finding. Reads
-    fail soft (no crash, correct per the fail-soft rule) but the store is never
-    repaired, so 'no results' is indistinguishable from 'store destroyed'."""
+def test_corrupt_vectors_db_read_fails_soft_then_the_rebuild_repairs_search(vault: Path):
+    """OF-1 end-to-end (was the passing counterpart evidencing the finding; now
+    evidences the fix). While vectors.db is destroyed, reads fail soft (no crash,
+    empty) — indistinguishable from an empty store — but the rebuild now REPAIRS the
+    store instead of leaving it silently dead, so semantic search actually recovers."""
     _truncate(_store_paths(vault)["vectors.db"])
 
+    # While broken: fail-soft, indistinguishable from an empty store.
     assert vector_store.count(vault) == 0
     with mock.patch.object(vector_store, "_embed", side_effect=_fake_embed):
         assert vector_store.best_match(vault, "async python", _BASE_URL, _EMBED_MODEL) is None
         assert vector_store.retrieve_related(vault, "async python", _BASE_URL, _EMBED_MODEL) == []
 
     result = _rebuild(vault)
-    assert result["skipped"] == len(_NOTES), "expected the captures.hash diff to skip every note"
-    assert vector_store.count(vault) == 0, "expected today's rebuild to leave vectors.db empty"
+    assert result["reembedded"] == len(_NOTES), "rebuild must re-embed every note"
+    assert vector_store.count(vault) == len(_NOTES), "rebuild must repair vectors.db"
+
+    # ...and search works again — the actual point, not just the row count.
+    with mock.patch.object(vector_store, "_embed", side_effect=_fake_embed):
+        assert vector_store.best_match(vault, "async python", _BASE_URL, _EMBED_MODEL) is not None
+        assert vector_store.retrieve_related(vault, "async python", _BASE_URL, _EMBED_MODEL) != []
 
 
 def test_corrupt_captures_db_reads_fail_soft(vault: Path):

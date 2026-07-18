@@ -26,7 +26,7 @@ import { CloudIcon, RefreshIcon, ChevronRightIcon, AlertIcon } from "../PillMenu
 import { BTN_SECONDARY, INPUT_STYLE } from "../ui/styles";
 import { Toggle } from "../ui/Toggle";
 import {
-  SettingRow, Note, StatusDot, TONE_COLOR,
+  Group, SettingRow, Note, StatusDot, TONE_COLOR,
   passTime, passSummary, passTone,
 } from "./parts";
 
@@ -66,7 +66,7 @@ const GAUGE_R = 46;
 const GAUGE_C = 2 * Math.PI * GAUGE_R;
 
 function Gauge({
-  size, fraction, tone, value, unit, running,
+  size, fraction, tone, value, unit, running, textless = false,
 }: {
   size: number;
   fraction: number;
@@ -74,8 +74,12 @@ function Gauge({
   value: string;
   unit: string;
   running: boolean;
+  /** Textless: no center value/unit, thicker ring so it stays legible small.
+   *  The value/unit still carry the aria-label, so screen readers lose nothing. */
+  textless?: boolean;
 }) {
   const empty = tone === "none";
+  const strokeWidth = textless ? 7 : 3;
   return (
     <div
       role="img"
@@ -94,14 +98,14 @@ function Gauge({
         }}
       >
         <circle
-          cx="52" cy="52" r={GAUGE_R} fill="none" strokeWidth="3"
+          cx="52" cy="52" r={GAUGE_R} fill="none" strokeWidth={strokeWidth}
           // Unknown reads as a dashed empty track, never a lit ring.
           stroke={empty ? "var(--text-3)" : "var(--border)"}
           strokeDasharray={empty ? "3 4" : undefined}
         />
         {!empty && (
           <circle
-            cx="52" cy="52" r={GAUGE_R} fill="none" strokeWidth="3" strokeLinecap="butt"
+            cx="52" cy="52" r={GAUGE_R} fill="none" strokeWidth={strokeWidth} strokeLinecap="butt"
             stroke={running ? "var(--text-1)" : TONE_COLOR[tone]}
             strokeDasharray={GAUGE_C}
             strokeDashoffset={GAUGE_C * (1 - fraction)}
@@ -109,17 +113,19 @@ function Gauge({
           />
         )}
       </svg>
-      <div style={{
-        position: "absolute", inset: 0, display: "flex", flexDirection: "column",
-        alignItems: "center", justifyContent: "center", gap: 1, pointerEvents: "none",
-      }}>
-        <span style={{ fontSize: size > 80 ? 17 : 12, fontWeight: 600, letterSpacing: "-0.03em", color: "var(--text-1)" }}>
-          {value}
-        </span>
-        <span style={{ fontSize: size > 80 ? 8.5 : 7.5, letterSpacing: "0.06em", color: "var(--text-3)", textAlign: "center", padding: "0 4px" }}>
-          {unit}
-        </span>
-      </div>
+      {!textless && (
+        <div style={{
+          position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center", gap: 1, pointerEvents: "none",
+        }}>
+          <span style={{ fontSize: size > 80 ? 17 : 12, fontWeight: 600, letterSpacing: "-0.03em", color: "var(--text-1)" }}>
+            {value}
+          </span>
+          <span style={{ fontSize: size > 80 ? 8.5 : 7.5, letterSpacing: "0.06em", color: "var(--text-3)", textAlign: "center", padding: "0 4px" }}>
+            {unit}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -162,8 +168,8 @@ function IntervalControl({
               onClick={() => { setDraft(null); onChange(p.minutes); }}
               style={{
                 ...BTN_SECONDARY,
-                fontSize: 11,
-                padding: "4px 8px",
+                fontSize: compact ? 10.5 : 11,
+                padding: compact ? "4px 7px" : "4px 8px",
                 marginLeft: idx === 0 ? 0 : -1,
                 background: active ? "var(--accent)" : (BTN_SECONDARY.background as string),
                 color: active ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
@@ -206,18 +212,15 @@ function IntervalControl({
 // ── The Drive plane's own schedule ──────────────────────────────────────────
 
 function Schedule({
-  compact, masterOff, settings, onChangeSettings,
-}: Pick<Props, "compact" | "masterOff" | "settings" | "onChangeSettings">) {
+  compact, masterOff, settings, onChangeSettings, delay,
+}: Pick<Props, "compact" | "masterOff" | "settings" | "onChangeSettings"> & { delay: number }) {
   const never = intervalIsNever(settings.intervalMinutes);
   const autoLive = autoPassesActive(!masterOff, settings.intervalMinutes);
 
   return (
-    <div style={{ borderTop: "1px solid var(--border-2)", padding: compact ? 12 : "16px 20px 8px" }}>
-      <div style={{ fontSize: 10, letterSpacing: "0.08em", color: "var(--text-3)", marginBottom: 8 }}>
-        SCHEDULE
-      </div>
-
-      <SettingRow title="How often" sub="Drive runs a pass in the background" disabled={masterOff} stack={compact}>
+    <Group label="Schedule" delay={delay} gap={6}>
+      <div>
+      <SettingRow title="Auto-sync" disabled={masterOff}>
         <IntervalControl
           minutes={settings.intervalMinutes}
           onChange={(m) => onChangeSettings({ intervalMinutes: m })}
@@ -228,12 +231,11 @@ function Schedule({
 
       {never && !masterOff && (
         <Note style={{ padding: "8px 0" }}>
-          No automatic passes of any kind will run. Sync now still works, and your setup stays exactly
-          as it is.
+          No automatic passes will run. Sync now still works.
         </Note>
       )}
 
-      <SettingRow title="Also sync when the app starts" disabled={!autoLive}>
+      <SettingRow title="On launch" disabled={!autoLive}>
         <Toggle
           label="Sync on launch"
           checked={settings.syncOnLaunch}
@@ -242,7 +244,7 @@ function Schedule({
         />
       </SettingRow>
 
-      <SettingRow title="Also sync after every capture" disabled={!autoLive}>
+      <SettingRow title="After capture" disabled={!autoLive}>
         <Toggle
           label="Sync after capture"
           checked={settings.syncAfterCapture}
@@ -251,18 +253,8 @@ function Schedule({
         />
       </SettingRow>
 
-      {/* Inoperative controls say why, rather than being silently ignored. */}
-      {!autoLive && (
-        <Note style={{ padding: "2px 0 8px" }}>
-          {masterOff
-            ? "Turn the syncing system on to use these."
-            : "These two do nothing while the schedule is set to Never — they are automatic passes."}
-        </Note>
-      )}
-
       <SettingRow
-        title="Also copy captures to Drive"
-        sub="captures are not notes · off by default"
+        title="Mirror captures"
         disabled={masterOff}
         last
       >
@@ -273,26 +265,23 @@ function Schedule({
           onChange={(v) => onChangeSettings({ mirrorCaptures: v })}
         />
       </SettingRow>
-    </div>
+      </div>
+    </Group>
   );
 }
 
 // ── History ─────────────────────────────────────────────────────────────────
 
-function History({ status, compact }: { status: SyncStatus | null; compact: boolean }) {
+function History({ status, delay }: { status: SyncStatus | null; delay: number }) {
   const [open, setOpen] = useState(false);
   const rows = status?.history ?? [];
   const last = status?.last_pass ?? null;
 
   return (
-    <>
-      <div style={{
-        display: "flex", alignItems: "center", gap: 12,
-        padding: compact ? "8px 12px" : "12px 20px",
-        borderTop: "1px solid var(--border-2)",
-      }}>
+    <Group label="History" delay={delay}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 12.5, color: "var(--text-1)" }}>Last pass</div>
+          <div style={{ fontSize: 12, color: "var(--text-1)" }}>Last pass</div>
           <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {last ? `${passTime(last.started)} · ${passSummary(last)}` : "never"}
           </div>
@@ -301,6 +290,7 @@ function History({ status, compact }: { status: SyncStatus | null; compact: bool
           <button
             type="button"
             aria-expanded={open}
+            aria-label={open ? "Hide history" : "Show all passes"}
             onClick={() => setOpen((o) => !o)}
             style={{
               background: "none", border: "none", font: "inherit", fontSize: 11,
@@ -315,20 +305,20 @@ function History({ status, compact }: { status: SyncStatus | null; compact: bool
             }}>
               <ChevronRightIcon size={12} />
             </span>
-            History
+            {open ? "Hide" : "Show all"}
           </button>
         )}
       </div>
 
       {open && (
-        <div style={{ borderTop: "1px solid var(--border-2)" }}>
+        <div style={{ display: "flex", flexDirection: "column" }}>
           {rows.map((row, i) => (
             <div
               key={`${row.started}-${i}`}
               className="sync-rise"
               style={{
                 display: "flex", alignItems: "center", gap: 9,
-                padding: compact ? "5px 12px" : "5px 20px 5px 44px",
+                padding: "5px 0 5px 4px",
                 fontSize: 11, color: "var(--text-2)",
                 borderBottom: i === rows.length - 1 ? "none" : "1px solid var(--border-2)",
                 animationDelay: `${i * 45}ms`,
@@ -342,7 +332,7 @@ function History({ status, compact }: { status: SyncStatus | null; compact: bool
           ))}
         </div>
       )}
-    </>
+    </Group>
   );
 }
 
@@ -352,7 +342,7 @@ function Banner({ tone, children }: { tone: StatusTone; children: ReactNode }) {
   return (
     <div style={{
       display: "flex", gap: 8, alignItems: "flex-start",
-      margin: "0 20px 16px",
+      margin: 0,
       border: `1px solid ${tone === "none" ? "var(--border)" : TONE_COLOR[tone]}`,
       borderRadius: "var(--radius)",
       padding: 12, fontSize: 11, color: "var(--text-2)", lineHeight: 1.6,
@@ -442,43 +432,63 @@ export default function SyncDashboard({
     }
     : null;
 
-  const pad = compact ? 12 : 20;
-
   return (
-    <div style={{ display: "flex", flexDirection: "column" }}>
-      {/* ── Drive: the plane that has to work ── */}
-      <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius)", background: "var(--bg)" }}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: compact ? 12 : 20, padding: pad, alignItems: "flex-start" }}>
-          <Gauge
-            size={compact ? 60 : 104}
-            fraction={gauge.fraction}
-            tone={gaugeTone}
-            value={gaugeValue}
-            unit={gaugeUnit}
-            running={running}
-          />
-
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{
-              fontSize: compact ? 13 : 15, fontWeight: 600, letterSpacing: "-0.02em",
-              color: "var(--text-1)", display: "flex", alignItems: "center", gap: 8,
-            }}>
-              <span aria-hidden="true" style={{ display: "flex", flexShrink: 0 }}><CloudIcon size={16} /></span>
-              Google Drive
-            </div>
-            <div className="sync-rise" style={{ display: "flex", alignItems: "center", gap: 7, fontSize: compact ? 11 : 12, color: "var(--text-2)", marginTop: 5 }}>
-              <StatusDot tone={masterOff ? "none" : driveTone} />
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{stateText}</span>
-            </div>
-            {!compact && (
-              <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 3 }}>
-                Your notes, both ways, in batches. Nothing else here works without it.
+    <div style={{ display: "flex", flexDirection: "column", gap: compact ? 16 : 20 }}>
+      {/* DRIVE — the plane that has to work. Flat on the panel surface, same
+          Field dialect as the Form/Function tabs (no card, no darker fill). */}
+      <Group label="Drive" delay={0} gap={compact ? 10 : 12}>
+        {compact ? (
+          // Compact (mock variant A1): textless ring at the left, title + status
+          // column to its right — no tagline, no side-by-side buttons.
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <Gauge
+              size={34}
+              fraction={gauge.fraction}
+              tone={gaugeTone}
+              value={gaugeValue}
+              unit={gaugeUnit}
+              running={running}
+              textless
+            />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{
+                fontSize: 12.5, fontWeight: 600, color: "var(--text-1)",
+                display: "flex", alignItems: "center", gap: 6,
+              }}>
+                Google Drive
               </div>
-            )}
+              <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11, color: "var(--text-2)", marginTop: 2 }}>
+                <StatusDot tone={masterOff ? "none" : driveTone} />
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{stateText}</span>
+              </div>
+            </div>
           </div>
+        ) : (
+          <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
+            <Gauge
+              size={84}
+              fraction={gauge.fraction}
+              tone={gaugeTone}
+              value={gaugeValue}
+              unit={gaugeUnit}
+              running={running}
+            />
 
-          {!compact && (
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{
+                fontSize: 15, fontWeight: 600, letterSpacing: "-0.02em",
+                color: "var(--text-1)", display: "flex", alignItems: "center", gap: 8,
+              }}>
+                <span aria-hidden="true" style={{ display: "flex", flexShrink: 0 }}><CloudIcon size={16} /></span>
+                Google Drive
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, color: "var(--text-2)", marginTop: 5 }}>
+                <StatusDot tone={masterOff ? "none" : driveTone} />
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{stateText}</span>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end", flexShrink: 0 }}>
               {connected ? (
                 <>
                   <button
@@ -499,7 +509,15 @@ export default function SyncDashboard({
                     </span>
                     {running ? "Running" : "Sync now"}
                   </button>
-                  <button type="button" className="btn-hover" style={BTN_SECONDARY} onClick={onDisconnectDrive}>
+                  <button
+                    type="button"
+                    className="btn-hover"
+                    onClick={onDisconnectDrive}
+                    style={{
+                      background: "none", border: "none", font: "inherit",
+                      fontSize: 12, color: "var(--text-3)", padding: 2, cursor: "pointer",
+                    }}
+                  >
                     Disconnect
                   </button>
                 </>
@@ -520,28 +538,45 @@ export default function SyncDashboard({
                 </button>
               )}
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
-        {banner && <Banner tone={banner.tone}>{banner.body}</Banner>}
-
+        {/* Compact: primary full-width, Disconnect demoted to a ghost line below
+            (approved design mock A1). Full window keeps the pair beside the gauge. */}
         {compact && (
-          <div style={{ display: "flex", gap: 8, padding: `0 ${pad}px ${pad}px` }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             {connected ? (
-              <button
-                type="button"
-                className="btn-hover"
-                disabled={masterOff || running}
-                onClick={onRunSync}
-                style={{
-                  ...BTN_SECONDARY, flex: 1, justifyContent: "center",
-                  background: "var(--text-1)", color: "var(--bg)", borderColor: "var(--text-1)", fontWeight: 600,
-                  cursor: masterOff || running ? "not-allowed" : "pointer",
-                  opacity: masterOff || running ? 0.4 : 1,
-                }}
-              >
-                {running ? "Running" : "Sync now"}
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="btn-hover"
+                  disabled={masterOff || running}
+                  onClick={onRunSync}
+                  style={{
+                    ...BTN_SECONDARY, width: "100%", justifyContent: "center",
+                    display: "inline-flex", alignItems: "center", gap: 6,
+                    background: "var(--text-1)", color: "var(--bg)", borderColor: "var(--text-1)", fontWeight: 600,
+                    cursor: masterOff || running ? "not-allowed" : "pointer",
+                    opacity: masterOff || running ? 0.4 : 1,
+                  }}
+                >
+                  <span aria-hidden="true" style={{ display: "flex", animation: running ? "spin 900ms linear infinite" : undefined }}>
+                    <RefreshIcon size={12} />
+                  </span>
+                  {running ? "Running" : "Sync now"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-hover"
+                  onClick={onDisconnectDrive}
+                  style={{
+                    alignSelf: "center", background: "none", border: "none", font: "inherit",
+                    fontSize: 12, color: "var(--text-3)", padding: 6, cursor: "pointer",
+                  }}
+                >
+                  Disconnect
+                </button>
+              </>
             ) : (
               <button
                 type="button"
@@ -549,7 +584,7 @@ export default function SyncDashboard({
                 disabled={masterOff || secretMissing || connecting}
                 onClick={onConnectDrive}
                 style={{
-                  ...BTN_SECONDARY, flex: 1, justifyContent: "center",
+                  ...BTN_SECONDARY, width: "100%", justifyContent: "center",
                   background: "var(--text-1)", color: "var(--bg)", borderColor: "var(--text-1)", fontWeight: 600,
                   cursor: masterOff || secretMissing || connecting ? "not-allowed" : "pointer",
                   opacity: masterOff || secretMissing || connecting ? 0.4 : 1,
@@ -560,43 +595,23 @@ export default function SyncDashboard({
             )}
           </div>
         )}
+      </Group>
 
-        <History status={status} compact={compact} />
+      {banner && <Banner tone={banner.tone}>{banner.body}</Banner>}
 
-        {/* Drive's own settings, inside Drive's border — so they cannot be misread as app-wide. */}
-        <Schedule compact={compact} masterOff={masterOff} settings={settings} onChangeSettings={onChangeSettings} />
-      </div>
+      {!compact && <History status={status} delay={45} />}
 
-      {/* ── The shortcut, docked to the plane it accelerates ── */}
-      <div style={{ position: "relative", paddingLeft: compact ? 18 : 32, paddingTop: 20 }}>
-        <span aria-hidden="true" style={{
-          position: "absolute", left: compact ? 8 : 15, top: 0, bottom: 0, width: 1, background: "var(--border)",
-        }} />
-        <span aria-hidden="true" style={{
-          position: "absolute", left: compact ? 8 : 15, top: "50%", width: compact ? 10 : 17, height: 1, background: "var(--border)",
-        }} />
+      <Schedule compact={compact} masterOff={masterOff} settings={settings} onChangeSettings={onChangeSettings} delay={compact ? 45 : 90} />
 
-        <div style={{ fontSize: 10, letterSpacing: "0.1em", color: "var(--text-3)", marginBottom: 8 }}>
-          OPTIONAL
+      {/* SAME-WIFI SHORTCUT — the accelerator; Drive still does the sync. Now a
+          flat Field group like the rest, not a docked card on a rail. */}
+      <Group label="Same-WiFi shortcut" delay={compact ? 90 : 135}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11, color: "var(--text-2)" }}>
+          <StatusDot tone={lanTone} />
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lanLabel}</span>
         </div>
-
-        <div style={{ border: "1px solid var(--border-2)", borderRadius: "var(--radius)", background: "var(--bg)", padding: compact ? 12 : "12px 16px" }}>
-          <div style={{ fontSize: 12.5, fontWeight: 500, color: "var(--text-1)", marginBottom: 4 }}>
-            Same-WiFi shortcut
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11, color: "var(--text-2)", marginBottom: 3 }}>
-            <StatusDot tone={lanTone} />
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lanLabel}</span>
-          </div>
-          {!compact && (
-            <Note style={{ marginBottom: 12 }}>
-              Moves files faster when the phone is on this network. Drive still does the sync — turning
-              this off changes nothing about what syncs, only how fast.
-            </Note>
-          )}
-          {lanSection}
-        </div>
-      </div>
+        {lanSection}
+      </Group>
 
       {/* Re-entry to the guided setup. */}
       <button
@@ -604,7 +619,7 @@ export default function SyncDashboard({
         onClick={onRunSetupAgain}
         disabled={masterOff}
         style={{
-          alignSelf: "flex-start", marginTop: 16,
+          alignSelf: "flex-start",
           background: "none", border: "none", font: "inherit", fontSize: 11,
           color: "var(--text-3)", textDecoration: "underline",
           padding: "4px 0",

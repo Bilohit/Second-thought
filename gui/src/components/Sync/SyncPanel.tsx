@@ -27,7 +27,6 @@ import PairingPanel, { type PairingState } from "../PairingPanel";
 import SyncWizard from "./SyncWizard";
 import SyncDashboard, { type SyncSettings } from "./SyncDashboard";
 import { Toggle } from "../ui/Toggle";
-import { Note } from "./parts";
 
 // omni_capture/config.py:SyncConfig — the fallbacks when [sync] is absent from the
 // TOML entirely. Kept in sync with the server's dataclass by hand, deliberately: a
@@ -266,11 +265,6 @@ export default function SyncPanel({ compact }: { compact: boolean }) {
       }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 12.5, color: "var(--text-1)" }}>Syncing system</div>
-          <Note style={{ marginTop: 2 }}>
-            {master
-              ? "On. Your notes move between this computer and your phone."
-              : "Off. Nothing syncs anywhere, and nothing below runs."}
-          </Note>
         </div>
         <Toggle label="Syncing system" checked={master} onChange={(v) => void commitMaster(v)} />
       </div>

@@ -52,7 +52,10 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 
 def _row_to_dict(row: tuple) -> dict:
-    return dict(zip(_COLUMNS, row))
+    # strict=: every SELECT uses `', '.join(_COLUMNS)`, so a row always has len(_COLUMNS)
+    # columns today; strict= turns a future schema/SELECT drift into a loud error instead
+    # of a silent field misalignment (OF-22 / ruff B905).
+    return dict(zip(_COLUMNS, row, strict=True))
 
 
 def create_reminder(

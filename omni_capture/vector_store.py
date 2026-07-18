@@ -103,11 +103,20 @@ def _get_conn(vault_root: Path) -> sqlite3.Connection:
     # and the writer don't block each other; busy_timeout is per-connection
     # and must be set on every open so a lock contention window is waited
     # out instead of raising "database is locked".
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute(_CREATE_TABLE)
-    conn.commit()
-    _migrate_schema(conn)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute(_CREATE_TABLE)
+        conn.commit()
+        _migrate_schema(conn)
+    except Exception:
+        # A corrupt db raises "file is not a database" on the first PRAGMA/CREATE.
+        # sqlite3.connect() already opened an OS handle; if we let the exception
+        # propagate without closing it the handle leaks, and on Windows that lock
+        # makes heal_corrupt_db's unlink fail (WinError 32) — so a store that was
+        # read even once could never be healed until process exit. Close, re-raise.
+        conn.close()
+        raise
     return conn
 
 
@@ -564,6 +573,71 @@ def count(vault_root: Path) -> int:
             return conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
     except Exception:
         return 0
+
+
+def heal_corrupt_db(vault_root: Path) -> bool:
+    """Discard vectors.db if it is unreadable, so the caller can re-create it.
+
+    Mirror of index_writer.heal_corrupt_db for the embedding store: vectors.db is a
+    derived cache — every row re-embeds from the vault .md files — so discarding an
+    unreadable one is the sanctioned recovery, not data loss. Without this a
+    truncated/half-flushed/bad-sector vectors.db raised sqlite3.DatabaseError on the
+    first read inside index_note (swallowed) and inside every search (fail-soft to
+    []), so semantic search was silently dead and never repaired (OF-1). Detection
+    must run BEFORE anything else opens the store.
+
+    Returns True if a corrupt db was discarded. OperationalError (SQLITE_BUSY/LOCKED,
+    a permissions fault) is caught FIRST and never heals — a healthy-but-unavailable
+    store must not be deleted; the same exact split as index_writer's captures heal.
+    """
+    db_path = _db_path(vault_root)
+    if not db_path.exists():
+        return False
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            # Touches the schema pages — connect() alone does not read the file.
+            conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        finally:
+            conn.close()
+        return False
+    except sqlite3.OperationalError as exc:
+        print(f"[VectorStore] vectors.db unavailable ({exc}) — leaving it intact; "
+              "this is not corruption", file=sys.stderr, flush=True)
+        index_health.record_failure("vectors", exc)
+        return False
+    except sqlite3.DatabaseError as exc:
+        print(f"[VectorStore] vectors.db unreadable ({exc}) — discarding the corrupt "
+              "derived cache; it rebuilds from the vault files", file=sys.stderr, flush=True)
+        try:
+            db_path.unlink()
+            # A stale -wal/-shm can resurrect the pages we just destroyed.
+            for extra in db_path.parent.glob(db_path.name + "-*"):
+                extra.unlink()
+        except OSError as unlink_exc:   # locked by another process — stay fail-soft
+            print(f"[VectorStore] could not discard corrupt vectors.db: {unlink_exc}",
+                  file=sys.stderr, flush=True)
+            index_health.record_failure("vectors", exc)
+            return False
+        return True
+
+
+def embedded_parents(vault_root: Path) -> set[str]:
+    """Vault-relative parent paths that have at least one authoritative embedding row.
+
+    The re-embed decision in vault_sync consults THIS (the vector store's own
+    contents), never captures.hash (OF-1): so a destroyed/emptied vectors.db with an
+    intact captures.db is re-embedded instead of skipped forever. Chunk rows are
+    keyed "<parent>::c<i>"; provisional=1 (LAN overlay, contract §11) rows use
+    synthetic paths that never match a real vault file and are excluded. Returns an
+    empty set on any read failure (empty/absent store), which routes every note to a
+    re-embed — the safe direction."""
+    try:
+        with _connect(vault_root) as conn:
+            ids = conn.execute("SELECT id FROM embeddings WHERE provisional = 0").fetchall()
+        return {r[0].split("::c")[0] for r in ids}
+    except Exception:
+        return set()
 
 
 # ── Smoke tests ───────────────────────────────────────────────────────────────

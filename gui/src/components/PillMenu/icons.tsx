@@ -252,3 +252,24 @@ export function DashboardIcon({ size = 18 }: { size?: number }): JSX.Element {
     </svg>
   );
 }
+
+/** Padlock glyph — the custom-theme editor's LOCKED rows (state colors,
+ *  radius/font/motion identity) that stay non-editable by design. */
+export function LockIcon({ size = 13 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="5" y="11" width="14" height="9" rx="1" />
+      <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+    </svg>
+  );
+}
+
+/** Plus glyph — the "Custom" swatch's add affordance in the theme picker. */
+export function PlusIcon({ size = 14 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </svg>
+  );
+}

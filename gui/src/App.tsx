@@ -64,17 +64,21 @@ import { setWindowNoactivate, armMenuClickAway, disarmMenuClickAway, setWindowBo
 import { geoSnapshot, geoClamp } from "./lib/geoLog";
 import { useToasts } from "./hooks/useToasts";
 import ToastHost from "./components/ToastHost";
+import { EDITABLE_ORDER, type EditableSlot } from "./lib/themeCode";
+import { deriveCustom } from "./lib/themeDerive";
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 
 export type Theme =
   | "dark" | "light"
   | "sage" | "sky" | "bubba-pink"
-  | "mist" | "lilac" | "sand" | "wine";
+  | "mist" | "lilac" | "sand" | "wine"
+  | "custom";
 export const THEMES: Theme[] = [
   "dark", "light",
   "sage", "sky", "bubba-pink",
   "mist", "lilac", "sand", "wine",
+  "custom",
 ];
 export const THEME_LABELS: Record<Theme, string> = {
   "dark":       "Void",
@@ -86,8 +90,62 @@ export const THEME_LABELS: Record<Theme, string> = {
   "lilac":      "Lilac",
   "sand":       "Sand",
   "wine":       "Wine",
+  "custom":     "Custom",
 };
 const STORAGE_KEY = "omni-theme";
+
+// ── Custom theme (Wave 3 T9) ─────────────────────────────────────────────
+// The 9 user-editable slots (Palette's remaining 11 fields are derived —
+// see lib/themeDerive.ts) persisted independently of STORAGE_KEY so picking
+// a preset and coming back to "custom" later doesn't lose the user's work.
+export const CUSTOM_THEME_KEY = "omni-custom-theme";
+const CUSTOM_STYLE_ELEMENT_ID = "omni-custom-theme-vars";
+
+export const CUSTOM_THEME_DEFAULTS: Record<EditableSlot, string> = {
+  bg: "#0a0a0a", surface: "#262626", surface2: "#404040", border: "#383838",
+  text1: "#fafafa", text2: "#a1a1a1", text3: "#7a7a7a", accent: "#737373",
+  glassBg: "#191919",
+};
+
+export function getInitialCustomTheme(): Record<EditableSlot, string> {
+  try {
+    const raw = localStorage.getItem(CUSTOM_THEME_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<Record<EditableSlot, string>>;
+      if (EDITABLE_ORDER.every((k) => typeof parsed[k] === "string")) {
+        return { ...CUSTOM_THEME_DEFAULTS, ...parsed } as Record<EditableSlot, string>;
+      }
+    }
+  } catch { /* ignore */ }
+  return { ...CUSTOM_THEME_DEFAULTS };
+}
+
+// Injects/refreshes a <style> tag overriding the `[data-theme="custom"]`
+// vars declared in index.css (Void-default fallbacks live there so a
+// half-applied custom theme never flashes unstyled). Removed on theme
+// change away from "custom" so switching presets stays clean.
+function applyCustomThemeVars(slots: Record<EditableSlot, string>) {
+  const p = deriveCustom(slots);
+  let el = document.getElementById(CUSTOM_STYLE_ELEMENT_ID) as HTMLStyleElement | null;
+  if (!el) {
+    el = document.createElement("style");
+    el.id = CUSTOM_STYLE_ELEMENT_ID;
+    document.head.appendChild(el);
+  }
+  el.textContent = `[data-theme="custom"] {
+  --bg: ${p.bg}; --surface: ${p.surface}; --surface-2: ${p.surface2};
+  --border: ${p.border}; --border-2: ${p.border2};
+  --text-1: ${p.text1}; --text-2: ${p.text2}; --text-3: ${p.text3};
+  --accent: ${p.accent}; --accent-d: ${p.accentDim}; --accent-glow: ${p.accentGlow};
+  --on-accent: ${p.onAccent}; --palette-bg: ${p.paletteBg};
+  --recording: ${p.recording}; --green: ${p.green}; --yellow: ${p.yellow}; --red: ${p.red};
+  --glass-bg: ${p.glassBg}; --glass-border: ${p.glassBorder}; --scrim: ${p.scrim};
+}`;
+}
+
+function removeCustomThemeVars() {
+  document.getElementById(CUSTOM_STYLE_ELEMENT_ID)?.remove();
+}
 
 const LOOK_MODE_KEY = "omni-look-mode";
 export function getInitialLookMode(): "search" | "chat" {
@@ -347,6 +405,7 @@ export default function App() {
   const [lookMode, setLookMode]           = useState<"search" | "chat">(getInitialLookMode);
   const [lookChatPersist, setLookChatPersist] = useState<LookChatPersist>(getInitialLookChatPersist);
   const [theme, setTheme]                 = useState<Theme>(getInitialTheme);
+  const [customTheme, setCustomTheme]     = useState<Record<EditableSlot, string>>(getInitialCustomTheme);
   const [inboxCount, setInboxCount]       = useState(0);
   const lookChat = useLookChat();
 
@@ -590,7 +649,24 @@ export default function App() {
   useEffect(() => { try { localStorage.setItem(LOOK_MODE_KEY, lookMode); } catch { /* ignore */ } }, [lookMode]);
   useEffect(() => { try { localStorage.setItem(LOOK_CHAT_PERSIST_KEY, lookChatPersist); } catch { /* ignore */ } }, [lookChatPersist]);
 
+  // Custom theme (Wave 3 T9): inject the derived CSS-var override only while
+  // "custom" is the active theme; remove it otherwise so switching away is
+  // clean and never leaves stale vars behind for the next custom edit.
+  useEffect(() => {
+    if (theme === "custom") applyCustomThemeVars(customTheme);
+    else removeCustomThemeVars();
+  }, [theme, customTheme]);
+  useEffect(() => {
+    try { localStorage.setItem(CUSTOM_THEME_KEY, JSON.stringify(customTheme)); } catch { /* ignore */ }
+  }, [customTheme]);
+
   const selectTheme = useCallback((t: Theme) => setTheme(t), []);
+  // Editor's Save: persist the 9 edited slots and switch the active theme to
+  // "custom" in one commit (mirrors selectTheme's shape for settingsProps).
+  const saveCustomTheme = useCallback((slots: Record<EditableSlot, string>) => {
+    setCustomTheme(slots);
+    setTheme("custom");
+  }, []);
 
   // Only Capsule/Minimal ever collapse to a pill, and only in the capture
   // view — Settings/Vault/Inbox/Stats always show full-size regardless.
@@ -2210,6 +2286,8 @@ export default function App() {
   const settingsProps = {
     theme,
     onSelectTheme: selectTheme,
+    customTheme,
+    onSaveCustomTheme: saveCustomTheme,
     displayMode,
     onSelectDisplayMode: setDisplayMode,
     pillCorner,

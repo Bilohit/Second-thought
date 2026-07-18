@@ -44,6 +44,8 @@ const TITLES: Record<RailView, [string, string]> = {
 export interface SettingsForward {
   theme?: Parameters<typeof SettingsPanel>[0]["theme"];
   onSelectTheme?: Parameters<typeof SettingsPanel>[0]["onSelectTheme"];
+  customTheme?: Parameters<typeof SettingsPanel>[0]["customTheme"];
+  onSaveCustomTheme?: Parameters<typeof SettingsPanel>[0]["onSaveCustomTheme"];
   displayMode?: Parameters<typeof SettingsPanel>[0]["displayMode"];
   onSelectDisplayMode?: Parameters<typeof SettingsPanel>[0]["onSelectDisplayMode"];
   pillCorner?: Parameters<typeof SettingsPanel>[0]["pillCorner"];

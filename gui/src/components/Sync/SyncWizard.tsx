@@ -169,8 +169,7 @@ function DriveStep({
       <div>
         <Note tone="fail" style={{ marginBottom: 8 }}>Google credentials file not found.</Note>
         <Note style={{ marginBottom: 12 }}>
-          Drive cannot be connected until an OAuth client file is in place. This is the one state the
-          Connect button cannot fix, so it is not offered here.
+          Drive can't connect until an OAuth client file is in place.
         </Note>
       </div>
     );
@@ -184,15 +183,13 @@ function DriveStep({
           Waiting for the browser consent window.
         </div>
         <Note style={{ marginBottom: 12 }}>
-          Finish signing in on the browser tab that just opened. Nothing is saved until you do. If you
-          closed it by accident, stop waiting and try again.
+          Finish signing in on the browser tab. Nothing saves until you do.
         </Note>
         <button type="button" className="btn-hover" style={BTN_SECONDARY} onClick={onStopWaiting}>
           Stop waiting
         </button>
         <Note style={{ marginTop: 8 }}>
-          This only stops this panel waiting. It cannot close the browser window — if you finish signing
-          in there, Drive still connects.
+          Only stops the panel waiting — it can't close the browser tab.
         </Note>
       </div>
     );
@@ -201,16 +198,12 @@ function DriveStep({
   return (
     <div>
       {/* What it does, then what it costs — before asking. */}
-      <Note style={{ marginBottom: 12 }}>
-        Drive is the sync. Your notes move both ways through a folder in your Google Drive, in batches.
-        Nothing on this tab does anything until it is connected.
-        {!compact && " Your notes stay on this computer too — Drive is the shared copy, not the only one."}
+      <Note style={{ marginBottom: 10 }}>
+        Syncs your notes both ways through your Google Drive. Nothing here works until it's connected.
+        {!compact && " Your notes stay on this computer too."}
       </Note>
       {driveError && <Note tone="fail" style={{ marginBottom: 10 }}>{driveError}</Note>}
-      <Note style={{ marginBottom: 12 }}>
-        Costs: a Google sign-in, and your notes stored in your own Drive account.
-        {!compact && " Takes about 30 seconds."}
-      </Note>
+      <Note style={{ marginBottom: 12 }}>Needs a Google sign-in.</Note>
     </div>
   );
 }
@@ -219,13 +212,11 @@ function LanStep({ lanSection, compact }: { lanSection: ReactNode; compact: bool
   return (
     <div>
       <Note style={{ marginBottom: 12 }}>
-        Optional. When your phone is on the same WiFi as this computer, files can move directly between
-        them instead of waiting for the next Drive batch.
-        {!compact && " It is only a shortcut: Drive still decides what is correct, and everything works exactly the same without it."}
+        Optional. On the same WiFi, files move directly instead of waiting for the next Drive batch.
+        {!compact && " Drive still decides what's correct — this only changes speed."}
       </Note>
       <Note style={{ marginBottom: 12 }}>
-        Costs: this computer listens on your local network while it is on. Skipping changes nothing
-        about what syncs, only how fast.
+        This computer listens on your local network while it's on.
       </Note>
       {lanSection}
     </div>
@@ -250,13 +241,21 @@ export default function SyncWizard({
   const driveSummary =
     driveConnected ? "connected"
     : secretMissing ? "credentials file missing"
-    : (connecting || drive?.connecting) ? "waiting for browser consent"
-    : "not connected · nothing syncs yet";
+    : (connecting || drive?.connecting) ? "waiting for consent"
+    : "not connected";
 
   const setupDone = driveConnected;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+      {/* Uppercase eyebrow — the same micro-label the Form/Function Field groups
+          and the restyled dashboard use, so the wizard reads as the same family. */}
+      <div style={{
+        fontSize: 10, fontWeight: 600, letterSpacing: "0.08em",
+        textTransform: "uppercase", color: "var(--text-3)", marginBottom: 12,
+      }}>
+        Set up sync
+      </div>
       <ol style={{ listStyle: "none", margin: 0, padding: 0 }}>
         <Rung
           index={0}
@@ -303,7 +302,7 @@ export default function SyncWizard({
             }} />
           </span>
           <span style={{ fontSize: 11, color: setupDone ? "var(--text-2)" : "var(--text-3)" }}>
-            {setupDone ? "Sync is set up. The step below is optional." : "Two steps. That is the whole setup."}
+            {setupDone ? "Set up. The step below is optional." : "Two steps — that's the whole setup."}
           </span>
         </li>
       </ol>
@@ -362,8 +361,7 @@ export default function SyncWizard({
 
       {!onDrive && (
         <Note style={{ marginTop: 10 }}>
-          Cancel undoes the same-WiFi change and returns to the sync panel. It cannot undo the Google
-          sign-in — that grant is real and stays until you disconnect Drive.
+          Cancel undoes the WiFi change. It can't undo the Google sign-in.
         </Note>
       )}
     </div>

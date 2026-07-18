@@ -20,6 +20,9 @@ import { DEFAULT_CHAT_SYSTEM_PROMPT } from "../lib/lookChatDefaults";
 import { logger, LogLevel } from "../lib/logger";
 import { isGeoDebugEnabled, setGeoDebugEnabled } from "../lib/geoLog";
 import { THEMES, THEME_LABELS, type Theme, type LookChatPersist } from "../App";
+import type { EditableSlot } from "../lib/themeCode";
+import ThemeCustomEditor from "./ThemeCustomEditor";
+import { PlusIcon } from "./PillMenu/icons";
 import type { PillMode, PillCorner } from "../lib/pillTypes";
 import type { PillAnchor } from "../lib/pillAnchor";
 import { ANCHOR_ORDER } from "../lib/pillAnchor";
@@ -38,6 +41,11 @@ interface Props {
   onClose:      () => void;
   theme?:       Theme;
   onSelectTheme?: (theme: Theme) => void;
+  // Custom theme editor (Wave 3 T9) — the 9 last-saved editable slots plus a
+  // save handler that persists them and switches the active theme to
+  // "custom" in one commit (App.tsx's saveCustomTheme).
+  customTheme?: Record<EditableSlot, string>;
+  onSaveCustomTheme?: (slots: Record<EditableSlot, string>) => void;
   measureRef?:  (el: HTMLDivElement | null) => void;
 
   // Display Mode (Item 2: pill/minimized window) — client-only preferences,
@@ -75,48 +83,76 @@ interface Props {
 
 // ── Theme swatch picker ──────────────────────────────────────────────────────
 
-function ThemeSwatchPicker({ theme, onSelectTheme }: { theme: Theme; onSelectTheme: (t: Theme) => void }) {
+function ThemeSwatchPicker({ theme, onSelectTheme, compact }: { theme: Theme; onSelectTheme: (t: Theme) => void; compact?: boolean }) {
   return (
     <div
       role="radiogroup"
       aria-label="Theme"
-      style={{ display: "flex", flexWrap: "wrap", gap: 8 }}
+      style={{
+        display: "grid",
+        gridTemplateColumns: compact ? "repeat(5, 40px)" : "repeat(10, 36px)",
+        gap: compact ? 10 : 4,
+        justifyContent: "center",
+      }}
     >
       {THEMES.map((t) => {
         const active = t === theme;
+        const isCustom = t === "custom";
         return (
-          <button
-            key={t}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            aria-label={THEME_LABELS[t]}
-            title={THEME_LABELS[t]}
-            onClick={() => onSelectTheme(t)}
-            data-theme={t}
-            className="btn-hover"
-            style={{
-              width: 26,
-              height: 26,
-              padding: 0,
-              border: active ? "2px solid var(--accent)" : "1px solid var(--border)",
-              borderRadius: "var(--radius-sm)",
-              background: "var(--surface)",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
+          <div key={t} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, width: compact ? 40 : 36 }}>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={active}
+              aria-label={THEME_LABELS[t]}
+              title={THEME_LABELS[t]}
+              onClick={() => onSelectTheme(t)}
+              data-theme={isCustom ? undefined : t}
+              className="btn-hover"
+              style={{
+                width: 26,
+                height: 26,
+                padding: 0,
+                border: active
+                  ? "2px solid var(--accent)"
+                  : isCustom ? "1px dashed var(--border)" : "1px solid var(--border)",
+                borderRadius: "var(--radius-sm)",
+                background: "var(--surface)",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "var(--text-3)",
+              }}
+            >
+              {isCustom ? (
+                <PlusIcon size={13} />
+              ) : (
+                <span
+                  style={{
+                    width: 14,
+                    height: 14,
+                    background: "var(--accent)",
+                    border: "1px solid var(--border)",
+                  }}
+                />
+              )}
+            </button>
             <span
               style={{
-                width: 14,
-                height: 14,
-                background: "var(--accent)",
-                border: "1px solid var(--border)",
+                fontSize: 9,
+                color: active ? "var(--text-2)" : "var(--text-3)",
+                textAlign: "center",
+                lineHeight: 1.2,
+                maxWidth: compact ? 40 : 36,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
               }}
-            />
-          </button>
+            >
+              {THEME_LABELS[t]}
+            </span>
+          </div>
         );
       })}
     </div>
@@ -307,7 +343,7 @@ function HotkeyRecorder({
 // ── Main settings panel ──────────────────────────────────────────────────────
 
 export default function SettingsPanel({
-  visible, onClose, theme, onSelectTheme, measureRef,
+  visible, onClose, theme, onSelectTheme, customTheme, onSaveCustomTheme, measureRef,
   displayMode, onSelectDisplayMode,
   pillCorner, onSelectPillCorner,
   pillPinned, onTogglePillPinned,
@@ -615,7 +651,17 @@ export default function SettingsPanel({
             {/* Theme */}
             {onSelectTheme && theme && (
               <Field label="Theme">
-                <ThemeSwatchPicker theme={theme} onSelectTheme={onSelectTheme} />
+                <ThemeSwatchPicker theme={theme} onSelectTheme={onSelectTheme} compact={compact} />
+              </Field>
+            )}
+
+            {/* Custom theme editor — shown once "Custom" is the active theme
+               (Wave 3 T9). customTheme/onSaveCustomTheme are wired from
+               App.tsx's settingsProps; falls back to hiding rather than
+               crashing if a caller ever omits them. */}
+            {theme === "custom" && customTheme && onSaveCustomTheme && (
+              <Field label="Custom theme">
+                <ThemeCustomEditor savedSlots={customTheme} onSave={onSaveCustomTheme} compact={compact} />
               </Field>
             )}
 

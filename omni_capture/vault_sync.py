@@ -18,7 +18,10 @@ from typing import Optional, TypedDict
 from index_writer import (
     init_db, _file_hash, heal_corrupt_db, remove_capture_by_path, upsert_capture_from_file,
 )
-from vector_store import _connect, index_note, remove_from_index
+from vector_store import (
+    _connect, index_note, remove_from_index,
+    heal_corrupt_db as heal_corrupt_vector_db, embedded_parents,
+)
 
 _SKIP_DIRS = {".omni_capture", ".git", ".obsidian"}
 
@@ -35,7 +38,9 @@ class SyncResult(TypedDict):
     removed: int
     updated: int
     skipped: int
+    reembedded: int       # notes re-embedded despite an unchanged captures.hash (empty/rebuilt vectors.db, OF-1)
     healed: bool          # a corrupt captures.db was discarded and rebuilt from files
+    vectors_healed: bool  # a corrupt vectors.db was discarded and rebuilt from files (OF-1)
     dedup_rebuilt: bool   # a missing/empty dedup ledger was rebuilt from the vault files (R-1)
     error: Optional[str]  # the pass did NOT complete; counts below are partial
 
@@ -83,7 +88,8 @@ def purge_orphan_index_entries(vault_root: Path) -> int:
 def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> SyncResult:
     """Full diff-sync: heal a corrupt index, remove orphans, add/update changed files."""
     result: SyncResult = {"added": 0, "removed": 0, "updated": 0, "skipped": 0,
-                          "healed": False, "dedup_rebuilt": False, "error": None}
+                          "reembedded": 0, "healed": False, "vectors_healed": False,
+                          "dedup_rebuilt": False, "error": None}
     try:
         # --- heal a corrupt captures.db BEFORE anything reads it ---
         # It is a derived cache; an unreadable one is discarded here so the
@@ -92,6 +98,13 @@ def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> Syn
         # function returned {"added": 0} -- indistinguishable from "nothing to do"
         # -- while the index stayed dead until a human deleted the file.
         result["healed"] = heal_corrupt_db(vault_root)
+
+        # --- heal a corrupt vectors.db too, BEFORE anything opens it (OF-1) ---
+        # Same derived-cache recovery: a truncated/half-flushed vectors.db raised
+        # DatabaseError inside index_note (swallowed) and every search (fail-soft to
+        # []), so semantic search was silently dead and never repaired. Discarding it
+        # here lets the re-embed pass below re-create it from the vault files.
+        result["vectors_healed"] = heal_corrupt_vector_db(vault_root)
 
         # --- rebuild a missing/empty dedup ledger (R-1 finisher) ---
         # The ledger is a derived cache like the two DBs around it, but it was the only one with
@@ -153,6 +166,14 @@ def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> Syn
         }
         conn.close()
 
+        # OF-1: the re-embed decision must consult the vector store's OWN contents,
+        # not captures.hash. Otherwise an unchanged note (captures.hash matches disk)
+        # is classified `skipped` and never re-embedded — so a destroyed/emptied
+        # vectors.db with an intact captures.db leaves semantic search silently dead
+        # forever. Snapshot the embedded set once (post-heal, post-purge) and re-embed
+        # any note absent from it even on the skip path.
+        embedded = embedded_parents(vault_root)
+
         for p in _iter_vault_md(vault_root):
             ap = str(p)
             current_hash = _file_hash(ap)
@@ -169,7 +190,14 @@ def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> Syn
                 _embed_file(vault_root, p, base_url, embed_model)
                 result["updated"] += 1
             else:
-                result["skipped"] += 1
+                # captures.hash unchanged — but re-embed if the vector store is
+                # missing this note (rebuilt/emptied/corrupt-then-healed store, OF-1).
+                rel = str(p.relative_to(vault_root)).replace("\\", "/")
+                if rel not in embedded:
+                    _embed_file(vault_root, p, base_url, embed_model)
+                    result["reembedded"] += 1
+                else:
+                    result["skipped"] += 1
 
     except Exception as exc:
         # Still fail-soft (a broken index must never break capture), but the caller
