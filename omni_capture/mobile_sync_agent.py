@@ -56,6 +56,76 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+_ILLEGAL_NAME = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
+_RESERVED_STEMS = {"CON", "PRN", "AUX", "NUL",
+                   *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
+_UNTITLED_TS = re.compile(r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})")
+
+
+def _created_stamp(created_at: str) -> str:
+    """A note's `created` as its LITERAL written wall-clock digits `YYYY-MM-DD HHMM` (NO timezone
+    conversion — desktop writes naive-local `created`, phone writes UTC-Z; slicing the digits is the
+    only rule that agrees on both), or "" if unparseable. Used by BOTH the Untitled fallback and the
+    clash-loser suffix. MUST match phone createdStamp() exactly."""
+    m = _UNTITLED_TS.match(created_at or "")
+    if not m:
+        return ""
+    y, mo, d, h, mi = m.groups()
+    return f"{y}-{mo}-{d} {h}{mi}"
+
+
+def _untitled(created_at: str) -> str:
+    """Blank-title filename fallback. MUST match phone untitled()."""
+    stamp = _created_stamp(created_at)
+    return f"Untitled {stamp}" if stamp else "Untitled"
+
+
+def _hub_filename(title: str, created_at: str) -> str:
+    """Pure: a note's hub/local filename from its title. MUST match phone hubFilename() exactly."""
+    base = (title or "").strip()
+    if not base:
+        base = _untitled(created_at)
+    base = _ILLEGAL_NAME.sub("-", base)
+    base = re.sub(r"-{2,}", "-", base)
+    base = base.strip(" .-")[:120].strip(" .-")
+    if base.upper() in _RESERVED_STEMS:
+        base = base + "_"
+    if not base:
+        base = _untitled(created_at)
+    return base + ".md"
+
+
+def _resolve_hub_names(notes: list) -> dict:
+    """Pure: assign each note its hub/local filename, resolving same-folder clashes. The later-created
+    note (tie -> larger id) is suffixed with its `created` date+time ` (YYYY-MM-DD HHMM)`; the winner
+    keeps the clean name. If two losers share the title AND the same minute, the second also gets its
+    short id appended (` (YYYY-MM-DD HHMM <last6 id>)`) so the LOCAL filename stays unique — a
+    same-named local file would overwrite, losing a body. MUST match phone resolveHubNames() exactly."""
+    groups: dict = {}
+    for n in notes:
+        name = _hub_filename(n["title"], n["created"])
+        groups.setdefault((n.get("category"), name), []).append(n)
+    out: dict = {}
+    for (_cat, name), members in groups.items():
+        members.sort(key=lambda n: (n["created"], n["id"]))
+        used: set = set()
+        for i, n in enumerate(members):
+            if i == 0:
+                out[n["id"]] = name
+                used.add(name)
+            else:
+                stem = name[:-3]  # drop ".md"
+                stamp = _created_stamp(n["created"]) or n["id"][-6:]
+                cand = f"{stem} ({stamp}).md"
+                if cand in used:  # two losers, same title, same minute → disambiguate by id
+                    cand = f"{stem} ({stamp} {n['id'][-6:]}).md"
+                out[n["id"]] = cand
+                used.add(cand)
+    return out
+
+
 def _atomic_write_note(path: str, content: str) -> None:
     """Write a SYNC-OWNED vault note atomically: temp sibling + os.replace (save_state's /
     provisional_store._save_state's idiom). Path.write_text truncates the target and streams, so a
@@ -143,6 +213,8 @@ def read_vault_notes(vault_path: str, mirror_captures: bool = False) -> Dict[str
             "body": strip_frontmatter(content),
             "hash": _sha256(content),
             "category": fields.get("category") or folder_cat,
+            "title": fields.get("title", ""),
+            "created": fields.get("created", ""),
         }
     return notes
 
@@ -203,7 +275,7 @@ def _list_children(drive, parent_id: str, mime_is_folder: Optional[bool] = None)
             drive.files()
             .list(
                 q=q,
-                fields="nextPageToken, files(id, name, headRevisionId, appProperties, mimeType)",
+                fields="nextPageToken, files(id, name, headRevisionId, appProperties, mimeType, md5Checksum)",
                 pageToken=page_token,
             )
             .execute()
@@ -290,7 +362,13 @@ def get_hub_notes(drive, hub_folder_id: str) -> Dict[str, Dict]:
         for f in _list_children(drive, cat_id, mime_is_folder=False):
             if not f["name"].endswith(".md"):
                 continue
-            key = (f.get("appProperties") or {}).get("noteId") or Path(f["name"]).stem
+            props = f.get("appProperties") or {}
+            note_id = props.get("noteId")
+            if not note_id:
+                note_id = Path(f["name"]).stem
+                print(f"[mobile_sync_agent] hub file {f.get('id')} ({f['name']}) has no "
+                      f"appProperties.noteId; keying by filename stem {note_id} (legacy/foreign)")
+            key = note_id
             f["category"] = cat_name
             # ponytail: assumes hub-level note-id uniqueness (ids are ULIDs). Two files sharing an
             # id stem across category folders would collide here, last-wins; add a warn/dedup pass
@@ -303,7 +381,13 @@ def get_hub_notes(drive, hub_folder_id: str) -> Dict[str, Dict]:
     for f in _list_children(drive, hub_folder_id, mime_is_folder=False):
         if not f["name"].endswith(".md"):
             continue
-        key = (f.get("appProperties") or {}).get("noteId") or Path(f["name"]).stem
+        props = f.get("appProperties") or {}
+        note_id = props.get("noteId")
+        if not note_id:
+            note_id = Path(f["name"]).stem
+            print(f"[mobile_sync_agent] hub file {f.get('id')} ({f['name']}) has no "
+                  f"appProperties.noteId; keying by filename stem {note_id} (legacy/foreign)")
+        key = note_id
         f["category"] = None
         files.setdefault(key, f)
     return files
@@ -322,42 +406,95 @@ def _resolve_dest_folder(drive, hub_folder_id: str, category: Optional[str], cac
     return cache[category]
 
 
-def _upload_note(drive, note: Dict, dest_folder_id: str, existing: Optional[Dict]) -> Dict:
+def _upload_note(drive, note: Dict, dest_folder_id: str, existing: Optional[Dict],
+                 *, hub_name: Optional[str] = None) -> Dict:
     """Create or update one note on the hub. Returns the Drive file resource
-    (with id + headRevisionId). Asserts the body is byte-identical to the source."""
+    (with id + headRevisionId). Asserts the body is byte-identical to the source.
+
+    hub_name: the note's resolved title-based filename (data-model-and-contracts.md §2 v1.2+;
+    normally from `_resolve_hub_names` over the note's folder). Defaults to `_hub_filename` on
+    the note's own title/created for callers that have not resolved clashes (legacy/test paths).
+    On an update, the file is renamed in place (same Drive file id, `files().update`) — never
+    re-created — UNLESS its previously-synced name (existing["hub_name"]) already matches, in
+    which case `name` is dropped from the update body to avoid a needless headRevisionId bump.
+    """
     content = note["content"]
     # Body-sacred: we upload the source bytes verbatim; the body must be unchanged.
     # Explicit check (not `assert`) — must not be strippable under python -O.
     if strip_frontmatter(content) != note["body"]:
         raise RuntimeError("body-sacred violation: body bytes changed before upload")
 
+    name = hub_name or _hub_filename(note.get("title") or "", note.get("created") or "")
     media = MediaInMemoryUpload(content.encode("utf-8"), mimetype="text/markdown")
-    metadata = {"name": f"{note['id']}.md", "appProperties": {"noteId": note["id"]}}
+    metadata = {"name": name, "appProperties": {"noteId": note["id"]}}
 
     if existing and existing.get("drive_file_id"):
         # ponytail: update-in-place by file id — a note whose category changed stays in its
         # original hub folder (no move). Wire a parents add/remove here if per-category hub
         # placement must track category edits.
+        prev_name = existing.get("hub_name")
+        if prev_name is not None and prev_name == name:
+            metadata.pop("name")  # unchanged name — skip the rename, avoid a needless rev bump
+        elif prev_name is not None:
+            print(f"[mobile_sync_agent] renamed {note['id']}: {prev_name!r} -> {name!r}")
         return (
             drive.files()
             .update(
                 fileId=existing["drive_file_id"],
+                body=metadata,
                 media_body=media,
-                fields="id, headRevisionId",
+                fields="id, headRevisionId, name",
             )
             .execute()
         )
     metadata["parents"] = [dest_folder_id]
     return (
         drive.files()
-        .create(body=metadata, media_body=media, fields="id, headRevisionId")
+        .create(body=metadata, media_body=media, fields="id, headRevisionId, name")
         .execute()
     )
 
 
-def _download_content(drive, file_id: str) -> str:
-    """Fetch a hub file's current bytes (Drive `GET ?alt=media`), decoded as UTF-8."""
-    return drive.files().get_media(fileId=file_id).execute().decode("utf-8")
+def _maybe_rename_local(local_path: str, hub_name: Optional[str],
+                        prev_hub_name: Optional[str], note_id: str) -> str:
+    """Local half of title-based naming (spec scope = hub+local): if the note's resolved name
+    changed since the last sync recorded one, rename the vault file in place — atomic os.replace
+    BEFORE any new content is written, so the note is never bodyless mid-rename and never ends up
+    duplicated under both names. Returns the (possibly new) path to write/read at.
+
+    A note with no PRIOR tracked name (never synced under this feature, e.g. a legacy `<id>.md`
+    file untouched since migration) is left at its current filename here — this only fires on an
+    OBSERVED name change, it does not itself bulk-rename legacy files (that one-time sweep is
+    Phase 3's `migrate_hub_filenames`, not this per-note-sync path)."""
+    if not hub_name or not prev_hub_name or prev_hub_name == hub_name:
+        return local_path
+    if Path(local_path).name == hub_name:
+        return local_path
+    new_path = str(Path(local_path).with_name(hub_name))
+    os.replace(local_path, new_path)
+    print(f"[mobile_sync_agent] local rename {note_id}: {Path(local_path).name!r} -> {hub_name!r}")
+    return new_path
+
+
+def _download_content(drive, file_id: str, expected_md5: Optional[str] = None) -> str:
+    """Fetch a hub file's current bytes (Drive `GET ?alt=media`), decoded as UTF-8.
+
+    OF-33: when `expected_md5` (Drive's `md5Checksum` from the file listing) is given, verify the
+    downloaded bytes hash to it BEFORE decoding — a truncated/corrupt download that still parses
+    would otherwise be ingested as authoritative (the desktop twin of the phone's OF-10 guard).
+    Mismatch raises → the caller's `except` treats it as transient (base_rev not advanced, retried
+    next pass, same as a 5xx). Omitting `expected_md5` keeps the old behavior (pure superset), which
+    is why the CP2 stub read and injected test downloads are unaffected.
+    """
+    raw = drive.files().get_media(fileId=file_id).execute()
+    if expected_md5:
+        got = hashlib.md5(raw).hexdigest()
+        if got != expected_md5:
+            raise ValueError(
+                f"download integrity check failed for {file_id}: "
+                f"md5 {got} != hub {expected_md5} (transient — held for retry)"
+            )
+    return raw.decode("utf-8")
 
 
 def _download_revision(drive, file_id: str, revision_id: str) -> str:
@@ -369,6 +506,101 @@ def _download_revision(drive, file_id: str, revision_id: str) -> str:
         .execute()
         .decode("utf-8")
     )
+
+
+def migrate_hub_filenames(drive, hub_folder_id: str, state: Dict[str, Dict]) -> Dict[str, Dict]:
+    """One-time hub-filename migration (Task 3.1): renames every legacy hub note file to its
+    resolved title-based name (data-model-and-contracts.md §2 v1.2+, `_resolve_hub_names`) and
+    stamps `appProperties.noteId`, converging pre-existing hub content onto the naming scheme
+    reconcile_changes/mirror_to_hub already produce for ongoing syncs. HUB-SIDE ONLY — see
+    run_once for the local-vault half (deliberately kept out of this function; see below).
+
+    Guard: `state["hub_names_migrated"]` already True -> return state unchanged, ZERO Drive calls.
+
+    Resumable + idempotent: the flag is set True ONLY after a full clean pass over every hub note
+    — an exception mid-pass propagates WITHOUT setting it, so a re-run resumes. Independent of the
+    flag, each FILE is also individually idempotent: one already at its resolved name AND already
+    carrying appProperties.noteId is skipped with no Drive write — this is what makes a resumed
+    pass (or a redundant one before the flag is persisted) cheap, not just the top-level guard.
+
+    Body-sacred: the one read per file is a content download solely to recover frontmatter
+    id/title/created for naming (the same identity problem get_hub_notes solves) — the body is
+    never altered, and the rename itself is a metadata-only `files().update(body={...})` with NO
+    media_body, so the file's bytes on Drive are never re-uploaded.
+
+    State is touched ONLY for a note this desktop already has a prior sync-state record for
+    (`note_id in state`) — never for a note the hub holds that the desktop has no record of.
+    Two reasons, both load-bearing:
+      1. pull_new_hub_notes' "already tracked" skip is `if key in vault_notes or key in state:
+         continue`. Writing a bare hub_name-only stub into state for a never-pulled note would
+         make that check treat it as already-synced and permanently swallow its first pull.
+      2. reconcile_changes' non-adopted path does `prior["base_rev"]` by bare-key indexing (not
+         `.get`) once local AND remote have both changed; a state entry with `hub_name` but no
+         `base_rev` (which is all this function could ever legitimately know) would KeyError
+         there. Only touching PRE-EXISTING entries (which already carry a real base_rev) avoids
+         ever constructing that malformed shape.
+    A note this function renames but does not touch in state still gets its LOCAL vault mirror
+    converged in run_once (see the local-rename block there — it reuses run_once's own state
+    lookups, so this function does not need to write anything for that case either); a hub-only
+    note nobody has ever pulled still lands at `<id>.md` via the ordinary pull_new_hub_notes path
+    afterwards (unaffected by this migration — title-naming a freshly pulled note is a separate,
+    not-yet-closed gap, see Task 2.4).
+    """
+    if state.get("hub_names_migrated"):
+        return state
+
+    new_state = dict(state)
+    categories, _reserved = list_hub_tree(drive, hub_folder_id)
+
+    entries = []  # (drive_file, category_name_or_None)
+    for cat_name, cat_id in categories.items():
+        for f in _list_children(drive, cat_id, mime_is_folder=False):
+            if f["name"].endswith(".md"):
+                entries.append((f, cat_name))
+    for f in _list_children(drive, hub_folder_id, mime_is_folder=False):
+        if f["name"].endswith(".md"):
+            entries.append((f, None))
+
+    parsed = []
+    seen_ids: set = set()
+    for f, cat_name in entries:
+        content = _download_content(drive, f["id"])
+        fields = read_all_fields(content)
+        note_id = fields.get("id") or Path(f["name"]).stem
+        if note_id in seen_ids:
+            continue  # category-folder note wins over a same-id root duplicate (mirrors get_hub_notes)
+        seen_ids.add(note_id)
+        parsed.append({
+            "file": f, "id": note_id, "category": cat_name,
+            "title": fields.get("title") or "", "created": fields.get("created") or "",
+        })
+
+    hub_names = _resolve_hub_names([
+        {"id": p["id"], "title": p["title"], "created": p["created"], "category": p["category"]}
+        for p in parsed
+    ])
+
+    for p in parsed:
+        f = p["file"]
+        note_id = p["id"]
+        resolved = hub_names.get(note_id, f["name"])
+        has_note_id = bool((f.get("appProperties") or {}).get("noteId"))
+
+        if f["name"] != resolved or not has_note_id:
+            drive.files().update(
+                fileId=f["id"],
+                body={"name": resolved, "appProperties": {"noteId": note_id}},
+                fields="id, headRevisionId, name",
+            ).execute()
+            print(f"[mobile_sync_agent] migrate rename {note_id}: {f['name']!r} -> {resolved!r}")
+
+        if note_id in state:  # pre-existing entry only — see docstring for why
+            entry = dict(new_state.get(note_id, {}))
+            entry["hub_name"] = resolved
+            new_state[note_id] = entry
+
+    new_state["hub_names_migrated"] = True
+    return new_state
 
 
 def reconcile_changes(
@@ -409,6 +641,16 @@ def reconcile_changes(
     failed = 0
     new_state = dict(state)
     folder_cache: Dict[str, str] = {}
+    # Resolved once per folder (via (category, name) grouping inside _resolve_hub_names) over every
+    # local note — used below to rename/re-upload a note whose title changed. Based on the LOCAL
+    # (pre-merge) title: the common case is a user retitling on this device; a title that changed
+    # ONLY on the remote side during this same pass keeps its prior local name here (simplification —
+    # the next pass's mirror/pull sees the merged title and converges it).
+    hub_names = _resolve_hub_names([
+        {"id": nid, "title": n.get("title", ""), "created": n.get("created", ""),
+         "category": n.get("category")}
+        for nid, n in vault_notes.items()
+    ])
 
     for note_id, local in vault_notes.items():
         prior = state.get(note_id)
@@ -435,7 +677,10 @@ def reconcile_changes(
         local_changed = local["hash"] != prior.get("local_hash")
         file_id = prior["drive_file_id"]
         try:
-            remote_text = _download_content(drive, file_id)
+            # OF-33: pass the hub's md5Checksum so a truncated/corrupt download is rejected before
+            # it can be adopted — one guard covers all three outcomes below (already-synced, pull,
+            # 3-way reconcile), since they all consume this single `remote_text`.
+            remote_text = _download_content(drive, file_id, hub_file.get("md5Checksum"))
             if adopted and remote_text == local["content"]:
                 # Already in sync, we just could not prove it: the head IS our bytes, so this is
                 # a head we have now observed a sync at — record it and skip. Without the byte
@@ -474,31 +719,41 @@ def reconcile_changes(
                 base, local_note, parse_note(remote_text), new_id()
             )
             merged_text = serialize_note(merged_result.merged)
-            write_file(local["path"], merged_text)
+            hub_name = hub_names.get(note_id)
+            local_path = _maybe_rename_local(
+                local["path"], hub_name, prior.get("hub_name"), note_id
+            )
+            write_file(local_path, merged_text)
             dest = _resolve_dest_folder(drive, hub_folder_id, local.get("category"), folder_cache)
             up = _upload_note(
                 drive,
                 {"id": note_id, "content": merged_text, "body": merged_result.merged.body},
                 dest,
-                {"drive_file_id": file_id},
+                {"drive_file_id": file_id, "hub_name": prior.get("hub_name")},
+                hub_name=hub_name,
             )
             new_state[note_id] = {
                 "drive_file_id": up["id"],
                 "base_rev": up.get("headRevisionId"),
                 "local_hash": _sha256(merged_text),
+                "hub_name": hub_name,
             }
             reconciled += 1
 
             if merged_result.conflicted_copy is not None:
                 cc = merged_result.conflicted_copy
                 cc_text = serialize_note(cc)
-                cc_path = str(Path(local["path"]).with_name(f"{cc.id}.md"))
+                cc_path = str(Path(local_path).with_name(f"{cc.id}.md"))
                 write_file(cc_path, cc_text)
                 up_cc = _upload_note(
                     drive,
                     {"id": cc.id, "content": cc_text, "body": cc.body},
                     dest,
                     None,
+                    # ponytail: conflicted copies keep the old <id>.md naming (out of Task 2.4 scope —
+                    # title-based names risk colliding with the note they diverged from; the id
+                    # suffix is what makes a conflicted copy recognizable as one).
+                    hub_name=f"{cc.id}.md",
                 )
                 new_state[cc.id] = {
                     "drive_file_id": up_cc["id"],
@@ -531,6 +786,13 @@ def mirror_to_hub(
     failed = 0
     new_state = dict(state)
     folder_cache: Dict[str, str] = {}
+    # _resolve_hub_names groups by (category, name) internally, so one pass over every note
+    # being mirrored already scopes clash resolution per hub folder.
+    hub_names = _resolve_hub_names([
+        {"id": nid, "title": n.get("title", ""), "created": n.get("created", ""),
+         "category": n.get("category")}
+        for nid, n in vault_notes.items()
+    ])
 
     for note_id, note in vault_notes.items():
         prior = state.get(note_id)
@@ -558,11 +820,17 @@ def mirror_to_hub(
             continue
         try:
             dest = _resolve_dest_folder(drive, hub_folder_id, note.get("category"), folder_cache)
-            result = _upload_note(drive, note, dest, prior)
+            hub_name = hub_names.get(note_id)
+            prev_hub_name = prior.get("hub_name") if prior else None
+            local_path = _maybe_rename_local(note["path"], hub_name, prev_hub_name, note_id)
+            if local_path != note["path"]:
+                note = dict(note, path=local_path)  # keep this pass's in-memory note consistent
+            result = _upload_note(drive, note, dest, prior, hub_name=hub_name)
             new_state[note_id] = {
                 "drive_file_id": result["id"],
                 "base_rev": result.get("headRevisionId"),
                 "local_hash": note["hash"],
+                "hub_name": hub_name,
             }
             uploaded += 1
         except Exception as e:
@@ -593,7 +861,11 @@ def pull_new_hub_notes(
     """Pull hub notes the desktop has never seen (phone-created / first sync) into the vault.
 
     'New' = id in neither the local vault nor the state sidecar. Placement:
-    vault/<category-from-frontmatter>/<id>.md; missing/empty category → the scratchpad.
+    vault/<category-from-frontmatter>/<hub-name>.md; missing/empty category → the scratchpad.
+    <hub-name> mirrors the hub file's OWN resolved `name` (get_hub_notes already carries it,
+    clash-unique on the hub) — this function never recomputes `_resolve_hub_names`, it just
+    matches the local filename to the hub's. Falls back to `<id>.md` only if the hub record's
+    name is missing/unsafe (never crash on an untrusted Drive listing).
     Bytes are written verbatim (body-sacred — we never touch a pulled body).
     Returns (pulled, failed, new_state).
     """
@@ -602,8 +874,11 @@ def pull_new_hub_notes(
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             _atomic_write_note(path, content)  # atomic + byte-verbatim (body-sacred)
     if download is None:
+        # OF-33: verify each pulled file against its hub md5Checksum (transient reject on mismatch,
+        # caught below → failed++, retried). The injectable `download` seam stays one-arg for tests.
+        _md5_by_id = {hf["id"]: hf.get("md5Checksum") for hf in hub_files.values() if hf.get("id")}
         def download(file_id: str) -> str:
-            return _download_content(drive, file_id)
+            return _download_content(drive, file_id, _md5_by_id.get(file_id))
 
     pulled = 0
     failed = 0
@@ -621,15 +896,23 @@ def pull_new_hub_notes(
             category = fields.get("category")
             sub = category if category else scratchpad_folder
             # Hub frontmatter is untrusted input — `id`/`category` become path components (B-12
-            # class). Reject anything that could step outside vault/<category>/<id>.md.
+            # class). Reject anything that could step outside vault/<category>/<local_name>.
             _safe_path_component(note_id)
             _safe_path_component(sub)
-            dest = str(Path(vault_root) / sub / f"{note_id}.md")
+            hub_name = hub_file.get("name")
+            try:
+                if hub_name:
+                    _safe_path_component(hub_name)
+            except ValueError:
+                hub_name = None
+            local_name = hub_name or f"{note_id}.md"
+            dest = str(Path(vault_root) / sub / local_name)
             write_file(dest, content)
             new_state[note_id] = {
                 "drive_file_id": hub_file["id"],
                 "base_rev": hub_file.get("headRevisionId"),
                 "local_hash": _sha256(content),
+                "hub_name": hub_name,
             }
             pulled += 1
         except Exception as e:
@@ -823,14 +1106,47 @@ def run_once(
     and before mirror so enriched frontmatter uploads the same pass. Returns
     (uploaded, failed, reconciled, conflicts, pulled, ingested, enriched)."""
     hub_id = ensure_hub_folder(drive)
+    vault_root = vault_root or vault_path
+    state = load_state(state_path)
+
+    # Task 3.1: one-time hub-filename migration, guarded on state["hub_names_migrated"] so it is
+    # zero-cost on every pass after the first. Runs BEFORE list_hub_tree/get_hub_notes below so
+    # the rest of this pass sees the POST-migration hub names, instead of racing a stale
+    # pre-rename snapshot.
+    first_migration_pass = not state.get("hub_names_migrated")
+    if first_migration_pass:
+        state = migrate_hub_filenames(drive, hub_id, state)
+
     _categories, reserved = list_hub_tree(drive, hub_id)
     vault_notes = read_vault_notes(vault_path, mirror_captures)
     hub_files = get_hub_notes(drive, hub_id)
-    state = load_state(state_path)
+
+    if first_migration_pass:
+        # Local half of Task 3.1: rename each already-tracked note's local vault mirror to the
+        # hub_name migrate_hub_filenames just resolved for it — os.replace, body untouched. Done
+        # HERE (reusing the vault_notes just read above) rather than inside
+        # migrate_hub_filenames, which must not perform its own vault scan
+        # (test_run_once_threads_mirror_captures_into_both_reads pins read_vault_notes to exactly
+        # two calls per pass, both honouring mirror_captures). A note with no prior state entry
+        # (never pulled here) has nothing to rename locally yet — pull_new_hub_notes below still
+        # claims it fresh.
+        for note_id, local in vault_notes.items():
+            prior = state.get(note_id)
+            resolved = prior.get("hub_name") if prior else None
+            if not resolved or Path(local["path"]).name == resolved:
+                continue
+            new_path = str(Path(local["path"]).with_name(resolved))
+            os.replace(local["path"], new_path)
+            print(f"[mobile_sync_agent] migrate local rename {note_id}: "
+                  f"{Path(local['path']).name!r} -> {resolved!r}")
+            local["path"] = new_path
+        save_state(state_path, state)
+
     # Snapshot per-note base_rev so we can tell which notes reached canonical this pass
     # (Drive is the sole canonical/version authority — LAN provisional never advances base_rev).
-    pre_revs = {nid: s.get("base_rev") for nid, s in state.items()}
-    vault_root = vault_root or vault_path
+    # isinstance guard: state may also carry the flat "hub_names_migrated" bool flag (Task 3.1)
+    # alongside per-note dicts — skip it here, it is not a note record.
+    pre_revs = {nid: s.get("base_rev") for nid, s in state.items() if isinstance(s, dict)}
 
     # F-5: local-only sync-ignore -- ignored notes never leave this machine
     # in either direction of outbound sync (see sync_ignore.py docstring).
@@ -886,6 +1202,8 @@ def run_once(
     # owns the per-note-id callback contract, not the caller that builds it.
     if provisional_fn is not None:
         for nid, s in new_state.items():
+            if not isinstance(s, dict):
+                continue  # skip the flat "hub_names_migrated" flag (Task 3.1) — not a note record
             if s.get("base_rev") != pre_revs.get(nid):
                 try:
                     provisional_fn(nid)

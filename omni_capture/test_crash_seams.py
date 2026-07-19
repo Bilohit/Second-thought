@@ -224,7 +224,11 @@ def test_s2_corrupt_sidecar_degrades_to_empty_and_never_blind_uploads(tmp_path, 
         "F-1 window OPEN: a corrupt sidecar let the desktop revert the peer's un-pulled edit")
     assert body_before in surviving, "the desktop's own body was discarded instead"
     # The rebuilt sidecar may only ever name a revision the hub actually issued (never a guess).
+    # (Task 3.1: state may also carry the flat "hub_names_migrated" bool flag — skip it, it is
+    # not a per-note record.)
     for entry in load_state(state_path).values():
+        if not isinstance(entry, dict):
+            continue
         rev = entry.get("base_rev")
         assert rev is None or rev in hub.issued_revs, (
             f"rebuilt sidecar claims base_rev={rev!r}, a revision the hub never issued")
@@ -273,6 +277,11 @@ def test_s3_crash_after_vault_write_before_ledger_update_self_heals(tmp_path):
     hub_files = get_hub_notes(hub, "HUB")
     pulled, failed, new_state = pull_new_hub_notes(
         vault_notes, hub_files, {}, hub, str(vault), SCRATCHPAD, write_file=_write_then_crash)
+    # This test exercises the pull-crash self-heal window, not Task 3.1's hub-filename migration —
+    # p01.md's title ("T", from _note_with_category) legitimately mismatches its legacy filename,
+    # which would otherwise make _recover's first run_once pass do a one-time (correct, but
+    # orthogonal to what this test pins) migration rename + revision bump. Pre-mark migrated.
+    new_state["hub_names_migrated"] = True
     save_state(state_path, new_state)
 
     assert (pulled, failed) == (0, 1)                       # the pull never completed...

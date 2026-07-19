@@ -464,7 +464,7 @@ def test_sync_sidecar_loss_reuses_the_hub_file_instead_of_duplicating(vault: Pat
     """
     seen: list[dict | None] = []
 
-    def _fake_upload(drive, note, dest_folder_id, existing):
+    def _fake_upload(drive, note, dest_folder_id, existing, *, hub_name=None):
         seen.append(existing)
         return {"id": "F1", "headRevisionId": "r2"}
 
@@ -475,7 +475,7 @@ def test_sync_sidecar_loss_reuses_the_hub_file_instead_of_duplicating(vault: Pat
     hub_files = {"n1": {"id": "F1", "headRevisionId": "r1", "name": "n1.md"}}
 
     with mock.patch.object(mobile_sync_agent, "_upload_note", _fake_upload), \
-         mock.patch.object(mobile_sync_agent, "_download_content", lambda d, f: remote), \
+         mock.patch.object(mobile_sync_agent, "_download_content", lambda d, f, m=None: remote), \
          mock.patch.object(mobile_sync_agent, "_resolve_dest_folder", lambda *a, **k: "dest"):
         reconciled, conflicts, failed, new_state = mobile_sync_agent.reconcile_changes(
             vault_notes, hub_files, {}, object(), "hubfolder",
@@ -486,7 +486,7 @@ def test_sync_sidecar_loss_reuses_the_hub_file_instead_of_duplicating(vault: Pat
     # `existing` was reconstructed from the hub listing despite an EMPTY sidecar, so the merged
     # note updates F1 in place instead of creating a duplicate orphan (the conflicted copy is a
     # different note with a fresh id, so it is correctly created rather than updated).
-    assert seen[0] == {"drive_file_id": "F1"}
+    assert seen[0] == {"drive_file_id": "F1", "hub_name": None}
     assert conflicts == 1, "both bodies must be kept — there is no ancestor to rule either stale"
     assert new_state["n1"]["drive_file_id"] == "F1"
     assert new_state["n1"]["local_hash"], "sidecar not repopulated after rebuild"

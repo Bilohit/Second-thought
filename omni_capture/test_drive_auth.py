@@ -72,6 +72,36 @@ def test_load_credentials_refreshes_expired_token_without_a_browser(tmp_path):
     assert json.loads(token_file.read_text()) == {"token": "refreshed"}
 
 
+def test_load_credentials_falls_back_to_consent_when_refresh_fails(tmp_path):
+    """OF-34: a cached token whose refresh fails permanently (e.g. minted under a
+    superseded scope → invalid_scope, or a revoked grant) must NOT wedge Connect.
+    Unlike has_cached_credentials (which stays browser-free), the interactive
+    load_credentials path drops to a fresh consent and re-caches the new token."""
+    token_file = tmp_path / ".drive_token.json"
+    token_file.write_text("{}")
+    stale = MagicMock(valid=False, expired=True, refresh_token="r")
+    stale.refresh.side_effect = Exception("invalid_scope: Bad Request")
+
+    fresh = MagicMock(valid=True)
+    fresh.to_json.return_value = '{"token": "fresh"}'
+    fake_flow = MagicMock()
+    fake_flow.run_local_server.return_value = fresh
+
+    with patch(
+        "drive_auth.Credentials.from_authorized_user_file", return_value=stale
+    ), patch("drive_auth.Request"), patch("drive_auth.InstalledAppFlow") as flow_cls:
+        flow_cls.from_client_secrets_file.return_value = fake_flow
+        creds = drive_auth.load_credentials(
+            client_secret_path=str(tmp_path / "client_secret.json"),
+            token_path=str(token_file),
+        )
+
+    stale.refresh.assert_called_once()
+    flow_cls.from_client_secrets_file.assert_called_once()  # fell back to consent
+    assert creds is fresh
+    assert json.loads(token_file.read_text()) == {"token": "fresh"}  # re-cached the new token
+
+
 # -- has_cached_credentials -------------------------------------------------
 #
 # §3.4 cold spot: drive_auth.py:64-80 was entirely uncovered. This function

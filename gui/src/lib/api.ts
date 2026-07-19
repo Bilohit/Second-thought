@@ -120,6 +120,12 @@ export interface VaultFile {
   path: string;
   size_bytes: number;
   modified: number;
+  /** Task 2.6: server-authoritative hub-upload naming (mobile_sync_agent's
+   *  _resolve_hub_names run over the note's folder). `hub_name` is the
+   *  resolved filename; `name_clash` is true iff this note is the suffixed
+   *  loser of a same-folder title collision. Never recompute this in TS. */
+  hub_name: string;
+  name_clash: boolean;
 }
 
 export interface Config {

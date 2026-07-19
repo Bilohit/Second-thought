@@ -18,7 +18,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openVaultPath } from "../lib/api";
-import { BellIcon, ClockIcon } from "./PillMenu/icons";
+import { BellIcon, ClockIcon, WarningTriangleIcon } from "./PillMenu/icons";
 import {
   getVaultCategories,
   createVaultCategory,
@@ -312,6 +312,26 @@ function FileRow({
       {onToggleIgnore && (
         <GhostDot ignored={!!ignored} onClick={() => onToggleIgnore(file)} />
       )}
+      {/* Task 2.6: server-authoritative name-clash. hub_name is the note's
+          STORED (suffixed) filename it would resolve to on the hub — shown
+          as-is in the row's meta text, yellow, no left icon / row tint. */}
+      {file.name_clash && (
+        <span
+          title={file.hub_name}
+          style={{
+            fontSize: 10, color: "var(--yellow)", whiteSpace: "nowrap",
+            overflow: "hidden", textOverflow: "ellipsis",
+            // Row is a single nowrap flex line (ROW_DIVIDER, gap 8, no wrap) —
+            // this is the one variable-width addition to it, so it needs its
+            // own shrink + cap or a long suffixed filename pushes the KB/date/
+            // remind/warning-icon cluster past the row's right edge instead of
+            // truncating in place.
+            flexShrink: 1, minWidth: 0, maxWidth: 140,
+          }}
+        >
+          {file.hub_name}
+        </span>
+      )}
       <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap" }}>{kb} KB</span>
       <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap" }}>{date}</span>
       {onRemind && (
@@ -324,6 +344,17 @@ function FileRow({
         >
           <BellIcon size={12} />
         </button>
+      )}
+      {/* Bare warning triangle at the row's right edge — no text label, no tint. */}
+      {file.name_clash && (
+        <span
+          role="img"
+          aria-label="Filename clash — rename this note"
+          title="Filename clash — rename this note"
+          style={{ display: "inline-flex", flexShrink: 0, color: "var(--yellow)" }}
+        >
+          <WarningTriangleIcon size={12} />
+        </span>
       )}
     </div>
   );

@@ -40,9 +40,19 @@ def load_credentials(
     if creds and creds.valid:
         return creds
 
+    refreshed = False
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-    else:
+        try:
+            creds.refresh(Request())
+            refreshed = True
+        except Exception as exc:  # noqa: BLE001 — any refresh failure falls back to consent
+            # OF-34: a refresh can fail permanently — a token minted under a superseded scope
+            # (the drive→drive.file migration) is rejected with `invalid_scope`, or the refresh
+            # token was revoked. This is the interactive Connect path (unlike has_cached_credentials,
+            # which must stay browser-free), so drop to a fresh consent instead of propagating and
+            # wedging Connect until the cached token file is manually deleted.
+            print(f"[drive_auth] token refresh failed ({exc}); running interactive consent")
+    if not refreshed:
         flow = InstalledAppFlow.from_client_secrets_file(
             client_secret_path, [DRIVE_SCOPE]
         )

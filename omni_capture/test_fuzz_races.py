@@ -238,13 +238,20 @@ class _FakeFiles:
         self.h.recs[fid] = rec
         return _Exec({"id": fid, "headRevisionId": rec.get("headRevisionId")})
 
-    def update(self, fileId=None, media_body=None, fields=None):
+    def update(self, fileId=None, media_body=None, fields=None, body=None):
         rec = self.h.recs[fileId]
         data = media_body.getbytes(0, media_body.size()) if media_body else rec["content"]
         rev = self.h._next_rev()
         rec.update(content=data, headRevisionId=rev)
         rec["revisions"][rev] = data
-        return _Exec({"id": fileId, "headRevisionId": rev})
+        if body:
+            # Title-based rename-in-place (_upload_note): `name`/`appProperties` land on the SAME
+            # file id, same as a real Drive files().update metadata patch.
+            if "name" in body:
+                rec["name"] = body["name"]
+            if "appProperties" in body:
+                rec["appProperties"] = dict(body["appProperties"])
+        return _Exec({"id": fileId, "headRevisionId": rev, "name": rec["name"]})
 
     def get_media(self, fileId=None):
         return _Exec(self.h.recs[fileId]["content"])
@@ -613,6 +620,8 @@ class VaultHubMachine(RuleBasedStateMachine):
     def i2_i5_base_rev(self):
         state = load_state(self.state_path)
         for nid, s in state.items():
+            if not isinstance(s, dict):
+                continue  # Task 3.1's flat "hub_names_migrated" bool flag — not a per-note record
             rev = s.get("base_rev")
             if rev is None:
                 continue
@@ -682,11 +691,18 @@ class VaultHubMachine(RuleBasedStateMachine):
 # report artifacts — each one is a hand-minimised repro of a fuzz failure.
 # ---------------------------------------------------------------------------
 def _sync_note(hub: FakeHub, vault: Path, state_path: str, nid="s01", body="orig body\n"):
-    """One note, in sync on both sides, sidecar written. Returns (fid, local_path)."""
+    """One note, in sync on both sides, sidecar written. Returns (fid, local_path).
+
+    The hub file is put at the legacy id-based name, but `run_once`'s first pass always runs
+    Task 3.1's one-time hub-filename migration BEFORE pull — that renames the hub file to its
+    resolved title-based name (title is always "T" here, via `_note_text`'s default) — and
+    Task 2.4 (pull mirrors the hub's own resolved name) means the note lands locally at "T.md",
+    not "<nid>.md". Returns the ACTUAL post-migration local path.
+    """
     fid = hub.put(f"{nid}.md", _note_with_category(nid, body, "Personal"),
                   hub.folder("Personal"), note_id=nid)
     run_once(str(vault), state_path, hub, vault_root=str(vault), scratchpad_folder=SCRATCHPAD)
-    return fid, str(vault / "Personal" / f"{nid}.md")
+    return fid, str(vault / "Personal" / "T.md")
 
 
 def _fresh(tmp_path):

@@ -22,12 +22,14 @@ Documented ceilings this file LOCKS IN rather than fixes (see the individual tes
     drive-colon), not a Windows-name sanitizer: CON/NUL/aux/trailing-dot/long/emoji pass through.
   - a BOM-prefixed note file parses as frontmatter-less → read_vault_notes treats it as a capture.
 """
+import hashlib
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from mobile_sync_agent import (
+    _download_content,
     _safe_path_component,
     _sha256,
     mirror_to_hub,
@@ -456,8 +458,10 @@ def test_upload_decision_ignores_file_mtime_entirely(tmp_path):
 
 
 def _vault_note(nid, text, path="/vault/x.md", category=None):
+    # title=nid keeps this fixture's resolved hub filename == "<nid>.md" (title-based naming,
+    # Task 2.4) so the existing id-keyed assertions below don't need to track a separate title.
     return {nid: {"id": nid, "path": path, "content": text, "body": "b\n",
-                  "hash": _sha256(text), "category": category}}
+                  "hash": _sha256(text), "category": category, "title": nid, "created": ""}}
 
 
 def _n_notes(n):
@@ -572,29 +576,51 @@ def test_truncated_download_cannot_destroy_a_locally_edited_body():
     assert "CC1" in "".join(writes)
 
 
-def test_truncated_download_on_an_unedited_note_lands_verbatim_documented_gap():
-    """DOCUMENTED GAP (reported, not fixed): with NO local edit the pull branch trusts the hub and
-    writes the downloaded bytes verbatim — a truncated 200 therefore lands in the vault and is
-    hashed as the new base, so the next pass (rev unchanged) never self-heals. There is no
-    download integrity check (Drive's `md5Checksum` is not consulted). Locked here so the current
-    behavior is explicit rather than assumed-safe.
+def test_truncated_download_on_an_unedited_note_is_rejected_by_md5_guard():
+    """OF-33 (was a documented gap, now CLOSED): the pull branch used to trust the hub and write a
+    truncated 200 verbatim, hashing it as the new base so the next pass never self-healed. With
+    Drive's `md5Checksum` now consulted (`_download_content` verifies raw bytes before decode), a
+    truncated download no longer matches the hub's checksum → it raises → the reconcile `except`
+    holds the state (base_rev NOT advanced) so the next pass retries. Nothing is written.
     """
-    local_text = "---\nid: 01A\norigin: note\n---\nfull body\n"
+    full_remote = "---\nid: 01A\norigin: note\n---\nfull remote body\n"
     truncated = "---\nid: 01A\norigin: no"
+    hub_md5 = hashlib.md5(full_remote.encode("utf-8")).hexdigest()
 
     drive = MagicMock()
     drive.files().get_media().execute.return_value = truncated.encode("utf-8")
     writes: dict[str, str] = {}
+    local_text = "---\nid: 01A\norigin: note\n---\nfull body\n"
     vault_notes = _vault_note("01A", local_text, path="/vault/01A.md")
     state = {"01A": {"drive_file_id": "F1", "base_rev": "r1", "local_hash": _sha256(local_text)}}
-    hub_files = {"01A": {"id": "F1", "headRevisionId": "r2"}}
+    hub_files = {"01A": {"id": "F1", "headRevisionId": "r2", "md5Checksum": hub_md5}}
 
     reconciled, conflicts, failed, new_state = reconcile_changes(
         vault_notes, hub_files, state, drive, "hub", write_file=lambda p, c: writes.update({p: c}))
 
-    assert (reconciled, conflicts, failed) == (1, 0, 0)
-    assert writes["/vault/01A.md"] == truncated                     # written verbatim, unverified
-    assert new_state["01A"]["local_hash"] == _sha256(truncated)     # and adopted as the new base
+    assert (reconciled, conflicts, failed) == (0, 0, 1)   # rejected as transient, not adopted
+    assert writes == {}                                   # nothing written to the vault
+    assert new_state["01A"]["base_rev"] == "r1"           # base held → next pass retries
+
+
+def test_download_content_md5_guard_passes_matching_bytes_and_rejects_mismatch():
+    """OF-33 unit: `_download_content(expected_md5=...)` returns the decoded text when the bytes
+    hash to the hub checksum, and raises (transient) when they do not. Omitting the checksum keeps
+    the old always-decode behavior (pure superset)."""
+    body = "---\nid: n1\norigin: note\n---\nhello\n"
+    raw = body.encode("utf-8")
+    good_md5 = hashlib.md5(raw).hexdigest()
+
+    drive = MagicMock()
+    drive.files().get_media().execute.return_value = raw
+
+    # matching checksum → decoded text
+    assert _download_content(drive, "F1", good_md5) == body
+    # no checksum → unchanged legacy behavior (still decodes)
+    assert _download_content(drive, "F1") == body
+    # wrong checksum → raises (caller treats as transient)
+    with pytest.raises(ValueError):
+        _download_content(drive, "F1", "deadbeef" * 4)
 
 
 def test_download_failure_holds_the_state_so_the_next_pass_retries():

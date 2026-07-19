@@ -174,16 +174,58 @@ async def delete_category(name: str, force: bool = False):
 
 @router.get("/vault/categories/{name}/files")
 async def list_category_files(name: str):
+    """Task 2.6: also carries `hub_name`/`name_clash` per note -- the SAME
+    resolution mobile_sync_agent runs before a hub upload (_resolve_hub_names
+    over every note in the folder, by title+created), so a row whose stored
+    on-disk filename differs from its title can still be flagged as the
+    clash LOSER before it ever reaches the hub. Authoritative server-side;
+    the GUI only displays it (never recomputes the naming rule)."""
+    from frontmatter import read_all_fields
+    from mobile_sync_agent import _hub_filename, _resolve_hub_names
+
     root = _srv()._get_vault_root()
     target = _safe_category_dir(root, name)
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"'{name}' not found.")
+
+    md_files = [f for f in sorted(target.iterdir()) if f.is_file() and f.suffix == ".md"]
+
+    # _resolve_hub_names needs id/title/created/category for every note in the
+    # folder (its clash grouping is per (category, name)) -- only notes that
+    # have an id are sync-addressable, so id-less files (e.g. a stray capture)
+    # sit out the resolution and are never flagged.
+    notes = []
+    fields_by_path: dict = {}
+    for f in md_files:
+        try:
+            fields = read_all_fields(f.read_text(encoding="utf-8", newline=""))
+        except Exception:
+            fields = {}
+        fields_by_path[f] = fields
+        note_id = fields.get("id")
+        if note_id:
+            notes.append({
+                "id": note_id,
+                "title": fields.get("title", ""),
+                "created": fields.get("created", ""),
+                "category": name,
+            })
+    resolved = _resolve_hub_names(notes)
+
     files = []
-    for f in sorted(target.iterdir()):
-        if f.is_file() and f.suffix == ".md":
-            stat = f.stat()
-            files.append({"name": f.stem, "filename": f.name, "path": str(f),
-                          "size_bytes": stat.st_size, "modified": stat.st_mtime})
+    for f in md_files:
+        stat = f.stat()
+        fields = fields_by_path[f]
+        note_id = fields.get("id")
+        if note_id and note_id in resolved:
+            hub_name = resolved[note_id]
+            name_clash = hub_name != _hub_filename(fields.get("title", ""), fields.get("created", ""))
+        else:
+            hub_name = f.name
+            name_clash = False
+        files.append({"name": f.stem, "filename": f.name, "path": str(f),
+                      "size_bytes": stat.st_size, "modified": stat.st_mtime,
+                      "hub_name": hub_name, "name_clash": name_clash})
     return {"category": name, "files": files}
 
 

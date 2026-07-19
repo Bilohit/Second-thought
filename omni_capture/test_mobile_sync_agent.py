@@ -12,6 +12,9 @@ from mobile_sync_agent import (
     reconcile_changes,
     enrich_notes,
     _sha256,
+    _hub_filename,
+    _resolve_hub_names,
+    _upload_note,
     _FOLDER_MIME,
 )
 from frontmatter import read_all_fields, strip_frontmatter
@@ -224,7 +227,8 @@ def test_mirror_creates_missing_note():
     uploaded, failed, new_state = mirror_to_hub(vault_notes, {}, {}, drive, "hub")
     assert (uploaded, failed) == (1, 0)
     assert new_state["01ABC"] == {
-        "drive_file_id": "F1", "base_rev": "rev1", "local_hash": "hashA"
+        "drive_file_id": "F1", "base_rev": "rev1", "local_hash": "hashA",
+        "hub_name": "Untitled.md",   # no title in this fixture -> Untitled fallback
     }
 
 
@@ -596,6 +600,43 @@ def test_get_hub_notes_scans_root_level_uncategorised_notes():
     assert notes["01ROOT"]["category"] is None      # uncategorised
 
 
+def test_get_hub_notes_prefers_appProperties_noteId_and_logs_filename_stem_fallback(capsys):
+    # Title-based universal filenames (0.3): a hub file WITH appProperties.noteId keys on the
+    # id, never on its (now human-readable) filename stem. A file WITHOUT appProperties (legacy
+    # or foreign) still falls back to the filename stem, but must log that it did so.
+    drive = MagicMock()
+
+    def _list(**kw):
+        q = kw.get("q", "")
+        resp = MagicMock()
+        if "'HUB' in parents" in q and f"mimeType!='{_FOLDER_MIME}'" in q:
+            # root-level file, NO appProperties -> legacy fallback to stem "01J9"
+            resp.execute.return_value = {"files": [
+                {"id": "R1", "name": "01J9.md", "headRevisionId": "rr"}], "nextPageToken": None}
+        elif "'HUB' in parents" in q:  # folder-list (list_hub_tree)
+            resp.execute.return_value = {"files": [
+                {"id": "c1", "name": "personal", "mimeType": _FOLDER_MIME}], "nextPageToken": None}
+        elif "'c1' in parents" in q:
+            # category-level file WITH appProperties.noteId -> keyed on "01H8", not "Grocery List"
+            resp.execute.return_value = {"files": [
+                {"id": "F1", "name": "Grocery List.md", "headRevisionId": "r1",
+                 "appProperties": {"noteId": "01H8"}}], "nextPageToken": None}
+        else:
+            resp.execute.return_value = {"files": [], "nextPageToken": None}
+        return resp
+
+    drive.files().list.side_effect = _list
+    notes = get_hub_notes(drive, "HUB")
+
+    assert "01H8" in notes
+    assert "Grocery List" not in notes            # never keyed by title-derived filename stem
+    assert "01J9" in notes                        # legacy file with no appProperties still falls back
+
+    out = capsys.readouterr().out
+    assert "no appProperties" in out
+    assert out.count("no appProperties") == 1     # only the fallback (01J9.md), not the F1 note
+
+
 def test_read_vault_notes_category_from_frontmatter_then_folder(tmp_path):
     # note in a category subfolder, no category field → folder name is the category
     workd = tmp_path / "work"
@@ -611,8 +652,8 @@ def test_read_vault_notes_category_from_frontmatter_then_folder(tmp_path):
 
 def test_mirror_places_new_note_in_category_folder():
     vault_notes = {
-        "01A": {"id": "01A", "path": "/v/work/a.md", "content": "---\nid: 01A\n---\nB",
-                "body": "B", "hash": "h", "category": "work"}
+        "01A": {"id": "01A", "path": "/v/work/a.md", "content": "---\nid: 01A\ntitle: Groceries\n---\nB",
+                "body": "B", "hash": "h", "category": "work", "title": "Groceries", "created": ""}
     }
     drive = MagicMock()
     drive.files().list().execute.return_value = {"files": []}            # category folder absent
@@ -620,8 +661,8 @@ def test_mirror_places_new_note_in_category_folder():
     uploaded, failed, new_state = mirror_to_hub(vault_notes, {}, {}, drive, "HUB")
     assert (uploaded, failed) == (1, 0)
     # the note-create body must carry parents = [the work-folder id], not [HUB]
-    create_calls = [c for c in drive.files().create.call_args_list if c.kwargs.get("body", {}).get("name") == "01A.md"]
-    assert create_calls, "note was not created with name 01A.md"
+    create_calls = [c for c in drive.files().create.call_args_list if c.kwargs.get("body", {}).get("name") == "Groceries.md"]
+    assert create_calls, "note was not created with name Groceries.md (title-based naming)"
     assert create_calls[0].kwargs["body"]["parents"] != ["HUB"]          # placed in a category folder
 
 
@@ -633,7 +674,30 @@ def _hub_note_text(nid, category=None, body="phone body"):
     return f"---\nid: {nid}\ntitle: T\norigin: note\n{cat}---\n{body}"
 
 
-def test_pull_places_new_note_in_category_folder():
+def test_pull_places_new_note_under_the_hub_resolved_title_name():
+    """Task 2.4: pull_new_hub_notes must mirror the HUB FILE'S OWN resolved `name` (get_hub_notes
+    already carries it, clash-unique on the hub) rather than recomputing/hardcoding <id>.md."""
+    hub_files = {"01NEW": {"id": "F1", "headRevisionId": "r1", "category": "personal", "name": "T.md"}}
+    drive = MagicMock()
+    drive.files().get_media().execute.return_value = _hub_note_text("01NEW", "work").encode("utf-8")
+    written = {}
+    pulled, failed, new_state = pull_new_hub_notes(
+        {}, hub_files, {}, drive, "/vault", "_scratchpad",
+        write_file=lambda p, c: written.__setitem__(p, c),
+    )
+    assert (pulled, failed) == (1, 0)
+    # placement uses the FRONTMATTER category ("work"), filename = the hub's resolved name (T.md)
+    assert written == {str(Path("/vault/work/T.md")): _hub_note_text("01NEW", "work")}
+    assert new_state["01NEW"] == {
+        "drive_file_id": "F1", "base_rev": "r1",
+        "local_hash": _sha256(_hub_note_text("01NEW", "work")),
+        "hub_name": "T.md",
+    }
+
+
+def test_pull_falls_back_to_id_name_when_hub_record_has_no_name():
+    """Guard: a hub record with no usable `name` (missing/unsafe) never crashes the pull — it
+    falls back to the legacy <id>.md local filename."""
     hub_files = {"01NEW": {"id": "F1", "headRevisionId": "r1", "category": "personal"}}
     drive = MagicMock()
     drive.files().get_media().execute.return_value = _hub_note_text("01NEW", "work").encode("utf-8")
@@ -643,16 +707,16 @@ def test_pull_places_new_note_in_category_folder():
         write_file=lambda p, c: written.__setitem__(p, c),
     )
     assert (pulled, failed) == (1, 0)
-    # placement uses the FRONTMATTER category ("work"), filename = <id>.md
     assert written == {str(Path("/vault/work/01NEW.md")): _hub_note_text("01NEW", "work")}
     assert new_state["01NEW"] == {
         "drive_file_id": "F1", "base_rev": "r1",
         "local_hash": _sha256(_hub_note_text("01NEW", "work")),
+        "hub_name": None,
     }
 
 
 def test_pull_falls_back_to_scratchpad_without_category():
-    hub_files = {"01NC": {"id": "F2", "headRevisionId": "r2", "category": "personal"}}
+    hub_files = {"01NC": {"id": "F2", "headRevisionId": "r2", "category": "personal", "name": "T.md"}}
     drive = MagicMock()
     drive.files().get_media().execute.return_value = _hub_note_text("01NC").encode("utf-8")
     written = {}
@@ -661,11 +725,11 @@ def test_pull_falls_back_to_scratchpad_without_category():
         write_file=lambda p, c: written.__setitem__(p, c),
     )
     assert (pulled, failed) == (1, 0)
-    assert str(Path("/vault/_scratchpad/01NC.md")) in written
+    assert str(Path("/vault/_scratchpad/T.md")) in written
 
 
 def test_pull_skips_notes_already_local_or_tracked():
-    hub_files = {"01A": {"id": "F1", "headRevisionId": "r1", "category": "personal"}}
+    hub_files = {"01A": {"id": "F1", "headRevisionId": "r1", "category": "personal", "name": "T.md"}}
     drive = MagicMock()
     # already in the vault
     p1, _, _ = pull_new_hub_notes({"01A": {}}, hub_files, {}, drive, "/vault", "_scratchpad",
@@ -674,6 +738,28 @@ def test_pull_skips_notes_already_local_or_tracked():
     p2, _, _ = pull_new_hub_notes({}, hub_files, {"01A": {}}, drive, "/vault", "_scratchpad",
                                   write_file=lambda p, c: None)
     assert p1 == 0 and p2 == 0
+
+
+def test_pull_writes_hub_resolved_name_not_id_and_pins_hub_name_in_state(tmp_path):
+    """Task 2.4 focused test: a hub note titled 'Pulled Note' with no local file → after
+    pull_new_hub_notes the local file exists at <vault>/<cat>/Pulled Note.md (NOT <id>.md),
+    body byte-identical to the hub content, and the new sync-state entry carries
+    hub_name='Pulled Note.md' — so a later reconcile/_maybe_rename_local never renames it."""
+    content = "---\nid: 01PN\ntitle: Pulled Note\norigin: note\ncategory: personal\n---\nphone body"
+    hub_files = {"01PN": {"id": "F9", "headRevisionId": "r9", "name": "Pulled Note.md"}}
+    drive = MagicMock()
+    drive.files().get_media().execute.return_value = content.encode("utf-8")
+    vault = tmp_path / "vault"
+    pulled, failed, new_state = pull_new_hub_notes(
+        {}, hub_files, {}, drive, str(vault), "_scratchpad",
+        download=lambda fid: content,
+    )
+    assert (pulled, failed) == (1, 0)
+    dest = vault / "personal" / "Pulled Note.md"
+    assert dest.exists()
+    assert not (vault / "personal" / "01PN.md").exists()
+    assert dest.read_bytes() == content.encode("utf-8")
+    assert new_state["01PN"]["hub_name"] == "Pulled Note.md"
 
 
 from mobile_sync_agent import intake_mobile_inbox
@@ -1320,3 +1406,414 @@ def test_main_no_lan_work_when_disabled(tmp_path, monkeypatch):
     assert captured["provisional_fn"] is None    # LAN disabled -> exactly the old behavior
     assert refreshed == []                        # no refresh_outbound call
     assert swept == []                            # no sweep call
+
+
+def test_hub_filename_parity_table():
+    C = "2026-07-19T15:30:00Z"
+    assert _hub_filename("Grocery List", C) == "Grocery List.md"
+    assert _hub_filename("", C) == "Untitled 2026-07-19 1530.md"
+    assert _hub_filename("   ", C) == "Untitled 2026-07-19 1530.md"
+    assert _hub_filename("a/b:c", C) == "a-b-c.md"
+    assert _hub_filename("///", C) == "Untitled 2026-07-19 1530.md"
+    assert _hub_filename("CON", C) == "CON_.md"
+    assert _hub_filename("x" * 200, C) == "x" * 120 + ".md"
+    assert _hub_filename("  ..dots.. ", C) == "dots.md"
+    # Untitled uses the LITERAL wall-clock digits — a naive-local (desktop-written) and a Z (phone-
+    # written) created with the same digits MUST give the same filename (no timezone conversion).
+    assert _hub_filename("", "2026-07-19T10:30:00") == "Untitled 2026-07-19 1030.md"
+    assert _hub_filename("", "2026-07-19T10:30:00Z") == "Untitled 2026-07-19 1030.md"
+
+
+def test_resolve_hub_names_suffixes_the_later_created_loser():
+    notes = [
+        {"id": "01AAAAAA", "title": "Meeting", "created": "2026-07-19T10:00:00Z", "category": "Work"},
+        {"id": "01BBBBBB", "title": "Meeting", "created": "2026-07-19T11:00:00Z", "category": "Work"},
+        {"id": "01CCCCCC", "title": "Solo",    "created": "2026-07-19T10:00:00Z", "category": "Work"},
+    ]
+    out = _resolve_hub_names(notes)
+    assert out["01AAAAAA"] == "Meeting.md"
+    assert out["01BBBBBB"] == "Meeting (2026-07-19 1100).md"   # loser suffixed with its created date+time
+    assert out["01CCCCCC"] == "Solo.md"
+
+
+def test_resolve_hub_names_same_minute_losers_disambiguate_by_id():
+    # two losers sharing the title AND the same minute -> the second gets its short id appended so the
+    # local filename stays unique (a bare date+time would collide -> overwrite -> body loss). Parity w/ phone.
+    notes = [
+        {"id": "01AAAAAA", "title": "Meeting", "created": "2026-07-19T10:00:00Z", "category": "Work"},
+        {"id": "01BBBBBB", "title": "Meeting", "created": "2026-07-19T10:05:00Z", "category": "Work"},
+        {"id": "01CCCCCC", "title": "Meeting", "created": "2026-07-19T10:05:40Z", "category": "Work"},
+    ]
+    out = _resolve_hub_names(notes)
+    assert out["01AAAAAA"] == "Meeting.md"                          # winner (earliest)
+    assert out["01BBBBBB"] == "Meeting (2026-07-19 1005).md"        # first loser keeps the clean stamp
+    assert out["01CCCCCC"] == "Meeting (2026-07-19 1005 CCCCCC).md" # same minute -> id appended
+
+
+# ---------------------------------------------------------------------------
+# Task 2.4 · name uploads by title, rename in place, local rename on title change
+# ---------------------------------------------------------------------------
+
+def test_upload_note_names_by_title_and_renames_in_place():
+    # existing file id F1; note title now "New" -> update carries name="New.md", SAME file id
+    # (no create call at all -- rename in place, never a new note).
+    captured = {}
+
+    class _Exec:
+        def __init__(self, r):
+            self.r = r
+        def execute(self):
+            return self.r
+
+    class _Files:
+        def update(self, **k):
+            captured.update(k)
+            return _Exec({"id": "F1", "headRevisionId": "r2", "name": "New.md"})
+        def create(self, **k):
+            raise AssertionError("must not create a new file — this is a rename in place")
+
+    class _Drive:
+        def files(self):
+            return _Files()
+
+    note = {
+        "id": "01H8", "title": "New", "created": "2026-07-19T10:00:00Z",
+        "content": "---\nid: 01H8\ntitle: New\ncreated: 2026-07-19T10:00:00Z\n---\nbody\n",
+        "body": "body\n",
+    }
+    result = _upload_note(_Drive(), note, "DEST", {"drive_file_id": "F1"})
+    assert result == {"id": "F1", "headRevisionId": "r2", "name": "New.md"}
+    assert captured["fileId"] == "F1"                 # same file id -- rename in place
+    assert captured["body"]["name"] == "New.md"       # renamed to the new title
+    assert captured["body"]["appProperties"] == {"noteId": "01H8"}
+
+
+def test_upload_note_skips_needless_rename_when_name_unchanged():
+    """Existing file whose LAST synced name already matches the resolved name -> `name` is
+    dropped from the update body (no needless headRevisionId bump on a pure content edit)."""
+    captured = {}
+
+    class _Exec:
+        def __init__(self, r):
+            self.r = r
+        def execute(self):
+            return self.r
+
+    class _Files:
+        def update(self, **k):
+            captured.update(k)
+            return _Exec({"id": "F1", "headRevisionId": "r3"})
+
+    class _Drive:
+        def files(self):
+            return _Files()
+
+    note = {
+        "id": "01H8", "title": "Same", "created": "2026-07-19T10:00:00Z",
+        "content": "---\nid: 01H8\n---\nbody2\n", "body": "body2\n",
+    }
+    _upload_note(_Drive(), note, "DEST", {"drive_file_id": "F1", "hub_name": "Same.md"},
+                hub_name="Same.md")
+    assert "name" not in captured["body"]
+    assert captured["body"]["appProperties"] == {"noteId": "01H8"}
+
+
+def test_mirror_renames_local_vault_file_on_title_change(tmp_path):
+    """A note retitled locally: mirror_to_hub renames the vault file in place (os.replace) BEFORE
+    upload, body byte-identical, old path gone, no duplicate left behind."""
+    category = tmp_path / "Inbox"
+    category.mkdir()
+    old_path = category / "Old.md"
+    content = "---\nid: 01H8\ntitle: New\ncreated: 2026-07-19T10:00:00Z\n---\nsame body\n"
+    old_path.write_text(content, encoding="utf-8", newline="")
+
+    vault_notes = {
+        "01H8": {"id": "01H8", "path": str(old_path), "content": content, "body": "same body\n",
+                 "hash": "HNEW", "category": "Inbox", "title": "New",
+                 "created": "2026-07-19T10:00:00Z"}
+    }
+    # Prior sync tracked this note under its OLD resolved name "Old.md" -- the retitle is the
+    # only thing that changed since, so the mismatch against the freshly resolved "New.md" is a
+    # genuine title change, not a first-ever-sync placeholder.
+    state = {"01H8": {"drive_file_id": "F1", "base_rev": "rev1", "local_hash": "HOLD",
+                       "hub_name": "Old.md"}}
+    drive = MagicMock()
+    drive.files().update().execute.return_value = {"id": "F1", "headRevisionId": "rev2",
+                                                    "name": "New.md"}
+
+    uploaded, failed, new_state = mirror_to_hub(vault_notes, {}, state, drive, "hub")
+
+    assert (uploaded, failed) == (1, 0)
+    new_path = category / "New.md"
+    assert new_path.exists()
+    assert not old_path.exists()                       # old path gone, no duplicate
+    assert new_path.read_text(encoding="utf-8", newline="") == content   # body byte-identical
+    assert new_state["01H8"]["hub_name"] == "New.md"
+    # the hub side was renamed in place too (same file id F1, no create call)
+    drive.files().create.assert_not_called()
+    assert drive.files().update.call_args.kwargs["body"]["name"] == "New.md"
+
+
+# ---------------------------------------------------------------------------
+# Task 3.1 · one-time hub-filename migration
+# ---------------------------------------------------------------------------
+
+from mobile_sync_agent import migrate_hub_filenames
+
+
+def _migrate_note_text(nid, title, created="2026-01-01T10:00:00Z"):
+    return f"---\nid: {nid}\ntitle: {title}\ncreated: {created}\norigin: note\n---\nbody\n"
+
+
+def _migrate_drive(categories, files_by_folder, contents, root_files=None):
+    """Fake drive for migrate_hub_filenames tests. Tracks LIVE file state (name/appProperties) in
+    a registry that update() mutates and list() reads back from — needed so a rename performed by
+    one call is visible to a later call in the same test (resumability tests need this; a static
+    MagicMock fixture like other tests use would not reflect the drive-side rename)."""
+    registry: dict = {}
+    folder_of: dict = {}
+    for fid, files in files_by_folder.items():
+        for f in files:
+            registry[f["id"]] = dict(f)
+            folder_of[f["id"]] = fid
+    for f in (root_files or []):
+        registry[f["id"]] = dict(f)
+        folder_of[f["id"]] = "HUB"
+
+    drive = MagicMock()
+
+    def _list(**kw):
+        q = kw.get("q", "")
+        resp = MagicMock()
+        if "'HUB' in parents" in q:
+            if f"mimeType='{_FOLDER_MIME}'" in q:
+                resp.execute.return_value = {
+                    "files": [{"id": fid, "name": n, "mimeType": _FOLDER_MIME}
+                              for n, fid in categories.items()],
+                    "nextPageToken": None,
+                }
+            else:
+                resp.execute.return_value = {
+                    "files": [f for fid, f in registry.items() if folder_of.get(fid) == "HUB"],
+                    "nextPageToken": None,
+                }
+        else:
+            parent = next((fid for fid in files_by_folder if f"'{fid}' in parents" in q), None)
+            resp.execute.return_value = {
+                "files": [f for fid, f in registry.items() if folder_of.get(fid) == parent],
+                "nextPageToken": None,
+            }
+        return resp
+
+    drive.files().list.side_effect = _list
+
+    def _get_media(fileId=None):
+        resp = MagicMock()
+        resp.execute.return_value = contents[fileId].encode("utf-8")
+        return resp
+
+    drive.files().get_media.side_effect = _get_media
+
+    updates = []
+
+    def _update(**kw):
+        updates.append(kw)
+        fid = kw["fileId"]
+        body = kw["body"]
+        if "name" in body:
+            registry[fid]["name"] = body["name"]
+        if "appProperties" in body:
+            registry[fid]["appProperties"] = body["appProperties"]
+        resp = MagicMock()
+        resp.execute.return_value = {"id": fid, "headRevisionId": "rX", "name": registry[fid]["name"]}
+        return resp
+
+    drive.files().update.side_effect = _update
+    drive._updates = updates
+    drive._registry = registry
+    return drive
+
+
+def test_migrate_renames_legacy_files_to_title_and_stamps_note_id():
+    contents = {
+        "F1": _migrate_note_text("01AAA", "Alpha", "2026-01-01T10:00:00Z"),
+        "F2": _migrate_note_text("01BBB", "Beta", "2026-01-02T10:00:00Z"),
+    }
+    drive = _migrate_drive(
+        categories={"personal": "c1"},
+        files_by_folder={"c1": [
+            {"id": "F1", "name": "01AAA.md", "headRevisionId": "r1"},
+            {"id": "F2", "name": "01BBB.md", "headRevisionId": "r2"},  # neither has appProperties
+        ]},
+        contents=contents,
+    )
+
+    new_state = migrate_hub_filenames(drive, "HUB", {})
+
+    assert new_state["hub_names_migrated"] is True
+    renamed = {u["fileId"]: u["body"] for u in drive._updates}
+    assert renamed["F1"] == {"name": "Alpha.md", "appProperties": {"noteId": "01AAA"}}
+    assert renamed["F2"] == {"name": "Beta.md", "appProperties": {"noteId": "01BBB"}}
+    assert drive._registry["F1"]["name"] == "Alpha.md"
+    assert drive._registry["F2"]["name"] == "Beta.md"
+
+
+def test_migrate_guard_skips_when_already_migrated():
+    drive = MagicMock()
+    state = {"hub_names_migrated": True}
+    result = migrate_hub_filenames(drive, "HUB", state)
+    assert result == state
+    drive.files().list.assert_not_called()
+    drive.files().update.assert_not_called()
+    drive.files().get_media.assert_not_called()
+
+
+def test_migrate_idempotent_second_run_is_zero_update_calls():
+    contents = {"F1": _migrate_note_text("01AAA", "Alpha")}
+    drive = _migrate_drive(
+        categories={"personal": "c1"},
+        files_by_folder={"c1": [{"id": "F1", "name": "01AAA.md", "headRevisionId": "r1"}]},
+        contents=contents,
+    )
+    state1 = migrate_hub_filenames(drive, "HUB", {})
+    assert len(drive._updates) == 1
+
+    state2 = migrate_hub_filenames(drive, "HUB", state1)
+    assert state2 is state1              # top-level guard short-circuits, no rescan at all
+    assert len(drive._updates) == 1      # unchanged
+
+
+def test_migrate_per_file_noop_on_second_scan_before_flag_persisted():
+    """Simulate a resumed migration where the flag was NOT yet persisted (crash before save) but
+    the file itself was already renamed+stamped on Drive in the earlier attempt: a fresh scan must
+    treat it as a no-op (zero update calls for that file) — this is what makes resuming cheap."""
+    contents = {"F1": _migrate_note_text("01AAA", "Alpha")}
+    drive = _migrate_drive(
+        categories={"personal": "c1"},
+        files_by_folder={"c1": [{"id": "F1", "name": "01AAA.md", "headRevisionId": "r1"}]},
+        contents=contents,
+    )
+    migrate_hub_filenames(drive, "HUB", {})
+    assert len(drive._updates) == 1
+
+    # Re-scan with an empty state (as if the flag write never landed) — per-file check must still
+    # skip the already-renamed, already-stamped file.
+    migrate_hub_filenames(drive, "HUB", {})
+    assert len(drive._updates) == 1
+
+
+def test_migrate_resumable_after_mid_pass_failure():
+    contents = {
+        "F1": _migrate_note_text("01AAA", "Alpha"),
+        "F2": _migrate_note_text("01BBB", "Beta"),
+    }
+    drive = _migrate_drive(
+        categories={"personal": "c1"},
+        files_by_folder={"c1": [
+            {"id": "F1", "name": "01AAA.md", "headRevisionId": "r1"},
+            {"id": "F2", "name": "01BBB.md", "headRevisionId": "r2"},
+        ]},
+        contents=contents,
+    )
+
+    real_update = drive.files().update.side_effect
+
+    def _flaky_update(**kw):
+        if kw["fileId"] == "F2":
+            raise RuntimeError("simulated Drive failure")
+        return real_update(**kw)
+
+    drive.files().update.side_effect = _flaky_update
+
+    with pytest.raises(RuntimeError):
+        migrate_hub_filenames(drive, "HUB", {})
+    assert len(drive._updates) == 1                     # F1 renamed before the failure hit F2
+    assert drive._registry["F1"]["name"] == "Alpha.md"  # F1's rename stuck despite the raise
+
+    # flag never set -> caller re-runs migrate_hub_filenames on next pass, same (unset) state
+    drive.files().update.side_effect = real_update
+    state = migrate_hub_filenames(drive, "HUB", {})
+    assert state["hub_names_migrated"] is True
+    assert len(drive._updates) == 2       # only F2 updated this pass -- F1 was already a no-op
+    assert drive._registry["F2"]["name"] == "Beta.md"
+
+
+def test_migrate_records_hub_name_for_an_already_tracked_note():
+    """A note this desktop already has a prior sync-state record for (drive_file_id/base_rev
+    already tracked from an earlier ordinary sync) gets state["hub_name"] set to the resolved
+    name -- this is what run_once's local-rename step (reusing its own vault_notes read) keys off
+    to converge the local vault mirror afterwards. Migration itself does no local/vault IO."""
+    contents = {"F1": _migrate_note_text("01AAA", "Alpha")}
+    drive = _migrate_drive(
+        categories={"personal": "c1"},
+        files_by_folder={"c1": [{"id": "F1", "name": "01AAA.md", "headRevisionId": "r1"}]},
+        contents=contents,
+    )
+    prior_state = {"01AAA": {"drive_file_id": "F1", "base_rev": "r1", "local_hash": "H"}}
+
+    state = migrate_hub_filenames(drive, "HUB", prior_state)
+
+    assert state["01AAA"]["hub_name"] == "Alpha.md"
+    assert state["01AAA"]["base_rev"] == "r1"      # pre-existing fields survive the update
+    assert drive._registry["F1"]["name"] == "Alpha.md"
+
+
+def test_migrate_never_pulled_note_leaves_state_untouched_for_pull_to_still_claim_it():
+    """A hub note the desktop has NEVER pulled (no prior state entry) must NOT get a state entry
+    from migration alone -- pull_new_hub_notes' "already tracked" skip
+    (`if key in vault_notes or key in state: continue`) would otherwise treat a bare hub_name-only
+    stub as already-synced and silently swallow the note's first pull forever. Also: a state entry
+    with `hub_name` but no `base_rev` would KeyError in reconcile_changes' non-adopted 3-way-merge
+    path (`prior["base_rev"]` is bare-key indexed there), which only pre-existing entries avoid."""
+    contents = {"F1": _migrate_note_text("01AAA", "Alpha")}
+    drive = _migrate_drive(
+        categories={"personal": "c1"},
+        files_by_folder={"c1": [{"id": "F1", "name": "01AAA.md", "headRevisionId": "r1"}]},
+        contents=contents,
+    )
+    state = migrate_hub_filenames(drive, "HUB", {})
+    assert "01AAA" not in state          # hub file was still renamed...
+    assert drive._registry["F1"]["name"] == "Alpha.md"
+    assert state["hub_names_migrated"] is True
+
+
+def test_run_once_migration_renames_hub_and_local_file_for_a_tracked_note(tmp_path, monkeypatch):
+    """Integration: run_once wires migrate_hub_filenames (hub-side rename) + its own local-rename
+    step (reusing the vault_notes it already read) so an already-tracked legacy note converges on
+    BOTH sides in one pass, and the second pass is a clean no-op (flag set, per-file no-op)."""
+    vault = tmp_path / "vault"
+    cat = vault / "personal"
+    cat.mkdir(parents=True)
+    local_content = _migrate_note_text("01AAA", "Alpha")
+    local_path = cat / "01AAA.md"
+    local_path.write_text(local_content, encoding="utf-8", newline="")
+
+    state_path = str(tmp_path / "state.json")
+    save_state(state_path, {
+        "01AAA": {"drive_file_id": "F1", "base_rev": "r1", "local_hash": _sha256(local_content)},
+    })
+
+    drive = _migrate_drive(
+        categories={"personal": "c1"},
+        files_by_folder={"c1": [{"id": "F1", "name": "01AAA.md", "headRevisionId": "r1"}]},
+        contents={"F1": local_content},
+    )
+    monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
+
+    run_once(str(vault), state_path, drive, vault_root=str(vault), scratchpad_folder="_scratchpad")
+
+    new_local = cat / "Alpha.md"
+    assert new_local.exists()
+    assert not local_path.exists()
+    assert new_local.read_text(encoding="utf-8", newline="") == local_content
+    assert drive._registry["F1"]["name"] == "Alpha.md"
+
+    final_state = load_state(state_path)
+    assert final_state["hub_names_migrated"] is True
+    assert final_state["01AAA"]["hub_name"] == "Alpha.md"
+
+    # second pass: pure no-op migration-wise (flag set) -- no further Drive update calls, no
+    # further local rename (already converged).
+    drive._updates.clear()
+    run_once(str(vault), state_path, drive, vault_root=str(vault), scratchpad_folder="_scratchpad")
+    assert drive._updates == []
