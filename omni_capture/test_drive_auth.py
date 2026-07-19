@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 import drive_auth
 
 
-def test_scope_is_full_drive():
-    assert drive_auth.DRIVE_SCOPE == "https://www.googleapis.com/auth/drive"
+def test_scope_is_drive_file():
+    assert drive_auth.DRIVE_SCOPE == "https://www.googleapis.com/auth/drive.file"
 
 
 def test_load_credentials_uses_cached_valid_token(tmp_path):

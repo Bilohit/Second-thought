@@ -14,7 +14,7 @@ import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, use
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getConfig, patchConfig } from "../lib/api";
 import { formatHotkey, DEFAULT_HOTKEY, canParseHotkey } from "../lib/hotkey";
-import { setHotkey as setHotkeyRust, setLogLevel } from "../lib/tauri";
+import { setHotkey as setHotkeyRust, setLogLevel, revealLogFile } from "../lib/tauri";
 import { getVaultCategories } from "../lib/api";
 import { DEFAULT_CHAT_SYSTEM_PROMPT } from "../lib/lookChatDefaults";
 import { logger, LogLevel } from "../lib/logger";
@@ -624,7 +624,7 @@ export default function SettingsPanel({
           <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
             Settings
           </span>
-          <button className="no-drag icon-close-btn" onClick={onClose} title="Close">
+          <button className="no-drag icon-close-btn" onClick={onClose} title="Close" aria-label="Close">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="2" y1="2" x2="12" y2="12" />
               <line x1="12" y1="2" x2="2" y2="12" />
@@ -1015,6 +1015,19 @@ export default function SettingsPanel({
                   <option key={name} value={name}>{name}</option>
                 ))}
               </select>
+            </Field>
+
+            {/* Crash log export — reveals the rotating diagnostics log in the OS file manager so it
+                can be attached to a bug report. Capture + rotation already ship via logger.ts. */}
+            <Field label="Crash Log">
+              <button
+                onClick={() => { void revealLogFile(); }}
+                className="btn-hover"
+                style={{ ...BTN_SECONDARY, width: "100%" }}
+                aria-label="Reveal the diagnostics log file in the file manager"
+              >
+                Reveal log file
+              </button>
             </Field>
 
             {/* Geometry debug logging — on by default; logs window/monitor/

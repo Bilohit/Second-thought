@@ -327,7 +327,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
             >
               <RefreshIcon size={13} />
             </button>
-            <button className="no-drag icon-close-btn" onClick={onClose} title="Close">
+            <button className="no-drag icon-close-btn" onClick={onClose} title="Close" aria-label="Close">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <line x1="2" y1="2" x2="12" y2="12" />
                 <line x1="12" y1="2" x2="2" y2="12" />
@@ -339,7 +339,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
 
       {/* LLM offline banner — persistent signal, not just a per-message failure marker */}
       {llmOffline && (
-        <div style={{ fontSize: 12, color: "var(--red)", borderBottom: "1px solid var(--border)", textAlign: "center", padding: "6px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+        <div role="status" aria-live="polite" style={{ fontSize: 12, color: "var(--red)", borderBottom: "1px solid var(--border)", textAlign: "center", padding: "6px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
           <AlertIcon size={12} />
           Model offline — Ollama unreachable
         </div>
@@ -347,12 +347,12 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
 
       {/* Sync banner */}
       {effSyncing && (
-        <div style={{ fontSize: 12, color: "var(--text-3)", borderBottom: "1px solid var(--border)", textAlign: "center", padding: "6px 14px" }}>
+        <div role="status" aria-live="polite" style={{ fontSize: 12, color: "var(--text-3)", borderBottom: "1px solid var(--border)", textAlign: "center", padding: "6px 14px" }}>
           Syncing vault index…
         </div>
       )}
       {!effSyncing && effSyncStatus && (
-        <div style={{ fontSize: 12, color: syncFailed ? "var(--red)" : "var(--text-3)", borderBottom: "1px solid var(--border)", textAlign: "center", padding: "6px 14px" }}>
+        <div role="status" aria-live="polite" style={{ fontSize: 12, color: syncFailed ? "var(--red)" : "var(--text-3)", borderBottom: "1px solid var(--border)", textAlign: "center", padding: "6px 14px" }}>
           {effSyncStatus}
         </div>
       )}
@@ -502,7 +502,16 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                   {dedupedSemantic.map((s) => (
                     <div
                       key={s.path}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => { openFilePath(s.path); onClose(); }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          openFilePath(s.path);
+                          onClose();
+                        }
+                      }}
                       style={{
                         display: "flex", alignItems: "flex-start", gap: 10,
                         padding: "9px 14px", cursor: "pointer",

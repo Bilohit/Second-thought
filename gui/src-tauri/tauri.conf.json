@@ -33,7 +33,8 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: http://localhost:7070; media-src 'self' http://localhost:7070; font-src 'self'; connect-src 'self' http://localhost:7070; object-src 'none'; base-uri 'self'; form-action 'self'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http://localhost:7070; media-src 'self' http://localhost:7070; font-src 'self'; connect-src 'self' http://localhost:7070 ws://localhost:1420; object-src 'none'"
     }
   },
   "bundle": {

@@ -19,7 +19,7 @@ interface Props {
 export default function StatusIndicator({ captureState, llmStatus, showLabel = false, size = 7 }: Props) {
   const { dotColor, label, pulse } = statusVisual(captureState, llmStatus);
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+    <span role="status" aria-live="polite" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
       <span
         aria-hidden="true"
         style={{

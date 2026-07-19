@@ -240,6 +240,7 @@ export default function FullWindow(props: FullWindowProps) {
                 className="btn-hover rail-btn rail-btn--main"
                 onClick={() => setView(v)}
                 title={TITLES[v][0]}
+                aria-label={TITLES[v][0]}
                 aria-pressed={view === v}
               >
                 {v === "dashboard" ? <DashboardIcon size={18} /> : v === "look" ? <MenuIcon target="search" size={18} /> : <MenuIcon target="vault" size={18} />}
@@ -253,6 +254,7 @@ export default function FullWindow(props: FullWindowProps) {
               className="btn-hover rail-btn rail-btn--footer"
               onClick={() => setView("settings")}
               title="Settings"
+              aria-label="Settings"
               aria-pressed={view === "settings"}
             >
               <MenuIcon target="settings" size={16} />
@@ -261,6 +263,7 @@ export default function FullWindow(props: FullWindowProps) {
               className="btn-hover rail-btn rail-btn--footer"
               onClick={props.onHideToTray}
               title="Hide to tray"
+              aria-label="Hide to tray"
               aria-pressed={false}
             >
               <MenuIcon target="hide" size={16} />

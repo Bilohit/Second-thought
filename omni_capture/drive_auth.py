@@ -3,7 +3,8 @@ drive_auth.py — Google Drive OAuth for the desktop sync agent.
 
 Installed-app flow (google-auth-oauthlib): first call opens a browser once for
 consent; the resulting token is cached and refreshed automatically thereafter.
-Scope is full drive (user decision 2026-07-10; data-model §10 MVP).
+Scope is drive.file — least-privilege, app sees only files it creates (decision
+2026-07-19; spike verdict PER-PROJECT so the two OAuth clients share per-file grants).
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build, Resource
 
-DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
+DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 
 # B-4 class: anchored to this module's directory, NEVER CWD-relative. The Tauri shell spawns the
 # server with cwd = project root (lib.rs `current_dir(&project_root)`) while the CLI runs from

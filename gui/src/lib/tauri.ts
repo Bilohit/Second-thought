@@ -3,6 +3,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { logger, LogLevel } from "./logger";
 import { logicalToPhysicalRect } from "./monitor";
 
@@ -49,6 +50,21 @@ export async function setLogLevel(level: LogLevel): Promise<void> {
     await invoke("set_log_level", { level });
   } catch (err) {
     logger.warn("tauri", "set_log_level (rust) failed — frontend level still applied", err);
+  }
+}
+
+/** Reveal the current crash/diagnostics log file in the OS file manager, so the user can
+ *  attach it to a bug report (the export half of gate pt 6 — capture + rotation already ship
+ *  via logger.ts → Rust append_log). Path comes from the Rust `log_file_path` command; the
+ *  logs/ dir alongside it also holds the rotated siblings. Best-effort: throws are surfaced to
+ *  the caller so the UI can show a failure, but a no-op outside Tauri just logs and returns. */
+export async function revealLogFile(): Promise<void> {
+  try {
+    const path = await invoke<string>("log_file_path");
+    await revealItemInDir(path);
+  } catch (err) {
+    logger.warn("tauri", "revealLogFile failed", err);
+    throw err;
   }
 }
 

@@ -144,6 +144,7 @@ function CategoryCard({
             className="btn-hover"
             style={BTN_GHOST}
             title={cat.description ? "Edit description" : "Add LLM routing description"}
+            aria-label={cat.description ? "Edit description" : "Add LLM routing description"}
             onClick={() => onEditDescription(cat.name, cat.description)}
           >
             {/* Pencil icon */}
@@ -157,6 +158,7 @@ function CategoryCard({
             className="btn-hover"
             style={BTN_GHOST}
             title="Rename"
+            aria-label="Rename category"
             onClick={() => onRename(cat.name)}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -169,6 +171,7 @@ function CategoryCard({
             className="btn-hover hover-danger"
             style={BTN_GHOST}
             title="Delete"
+            aria-label="Delete category"
             onClick={() => onRequestDelete(cat.name)}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -238,6 +241,7 @@ function GhostDot({ ignored, onClick }: { ignored: boolean; onClick: () => void 
     <button
       onClick={(e) => { e.stopPropagation(); onClick(); }}
       title={ignored ? "Sync-ignored — local only. Click to re-enable sync." : "Synced. Click to make this note local-only."}
+      aria-label={ignored ? "Sync-ignored — local only. Click to re-enable sync." : "Synced. Click to make this note local-only."}
       aria-pressed={ignored}
       style={{
         width: 14, height: 14, flexShrink: 0, padding: 0,
@@ -315,6 +319,7 @@ function FileRow({
           className="btn-hover"
           style={{ ...BTN_GHOST, flexShrink: 0 }}
           title="Remind me"
+          aria-label="Remind me"
           onClick={(e) => { e.stopPropagation(); onRemind(file); }}
         >
           <BellIcon size={12} />

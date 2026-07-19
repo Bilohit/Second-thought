@@ -1,0 +1,73 @@
+name: CI
+
+# DRAFT — scaffolded for 1.0 publish gate (gate pt 10). Not yet verified against a live CI run.
+#
+# Version pins:
+#   - Python 3.12: no pyproject.toml/.python-version/runtime.txt found in omni_capture/ to pin
+#     an exact version, so this defaults to 3.12 per gate instructions. requirements.txt only
+#     notes "tomllib is stdlib in Python 3.11+" (with a tomli<3.11 fallback), so 3.10+ is
+#     supported in principle — 3.12 was chosen as a reasonable current default.
+#   - Node 20: no .nvmrc or package.json "engines" field found in gui/, so this defaults to
+#     Node 20 per gate instructions.
+#
+# Runner: ubuntu-latest for both jobs. No Windows-only test dependency was found (no win32/
+# sys.platform guards in omni_capture tests, no process.platform checks in gui/src) — pytest,
+# vitest, and tsc are all cross-platform, so Linux runners are sufficient for this gate even
+# though the shipped product targets Windows.
+#
+# Deliberately out of scope (ponytail: keep this gate boring):
+#   - No matrix builds, no deploy steps, no coverage upload.
+#   - FUZZ=1 suites are opt-in per doctrine and are NOT run here.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  desktop-pytest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: omni_capture
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: omni_capture/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pytest
+        run: python -m pytest -q
+
+  gui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (tsc + vite build)
+        run: npm run build
+
+      - name: Test (vitest)
+        run: npm test
+
+  # Fuzz suites are explicitly opt-in per doctrine (FUZZ=1) and must never run on push/PR.
+  # No fuzz target currently exists under omni_capture or gui, so no manual dispatch job is
+  # added here yet — add one (workflow_dispatch, separate from the jobs above) if/when a fuzz
+  # suite is introduced on the desktop side.

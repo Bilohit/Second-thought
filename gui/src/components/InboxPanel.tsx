@@ -195,6 +195,7 @@ function InboxRow({
         <button
           onClick={() => onDiscard(item.note_id)}
           title="Discard"
+          aria-label="Discard"
           className="btn-hover hover-danger"
           style={BTN_GHOST}
         >
@@ -351,6 +352,7 @@ export default function InboxPanel({
         className="btn-hover"
         style={BTN_GHOST}
         title="Refresh"
+        aria-label="Refresh"
         onClick={() => { load(); loadReminders(); }}
       >
         <RefreshIcon size={13} />
@@ -403,6 +405,7 @@ export default function InboxPanel({
                 className="no-drag icon-close-btn"
                 onClick={onClose}
                 title="Close"
+                aria-label="Close"
               >
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                   <line x1="2" y1="2" x2="12" y2="12" />
