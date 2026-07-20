@@ -17,12 +17,18 @@ from __future__ import annotations
 import asyncio
 import os
 import textwrap
-from typing import Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
 import instructor
 from openai import AsyncOpenAI, OpenAI
 
 from models import CaptureOutput, build_capture_model
+
+if TYPE_CHECKING:
+    # OF-15: annotate `enriched` with its real type without a runtime circular import
+    # (models imports from this module's siblings). `from __future__ import annotations` above
+    # keeps the annotation a lazy string, so this import only exists for the type checker.
+    from models import EnrichedPayload
 
 OLLAMA_API_KEY = "ollama"
 
@@ -258,7 +264,7 @@ def _build_system_prompt(
 # ---------------------------------------------------------------------------
 
 def run_llm_engine(
-    enriched: "CaptureOutput",          # actually EnrichedPayload; avoid circular import
+    enriched: "EnrichedPayload",
     category_descriptions: Dict[str, str],
     existing_context: Optional[str] = None,
     today: Optional[str] = None,

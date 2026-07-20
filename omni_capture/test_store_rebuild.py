@@ -654,27 +654,24 @@ def test_corrupt_captures_db_reads_fail_soft(vault: Path):
     )
 
 
-def test_deleting_captures_db_in_process_wedges_init_db(vault: Path):
-    """FINDING (MEDIUM): index_writer._INITIALIZED (index_writer.py:59, 280-283)
-    memoizes "schema applied" per db PATH for the process lifetime. If the file
-    disappears while the server runs (user cleanup, sync tool, antivirus), every
-    later init_db re-creates an EMPTY file and skips the DDL — so the tables
-    never come back until a restart. Recovery is restart-only by construction;
-    this test pins that ceiling."""
+def test_deleting_captures_db_in_process_heals_init_db(vault: Path):
+    """OF-12 (was a pinned MEDIUM ceiling — now FIXED): index_writer._INITIALIZED memoizes "schema
+    applied" per db PATH for the process. If the file disappears while the server runs (user cleanup,
+    sync tool, antivirus), init_db used to re-create an EMPTY file and skip the DDL — the tables never
+    came back until a restart. init_db now re-verifies the core table exists (index_writer._has_schema)
+    and re-applies the schema IN-PROCESS, so no restart is needed."""
     p = index_writer.get_db_path(vault)
     p.unlink()
     _drop_sqlite_sidecars(p)
-    # NOTE: deliberately no _restart() — this is the live-process path.
+    # NOTE: deliberately no _restart() — the heal must happen on the live-process path.
 
     conn = index_writer.init_db(vault)
     try:
-        with pytest.raises(sqlite3.OperationalError, match="no such table"):
-            conn.execute("SELECT COUNT(*) FROM captures").fetchone()
+        # the schema is re-applied immediately, in the same process — no "no such table"
+        assert conn.execute("SELECT COUNT(*) FROM captures").fetchone()[0] == 0
     finally:
         conn.close()
 
-    _restart(vault)  # a process restart is what heals it
-    assert _index_state(vault)["count"] == 0
     _rebuild(vault)
     assert _index_state(vault)["count"] == len(_NOTES)
 

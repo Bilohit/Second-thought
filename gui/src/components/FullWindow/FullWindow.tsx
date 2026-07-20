@@ -94,6 +94,7 @@ export default function FullWindow(props: FullWindowProps) {
     if (props.initialView) setView(props.initialView);
   }, [props.initialView]);
   const [inboxTab, setInboxTab] = useState<InboxTab>("inbox");
+  const [librarySection, setLibrarySection] = useState<"vault" | "tags" | "trash">("vault");
   const [healthOpen, setHealthOpen] = useState(false);
   const [healthVault, setHealthVault] = useState<number | null>(null);
   const [healthInbox, setHealthInbox] = useState<number | null>(null);
@@ -306,6 +307,20 @@ export default function FullWindow(props: FullWindowProps) {
               />
             </div>
           )}
+          {view === "library" && (
+            <div className="no-drag" style={{ display: "flex", alignItems: "center" }}>
+              <SegmentedToggle
+                ariaLabel="Library section"
+                options={[
+                  { key: "vault" as const, label: "Vault" },
+                  { key: "tags" as const, label: "Tags" },
+                  { key: "trash" as const, label: "Trash" },
+                ]}
+                value={librarySection}
+                onChange={setLibrarySection}
+              />
+            </div>
+          )}
         </div>
 
         {/* C2: a render throw in the routed view never blanks the whole
@@ -355,7 +370,7 @@ export default function FullWindow(props: FullWindowProps) {
         )}
         {view === "library" && (
           <div key="library" className="fw-view-panel">
-            <LibraryView visible onOpenNote={setEditorPath} />
+            <LibraryView visible section={librarySection} onOpenNote={setEditorPath} />
           </div>
         )}
         {view === "inbox" && (

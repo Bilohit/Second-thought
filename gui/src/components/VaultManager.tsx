@@ -912,7 +912,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
             )}
             {!compactHeader && !drillCat && vaultRoot && (
               <span style={{
-                fontSize: 10, color: "var(--text-3)", fontFamily: "monospace",
+                fontSize: 10, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.08em",
                 ...(embedded
                   ? { flex: 1, wordBreak: "break-all" }
                   : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }),

@@ -27,7 +27,7 @@ import {
 } from "../lib/tauri";
 import { getLanDeviceId } from "../lib/api";
 import { resolveLanTone } from "../lib/syncSetup";
-import { INPUT_STYLE, BTN_SECONDARY } from "./ui/styles";
+import { BTN_SECONDARY } from "./ui/styles";
 import { Toggle } from "./ui/Toggle";
 import { TONE_COLOR } from "./Sync/parts";
 
@@ -176,25 +176,26 @@ export default function PairingPanel({
       )}
 
       {info.enabled && qr && (
-        <>
-          <Field label="Scan on phone">
-            <div
-              style={{
-                ...INPUT_STYLE,
-                width: qrSize + 16,
-                height: qrSize + 16,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                padding: 0,
-              }}
-            >
-              <img src={qr} alt="Pairing QR code" width={qrSize} height={qrSize} />
-            </div>
-          </Field>
-          <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-            {info.lan_ip ?? info.host}:{info.port} — scan once in the phone app.
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, textAlign: "center" }}>
+          <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-1)" }}>Pair your phone</div>
+          {/* Light quiet-zone tile — a QR on the dark surface risks failing to scan. */}
+          <div style={{ width: qrSize + 20, height: qrSize + 20, background: "#fafafa", display: "flex", alignItems: "center", justifyContent: "center", padding: 10 }}>
+            <img src={qr} alt="Pairing QR code" width={qrSize} height={qrSize} />
           </div>
+          <ol style={{ listStyle: "none", margin: 0, padding: 0, textAlign: "left", display: "flex", flexDirection: "column", gap: 5 }}>
+            {[
+              "Open Second Thought on your phone",
+              "Go to Settings → Pair device",
+            ].map((step, i) => (
+              <li key={i} style={{ fontSize: 11, color: "var(--text-2)", display: "flex", gap: 8 }}>
+                <span style={{ color: "var(--accent)", fontWeight: 600 }}>{i + 1}</span> {step}
+              </li>
+            ))}
+            <li style={{ fontSize: 11, color: "var(--text-2)", display: "flex", gap: 8 }}>
+              <span style={{ color: "var(--accent)", fontWeight: 600 }}>3</span>
+              <span>Scan · <span style={{ color: "var(--text-3)", fontVariantNumeric: "tabular-nums" }}>{info.lan_ip ?? info.host}:{info.port}</span></span>
+            </li>
+          </ol>
           <button
             className="btn-hover"
             style={BTN_SECONDARY}
@@ -203,7 +204,7 @@ export default function PairingPanel({
           >
             Rotate secret
           </button>
-        </>
+        </div>
       )}
 
       {info.enabled && !qr && !info.lan_ip && (

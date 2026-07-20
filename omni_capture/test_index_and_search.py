@@ -127,6 +127,24 @@ class TestInitDb(unittest.TestCase):
             init_db(vault).close()
             init_db(vault).close()  # no error
 
+    def test_reinit_after_db_file_deleted_midprocess(self):
+        """OF-12: if the db file vanishes while the process runs, the _INITIALIZED memo would
+        skip DDL on the next open and leave the recreated file empty. init_db must re-apply the
+        schema when the core table is missing."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = _vault(Path(td))
+            init_db(vault).close()  # populates _INITIALIZED for this path
+            get_db_path(vault).unlink()  # file gone, but the memo still says "initialized"
+            conn = init_db(vault)
+            tables = {
+                r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            conn.close()
+            self.assertIn("captures", tables, "schema must be re-applied after the file is deleted")
+            self.assertIn("captures_fts", tables)
+
 
 class TestLogCaptureDb(unittest.TestCase):
     def test_inserts_row(self):

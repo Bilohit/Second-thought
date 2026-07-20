@@ -14,6 +14,7 @@ from mobile_sync_agent import (
     _sha256,
     _hub_filename,
     _resolve_hub_names,
+    _reap_tmp_orphans,
     _upload_note,
     _FOLDER_MIME,
 )
@@ -34,6 +35,27 @@ def test_read_vault_notes_keys_by_frontmatter_id(tmp_path):
     assert "01ABC" in notes           # keyed by id, NOT filename stem
     assert "anything" not in notes
     assert notes["01ABC"]["body"] == "Body here"
+
+
+def test_reap_tmp_orphans_removes_only_md_tmp(tmp_path):
+    # OF-19: crash-orphaned <note>.md.tmp files accumulate; the reaper clears them without touching
+    # real notes or the state file's own .tmp convention.
+    real = _write(tmp_path, "note.md", "01REAL", "keep me")
+    orphan = tmp_path / "note.md.tmp"
+    orphan.write_text("torn write", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    nested = tmp_path / "sub" / "other.md.tmp"
+    nested.write_text("torn too", encoding="utf-8")
+    state_tmp = tmp_path / "state.json.tmp"  # NOT a note tmp — must survive
+    state_tmp.write_text("{}", encoding="utf-8")
+
+    reaped = _reap_tmp_orphans(str(tmp_path))
+
+    assert reaped == 2
+    assert not orphan.exists()
+    assert not nested.exists()
+    assert real.exists() and real.read_text(encoding="utf-8").endswith("keep me")
+    assert state_tmp.exists()
 
 
 def test_read_vault_notes_skips_files_without_id(tmp_path):
@@ -171,6 +193,59 @@ def test_upload_sync_file_creates_then_updates():
     assert (calls["create"], calls["update"]) == (1, 0)   # first → create
     upload_sync_file(drive, "hub", "lan_endpoint.json", '{"device":"d2"}')
     assert (calls["create"], calls["update"]) == (1, 1)   # second → update in place
+
+
+def test_purge_expired_hub_trash_deletes_only_old():
+    # OF-16: the desktop is the hub-side purge authority. Sweep _trash/, deleting only notes past the
+    # 30-day window (by Drive modifiedTime); a missing timestamp is kept (safe default).
+    from datetime import datetime, timezone
+    from mobile_sync_agent import purge_expired_hub_trash, _FOLDER_MIME, _PURGE_AFTER_SECONDS
+
+    NOW = 1_000_000_000.0
+    old_iso = datetime.fromtimestamp(NOW - (_PURGE_AFTER_SECONDS + 3600), tz=timezone.utc).isoformat()
+    fresh_iso = datetime.fromtimestamp(NOW - 3600, tz=timezone.utc).isoformat()
+    deleted: list[str] = []
+
+    class _Exec:
+        def __init__(self, r): self.r = r
+        def execute(self): return self.r
+
+    class _Files:
+        def list(self, q=None, fields=None, pageToken=None):
+            if f"mimeType='{_FOLDER_MIME}'" in q:  # list_hub_tree folder scan → the _trash folder
+                return _Exec({"files": [{"id": "trashfolder", "name": "_trash"}]})
+            return _Exec({"files": [                # _list_children of _trash (mimeType != folder)
+                {"id": "old1", "name": "old.md", "modifiedTime": old_iso},
+                {"id": "fresh1", "name": "fresh.md", "modifiedTime": fresh_iso},
+                {"id": "nostamp", "name": "x.md"},  # no modifiedTime → never purged
+            ]})
+        def delete(self, fileId=None):
+            deleted.append(fileId)
+            return _Exec({})
+
+    class _Drive:
+        def files(self): return _Files()
+
+    n = purge_expired_hub_trash(_Drive(), "hub", now_ts=NOW)
+    assert n == 1
+    assert deleted == ["old1"]  # only the expired one; fresh + timestamp-less are kept
+
+
+def test_purge_expired_hub_trash_no_trash_folder_is_noop():
+    from mobile_sync_agent import purge_expired_hub_trash, _FOLDER_MIME
+
+    class _Exec:
+        def __init__(self, r): self.r = r
+        def execute(self): return self.r
+
+    class _Files:
+        def list(self, q=None, fields=None, pageToken=None):
+            return _Exec({"files": []})  # no folders at all → no _trash
+
+    class _Drive:
+        def files(self): return _Files()
+
+    assert purge_expired_hub_trash(_Drive(), "hub") == 0
 
 
 def test_state_roundtrip(tmp_path):
@@ -1333,7 +1408,7 @@ def _fake_cfg(vault_root: Path, lan_enabled: bool):
     return types.SimpleNamespace(
         vault=types.SimpleNamespace(root=vault_root, scratchpad_folder="_scratchpad"),
         lan=types.SimpleNamespace(enabled=lan_enabled, host="", port=7071),
-        sync=types.SimpleNamespace(mirror_captures=False),
+        sync=types.SimpleNamespace(mirror_captures=False, interval_minutes=60),
     )
 
 

@@ -14,20 +14,18 @@
  * `PLANE 1` / `PLANE 2` labels are cut for plain language, and the account email
  * line is dropped (/drive/auth/status does not return an email and will not).
  */
-import { useState } from "react";
 import type { ReactNode } from "react";
 import type { StatusTone } from "../../lib/syncSetup";
 import {
-  resolveGauge, intervalIsNever, autoPassesActive,
-  NEVER_INTERVAL_MINUTES, MIN_INTERVAL_MINUTES,
+  resolveGauge, intervalIsNever,
+  NEVER_INTERVAL_MINUTES,
 } from "../../lib/syncSetup";
 import type { DriveAuthStatus, SyncStatus, SyncRunResult } from "../../lib/api";
-import { CloudIcon, RefreshIcon, ChevronRightIcon, AlertIcon } from "../PillMenu/icons";
-import { BTN_SECONDARY, INPUT_STYLE } from "../ui/styles";
+import { CloudIcon, RefreshIcon, AlertIcon } from "../PillMenu/icons";
+import { BTN_SECONDARY } from "../ui/styles";
 import { Toggle } from "../ui/Toggle";
 import {
   Group, SettingRow, Note, StatusDot, TONE_COLOR,
-  passTime, passSummary, passTone,
 } from "./parts";
 
 export interface SyncSettings {
@@ -148,9 +146,6 @@ function IntervalControl({
   disabled: boolean;
   compact: boolean;
 }) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const custom = !PRESETS.some((p) => p.minutes === minutes);
-
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
       {/* Wraps rather than overflowing: the capsule panel is 288px and this group
@@ -165,7 +160,7 @@ function IntervalControl({
               className="btn-hover"
               aria-pressed={active}
               disabled={disabled}
-              onClick={() => { setDraft(null); onChange(p.minutes); }}
+              onClick={() => onChange(p.minutes)}
               style={{
                 ...BTN_SECONDARY,
                 fontSize: compact ? 10.5 : 11,
@@ -183,28 +178,6 @@ function IntervalControl({
           );
         })}
       </div>
-      {!compact && (
-        <>
-          <input
-            type="number"
-            min={MIN_INTERVAL_MINUTES}
-            aria-label="Custom interval in minutes"
-            disabled={disabled}
-            value={draft ?? (custom ? String(minutes) : "")}
-            placeholder={custom ? undefined : "custom"}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={() => {
-              if (draft === null) return;
-              if (draft.trim() === "") { setDraft(null); return; }
-              // The server's real clamp, applied where the user can see it happen.
-              onChange(Math.max(MIN_INTERVAL_MINUTES, Math.round(Number(draft))));
-              setDraft(null);
-            }}
-            style={{ ...INPUT_STYLE, width: 72, textAlign: "right", opacity: disabled ? 0.4 : 1 }}
-          />
-          <span style={{ fontSize: 11, color: "var(--text-3)" }}>min</span>
-        </>
-      )}
     </div>
   );
 }
@@ -215,7 +188,6 @@ function Schedule({
   compact, masterOff, settings, onChangeSettings, delay,
 }: Pick<Props, "compact" | "masterOff" | "settings" | "onChangeSettings"> & { delay: number }) {
   const never = intervalIsNever(settings.intervalMinutes);
-  const autoLive = autoPassesActive(!masterOff, settings.intervalMinutes);
 
   return (
     <Group label="Schedule" delay={delay} gap={6}>
@@ -235,20 +207,20 @@ function Schedule({
         </Note>
       )}
 
-      <SettingRow title="On launch" disabled={!autoLive}>
+      <SettingRow title="On launch" disabled={masterOff}>
         <Toggle
           label="Sync on launch"
           checked={settings.syncOnLaunch}
-          disabled={!autoLive}
+          disabled={masterOff}
           onChange={(v) => onChangeSettings({ syncOnLaunch: v })}
         />
       </SettingRow>
 
-      <SettingRow title="After capture" disabled={!autoLive}>
+      <SettingRow title="After capture" disabled={masterOff}>
         <Toggle
           label="Sync after capture"
           checked={settings.syncAfterCapture}
-          disabled={!autoLive}
+          disabled={masterOff}
           onChange={(v) => onChangeSettings({ syncAfterCapture: v })}
         />
       </SettingRow>
@@ -266,72 +238,6 @@ function Schedule({
         />
       </SettingRow>
       </div>
-    </Group>
-  );
-}
-
-// ── History ─────────────────────────────────────────────────────────────────
-
-function History({ status, delay }: { status: SyncStatus | null; delay: number }) {
-  const [open, setOpen] = useState(false);
-  const rows = status?.history ?? [];
-  const last = status?.last_pass ?? null;
-
-  return (
-    <Group label="History" delay={delay}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 12, color: "var(--text-1)" }}>Last pass</div>
-          <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {last ? `${passTime(last.started)} · ${passSummary(last)}` : "never"}
-          </div>
-        </div>
-        {rows.length > 0 && (
-          <button
-            type="button"
-            aria-expanded={open}
-            aria-label={open ? "Hide history" : "Show all passes"}
-            onClick={() => setOpen((o) => !o)}
-            style={{
-              background: "none", border: "none", font: "inherit", fontSize: 11,
-              color: "var(--text-3)", cursor: "pointer", display: "inline-flex",
-              alignItems: "center", gap: 5, padding: "2px 4px",
-            }}
-          >
-            <span style={{
-              display: "flex",
-              transform: open ? "rotate(90deg)" : "rotate(0deg)",
-              transition: "transform 160ms var(--hover-ease-out)",
-            }}>
-              <ChevronRightIcon size={12} />
-            </span>
-            {open ? "Hide" : "Show all"}
-          </button>
-        )}
-      </div>
-
-      {open && (
-        <div style={{ display: "flex", flexDirection: "column" }}>
-          {rows.map((row, i) => (
-            <div
-              key={`${row.started}-${i}`}
-              className="sync-rise"
-              style={{
-                display: "flex", alignItems: "center", gap: 9,
-                padding: "5px 0 5px 4px",
-                fontSize: 11, color: "var(--text-2)",
-                borderBottom: i === rows.length - 1 ? "none" : "1px solid var(--border-2)",
-                animationDelay: `${i * 45}ms`,
-              }}
-            >
-              <StatusDot tone={passTone(row)} />
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {passTime(row.started)} · {passSummary(row)}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
     </Group>
   );
 }
@@ -598,8 +504,6 @@ export default function SyncDashboard({
       </Group>
 
       {banner && <Banner tone={banner.tone}>{banner.body}</Banner>}
-
-      {!compact && <History status={status} delay={45} />}
 
       <Schedule compact={compact} masterOff={masterOff} settings={settings} onChangeSettings={onChangeSettings} delay={compact ? 45 : 90} />
 

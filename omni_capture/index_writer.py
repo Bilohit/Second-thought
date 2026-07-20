@@ -262,11 +262,24 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _has_schema(conn: sqlite3.Connection) -> bool:
+    # OF-12: _INITIALIZED memoizes "DDL ran" per path for the process. If the db file is deleted out
+    # from under a live process, sqlite3.connect silently recreates an EMPTY file but the memo still
+    # says "initialized" -> the core tables are missing until restart. Re-verify the core table
+    # actually exists before trusting the memo. Cheap: one sqlite_master lookup, and only on the
+    # already-memoized path (the `or` below short-circuits on a first-time open).
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='captures'"
+    ).fetchone()
+    return row is not None
+
+
 def init_db(vault_root: Path) -> sqlite3.Connection:
     """
     Open (or create) the SQLite database at the canonical path.
     Applies the schema on first call per vault path (within the process);
-    subsequent calls skip the DDL/migration overhead.
+    subsequent calls skip the DDL/migration overhead, unless the db file was
+    removed mid-process (then the schema is re-applied — see _has_schema).
     Returns the open connection — caller is responsible for closing it.
     """
     db_path = get_db_path(vault_root)
@@ -278,7 +291,7 @@ def init_db(vault_root: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
 
     key = str(db_path)
-    if key not in _INITIALIZED:
+    if key not in _INITIALIZED or not _has_schema(conn):
         conn.executescript(_DDL)
         _migrate_schema(conn)
         _INITIALIZED.add(key)

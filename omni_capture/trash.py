@@ -13,10 +13,11 @@ Files are the source of truth: "deleted_at" is the trashed file's own mtime
 "original category" is read straight out of the note's own frontmatter —
 nothing is tracked in a side database.
 
-ponytail: no automatic 30-day purge job exists yet — the countdown is
-display-only (matches the mock's "Purge policy: 30 days" caption). Add a
-scheduled sweep only if lingering trash actually becomes a problem in
-practice.
+OF-16: `purge_expired` hard-deletes `_trash/*.md` past the 30-day window (the
+LOCAL-vault half of the purge); the desktop sync agent sweeps the hub `_trash/`
+separately (mobile_sync_agent.purge_expired_hub_trash — the Drive-side purge
+authority, note-features §6 "purge runs only on the online device"). The
+"Purge policy: 30 days" caption is now enforced, not display-only.
 """
 from __future__ import annotations
 
@@ -55,6 +56,27 @@ def list_trash(vault_root: Path) -> list[dict]:
         })
     out.sort(key=lambda r: r["deleted_at"], reverse=True)
     return out
+
+
+def purge_expired(vault_root: Path, now: float | None = None) -> list[str]:
+    """OF-16: permanently delete `_trash/*.md` whose 30-day recovery window has elapsed.
+
+    `deleted_at` is the trashed file's own mtime (see list_trash). Restore always wins: a file restored
+    before its window elapses has already left `_trash/`, so it is never seen here. This is the LOCAL
+    half of the purge; the hub `_trash/` is swept by the sync agent. Returns the filenames purged."""
+    now = time.time() if now is None else now
+    trash_dir = _trash_dir(vault_root)
+    if not trash_dir.is_dir():
+        return []
+    purged: list[str] = []
+    for f in trash_dir.glob("*.md"):
+        try:
+            if now - f.stat().st_mtime >= _PURGE_AFTER_SECONDS:
+                f.unlink()
+                purged.append(f.name)
+        except OSError:
+            continue
+    return purged
 
 
 def restore_from_trash(vault_root: Path, filename: str) -> dict:
@@ -117,5 +139,19 @@ if __name__ == "__main__":
         except FileNotFoundError:
             pass
         print("[T3] restore_from_trash missing  PASS")
+
+        # T4: purge_expired removes only files past the 30-day window (OF-16).
+        import os as _os
+        fresh = trash_dir / "fresh.md"
+        fresh.write_text("---\ntitle: Fresh\n---\nbody\n", encoding="utf-8")
+        old = trash_dir / "expired.md"
+        old.write_text("---\ntitle: Expired\n---\nbody\n", encoding="utf-8")
+        old_mtime = time.time() - (_PURGE_AFTER_SECONDS + 3600)
+        _os.utime(old, (old_mtime, old_mtime))
+        purged = purge_expired(vault)
+        assert purged == ["expired.md"], purged
+        assert not old.exists()
+        assert fresh.exists()
+        print("[T4] purge_expired  PASS")
 
     print("\nAll trash.py smoke tests passed.")

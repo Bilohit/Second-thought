@@ -144,7 +144,7 @@ function renderCaptureCard(
       <div style={CLABEL}>
         Capture
         <span style={{ flex: 1 }} />
-        {voicePhase !== "recording" && <span style={chipStyle(!!chipColor, chipColor)}>{chipLabel}</span>}
+        {voicePhase !== "recording" && chipLabel !== "idle" && <span style={chipStyle(!!chipColor, chipColor)}>{chipLabel}</span>}
         {voiceIdle ? (
           <button
             type="button"

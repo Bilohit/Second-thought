@@ -5,6 +5,7 @@
 import { openPath } from "@tauri-apps/plugin-opener";
 import { getGuiSecret } from "./tauri";
 import { logger } from "./logger";
+import { parseSseFrame } from "./sse";
 
 /** Open a file or folder with the OS default handler (cross-platform host API). */
 // ponytail: $HOME/** scope; tighten to the live vault root if a user keeps notes outside home
@@ -12,15 +13,6 @@ export async function openFilePath(path: string): Promise<void> { await openPath
 export async function openVaultPath(path: string): Promise<void> { await openPath(path); }
 
 const BASE = "http://localhost:7070";
-
-function parseSseFrame(frame: string): { ev: string; data: string } | null {
-  let ev = "message", data = "";
-  for (const line of frame.split("\n")) {
-    if (line.startsWith("event: ")) ev = line.slice(7).trim();
-    if (line.startsWith("data: ")) data = line.slice(6).trim();
-  }
-  return data ? { ev, data } : null;
-}
 
 async function assertOk(r: Response, fallback: string): Promise<Response> {
   if (r.ok) return r;

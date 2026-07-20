@@ -85,7 +85,7 @@ export const THEME_LABELS: Record<Theme, string> = {
   "light":      "Paper",
   "sage":       "Sage",
   "sky":        "Sky",
-  "bubba-pink": "Bubba Pink",
+  "bubba-pink": "Bubba",
   "mist":       "Mist",
   "lilac":      "Lilac",
   "sand":       "Sand",

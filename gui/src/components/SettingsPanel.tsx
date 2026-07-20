@@ -90,16 +90,16 @@ function ThemeSwatchPicker({ theme, onSelectTheme, compact }: { theme: Theme; on
       aria-label="Theme"
       style={{
         display: "grid",
-        gridTemplateColumns: compact ? "repeat(5, 40px)" : "repeat(10, 36px)",
-        gap: compact ? 10 : 4,
-        justifyContent: "center",
+        gridTemplateColumns: compact ? "repeat(5, 40px)" : "repeat(5, 1fr)",
+        gap: compact ? 10 : 12,
+        justifyContent: compact ? "center" : "stretch",
       }}
     >
       {THEMES.map((t) => {
         const active = t === theme;
         const isCustom = t === "custom";
         return (
-          <div key={t} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, width: compact ? 40 : 36 }}>
+          <div key={t} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, width: compact ? 40 : "auto" }}>
             <button
               type="button"
               role="radio"
@@ -110,8 +110,8 @@ function ThemeSwatchPicker({ theme, onSelectTheme, compact }: { theme: Theme; on
               data-theme={isCustom ? undefined : t}
               className="btn-hover"
               style={{
-                width: 26,
-                height: 26,
+                width: compact ? 26 : 40,
+                height: compact ? 26 : 40,
                 padding: 0,
                 border: active
                   ? "2px solid var(--accent)"
@@ -126,12 +126,12 @@ function ThemeSwatchPicker({ theme, onSelectTheme, compact }: { theme: Theme; on
               }}
             >
               {isCustom ? (
-                <PlusIcon size={13} />
+                <PlusIcon size={compact ? 13 : 18} />
               ) : (
                 <span
                   style={{
-                    width: 14,
-                    height: 14,
+                    width: compact ? 14 : 20,
+                    height: compact ? 14 : 20,
                     background: "var(--accent)",
                     border: "1px solid var(--border)",
                   }}
@@ -163,10 +163,11 @@ function ThemeSwatchPicker({ theme, onSelectTheme, compact }: { theme: Theme; on
 // "custom" (center cell) leaves the pill wherever the window was last
 // dragged/placed instead of snapping it anywhere.
 
-const ANCHOR_CELL = 30;
+const ANCHOR_CELL = 42;
 
 function AnchorGrid({ anchor, onSelect }: { anchor: PillAnchor; onSelect: (a: PillAnchor) => void }) {
   return (
+    <div style={{ display: "flex", justifyContent: "center" }}>
     <div
       role="radiogroup"
       aria-label="Pill placement"
@@ -174,7 +175,10 @@ function AnchorGrid({ anchor, onSelect }: { anchor: PillAnchor; onSelect: (a: Pi
         display: "grid",
         gridTemplateColumns: `repeat(3, ${ANCHOR_CELL}px)`,
         gridTemplateRows: `repeat(3, ${ANCHOR_CELL}px)`,
-        gap: 4,
+        gap: 6,
+        padding: 10,
+        border: "1px solid var(--border)",
+        background: "var(--surface)",
         width: "fit-content",
       }}
     >
@@ -195,7 +199,7 @@ function AnchorGrid({ anchor, onSelect }: { anchor: PillAnchor; onSelect: (a: Pi
               width: ANCHOR_CELL,
               height: ANCHOR_CELL,
               padding: 0,
-              background: active ? "var(--surface-2)" : "var(--surface)",
+              background: active ? "var(--surface-2)" : "var(--bg)",
               border: active ? "1px solid var(--accent)" : "1px solid var(--border)",
               borderStyle: isCustom ? "dashed" : "solid",
               cursor: "pointer",
@@ -213,6 +217,7 @@ function AnchorGrid({ anchor, onSelect }: { anchor: PillAnchor; onSelect: (a: Pi
           </button>
         );
       })}
+    </div>
     </div>
   );
 }

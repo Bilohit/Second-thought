@@ -145,6 +145,23 @@ def _atomic_write_note(path: str, content: str) -> None:
     os.replace(tmp, path)   # atomic
 
 
+def _reap_tmp_orphans(vault_path: str) -> int:
+    """OF-19: _atomic_write_note writes a `<note>.md.tmp` sibling then os.replace()s it into place.
+    A kill between the two leaves an orphan `.md.tmp` that read_vault_notes' `*.md` rglob never sees
+    and nothing reaps, so it lingers on disk forever. The write+replace is synchronous within one
+    call, so no live `.md.tmp` survives across passes — any found at pass start is dead. Only
+    _atomic_write_note produces `<path-ending-.md>.tmp` (save_state uses `state.json.tmp`), so the
+    glob is exact. Reap them so they don't accumulate. Returns how many were removed."""
+    reaped = 0
+    for tmp in Path(vault_path).rglob("*.md.tmp"):
+        try:
+            tmp.unlink()
+            reaped += 1
+        except OSError:
+            pass  # locked/gone — harmless (invisible to the *.md scan); next pass retries
+    return reaped
+
+
 def _mint_capture_id() -> str:
     # ponytail: uuid4-hex id (opaque sync identity, only needs uniqueness), matching the same
     # ULID-substitute convention already used for conflicted-copy ids in reconcile_changes().
@@ -275,7 +292,7 @@ def _list_children(drive, parent_id: str, mime_is_folder: Optional[bool] = None)
             drive.files()
             .list(
                 q=q,
-                fields="nextPageToken, files(id, name, headRevisionId, appProperties, mimeType, md5Checksum)",
+                fields="nextPageToken, files(id, name, headRevisionId, appProperties, mimeType, md5Checksum, modifiedTime)",
                 pageToken=page_token,
             )
             .execute()
@@ -344,6 +361,45 @@ def _download_bytes(drive, file_id: str) -> bytes:
 
 def _delete_file(drive, file_id: str) -> None:
     drive.files().delete(fileId=file_id).execute()
+
+
+# OF-16: 30-day trash purge. Retention window; keep in lockstep with trash.py `_PURGE_AFTER_SECONDS`
+# and the phone's trash.ts `PURGE_WINDOW_MS`.
+_PURGE_AFTER_SECONDS = 30 * 24 * 3600
+
+
+def _parse_drive_time(rfc3339: str) -> float:
+    """Drive modifiedTime (RFC3339, e.g. '2026-07-20T12:00:00.000Z') → epoch seconds."""
+    from datetime import datetime
+    return datetime.fromisoformat(rfc3339.replace("Z", "+00:00")).timestamp()
+
+
+def purge_expired_hub_trash(
+    drive, hub_folder_id: str, now_ts: Optional[float] = None,
+    ttl_seconds: float = _PURGE_AFTER_SECONDS,
+) -> int:
+    """OF-16: permanently delete hub `_trash/` notes trashed longer than ttl_seconds ago.
+
+    The desktop is the single Drive-side purge authority (note-features §6: purge runs only on the
+    online device); each peer separately purges its own LOCAL trash mirror. Age = Drive modifiedTime
+    (the move-to-`_trash/` stamp) — a coarse retention sweep, NOT a version/conflict decision, so
+    modifiedTime is the correct clock here (the headRevisionId-never-mtime lock governs merge/version
+    calls, which this is not). Restore always wins: a restored note has already left `_trash/`, so it
+    is never seen here. Returns how many files were purged."""
+    now_ts = time.time() if now_ts is None else now_ts
+    _cats, reserved = list_hub_tree(drive, hub_folder_id)
+    trash_id = reserved.get("_trash")
+    if not trash_id:
+        return 0
+    purged = 0
+    for f in _list_children(drive, trash_id, mime_is_folder=False):
+        mtime = f.get("modifiedTime")
+        if not mtime:
+            continue  # no timestamp → never purge (safe default: keep)
+        if now_ts - _parse_drive_time(mtime) >= ttl_seconds:
+            _delete_file(drive, f["id"])
+            purged += 1
+    return purged
 
 
 def get_hub_notes(drive, hub_folder_id: str) -> Dict[str, Dict]:
@@ -1108,6 +1164,15 @@ def run_once(
     hub_id = ensure_hub_folder(drive)
     vault_root = vault_root or vault_path
     state = load_state(state_path)
+    _reap_tmp_orphans(vault_path)  # OF-19: clear any crash-orphaned <note>.md.tmp from a prior pass
+    # OF-16: 30-day trash purge — best-effort, must never abort a sync pass. Local vault _trash/ plus
+    # the hub _trash/ (the desktop is the Drive-side purge authority; peers purge their own local copy).
+    try:
+        from trash import purge_expired
+        purge_expired(Path(vault_path))
+        purge_expired_hub_trash(drive, hub_id)
+    except Exception as e:  # noqa: BLE001 - a purge failure must not break sync
+        print(f"[mobile_sync_agent] trash purge failed: {e}")
 
     # Task 3.1: one-time hub-filename migration, guarded on state["hub_names_migrated"] so it is
     # zero-cost on every pass after the first. Runs BEFORE list_hub_tree/get_hub_notes below so
@@ -1334,7 +1399,15 @@ def run_pass() -> dict:
             print(f"[mobile_sync_agent] lan refresh_outbound failed: {e}")
         try:
             import provisional_store as ps
-            ps.sweep(os.path.join(vault_path, ".sync"), now_ts=time.time(), ttl_seconds=86400.0)
+            # OF-7: TTL = N=3 sync intervals (contract §11.6), derived from the configured interval
+            # so both peers agree and it self-scales — not a hardcoded 24h. interval_minutes==0 is the
+            # never-auto-sync sentinel; fall back to the 60-min default basis so the TTL stays sane.
+            interval_min = cfg.sync.interval_minutes or 60
+            ps.sweep(
+                os.path.join(vault_path, ".sync"),
+                now_ts=time.time(),
+                ttl_seconds=float(3 * interval_min * 60),
+            )
         except Exception as e:
             print(f"[mobile_sync_agent] lan provisional sweep failed: {e}")
         try:

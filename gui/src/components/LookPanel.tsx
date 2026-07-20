@@ -18,7 +18,6 @@ import {
   BTN_GHOST, BTN_SECONDARY, INPUT_STYLE,
 } from "./ui/styles";
 import { RefreshIcon, SendIcon, AlertIcon } from "./PillMenu/icons";
-import { Toggle } from "./ui/Toggle";
 
 interface LookChatHook {
   messages: ChatMessage[];
@@ -697,13 +696,40 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
             {compact ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "3px 6px 4px", flexShrink: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={ignoreHistory}
+                    aria-label="Ignore history"
                     title="When on, each message is sent without prior conversation context"
-                    style={{ display: "flex", alignItems: "center", gap: 6 }}
+                    onClick={() => setIgnoreHistory(!ignoreHistory)}
+                    style={{
+                      position: "relative", overflow: "hidden",
+                      display: "inline-flex", alignItems: "center", gap: 7,
+                      font: "inherit", fontSize: 10,
+                      padding: "5px 10px",
+                      // #10: fixed 0 radius — never follows the rounded/sharp form setting.
+                      borderRadius: 0,
+                      border: `1px solid ${ignoreHistory ? "var(--accent)" : "var(--border)"}`,
+                      background: "var(--surface)",
+                      color: ignoreHistory ? "var(--text-1)" : "var(--text-2)",
+                      cursor: "pointer", flexShrink: 0,
+                      transition: "border-color 160ms var(--hover-ease-out), color 160ms var(--hover-ease-out)",
+                    }}
                   >
-                    <Toggle checked={ignoreHistory} onChange={setIgnoreHistory} label="Ignore history" />
-                    <span style={{ fontSize: 10, color: "var(--text-3)" }}>Ignore history</span>
-                  </div>
+                    <span aria-hidden="true" style={{
+                      position: "absolute", inset: 0, background: "var(--accent-d)",
+                      transform: ignoreHistory ? "scaleX(1)" : "scaleX(0)", transformOrigin: "left",
+                      transition: "transform 220ms cubic-bezier(0.16,1,0.3,1)",
+                    }} />
+                    <span aria-hidden="true" style={{
+                      position: "relative", width: 8, height: 8, flexShrink: 0,
+                      border: `1px solid ${ignoreHistory ? "var(--accent)" : "var(--text-3)"}`,
+                      background: ignoreHistory ? "var(--accent)" : "transparent",
+                      transition: "background 160ms, border-color 160ms",
+                    }} />
+                    <span style={{ position: "relative" }}>Ignore history</span>
+                  </button>
                   <button
                     type="button"
                     onClick={reset}
@@ -785,13 +811,40 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <div
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={ignoreHistory}
+                    aria-label="Ignore history"
                     title="When on, each message is sent without prior conversation context"
-                    style={{ display: "flex", alignItems: "center", gap: 6 }}
+                    onClick={() => setIgnoreHistory(!ignoreHistory)}
+                    style={{
+                      position: "relative", overflow: "hidden",
+                      display: "inline-flex", alignItems: "center", gap: 7,
+                      font: "inherit", fontSize: 10,
+                      padding: "5px 10px",
+                      // #10: fixed 0 radius — never follows the rounded/sharp form setting.
+                      borderRadius: 0,
+                      border: `1px solid ${ignoreHistory ? "var(--accent)" : "var(--border)"}`,
+                      background: "var(--surface)",
+                      color: ignoreHistory ? "var(--text-1)" : "var(--text-2)",
+                      cursor: "pointer", flexShrink: 0,
+                      transition: "border-color 160ms var(--hover-ease-out), color 160ms var(--hover-ease-out)",
+                    }}
                   >
-                    <Toggle checked={ignoreHistory} onChange={setIgnoreHistory} label="Ignore history" />
-                    <span style={{ fontSize: 10, color: "var(--text-3)" }}>Ignore history</span>
-                  </div>
+                    <span aria-hidden="true" style={{
+                      position: "absolute", inset: 0, background: "var(--accent-d)",
+                      transform: ignoreHistory ? "scaleX(1)" : "scaleX(0)", transformOrigin: "left",
+                      transition: "transform 220ms cubic-bezier(0.16,1,0.3,1)",
+                    }} />
+                    <span aria-hidden="true" style={{
+                      position: "relative", width: 8, height: 8, flexShrink: 0,
+                      border: `1px solid ${ignoreHistory ? "var(--accent)" : "var(--text-3)"}`,
+                      background: ignoreHistory ? "var(--accent)" : "transparent",
+                      transition: "background 160ms, border-color 160ms",
+                    }} />
+                    <span style={{ position: "relative" }}>Ignore history</span>
+                  </button>
                   <span style={{ fontSize: 10, color: "var(--text-3)", flex: 1 }}>
                     {ignoreHistory ? "Standalone query — prior turns skipped" : "Follow-ups use recent chat context"}
                   </span>
