@@ -28,5 +28,9 @@ omni_capture/.mobile_sync_state.json
 # OAuth material — never commit
 omni_capture/client_secret.json
 omni_capture/.drive_token.json
+
+# Local config holds live X-Omni-Secret + LAN key once the app runs — never commit.
+# Ship config.toml.example instead; the app writes a real config.toml on first launch.
+omni_capture/config.toml
 coverage/
 omni_capture/.coverage
