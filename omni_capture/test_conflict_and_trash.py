@@ -29,7 +29,7 @@ from conflict_resolver import (
     resolve_conflict,
 )
 from note_editor import NoteConflictError
-from trash import list_trash, restore_from_trash
+from trash import list_trash, move_to_trash, restore_from_trash
 
 _ORIGINAL = (
     "---\nid: 01ORIG\ntitle: Example note\ncategory: Tech_Notes\n---\n"
@@ -361,6 +361,64 @@ def test_unreadable_trash_entry_is_skipped_not_fatal(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "read_text", flaky)
     items = list_trash(tmp_path)
     assert [i["filename"] for i in items] == ["good.md"]
+
+
+def test_move_to_trash_is_body_byte_identical(tmp_path):
+    """ISS-005 A: a user delete is a soft MOVE — frontmatter + sacred body byte-identical
+    after, and the file leaves its category folder for _trash/."""
+    cat = tmp_path / "Personal"
+    cat.mkdir()
+    note = cat / "keep.md"
+    # CRLF body + trailing spaces: a byte churn (newline translation, rstrip) would show here.
+    raw = (
+        b"---\ntitle: Keep\ncategory: Personal\norigin: note\n---\n"
+        b"# Keep\r\n\r\nSacred body.   \n"
+    )
+    note.write_bytes(raw)
+
+    result = move_to_trash(tmp_path, note)
+
+    assert not note.exists(), "note must leave its category folder"
+    trashed = tmp_path / "_trash" / result["filename"]
+    assert trashed.read_bytes() == raw, "move_to_trash rewrote the note bytes"
+    # Original category survives in frontmatter → restore puts it back where it was.
+    listed = list_trash(tmp_path)
+    assert listed and listed[0]["category"] == "Personal"
+
+
+def test_move_to_trash_round_trips_with_restore(tmp_path):
+    """A trashed note restores to its original category (the symmetric move, both directions)."""
+    cat = tmp_path / "Work"
+    cat.mkdir()
+    note = cat / "task.md"
+    note.write_text("---\ntitle: Task\ncategory: Work\norigin: note\n---\nbody\n", encoding="utf-8")
+
+    moved = move_to_trash(tmp_path, note)
+    assert not note.exists()
+    restored = restore_from_trash(tmp_path, moved["filename"])
+    assert restored["category"] == "Work"
+    assert (cat / moved["filename"]).is_file()
+
+
+def test_move_to_trash_missing_note_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        move_to_trash(tmp_path, tmp_path / "Personal" / "ghost.md")
+
+
+def test_move_to_trash_does_not_overwrite_a_same_named_trash_entry(tmp_path):
+    """Two notes sharing a filename, deleted in turn, must both survive in _trash/."""
+    trash_dir = tmp_path / "_trash"
+    trash_dir.mkdir()
+    (trash_dir / "dup.md").write_text("---\ntitle: First\n---\nfirst\n", encoding="utf-8")
+    cat = tmp_path / "Personal"
+    cat.mkdir()
+    live = cat / "dup.md"
+    live.write_text("---\ntitle: Second\n---\nsecond\n", encoding="utf-8")
+
+    result = move_to_trash(tmp_path, live)
+    assert result["filename"] != "dup.md", "must not clobber the existing trashed note"
+    assert (trash_dir / "dup.md").read_text(encoding="utf-8").endswith("first\n")
+    assert (trash_dir / result["filename"]).read_text(encoding="utf-8").endswith("second\n")
 
 
 def test_list_trash_is_newest_deleted_first(tmp_path):

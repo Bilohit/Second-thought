@@ -25,6 +25,7 @@ from typing import Dict, List, Optional
 
 from models import CaptureOutput
 from frontmatter import strip_frontmatter
+from path_safety import safe_subdir
 
 
 def _scratchpad_path(vault_root: Path, scratchpad_folder: str) -> Path:
@@ -87,7 +88,12 @@ def route_failed_vision(
         suggested_filename="unprocessed-image",
         markdown_content=body,
         rationale=reason,
-        key_signals=["vision-failed"],
+        # ISS-019: namespaced under sys/ so this machine-written marker
+        # never masquerades as a user content tag in the Tags browser --
+        # _signals_to_tags (storage_engine.py) passes "/" through untouched,
+        # so this becomes frontmatter tag "sys/vision-failed" and the
+        # Tags browser (TagsView.tsx) filters the whole sys/ namespace out.
+        key_signals=["sys/vision-failed"],
         confidence=0.0,
         requires_new_category=False,
     )
@@ -133,7 +139,8 @@ def route_failed_llm(
         suggested_filename="unprocessed-capture",
         markdown_content=body,
         rationale=reason,
-        key_signals=["llm-failed"],
+        # ISS-019: namespaced under sys/ -- see route_failed_vision above.
+        key_signals=["sys/llm-failed"],
         confidence=0.0,
         requires_new_category=False,
     )
@@ -190,10 +197,20 @@ def approve_scratchpad_item(
         raise FileNotFoundError(f"Scratchpad item {note_id!r} not found.")
 
     text = item.read_text(encoding="utf-8", errors="ignore")
-    category = target_category or _extract_frontmatter_field(text, "category") or "Uncategorised"
+    raw_category = target_category or _extract_frontmatter_field(text, "category") or "Uncategorised"
+
+    # SRV-03: this join is reached by TWO untrusted values -- the caller's
+    # `target_category`, and the note's own `category` frontmatter, which arrives from
+    # the Drive hub. Sanitizing only at the server route (server.py:1481) left this
+    # second source wide open and left every non-HTTP caller unguarded, so the guard
+    # belongs here, where all paths converge.
+    try:
+        dest_dir = safe_subdir(vault_root, raw_category)
+    except ValueError:
+        dest_dir = safe_subdir(vault_root, "Uncategorised")
+    category = dest_dir.name
 
     init_vault(vault_root, scratchpad_folder)
-    dest_dir = vault_root / category
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     base_filename = re.sub(r"-" + note_id + r"$", "", item.stem) + ".md"

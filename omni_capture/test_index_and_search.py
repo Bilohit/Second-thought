@@ -19,13 +19,22 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import unittest.mock as mock
 from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 # Silence startup warnings for tests (must be set before importing server)
-os.environ.setdefault("OMNI_GUI_SECRET", "")
+# SRV-01: server._require_secret now fails CLOSED, so an empty OMNI_GUI_SECRET
+# 403s every route instead of disabling auth. Every server test module uses this
+# SAME literal on purpose: the env var is process-global and pytest imports all
+# modules before running any test, so differing values would make the suite
+# order-dependent.
+GUI_SECRET = "omni-test-secret-0123456789abcdef"
+os.environ["OMNI_GUI_SECRET"] = GUI_SECRET
+_AUTH = {"X-Omni-Secret": GUI_SECRET}
+
 
 try:
     from fastapi.testclient import TestClient
@@ -294,6 +303,118 @@ class TestSearch(unittest.TestCase):
             self.assertEqual(results, [])
 
 
+class TestTieredSearch(unittest.TestCase):
+    """P-DSEARCH: substring + exact + bm25-relevance tiers (ISS-011, ISS-012)."""
+
+    def _write_note(self, vault: Path, category: str, name: str, body: str, **kw) -> None:
+        cat_dir = vault / category
+        cat_dir.mkdir(parents=True, exist_ok=True)
+        path = cat_dir / f"{name}.md"
+        path.write_text(f"---\ntitle: {name}\n---\n{body}\n", encoding="utf-8")
+        log_capture_db(_entry_index(filepath=str(path), filename=name, category=category, **kw), vault)
+
+    def test_substring_tier_finds_non_token_boundary_fragment(self):
+        """'bug' inside 'debugger' is not a token/prefix match for FTS5 (the
+        token starts with 'deb', not 'bug') -- only the raw LIKE net (item 3,
+        tier 'substring') can find it."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = _vault(Path(td))
+            self._write_note(vault, "Tech_Notes", "debug-note", "An embedded debugger reference.")
+
+            results = search("bug", vault)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["tier"], "substring")
+            self.assertAlmostEqual(results[0]["score"], 0.35)
+
+    def test_hyphenated_query_matches_hyphenated_index_term(self):
+        """ISS-011: 'QA-CLIPTEST' must match even though FTS5's unicode61
+        tokenizer splits the hyphen into separate index terms at write time."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = _vault(Path(td))
+            self._write_note(vault, "Unprocessed_Captures", "clip", "QA-CLIPTEST marker text.")
+
+            results = search("QA-CLIPTEST", vault)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["filename"], "clip")
+
+    def test_exact_phrase_tier_requires_adjacency(self):
+        """Two adjacent words land in the 'exact' tier (FTS5 phrase match) --
+        distinct from the looser per-token AND match ('substring')."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = _vault(Path(td))
+            self._write_note(vault, "Tech_Notes", "ml", "A machine learning pipeline overview.")
+
+            results = search("machine learning", vault)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["tier"], "exact")
+
+    def test_bm25_orders_by_relevance_not_recency(self):
+        """The older-but-more-relevant note must rank ABOVE the newer-but-
+        barely-relevant one -- the old `ORDER BY timestamp DESC` would have
+        put them the other way around."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = _vault(Path(td))
+            self._write_note(
+                vault, "Tech_Notes", "rocket-heavy",
+                "rocket rocket rocket rocket engines",
+                timestamp="2025-01-01T00:00:00",
+            )
+            self._write_note(
+                vault, "Tech_Notes", "rocket-mention",
+                "A short note mentioning a rocket in passing, among many other "
+                "unrelated words that pad out this document considerably.",
+                timestamp="2025-06-01T00:00:00",
+            )
+
+            results = search("rocket", vault)
+            self.assertGreaterEqual(len(results), 2)
+            self.assertEqual(results[0]["filename"], "rocket-heavy",
+                              "bm25 relevance must win over recency")
+
+    def test_blank_query_still_orders_by_recency_with_null_tier(self):
+        """A blank query keeps the old 'browse everything, newest first'
+        behavior -- there's nothing to rank by relevance."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = _vault(Path(td))
+            self._write_note(vault, "Tech_Notes", "a", "alpha", timestamp="2025-01-01T00:00:00")
+            self._write_note(vault, "Tech_Notes", "b", "beta", timestamp="2025-06-01T00:00:00")
+
+            results = search("", vault)
+            self.assertEqual(results[0]["filename"], "b")
+            self.assertIsNone(results[0]["tier"])
+            self.assertIsNone(results[0]["score"])
+
+
+class TestSemanticFusion(unittest.TestCase):
+    """P-DSEARCH item 6: GET /search fuses the semantic tier server-side."""
+
+    def _make_client(self, vault: Path) -> "TestClient":
+        import server
+        server._get_vault_root = lambda: vault   # type: ignore[attr-defined]
+        return TestClient(server.app, headers=_AUTH)
+
+    def test_semantic_tier_surfaced_with_score(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            client = self._make_client(vault)
+            import vector_store
+            fake_row = {
+                "path": "Tech_Notes/related.md",
+                "similarity": 0.87,
+                "excerpt": "…",
+                "category": "Tech_Notes",
+            }
+            with mock.patch.object(vector_store, "semantic_search", return_value=[fake_row]):
+                data = client.get("/search?q=something").json()
+
+            tiers = {r["tier"] for r in data["results"]}
+            self.assertIn("semantic", tiers)
+            sem = next(r for r in data["results"] if r["tier"] == "semantic")
+            self.assertEqual(sem["score"], 0.87)
+            self.assertEqual(sem["path"], "Tech_Notes/related.md")
+
+
 class TestStats(unittest.TestCase):
     def _populate(self, vault: Path) -> None:
         for i, (cat, fp) in enumerate([
@@ -450,7 +571,7 @@ class TestSearchEndpoint(unittest.TestCase):
     def _make_client(self, vault: Path) -> "TestClient":
         import server
         server._get_vault_root = lambda: vault   # type: ignore[attr-defined]
-        return TestClient(server.app)
+        return TestClient(server.app, headers=_AUTH)
 
     def _seed(self, vault: Path, entries: list[dict]) -> None:
         for e in entries:
@@ -532,7 +653,7 @@ class TestStatsEndpoint(unittest.TestCase):
     def _make_client(self, vault: Path) -> "TestClient":
         import server
         server._get_vault_root = lambda: vault   # type: ignore[attr-defined]
-        return TestClient(server.app)
+        return TestClient(server.app, headers=_AUTH)
 
     def _seed(self, vault: Path) -> None:
         entries = [

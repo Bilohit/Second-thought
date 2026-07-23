@@ -9,7 +9,7 @@ import {
   getNoteConflict,
   resolveNoteConflict,
   addNoteAttachment,
-  attachmentUrl,
+  fetchAttachmentBlob,
   NoteConflictError,
   type NoteContent,
   type SearchResult,
@@ -20,6 +20,8 @@ import {
 } from "../lib/api";
 import { applyMarkdownFormat, parseOutline, parseWikilinks, type FormatKind } from "../lib/noteFormat";
 import { parseAttachments } from "../lib/attachments";
+import { isSaveRetry, saveRetryDelayMs } from "../lib/saveRetry";
+import { logger } from "../lib/logger";
 import { diffLines } from "../lib/lineDiff";
 import { BellIcon, ClockIcon } from "./PillMenu/icons";
 import { RADIAL_STAGGER_MS } from "./PillMenu/RadialMenu";
@@ -27,7 +29,7 @@ import { RADIAL_STAGGER_MS } from "./PillMenu/RadialMenu";
 const TRAVEL = "cubic-bezier(0.22,1,0.36,1)";
 const SETTLE = "cubic-bezier(0.16,1,0.3,1)";
 const DUR = 260;
-const SAVE_DEBOUNCE_MS = 900;
+// Autosave debounce + failure backoff live in lib/saveRetry.ts (GUI-18).
 
 interface NoteEditorProps {
   open: boolean;
@@ -205,6 +207,10 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastSavedBodyRef = useRef("");
+  // GUI-18: last body actually *sent* (as opposed to successfully saved) plus
+  // its consecutive-failure count — together these drive the autosave backoff.
+  const lastAttemptedBodyRef = useRef<string | null>(null);
+  const saveFailuresRef = useRef(0);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const reducedMotion = typeof window !== "undefined"
@@ -270,24 +276,37 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     if (!open || !path || baseMtime === null) return;
     if (saveState === "conflict") return;
     if (body === lastSavedBodyRef.current) return;
+    // GUI-18: a failed save leaves lastSavedBodyRef untouched, so this effect
+    // re-fires on the identical body. Track the last *attempted* body too and
+    // back the retry off, instead of hammering a failing endpoint at the plain
+    // debounce interval forever.
+    const retrying = isSaveRetry(body, lastAttemptedBodyRef.current);
+    if (!retrying) saveFailuresRef.current = 0;
+    const delay = saveRetryDelayMs(saveFailuresRef.current);
+
     setSaveState("saving");
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
+      lastAttemptedBodyRef.current = body;
       saveNoteContent(path, body, baseMtime)
         .then((r) => {
+          saveFailuresRef.current = 0;
           lastSavedBodyRef.current = body;
           setBaseMtime(r.mtime);
           setSaveState("saved");
         })
         .catch((err) => {
           if (err instanceof NoteConflictError) {
+            saveFailuresRef.current = 0;
             setConflictBody(err.currentBody);
             setSaveState("conflict");
           } else {
+            saveFailuresRef.current += 1;
+            logger.warn("note", "autosave failed", { path, attempt: saveFailuresRef.current, err });
             setSaveState("error");
           }
         });
-    }, SAVE_DEBOUNCE_MS);
+    }, delay);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [body, open, path, baseMtime, saveState]);
@@ -431,6 +450,40 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
   // F-13: attachment blocks parsed from the current body -- always reflects
   // what's actually on disk/in the textarea, no separate source of truth.
   const attachments = useMemo(() => parseAttachments(body), [body]);
+
+  // GUI-07: `/note/attachment` is behind X-Omni-Secret, and a DOM-issued
+  // `src`/`href` GET carries no headers -- inline attachments 403'd and never
+  // rendered. Fetch each one with the auth header and hand the DOM a `blob:`
+  // URL instead. Keyed on (note.path, filenames); every URL created here is
+  // revoked on cleanup, so blob lifetime is bounded by one open note.
+  const notePath = note?.path ?? null;
+  const attachmentKey = attachments.map((a) => a.filename).join(" ");
+  const [attachmentUrls, setAttachmentUrls] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!notePath || attachments.length === 0) { setAttachmentUrls({}); return; }
+    let cancelled = false;
+    const created: string[] = [];
+    Promise.all(
+      attachments.map(async (a) => {
+        try {
+          const url = await fetchAttachmentBlob(notePath, a.filename);
+          created.push(url);
+          return [a.filename, url] as const;
+        } catch {
+          return null; // one bad attachment must not blank the others
+        }
+      }),
+    ).then((pairs) => {
+      if (cancelled) return;
+      setAttachmentUrls(Object.fromEntries(pairs.filter((p): p is readonly [string, string] => p !== null)));
+    });
+    return () => {
+      cancelled = true;
+      for (const url of created) URL.revokeObjectURL(url);
+      setAttachmentUrls({});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notePath, attachmentKey]);
 
   const handleAttachFile = useCallback((file: File | null) => {
     if (!file || !note || baseMtime === null) return;
@@ -633,23 +686,27 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
                       }}>
                         {a.kind === "audio" ? "VOICE MEMO" : a.kind === "image" ? "IMAGE" : "FILE"} · {a.filename}
                       </div>
-                      {a.kind === "image" && (
+                      {a.kind === "image" && attachmentUrls[a.filename] && (
                         <img
-                          src={attachmentUrl(note.path, a.filename)}
+                          src={attachmentUrls[a.filename]}
                           alt={a.filename}
                           style={{ display: "block", width: "100%", maxHeight: 320, objectFit: "contain", background: "var(--surface)" }}
                         />
                       )}
-                      {a.kind === "audio" && (
+                      {a.kind === "audio" && attachmentUrls[a.filename] && (
                         // ponytail: native <audio controls> instead of the mock's
                         // custom waveform scrubber -- zero-dependency playback that
                         // covers the same job (play/pause/seek/time); revisit with a
                         // custom waveform only if the native control visibly falls short.
-                        <audio controls style={{ width: "100%", display: "block" }} src={attachmentUrl(note.path, a.filename)} />
+                        <audio controls style={{ width: "100%", display: "block" }} src={attachmentUrls[a.filename]} />
                       )}
-                      {a.kind === "file" && (
+                      {a.kind === "file" && attachmentUrls[a.filename] && (
                         <a
-                          href={attachmentUrl(note.path, a.filename)}
+                          // Same blob URL as the inline cases -- a plain href to
+                          // the route 403s too (the webview navigates without
+                          // the header), so there is no second path here.
+                          href={attachmentUrls[a.filename]}
+                          download={a.filename}
                           target="_blank"
                           rel="noreferrer"
                           style={{ display: "block", padding: "10px 12px", fontSize: 12, color: "var(--text-2)" }}

@@ -14,7 +14,7 @@ def test_load_credentials_uses_cached_valid_token(tmp_path):
     token_file = tmp_path / ".drive_token.json"
     token_file.write_text("{}")  # contents irrelevant; from_authorized_user_file is mocked
 
-    fake_creds = MagicMock(valid=True)
+    fake_creds = MagicMock(valid=True, scopes=[drive_auth.DRIVE_SCOPE])
     with patch(
         "drive_auth.Credentials.from_authorized_user_file", return_value=fake_creds
     ) as from_file, patch("drive_auth.InstalledAppFlow") as flow:
@@ -31,7 +31,7 @@ def test_load_credentials_uses_cached_valid_token(tmp_path):
 def test_load_credentials_runs_flow_when_no_token(tmp_path):
     """No cached token → run the installed-app flow and persist the result."""
     token_path = tmp_path / ".drive_token.json"
-    fake_creds = MagicMock(valid=True)
+    fake_creds = MagicMock(valid=True, scopes=[drive_auth.DRIVE_SCOPE])
     fake_creds.to_json.return_value = '{"token": "x"}'
 
     fake_flow = MagicMock()
@@ -55,7 +55,7 @@ def test_load_credentials_refreshes_expired_token_without_a_browser(tmp_path):
     browser on a routine background sync pass."""
     token_file = tmp_path / ".drive_token.json"
     token_file.write_text("{}")
-    fake_creds = MagicMock(valid=False, expired=True, refresh_token="r")
+    fake_creds = MagicMock(valid=False, expired=True, refresh_token="r", scopes=[drive_auth.DRIVE_SCOPE])
     fake_creds.to_json.return_value = '{"token": "refreshed"}'
 
     with patch(
@@ -79,10 +79,10 @@ def test_load_credentials_falls_back_to_consent_when_refresh_fails(tmp_path):
     load_credentials path drops to a fresh consent and re-caches the new token."""
     token_file = tmp_path / ".drive_token.json"
     token_file.write_text("{}")
-    stale = MagicMock(valid=False, expired=True, refresh_token="r")
+    stale = MagicMock(valid=False, expired=True, refresh_token="r", scopes=[drive_auth.DRIVE_SCOPE])
     stale.refresh.side_effect = Exception("invalid_scope: Bad Request")
 
-    fresh = MagicMock(valid=True)
+    fresh = MagicMock(valid=True, scopes=[drive_auth.DRIVE_SCOPE])
     fresh.to_json.return_value = '{"token": "fresh"}'
     fake_flow = MagicMock()
     fake_flow.run_local_server.return_value = fresh
@@ -135,7 +135,7 @@ def test_has_cached_credentials_false_on_corrupt_token(tmp_path):
 
 def test_has_cached_credentials_true_for_valid_token(tmp_path):
     token_file = _token(tmp_path)
-    fake_creds = MagicMock(valid=True)
+    fake_creds = MagicMock(valid=True, scopes=[drive_auth.DRIVE_SCOPE])
     with patch(
         "drive_auth.Credentials.from_authorized_user_file", return_value=fake_creds
     ), patch("drive_auth.InstalledAppFlow") as flow:
@@ -148,7 +148,7 @@ def test_has_cached_credentials_refreshes_expired_token_and_recaches(tmp_path):
     """Expired-but-refreshable is still "usable": refresh non-interactively and
     persist the new token so the next call is a cheap valid-token hit."""
     token_file = _token(tmp_path)
-    fake_creds = MagicMock(valid=False, expired=True, refresh_token="r")
+    fake_creds = MagicMock(valid=False, expired=True, refresh_token="r", scopes=[drive_auth.DRIVE_SCOPE])
     fake_creds.to_json.return_value = '{"token": "refreshed"}'
 
     with patch(
@@ -165,7 +165,7 @@ def test_has_cached_credentials_false_when_refresh_fails(tmp_path):
     """Revoked grant / offline: the refresh raises. Answer False and leave the
     cached token file untouched — do not fall through to interactive consent."""
     token_file = _token(tmp_path)
-    fake_creds = MagicMock(valid=False, expired=True, refresh_token="r")
+    fake_creds = MagicMock(valid=False, expired=True, refresh_token="r", scopes=[drive_auth.DRIVE_SCOPE])
     fake_creds.refresh.side_effect = Exception("invalid_grant")
 
     with patch(
@@ -181,7 +181,7 @@ def test_has_cached_credentials_false_when_expired_without_refresh_token(tmp_pat
     """Expired with no refresh token is unusable — only consent could fix it,
     and consent is exactly what this function must never trigger."""
     token_file = _token(tmp_path)
-    fake_creds = MagicMock(valid=False, expired=True, refresh_token=None)
+    fake_creds = MagicMock(valid=False, expired=True, refresh_token=None, scopes=[drive_auth.DRIVE_SCOPE])
 
     with patch(
         "drive_auth.Credentials.from_authorized_user_file", return_value=fake_creds
@@ -221,7 +221,7 @@ def test_has_cached_credentials_default_token_is_not_cwd_relative(tmp_path, monk
     monkeypatch.chdir(tmp_path)  # a cwd with no credentials, like the server's
     seen = {}
 
-    def _spy(path, scopes):
+    def _spy(path):
         seen["path"] = path
         raise ValueError("stop here; only the resolved path matters")
 

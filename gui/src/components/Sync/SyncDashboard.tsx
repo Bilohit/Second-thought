@@ -20,13 +20,49 @@ import {
   resolveGauge, intervalIsNever,
   NEVER_INTERVAL_MINUTES,
 } from "../../lib/syncSetup";
-import type { DriveAuthStatus, SyncStatus, SyncRunResult } from "../../lib/api";
+import type { DriveAuthStatus, SyncStatus, SyncRunResult, SyncPassRow } from "../../lib/api";
 import { CloudIcon, RefreshIcon, AlertIcon } from "../PillMenu/icons";
 import { BTN_SECONDARY } from "../ui/styles";
 import { Toggle } from "../ui/Toggle";
 import {
   Group, SettingRow, Note, StatusDot, TONE_COLOR,
 } from "./parts";
+
+// ── Last-pass summary line ("Last sync: HH:MM · N items") ──────────────────
+//
+// `SyncPassRow` always carries started/finished/duration_s/ok/error; the item
+// counts are display-only extras `mobile_sync_agent.run_pass()` merges in
+// (uploaded, pulled, reconciled, inbox_ingested, enriched, conflicts, errors —
+// see omni_capture/mobile_sync_agent.py:1553). A failed pass (ok:false, e.g.
+// auth/quota/network) never reaches run_pass(), so those extras are simply
+// absent — read as 0 rather than invented.
+function numField(row: SyncPassRow, key: string): number {
+  const v = row[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+/** Pure so it has a runnable check (sibling SyncDashboard.test.ts) without mounting React. */
+export function summarizeLastPass(row: SyncPassRow | null): string | null {
+  if (!row) return null;
+  const finished = new Date(row.finished);
+  const time = isNaN(finished.getTime())
+    ? null
+    : finished.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  const items = numField(row, "uploaded") + numField(row, "pulled")
+    + numField(row, "reconciled") + numField(row, "inbox_ingested");
+
+  const parts = [time ? `Last sync: ${time}` : "Last sync"];
+  parts.push(`${items} item${items === 1 ? "" : "s"}`);
+
+  const conflicts = numField(row, "conflicts");
+  if (conflicts > 0) parts.push(`${conflicts} conflict${conflicts === 1 ? "" : "s"}`);
+
+  const errors = numField(row, "errors");
+  if (errors > 0) parts.push(`${errors} error${errors === 1 ? "" : "s"}`);
+
+  return parts.join(" · ");
+}
 
 export interface SyncSettings {
   intervalMinutes: number;
@@ -37,6 +73,10 @@ export interface SyncSettings {
 
 interface Props {
   compact: boolean;
+  /** False until the first `/drive/auth/status` + `/sync/status` poll resolves.
+   *  Gates the whole dashboard so it never renders the "not connected" branch
+   *  as a false first frame — see DashboardSkeleton below. */
+  loaded: boolean;
   masterOff: boolean;
   drive: DriveAuthStatus | null;
   driveTone: StatusTone;
@@ -124,6 +164,52 @@ function Gauge({
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Loading skeleton: shown until the first real poll resolves ──────────────
+//
+// ISS-032: with `drive`/`status` both starting `null`, the dashboard's real
+// branches read that as "not connected" for one frame before the fetch lands —
+// a ~500ms flash of "syncing system is off … Connect Drive" on every tab open.
+// This is a distinct third state (loading), not a tint of the disconnected one,
+// so it never says anything false about the connection.
+function SkeletonBar({ width, height = 10 }: { width: number; height?: number }) {
+  return (
+    <div
+      aria-hidden="true"
+      style={{
+        width, height, borderRadius: 3, background: "var(--border)",
+        animation: "pulse 1.1s ease-in-out infinite",
+      }}
+    />
+  );
+}
+
+function DashboardSkeleton({ compact }: { compact: boolean }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: compact ? 16 : 20 }} aria-busy="true">
+      <span className="sr-only">Loading sync status…</span>
+      <Group label="Drive" delay={0} gap={compact ? 10 : 12}>
+        <div style={{ display: "flex", alignItems: "center", gap: compact ? 10 : 20 }}>
+          <div
+            aria-hidden="true"
+            style={{
+              width: compact ? 34 : 84, height: compact ? 34 : 84, borderRadius: "50%",
+              border: "3px solid var(--border)", flexShrink: 0,
+              animation: "pulse 1.1s ease-in-out infinite",
+            }}
+          />
+          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+            <SkeletonBar width={110} height={compact ? 12 : 14} />
+            <SkeletonBar width={80} />
+          </div>
+        </div>
+      </Group>
+      <Group label="Schedule" delay={compact ? 45 : 90} gap={6}>
+        <SkeletonBar width={180} />
+      </Group>
     </div>
   );
 }
@@ -264,11 +350,13 @@ function Banner({ tone, children }: { tone: StatusTone; children: ReactNode }) {
 // ── The dashboard ───────────────────────────────────────────────────────────
 
 export default function SyncDashboard({
-  compact, masterOff, drive, driveTone, status, syncTone,
+  compact, loaded, masterOff, drive, driveTone, status, syncTone,
   settings, onChangeSettings, onConnectDrive, onDisconnectDrive,
   connecting, driveError, onRunSync, running, lastRun, onRunSetupAgain,
   lanSection, lanTone, lanLabel,
 }: Props) {
+  if (!loaded) return <DashboardSkeleton compact={compact} />;
+
   const connected = drive?.connected ?? false;
   const secretMissing = drive ? !drive.client_secret_present : false;
   const schedulerStarted = status?.interval_minutes !== undefined;
@@ -292,6 +380,11 @@ export default function SyncDashboard({
     : intervalIsNever(settings.intervalMinutes) ? "NO AUTOMATIC PASSES"
     : gauge.minutesRemaining === null ? "NO PASS YET"
     : compact ? "TO NEXT" : "TO NEXT PASS";
+
+  // ISS-013: the tab showed connection state but never "when" / "how much" — the
+  // server has always returned this (sync_scheduler.py status()'s last_pass), it
+  // was just never rendered. Only meaningful once Drive is actually connected.
+  const lastSyncLine = connected ? summarizeLastPass(status?.last_pass ?? null) : null;
 
   const stateText =
     masterOff ? "syncing system is off"
@@ -367,6 +460,11 @@ export default function SyncDashboard({
                 <StatusDot tone={masterOff ? "none" : driveTone} />
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{stateText}</span>
               </div>
+              {lastSyncLine && (
+                <div style={{ fontSize: 10.5, color: "var(--text-3)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {lastSyncLine}
+                </div>
+              )}
             </div>
           </div>
         ) : (
@@ -392,6 +490,11 @@ export default function SyncDashboard({
                 <StatusDot tone={masterOff ? "none" : driveTone} />
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{stateText}</span>
               </div>
+              {lastSyncLine && (
+                <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 4 }}>
+                  {lastSyncLine}
+                </div>
+              )}
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end", flexShrink: 0 }}>

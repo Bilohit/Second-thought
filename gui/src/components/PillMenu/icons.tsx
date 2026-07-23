@@ -3,8 +3,8 @@
  * ---------
  * Shared icon set for the pill menus — exact paths reused from
  * CaptureOverlay.tsx's header row so the menu items look identical to the
- * full-window equivalents. `hide` is the chevron-into-tray glyph from the
- * "Collapse" button, repurposed here as the menu's "send to tray" action.
+ * full-window equivalents. `hide` is an eye-off glyph (ISS-038 — the prior
+ * download-arrow glyph read as "save"), used for the menu's "hide" action.
  */
 import type { JSX } from "react";
 
@@ -29,7 +29,7 @@ export function MenuIcon({ target, size = 16 }: { target: MenuTarget; size?: num
     viewBox: "0 0 24 24",
     fill: "none",
     stroke: "currentColor",
-    strokeWidth: 2,
+    strokeWidth: 1.7,
     strokeLinecap: "round" as const,
     strokeLinejoin: "round" as const,
     "aria-hidden": true,
@@ -74,11 +74,14 @@ export function MenuIcon({ target, size = 16 }: { target: MenuTarget; size?: num
         </svg>
       );
     case "hide":
+      // Eye-off — reads unambiguously as "hide", distinct from the
+      // download/save-into-tray arrow it replaces (ISS-038).
       return (
         <svg {...common}>
-          <path d="M12 4v9" />
-          <path d="M8 10l4 4 4-4" />
-          <path d="M4 18h16" />
+          <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+          <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+          <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+          <path d="M2 2l20 20" />
         </svg>
       );
   }
@@ -88,7 +91,7 @@ export function MenuIcon({ target, size = 16 }: { target: MenuTarget; size?: num
  *  pill's recording state (steady icon — the flashing dot read as an error). */
 export function MicIcon({ size }: { size: number }): JSX.Element {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <rect x="9" y="2" width="6" height="12" rx="3" />
       <path d="M5 10a7 7 0 0 0 14 0" />
       <line x1="12" y1="19" x2="12" y2="22" />
@@ -100,7 +103,7 @@ export function MicIcon({ size }: { size: number }): JSX.Element {
  *  refresh control (was duplicated inline in LookPanel.tsx). */
 export function RefreshIcon({ size = 16 }: { size?: number }): JSX.Element {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <polyline points="23 4 23 10 17 10" />
       <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
     </svg>
@@ -112,7 +115,7 @@ export function RefreshIcon({ size = 16 }: { size?: number }): JSX.Element {
  *  which is binoculars (MenuIcon target="search"). */
 export function SearchIcon({ size = 16 }: { size?: number }): JSX.Element {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="11" cy="11" r="8" />
       <line x1="21" y1="21" x2="16.65" y2="16.65" />
     </svg>
@@ -123,7 +126,7 @@ export function SearchIcon({ size = 16 }: { size?: number }): JSX.Element {
  *  (paired with MenuIcon target="inbox" for the "Review" tab). */
 export function BellIcon({ size = 16 }: { size?: number }): JSX.Element {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M10.268 21a2 2 0 0 0 3.464 0" />
       <path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" />
     </svg>
@@ -134,7 +137,7 @@ export function BellIcon({ size = 16 }: { size?: number }): JSX.Element {
  *  (paired with SearchIcon for "Search"). */
 export function ChatIcon({ size = 16 }: { size?: number }): JSX.Element {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
     </svg>
   );
@@ -144,7 +147,7 @@ export function ChatIcon({ size = 16 }: { size?: number }): JSX.Element {
  *  (LookPanel.tsx, compact branch). */
 export function SendIcon({ size = 16 }: { size?: number }): JSX.Element {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M12 19V5" />
       <path d="m5 12 7-7 7 7" />
     </svg>
@@ -155,7 +158,7 @@ export function SendIcon({ size = 16 }: { size?: number }): JSX.Element {
  *  chat system prompt field, the one field that doesn't auto-save). */
 export function SaveIcon({ size = 16 }: { size?: number }): JSX.Element {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
       <path d="M17 21v-8H7v8" />
       <path d="M7 3v5h8" />
@@ -229,17 +232,6 @@ export function CloudIcon({ size = 16 }: { size?: number }): JSX.Element {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M17.5 19H7a5 5 0 0 1-.6-9.96A6.5 6.5 0 0 1 18.9 8.4 4.3 4.3 0 0 1 17.5 19Z" />
-    </svg>
-  );
-}
-
-/** WiFi glyph — the same-WiFi accelerator. */
-export function WifiIcon({ size = 16 }: { size?: number }): JSX.Element {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M5 12.5a10 10 0 0 1 14 0" />
-      <path d="M8.5 16a5 5 0 0 1 7 0" />
-      <path d="M12 19.5v.01" />
     </svg>
   );
 }

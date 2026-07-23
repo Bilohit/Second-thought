@@ -23,7 +23,13 @@ from vector_store import (
     heal_corrupt_db as heal_corrupt_vector_db, embedded_parents,
 )
 
-_SKIP_DIRS = {".omni_capture", ".git", ".obsidian"}
+# SYNC-11: `_trash` and `_mobile_inbox` were missing here, so deleted notes and un-ingested phone
+# capture stubs were indexed into captures.db and vectors.db and surfaced in search and chat RAG.
+# mobile_sync_agent._RESERVED_FOLDERS is the authoritative set — reuse it rather than keeping a
+# second, drifting copy. Index-only change: both DBs are derived, rebuildable caches.
+from mobile_sync_agent import _RESERVED_FOLDERS
+
+_SKIP_DIRS = {".omni_capture", ".git", ".obsidian"} | _RESERVED_FOLDERS
 
 
 def _iter_vault_md(vault_root: Path):
@@ -42,6 +48,7 @@ class SyncResult(TypedDict):
     healed: bool          # a corrupt captures.db was discarded and rebuilt from files
     vectors_healed: bool  # a corrupt vectors.db was discarded and rebuilt from files (OF-1)
     dedup_rebuilt: bool   # a missing/empty dedup ledger was rebuilt from the vault files (R-1)
+    embed_failed: int     # SYNC-30: notes whose embedding call raised — counted, not just printed
     error: Optional[str]  # the pass did NOT complete; counts below are partial
 
 
@@ -89,7 +96,7 @@ def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> Syn
     """Full diff-sync: heal a corrupt index, remove orphans, add/update changed files."""
     result: SyncResult = {"added": 0, "removed": 0, "updated": 0, "skipped": 0,
                           "reembedded": 0, "healed": False, "vectors_healed": False,
-                          "dedup_rebuilt": False, "error": None}
+                          "dedup_rebuilt": False, "embed_failed": 0, "error": None}
     try:
         # --- heal a corrupt captures.db BEFORE anything reads it ---
         # It is a derived cache; an unreadable one is discarded here so the
@@ -182,19 +189,22 @@ def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> Syn
             if ap not in hash_map:
                 # new file — upsert into captures + embed
                 upsert_capture_from_file(vault_root, p)
-                _embed_file(vault_root, p, base_url, embed_model)
+                if not _embed_file(vault_root, p, base_url, embed_model):
+                    result["embed_failed"] += 1   # SYNC-30
                 result["added"] += 1
             elif current_hash != stored_hash:
                 # changed — re-upsert + re-embed
                 upsert_capture_from_file(vault_root, p)
-                _embed_file(vault_root, p, base_url, embed_model)
+                if not _embed_file(vault_root, p, base_url, embed_model):
+                    result["embed_failed"] += 1   # SYNC-30
                 result["updated"] += 1
             else:
                 # captures.hash unchanged — but re-embed if the vector store is
                 # missing this note (rebuilt/emptied/corrupt-then-healed store, OF-1).
                 rel = str(p.relative_to(vault_root)).replace("\\", "/")
                 if rel not in embedded:
-                    _embed_file(vault_root, p, base_url, embed_model)
+                    if not _embed_file(vault_root, p, base_url, embed_model):
+                        result["embed_failed"] += 1   # SYNC-30
                     result["reembedded"] += 1
                 else:
                     result["skipped"] += 1
@@ -208,13 +218,19 @@ def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> Syn
     return result
 
 
-def _embed_file(vault_root: Path, p: Path, base_url: str, embed_model: str) -> None:
+def _embed_file(vault_root: Path, p: Path, base_url: str, embed_model: str) -> bool:
+    """Returns False when the embedding failed (SYNC-30). Every failure used to be a bare
+    stderr line while `added`/`updated`/`reembedded` still incremented, so a pass that embedded
+    nothing was indistinguishable from a healthy one and semantic search silently rotted.
+    Still fail-soft — a dead Ollama must never abort the captures index."""
     try:
         content = p.read_text(encoding="utf-8", errors="ignore")
         if content.strip():
             index_note(vault_root, p, content, base_url, embed_model)
+        return True
     except Exception as exc:
         print(f"[VaultSync] embed error {p}: {exc}", file=sys.stderr)
+        return False
 
 
 if __name__ == "__main__":

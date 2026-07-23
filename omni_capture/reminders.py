@@ -23,6 +23,23 @@ _IS_WINDOWS = sys.platform.startswith("win")
 # machine only -- switch to schtasks /XML if another locale breaks it.
 _SCHTASKS_DATE_FMT = "%d/%m/%Y"
 
+# SRV-09: characters that let a note title break out of the quoted /TR command line
+# that schtasks re-parses. `"` closes the argument; the rest are cmd metacharacters
+# that would then be interpreted rather than passed to notifier.py.
+_SCHTASKS_UNSAFE = '"&|<>^%\r\n'
+
+
+def _sanitize_schtasks_label(label: str) -> str:
+    """Strip characters that would escape the quoted /TR string, and cap the length.
+
+    The label is display text passed straight to notifier.py as an argv element, so
+    dropping these characters costs nothing a user would notice. schtasks also rejects
+    an over-long /TR outright, which would make the reminder silently fail to schedule.
+    """
+    cleaned = "".join(ch for ch in label if ch not in _SCHTASKS_UNSAFE)
+    cleaned = " ".join(cleaned.split())  # collapse any remaining control whitespace
+    return cleaned[:120] or "Reminder"
+
 _DDL = """
 CREATE TABLE IF NOT EXISTS reminders (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,28 +97,49 @@ def create_reminder(
             "VALUES (?, ?, ?, 'pending', ?, ?)",
             (note_path, label, fire_at_iso, delivery, created_at),
         )
+        rid = int(cur.lastrowid)   # assigned by the INSERT; readable before the commit
+        # SRV-10: the OS task is created BEFORE the commit, inside the same try. The row
+        # id is already allocated (schtasks needs it for the task name), but nothing is
+        # durable until schtasks has succeeded -- so a schtasks failure rolls the row back
+        # instead of leaving an orphan 'pending' reminder no scheduled task will ever fire.
+        if delivery == "os" and _IS_WINDOWS:
+            _create_schtask(rid, note_path=note_path, label=label, fire_at_iso=fire_at_iso)
         conn.commit()
-        rid = int(cur.lastrowid)
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
-    if delivery == "os" and _IS_WINDOWS:
-        when = datetime.fromisoformat(fire_at_iso)
-        subprocess.run(
-            [
-                "schtasks", "/Create", "/F",
-                "/TN", f"SecondThought\\reminder-{rid}",
-                "/SC", "ONCE",
-                "/SD", when.strftime(_SCHTASKS_DATE_FMT),
-                "/ST", when.strftime("%H:%M"),
-                "/TR",
-                f'"{sys.executable}" "{Path(__file__).parent / "notifier.py"}" "{label}" "{Path(note_path).name}"',
-            ],
-            check=True,
-            capture_output=True,
-        )
-
     return rid
+
+
+def _create_schtask(rid: int, *, note_path: str, label: str, fire_at_iso: str) -> None:
+    """Register the Windows Task Scheduler entry that fires reminder *rid*.
+    Raises (CalledProcessError / ValueError) if the task could not be created --
+    create_reminder relies on that to roll its uncommitted row back."""
+    from datetime import datetime
+
+    when = datetime.fromisoformat(fire_at_iso)
+    # SRV-09: subprocess.run is already argv-based (no shell=True), so PYTHON is not
+    # the injection surface -- schtasks is. It re-parses the /TR string as a command
+    # line, so a `"` inside `label` closes the quoted argument and everything after it
+    # becomes new tokens. `label` is the note TITLE, which arrives from note
+    # frontmatter via sync_reminders_from_notes -- i.e. from the Drive hub.
+    safe_label = _sanitize_schtasks_label(label)
+    subprocess.run(
+        [
+            "schtasks", "/Create", "/F",
+            "/TN", f"SecondThought\\reminder-{rid}",
+            "/SC", "ONCE",
+            "/SD", when.strftime(_SCHTASKS_DATE_FMT),
+            "/ST", when.strftime("%H:%M"),
+            "/TR",
+            f'"{sys.executable}" "{Path(__file__).parent / "notifier.py"}" "{safe_label}" "{Path(note_path).name}"',
+        ],
+        check=True,
+        capture_output=True,
+    )
 
 
 def list_reminders(db_path: Path, include_done: bool = False) -> list[dict]:

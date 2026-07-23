@@ -102,7 +102,7 @@ def test_reindex_bodies_leaves_provisional_body_intact(tmp_path):
 
 
 def test_stats_total_excludes_provisional_rows(tmp_path):
-    """stats()'s dashboard/digest counts must not be inflated by not-yet-
+    """stats()'s dashboard counts must not be inflated by not-yet-
     canonical LAN provisional rows (contract §11)."""
     vault = tmp_path / "vault"
     vault.mkdir()

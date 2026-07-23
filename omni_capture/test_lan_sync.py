@@ -21,51 +21,53 @@ def _fetch_nonce(c, key) -> str:
     return json.loads(lan_crypto.open_envelope(r.json(), key))["nonce"]
 
 
-def _seal_auth(key, nonce, since=0, secret="S3CRET"):
-    """The ?auth= value: a sealed {secret, nonce, since} envelope, JSON-encoded for the query."""
-    return json.dumps(lan_crypto.seal(json.dumps(
-        {"secret": secret, "nonce": nonce, "since": since}), key))
-
-
-def _poll(c, key, since=0, secret="S3CRET"):
-    """Full handshake: fetch a nonce, seal auth, GET /lan/changes."""
+def _push(c, key, lan_secret="S3CRET", **fields):
+    """Full handshake: fetch a nonce, seal the push plaintext, POST /lan/push. LAN-02/20: /lan/push
+    redeems a single-use nonce too, so `nonce` is part of every push (contract §11.3 step 5)."""
     nonce = _fetch_nonce(c, key)
-    return c.get("/lan/changes", params={"auth": _seal_auth(key, nonce, since, secret)})
+    plain = {"lan_secret": lan_secret, "nonce": nonce, "op_id": "op1", "note_id": "noteA",
+             "base_rev": None, "device": "phone", "modified": "2026-07-11T00:00:00Z",
+             "body": "---\n---\nhi\n"}
+    plain.update(fields)
+    return c.post("/lan/push", json=lan_crypto.seal(json.dumps(plain), key))
+
+
+def _poll(c, key, since=0, lan_secret="S3CRET"):
+    """Full handshake: fetch a nonce, seal {lan_secret, nonce, since}, POST /lan/changes (LAN-11: the
+    auth envelope is the POST BODY now, not a ?auth= query value)."""
+    nonce = _fetch_nonce(c, key)
+    env = lan_crypto.seal(json.dumps({"lan_secret": lan_secret, "nonce": nonce, "since": since}), key)
+    return c.post("/lan/changes", json=env)
 
 
 def test_push_stages_provisional(tmp_path, monkeypatch):
     import provisional_store as ps
     c, key = _client(tmp_path, monkeypatch)
-    plain = json.dumps({"secret": "S3CRET", "op_id": "op1", "note_id": "noteA",
-                        "base_rev": None, "device": "phone", "modified": "2026-07-11T00:00:00Z",
-                        "body": "---\n---\nhi\n"})
-    r = c.post("/lan/push", json=lan_crypto.seal(plain, key))
+    r = _push(c, key, op_id="op1", note_id="noteA", body="---\n---\nhi\n")
     assert r.status_code == 200
     assert len(ps.list_provisional(str(tmp_path / ".sync"))) == 1
 
 
 def test_push_rejects_wrong_secret(tmp_path, monkeypatch):
     c, key = _client(tmp_path, monkeypatch)
-    plain = json.dumps({"secret": "WRONG", "op_id": "op1", "note_id": "n", "base_rev": None,
-                        "device": "d", "modified": "", "body": "x"})
-    r = c.post("/lan/push", json=lan_crypto.seal(plain, key))
+    r = _push(c, key, lan_secret="WRONG", note_id="n", body="x")
     assert r.status_code == 403
 
 
 def test_push_rejects_empty_server_secret(tmp_path, monkeypatch):
-    # An unconfigured (empty) server secret must never degrade to key-only auth
-    # — hmac.compare_digest("", "") would otherwise accept secret:"" from any
+    # An unconfigured (empty) server lan_secret must never degrade to key-only auth
+    # — hmac.compare_digest("", "") would otherwise accept lan_secret:"" from any
     # LAN peer who has the shared key but not the secret.
     import provisional_store as ps
     key = lan_crypto.gen_key_b64()
     monkeypatch.setattr(lan_sync, "_lan_key", lambda: key)
     monkeypatch.setattr(lan_sync, "_lan_secret", lambda: "")
     monkeypatch.setattr(lan_sync, "_sync_dir", lambda: str(tmp_path / ".sync"))
+    monkeypatch.setattr(lan_sync, "_vault_path", lambda: str(tmp_path))
+    lan_sync._nonces.clear()
     app = FastAPI(); app.include_router(lan_sync.router)
     c = TestClient(app)
-    plain = json.dumps({"secret": "", "op_id": "op1", "note_id": "n", "base_rev": None,
-                        "device": "d", "modified": "", "body": "x"})
-    r = c.post("/lan/push", json=lan_crypto.seal(plain, key))
+    r = _push(c, key, lan_secret="", note_id="n", body="x")
     assert r.status_code == 403
     assert ps.list_provisional(str(tmp_path / ".sync")) == []
 
@@ -79,7 +81,7 @@ def test_push_rejects_undecryptable(tmp_path, monkeypatch):
 def test_changes_returns_sealed_envelope(tmp_path, monkeypatch):
     # The handler now populates the feed IN-PROCESS by scanning the vault (the fix: the
     # single-shot mobile_sync_agent's set_outbound never reaches the running server). A note
-    # with an id in the vault must be served on GET /lan/changes AFTER a valid nonce handshake.
+    # with an id in the vault must be served on POST /lan/changes AFTER a valid nonce handshake.
     (tmp_path / "nA.md").write_text("---\nid: nA\norigin: note\n---\nd\n", encoding="utf-8", newline="")
     c, key = _client(tmp_path, monkeypatch)
     r = _poll(c, key, since=0)
@@ -122,16 +124,19 @@ def test_nonce_endpoint_issues_sealed_nonce(tmp_path, monkeypatch):
     assert plain["nonce"] in lan_sync._nonces          # recorded server-side
 
 
-def test_changes_rejects_missing_auth(tmp_path, monkeypatch):
-    # No ?auth= at all: 400 (undecryptable), never a served feed — the whole point of B-11.
+def test_changes_get_is_gone_and_empty_post_is_400(tmp_path, monkeypatch):
+    # LAN-11: /lan/changes is POST-only now — the old GET route (which carried ?auth=) is gone, so an
+    # old phone's GET poll gets a clean 405 and falls back to Drive. An empty/malformed POST body 400s
+    # before any vault scan — the whole point of B-11.
     (tmp_path / "nA.md").write_text("---\nid: nA\norigin: note\n---\nd\n", encoding="utf-8", newline="")
     c, key = _client(tmp_path, monkeypatch)
-    assert c.get("/lan/changes").status_code == 400
+    assert c.get("/lan/changes").status_code == 405
+    assert c.post("/lan/changes", content=b"").status_code == 400
 
 
 def test_changes_rejects_bad_secret(tmp_path, monkeypatch):
     c, key = _client(tmp_path, monkeypatch)
-    r = _poll(c, key, secret="WRONG")
+    r = _poll(c, key, lan_secret="WRONG")
     assert r.status_code == 403
 
 
@@ -144,8 +149,7 @@ def test_changes_rejects_empty_server_secret(tmp_path, monkeypatch):
     lan_sync._nonces.clear()
     app = FastAPI(); app.include_router(lan_sync.router)
     c = TestClient(app)
-    nonce = _fetch_nonce(c, key)
-    r = c.get("/lan/changes", params={"auth": _seal_auth(key, nonce, secret="")})
+    r = _poll(c, key, lan_secret="")
     assert r.status_code == 403
 
 
@@ -153,14 +157,15 @@ def test_changes_rejects_expired_nonce(tmp_path, monkeypatch):
     c, key = _client(tmp_path, monkeypatch)
     nonce = _fetch_nonce(c, key)
     lan_sync._nonces[nonce] = time.time() - 1          # force-expire the issued nonce
-    r = c.get("/lan/changes", params={"auth": _seal_auth(key, nonce)})
+    env = lan_crypto.seal(json.dumps({"lan_secret": "S3CRET", "nonce": nonce, "since": 0}), key)
+    r = c.post("/lan/changes", json=env)
     assert r.status_code == 403
 
 
 def test_changes_rejects_replayed_nonce(tmp_path, monkeypatch):
-    # Single-use: the same sealed auth envelope must fail on a second GET.
+    # Single-use: the same sealed body envelope must fail on a second POST.
     c, key = _client(tmp_path, monkeypatch)
     nonce = _fetch_nonce(c, key)
-    auth = _seal_auth(key, nonce)
-    assert c.get("/lan/changes", params={"auth": auth}).status_code == 200
-    assert c.get("/lan/changes", params={"auth": auth}).status_code == 403
+    env = lan_crypto.seal(json.dumps({"lan_secret": "S3CRET", "nonce": nonce, "since": 0}), key)
+    assert c.post("/lan/changes", json=env).status_code == 200
+    assert c.post("/lan/changes", json=env).status_code == 403

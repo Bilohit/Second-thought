@@ -5,7 +5,7 @@ import type { CaptureState } from "../hooks/useCapture";
 const BLANK_STEPS = { intercept: "pending", enrich: "pending", decide: "pending", write: "pending" } as CaptureState["steps"];
 
 function state(phase: CaptureState["phase"], extra: Partial<CaptureState> = {}): CaptureState {
-  return { phase, steps: BLANK_STEPS, preview: null, result: null, errorMsg: null, thinking: null, backgroundJob: null, starting: false, reminderOffer: null, ...extra };
+  return { phase, steps: BLANK_STEPS, preview: null, result: null, errorMsg: null, thinking: null, backgroundJob: null, starting: false, reminderOffer: null, aiOffline: false, ...extra };
 }
 
 // Characterization table: every phase × llmStatus combo

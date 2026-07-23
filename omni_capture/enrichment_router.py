@@ -22,6 +22,7 @@ import html
 import ipaddress
 import json
 import re
+import shutil
 import socket
 import threading
 import urllib.parse
@@ -64,6 +65,13 @@ def _assert_public_host(url: str) -> None:
     Set [capture] allow_private_hosts = true in config.toml to opt out (e.g.
     for users who capture from a private wiki).
     """
+    # SRV-08: scheme allowlist FIRST, before the allow_private_hosts opt-out. That
+    # setting is about intranet HOSTS; it must never be a way to reach file://,
+    # ftp://, or data: URLs, which have no host to check in the first place.
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Refusing to fetch non-HTTP(S) URL scheme {parsed.scheme!r}: {url!r}")
+
     try:
         from config import get_config
         if get_config().capture.allow_private_hosts:
@@ -85,6 +93,32 @@ def _assert_public_host(url: str) -> None:
                 f"Refusing to fetch non-public host {host!r} ({ip}). "
                 "Set [capture] allow_private_hosts = true to allow intranet URLs."
             )
+
+
+class _PublicHostRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """SRV-08: re-run the SSRF guard on every redirect hop.
+
+    `_assert_public_host` checked the URL once and then handed it to urlopen, which
+    transparently follows redirects. A public host answering 302 -> http://169.254.169.254
+    (cloud metadata) or -> http://127.0.0.1:7070 (this app's own API) bypassed the guard
+    entirely, because only the FIRST url was ever inspected.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _assert_public_host(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# Install the redirect guard into the DEFAULT opener rather than building a private
+# one at the call site. Both properties have to hold at once:
+#   - every redirect hop is re-validated (the actual fix), and
+#   - `urllib.request.urlopen` stays the real call path, so the many tests that do
+#     `mock.patch("urllib.request.urlopen", ...)` keep intercepting it.
+# Calling `opener.open(...)` directly satisfies the first and silently breaks the
+# second: the mock stops firing, the fetch goes to the real network, and because the
+# web handler is fail-soft the test still PASSES while testing nothing.
+# Only redirect behaviour changes; the loopback/Ollama callers never redirect.
+urllib.request.install_opener(urllib.request.build_opener(_PublicHostRedirectHandler()))
 
 
 def _strip_tracking_params(url: str) -> str:
@@ -784,6 +818,32 @@ def _enrich_audio(audio_path: str) -> EnrichedPayload:
     whisper_model = cfg.whisper.model
     device_pref   = cfg.whisper.device
 
+    # ISS-008: whisper shells out to ffmpeg to decode non-WAV audio. Without
+    # it on PATH, torch/whisper raises deep inside transcribe() with a raw
+    # OS error (e.g. "[WinError 2] The system cannot find the file specified").
+    # That text used to become `enriched_text` verbatim, and the downstream
+    # fallback slugifier (storage_engine._shorten_filename) turned it into
+    # the note's title — a raw WinError as the user-facing name. Preflight
+    # here instead: fail fast with a short, slug-safe friendly lead line and
+    # push the real detail into source_metadata (frontmatter), never the title.
+    if shutil.which("ffmpeg") is None:
+        detail = (
+            "ffmpeg was not found on PATH. Voice transcription requires it — "
+            "install with `winget install Gyan.FFmpeg` (Windows), then restart "
+            "the app and record again."
+        )
+        return EnrichedPayload(
+            raw_input=audio_path,
+            input_type="audio",
+            enriched_text=f"Voice capture failed.\n\n{detail}",
+            source_metadata={
+                "audio_path": audio_path,
+                "whisper_model": whisper_model,
+                "transcription_failed": True,
+                "transcription_error": detail,
+            },
+        )
+
     try:
         import whisper  # type: ignore
 
@@ -799,23 +859,38 @@ def _enrich_audio(audio_path: str) -> EnrichedPayload:
         model = whisper.load_model(whisper_model, device=device)
         result = model.transcribe(audio_path, fp16=(device == "cuda"))
         transcript = result["text"].strip()
+        source_metadata = {
+            "audio_path": audio_path,
+            "whisper_model": whisper_model,
+        }
 
     except ImportError:
-        transcript = (
-            "[Whisper not installed. Run: pip install openai-whisper]\n"
-            f"File: {audio_path}"
-        )
+        detail = "Whisper not installed. Run: pip install openai-whisper"
+        transcript = f"Voice capture failed.\n\n{detail}\nFile: {audio_path}"
+        source_metadata = {
+            "audio_path": audio_path,
+            "whisper_model": whisper_model,
+            "transcription_failed": True,
+            "transcription_error": detail,
+        }
     except Exception as exc:
-        transcript = f"[Whisper transcription failed: {exc}]\nFile: {audio_path}"
+        # Same principle as the ffmpeg branch above: keep the friendly lead
+        # line first so a fallback slugifier never titles the note off a raw
+        # exception string; the real detail still reaches the note body.
+        detail = str(exc)
+        transcript = f"Voice capture failed.\n\nTranscription error: {detail}\nFile: {audio_path}"
+        source_metadata = {
+            "audio_path": audio_path,
+            "whisper_model": whisper_model,
+            "transcription_failed": True,
+            "transcription_error": detail,
+        }
 
     return EnrichedPayload(
         raw_input=audio_path,
         input_type="audio",
         enriched_text=transcript,
-        source_metadata={
-            "audio_path": audio_path,
-            "whisper_model": whisper_model,
-        },
+        source_metadata=source_metadata,
     )
 
 
@@ -883,6 +958,31 @@ if __name__ == "__main__":
     assert "utm_source" not in stripped
     assert "id=42" in stripped
     print(f"[T3] Tracking params stripped: {stripped}  PASS")
+
+    # ── T4: ISS-008 — missing ffmpeg fails with a friendly title, never a
+    #        raw WinError/exception string as the note's lead line ─────────
+    with mock.patch("shutil.which", return_value=None):
+        ep_no_ffmpeg = _enrich_audio("C:/fake/voice.wav")
+    assert ep_no_ffmpeg.enriched_text.startswith("Voice capture failed."), (
+        f"expected friendly lead line, got: {ep_no_ffmpeg.enriched_text[:80]!r}"
+    )
+    assert "WinError" not in ep_no_ffmpeg.enriched_text
+    assert ep_no_ffmpeg.source_metadata["transcription_failed"] is True
+    assert "ffmpeg" in ep_no_ffmpeg.source_metadata["transcription_error"]
+    print("[T4] ffmpeg-missing preflight -> friendly title, detail in metadata  PASS")
+
+    # ── T4b: a transcription exception (ffmpeg present) still keeps the
+    #        friendly lead line first, with the raw detail only in metadata ──
+    with mock.patch("shutil.which", return_value="/usr/bin/ffmpeg"), \
+         mock.patch.dict("sys.modules", {"whisper": mock.MagicMock(
+             load_model=mock.MagicMock(side_effect=OSError("[WinError 2] fake failure")))}):
+        ep_exc = _enrich_audio("C:/fake/voice.wav")
+    assert ep_exc.enriched_text.startswith("Voice capture failed."), (
+        f"expected friendly lead line, got: {ep_exc.enriched_text[:80]!r}"
+    )
+    assert ep_exc.source_metadata["transcription_failed"] is True
+    assert "WinError" in ep_exc.source_metadata["transcription_error"]
+    print("[T4b] whisper exception -> friendly title, raw detail only in metadata  PASS")
 
     # ── T4: fetch_youtube_transcript success ───────────────────────────────
     fake_api = mock.MagicMock()

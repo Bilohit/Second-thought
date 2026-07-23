@@ -36,6 +36,41 @@ export function setIgnoreHistoryPref(enabled: boolean): void {
   } catch { /* ignore */ }
 }
 
+// ISS-016: chat turns used to be memory-only (bare useState) and vanished on
+// every app restart with no warning. Persist them to localStorage -- same
+// storage the ignoreHistory flag already uses -- so a restart keeps the
+// conversation. When the history policy is "ignore history" the user has
+// already opted out of carrying context forward, so a fresh session starts
+// empty rather than restoring a transcript that policy says to disregard.
+const CHAT_MESSAGES_KEY = "omni-look-chat-messages";
+
+export function loadPersistedMessages(): ChatMessage[] {
+  try {
+    const raw = localStorage.getItem(CHAT_MESSAGES_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as ChatMessage[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function savePersistedMessages(messages: ChatMessage[]): void {
+  try {
+    if (messages.length === 0) {
+      localStorage.removeItem(CHAT_MESSAGES_KEY);
+    } else {
+      localStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(messages));
+    }
+  } catch { /* ignore */ }
+}
+
+/** Pure: what the hook should start with on mount, given the persisted
+ *  ignoreHistory setting. Split out so it's testable without a renderer. */
+export function getInitialMessages(ignoreHistory: boolean): ChatMessage[] {
+  return ignoreHistory ? [] : loadPersistedMessages();
+}
+
 /** Message text for a transport-level failure (network drop, aborted fetch, etc).
  *  Bare text — failure state itself lives on `ChatMessage.failed`, not in this string. */
 export function formatChatFailure(err: unknown): string {
@@ -57,10 +92,16 @@ export function getRetryTarget(
 }
 
 export function useLookChat() {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() =>
+    getInitialMessages(getInitialIgnoreHistory())
+  );
   const [streaming, setStreaming] = useState(false);
   const [ignoreHistory, setIgnoreHistoryState] = useState(getInitialIgnoreHistory);
   const abortRef = useRef<AbortController | null>(null);
+  // Set synchronously before the async body so two fast submits can't both
+  // pass the guard -- the `streaming` state flag is still stale for the
+  // second call at that point. Mirrors useCapture.ts's inFlightRef.
+  const askingRef = useRef(false);
 
   const setIgnoreHistory = useCallback((enabled: boolean) => {
     setIgnoreHistoryState(enabled);
@@ -70,7 +111,8 @@ export function useLookChat() {
 
   const ask = useCallback((q: string) => {
     const { question, mode } = parseLookChatInput(q);
-    if (!question || streaming) return;
+    if (!question || streaming || askingRef.current) return;
+    askingRef.current = true;
     const history = ignoreHistory
       ? []
       : messages.map((m) => ({ role: m.role, content: m.content })).slice(-6);
@@ -88,8 +130,14 @@ export function useLookChat() {
     setStreaming(true);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    // `reset()` does setMessages([]) — an event still in flight would then
+    // index into an empty array and throw, killing the stream loop. Bail out
+    // instead: there is no longer a message for this stream to update.
     const updateLast = (patch: Partial<ChatMessage>) =>
-      setMessages((prev) => { const n = [...prev]; n[n.length - 1] = { ...n[n.length - 1], ...patch }; return n; });
+      setMessages((prev) => {
+        if (prev.length === 0) return prev;
+        const n = [...prev]; n[n.length - 1] = { ...n[n.length - 1], ...patch }; return n;
+      });
     (async () => {
       try {
         for await (const ev of streamLookChat(
@@ -104,6 +152,7 @@ export function useLookChat() {
             updateLast({ sources: ev.sources, searching: false });
           } else if (ev.kind === "token") {
             setMessages((prev) => {
+              if (prev.length === 0) return prev; // reset() raced this token
               const n = [...prev];
               const a = n[n.length - 1];
               n[n.length - 1] = { ...a, content: a.content + ev.text, searching: false };
@@ -121,7 +170,7 @@ export function useLookChat() {
           logger.error("look", "chat failed", err);
           updateLast({ content: formatChatFailure(err), searching: false, failed: true });
         }
-      } finally { setStreaming(false); abortRef.current = null; }
+      } finally { askingRef.current = false; setStreaming(false); abortRef.current = null; }
     })();
   }, [messages, streaming, ignoreHistory]);
 
@@ -129,8 +178,19 @@ export function useLookChat() {
     return () => { abortRef.current?.abort(); };
   }, []);
 
+  // Persist once a turn settles, not on every streamed token -- writing the
+  // whole transcript to localStorage per token would be a lot of redundant
+  // I/O for a long answer. A crash mid-stream can still lose that one
+  // in-flight turn; that's an acceptable ceiling for what ISS-016 asks for
+  // (survive a normal app restart, not a mid-generation kill).
+  useEffect(() => {
+    if (streaming) return;
+    savePersistedMessages(messages);
+  }, [messages, streaming]);
+
   const reset = useCallback(() => {
     abortRef.current?.abort();
+    askingRef.current = false;
     setMessages([]);
     setStreaming(false);
     logger.debug("look", "chat reset");

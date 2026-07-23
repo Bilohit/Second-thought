@@ -8,6 +8,8 @@
  *   3. Expose a message listener so popup.js can also trigger a capture.
  */
 
+importScripts("loopback.js"); // GUI-03: isLoopbackUrl
+
 const DEFAULT_SERVER = "http://localhost:7070";
 const ENDPOINT = "/share";
 
@@ -45,8 +47,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 // ── Core sender ───────────────────────────────────────────────────────────────
 
 async function _sendToSecondThought({ url, title, selection }) {
+  // GUI-04: `local`, not `sync` — chrome.storage.sync is replicated through
+  // Google's servers to every signed-in Chrome profile, so the X-Omni-Secret
+  // (a localhost API credential that should never leave this machine) was
+  // being uploaded and fanned out. `local` stays on disk here.
   const { serverUrl = DEFAULT_SERVER, secret = "" } =
-    await chrome.storage.sync.get(["serverUrl", "secret"]);
+    await chrome.storage.local.get(["serverUrl", "secret"]);
+
+  // GUI-03: refuse to attach the secret to a non-loopback destination.
+  if (!isLoopbackUrl(serverUrl)) {
+    _setBadge("✗", "#e53e3e");
+    return { ok: false, error: `Server URL must be on localhost (got ${serverUrl}).` };
+  }
 
   const headers = { "Content-Type": "application/json" };
   if (secret) headers["X-Omni-Secret"] = secret;
@@ -91,7 +103,7 @@ async function _sendToSecondThought({ url, title, selection }) {
             if (eventName === "job") result = { ok: true, queued: true, jobId: parsed.job_id, kind: parsed.kind };
             if (eventName === "duplicate") result = { ok: true, duplicate: true };
             if (parsed.path) result = { ok: true, path: parsed.path, category: parsed.category };
-            if (parsed.message) result = { ok: false, error: parsed.message };
+            if (eventName === "error" && parsed.message) result = { ok: false, error: parsed.message };
           } catch (_) {}
         } else if (line === "") {
           eventName = "";

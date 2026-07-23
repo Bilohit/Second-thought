@@ -32,20 +32,26 @@ import sys
 import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
-os.environ.setdefault("OMNI_GUI_SECRET", "")
+# SRV-01: server._require_secret now fails CLOSED, so an empty OMNI_GUI_SECRET
+# 403s every route instead of disabling auth. Every server test module uses this
+# SAME literal on purpose: the env var is process-global and pytest imports all
+# modules before running any test, so differing values would make the suite
+# order-dependent.
+GUI_SECRET = "omni-test-secret-0123456789abcdef"
+os.environ["OMNI_GUI_SECRET"] = GUI_SECRET
+_AUTH = {"X-Omni-Secret": GUI_SECRET}
+
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-import config
 import lan_crypto
 import lan_sync
 import provisional_store as ps
@@ -148,7 +154,7 @@ def gui(tmp_path, monkeypatch):
         '[vault]\nroot = "' + str(vault).replace("\\", "/") + '"\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr(server, "_GUI_SECRET", SECRET)
+    monkeypatch.setenv("OMNI_GUI_SECRET", SECRET)
     monkeypatch.setattr(server, "CONFIG_PATH", cfg_file)
     monkeypatch.setattr(server, "_get_vault_root", lambda: vault)
     monkeypatch.setattr(server, "reload_config", lambda *a, **k: None)
@@ -170,12 +176,12 @@ def gui(tmp_path, monkeypatch):
 GUI_ROUTES: list[tuple[str, str, dict]] = [
     ("POST",   "/capture",                        {"json": {"content_type": "text", "content": "x"}}),
     ("POST",   "/share",                          {"json": {"url": "https://example.com/a"}}),
+    ("GET",    "/ollama/reachable",               {}),
     ("GET",    "/sync/status",                    {}),
     ("POST",   "/sync/run",                       {}),
     ("GET",    "/drive/auth/status",              {}),
     ("POST",   "/drive/auth/connect",             {}),
     ("POST",   "/drive/auth/disconnect",          {}),
-    ("GET",    "/digest/today",                   {}),
     ("GET",    "/lan/device-id",                  {}),
     ("GET",    "/config",                         {}),
     ("PATCH",  "/config",                         {"json": {"llm_scrutiny": "strict"}}),
@@ -638,102 +644,6 @@ def test_cors_preflight_succeeds_for_every_route_method(gui):
 
 
 # ============================================================================
-# 7. /digest/today -- handler-reached regression lock (REGRESSION, now fixed)
-#
-# The auth sweep above only proves the GUARD rejects /digest/today; the handler
-# never runs in those cases, so nothing above caught what was wrong with it.
-# Reaching the handler with a VALID secret showed the route was 100% dead:
-#
-#   GET /digest/today -> 500, NameError: name 'get_config' is not defined
-#
-# Cause: `digest_today` resolved `get_config` as a module global, but the
-# module-level import at server.py:88 is `from config import reload_config`
-# only. It was the ONLY one of the 19 get_config call sites in server.py without
-# a local `from config import get_config` (cf. :229, :285, :480, :1244, :1256,
-# :1270, :1315, :1332, :1345, :1356, :1384 -- all import locally). Every call
-# failed; no input made the route work.
-#
-# FIXED at server.py:1021 by a separate Code agent (local `from config import
-# get_config`, matching the other call sites) while this audit was being written
-# -- these tests were authored RED against the defect and went green on that fix,
-# which is the regression lock the route needs. NOT xfail-marked, unlike the
-# audit-only findings above, which have no fix in flight. Test-only: server.py is
-# not touched from here.
-# ============================================================================
-
-def _patch_get_config(monkeypatch, vault: Path) -> None:
-    """Point `get_config()` at the tmp vault, patching the seam whichever way the
-    one-line fix lands -- but WITHOUT creating the missing global.
-
-    `digest_today` only reads `.vault.root`, and `digest_stats` derives
-    captures.db + reminders.db from that root, so this keeps the whole call tree
-    inside tmp_path and never reads ~/second-thought-storage or the repo's
-    config.toml. The fix can land two ways, and this must not care which:
-      * module-level -- `from config import get_config, reload_config` at :88,
-        so the handler reads `server.get_config`;
-      * local import -- `from config import get_config` inside the function,
-        matching the other 18 call sites, so it reads `config.get_config`.
-    Patching `config` covers the second. `server` is patched only behind hasattr
-    -- deliberately NOT `raising=False`, because creating `server.get_config`
-    would inject the very global whose absence is the bug and mask the defect.
-    """
-    cfg = SimpleNamespace(vault=SimpleNamespace(root=vault))
-    monkeypatch.setattr(config, "get_config", lambda: cfg)
-    if hasattr(server, "get_config"):
-        monkeypatch.setattr(server, "get_config", lambda: cfg)
-
-
-def test_digest_today_reaches_its_handler_with_a_valid_secret(gui, monkeypatch):
-    """The regression lock: an authenticated GET must return the 4 digest counts.
-
-    Was RED (NameError -> 500) until `get_config` was imported in the handler;
-    goes RED again the moment that import is dropped. F-14's contract is 4
-    counts, computed on demand, never written to the vault -- so this also holds
-    the digest to being ephemeral.
-    """
-    client, vault = gui
-    _patch_get_config(monkeypatch, vault)
-    before = _vault_md_notes(vault)
-
-    resp = client.get("/digest/today", headers=GOOD_HEADERS)
-
-    assert resp.status_code == 200, (
-        f"GET /digest/today returned {resp.status_code} for an authenticated caller "
-        "-- the route is dead on every call (NameError: name 'get_config' is not "
-        "defined). Fix: `from config import get_config` in digest_today."
-    )
-    assert set(resp.json()) == {"captured", "touched", "reminders_due", "unrevisited"}
-    _assert_no_leak(resp, vault)
-    # Notes only, deliberately not `_vault_notes`: digest_stats -> init_db creates
-    # .omni_capture/captures.db, which is a DERIVED index, not a vault write (see
-    # the "files are the source of truth" hard rule). F-14's "never written to the
-    # vault" is about notes -- no .md may appear.
-    assert _vault_md_notes(vault) == before, "/digest/today is ephemeral by contract (F-14)"
-
-
-def test_digest_today_does_not_500_with_a_traceback(gui, monkeypatch):
-    """The audit's core oracle applied to the live defect: whatever /digest/today
-    does, it must not be an unhandled exception rendered at the client.
-
-    Uses raise_server_exceptions=False so the NameError is observed as the 500 a
-    real client sees, rather than propagating into the test runner. Also proves
-    the failure at least does not leak the traceback / vault path / secret.
-    """
-    _, vault = gui
-    _patch_get_config(monkeypatch, vault)
-    client = TestClient(server.app, raise_server_exceptions=False)
-
-    resp = client.get("/digest/today", headers=GOOD_HEADERS)
-
-    _assert_no_leak(resp, vault)
-    assert resp.status_code != 500, (
-        "GET /digest/today 500s on every authenticated call (NameError: name "
-        "'get_config' is not defined, server.py:1022). Fix: import get_config at "
-        "server.py:88."
-    )
-
-
-# ============================================================================
 # 8. LAN listener (B-11) -- lan_sync.py
 #
 # s23 already verified nonce replay/expiry/cap/403 + B-12 traversal; the tests
@@ -760,18 +670,26 @@ def _fetch_nonce(c, key) -> str:
     return json.loads(lan_crypto.open_envelope(r.json(), key))["nonce"]
 
 
-def _seal_auth(key, nonce, since=0, secret="S3CRET") -> str:
-    return json.dumps(lan_crypto.seal(
-        json.dumps({"secret": secret, "nonce": nonce, "since": since}), key))
+def _seal_changes(key, nonce, since=0, lan_secret="S3CRET") -> dict:
+    """LAN-11: the sealed {lan_secret, nonce, since} envelope is the POST /lan/changes BODY now."""
+    return lan_crypto.seal(json.dumps({"lan_secret": lan_secret, "nonce": nonce, "since": since}), key)
+
+
+def _push_env(key, nonce, lan_secret="S3CRET", **fields):
+    """Seal a /lan/push plaintext with lan_secret + a redeemed nonce (LAN-02/17/20)."""
+    plain = {"lan_secret": lan_secret, "nonce": nonce, "op_id": "op1", "note_id": "n",
+             "base_rev": None, "device": "d", "modified": "", "body": "x"}
+    plain.update(fields)
+    return lan_crypto.seal(json.dumps(plain), key)
 
 
 def test_lan_changes_replayed_nonce_rejected_cleanly(tmp_path, monkeypatch):
     """Re-confirms s23's replay finding AND applies this audit's leak oracle."""
     c, key, sync_dir = _lan_client(tmp_path, monkeypatch)
     (tmp_path / "n.md").write_text("---\nid: n\norigin: note\n---\nx\n", encoding="utf-8", newline="")
-    auth = _seal_auth(key, _fetch_nonce(c, key))
-    assert c.get("/lan/changes", params={"auth": auth}).status_code == 200
-    replay = c.get("/lan/changes", params={"auth": auth})
+    env = _seal_changes(key, _fetch_nonce(c, key))
+    assert c.post("/lan/changes", json=env).status_code == 200
+    replay = c.post("/lan/changes", json=env)
     assert replay.status_code == 403
     _assert_clean_4xx(replay, tmp_path)
     assert ps.list_provisional(sync_dir) == []
@@ -781,7 +699,7 @@ def test_lan_changes_expired_nonce_rejected_cleanly(tmp_path, monkeypatch):
     c, key, sync_dir = _lan_client(tmp_path, monkeypatch)
     nonce = _fetch_nonce(c, key)
     lan_sync._nonces[nonce] = time.time() - 1        # force-expire
-    resp = c.get("/lan/changes", params={"auth": _seal_auth(key, nonce)})
+    resp = c.post("/lan/changes", json=_seal_changes(key, nonce))
     assert resp.status_code == 403
     _assert_clean_4xx(resp, tmp_path)
     assert ps.list_provisional(sync_dir) == []
@@ -790,16 +708,23 @@ def test_lan_changes_expired_nonce_rejected_cleanly(tmp_path, monkeypatch):
 def test_lan_changes_never_minted_nonce_rejected_cleanly(tmp_path, monkeypatch):
     """A nonce the server never issued (attacker-chosen) must not redeem."""
     c, key, sync_dir = _lan_client(tmp_path, monkeypatch)
-    resp = c.get("/lan/changes", params={"auth": _seal_auth(key, "deadbeef" * 4)})
+    resp = c.post("/lan/changes", json=_seal_changes(key, "deadbeef" * 4))
     assert resp.status_code == 403
     _assert_clean_4xx(resp, tmp_path)
+
+
+def test_lan_changes_get_method_is_gone(tmp_path, monkeypatch):
+    """LAN-11: the old GET /lan/changes route (with ?auth=) is removed — an old phone's GET poll now
+    gets a clean 405 and falls back to Drive, never a half-authenticated scan."""
+    c, key, sync_dir = _lan_client(tmp_path, monkeypatch)
+    assert c.get("/lan/changes").status_code == 405
 
 
 def test_lan_push_garbage_ciphertext_rejected_cleanly(tmp_path, monkeypatch):
     """Well-shaped envelope, wrong key -> 400, and nothing staged."""
     c, key, sync_dir = _lan_client(tmp_path, monkeypatch)
     other_key = lan_crypto.gen_key_b64()
-    env = lan_crypto.seal(json.dumps({"secret": "S3CRET", "op_id": "op1", "note_id": "n",
+    env = lan_crypto.seal(json.dumps({"lan_secret": "S3CRET", "op_id": "op1", "note_id": "n",
                                       "base_rev": None, "device": "d", "modified": "",
                                       "body": "x"}), other_key)
     resp = c.post("/lan/push", json=env)
@@ -836,18 +761,17 @@ def test_lan_push_oversized_valid_envelope_does_not_crash(tmp_path, monkeypatch)
     """A correctly-sealed but very large body: decryption succeeds, so this
     exercises the staging path's size handling rather than the reject path."""
     c, key, sync_dir = _lan_client(tmp_path, monkeypatch)
-    env = lan_crypto.seal(json.dumps({"secret": "S3CRET", "op_id": "big", "note_id": "bignote",
-                                      "base_rev": None, "device": "phone", "modified": "",
-                                      "body": "Z" * (2 * 1024 * 1024)}), key)
+    env = _push_env(key, _fetch_nonce(c, key), op_id="big", note_id="bignote", device="phone",
+                    body="Z" * (2 * 1024 * 1024))
     resp = c.post("/lan/push", json=env)
     _assert_no_crash(resp, tmp_path)
 
 
-def test_lan_changes_oversized_auth_param_rejected_cleanly(tmp_path, monkeypatch):
-    """Capped at 50k for the same httpx MAX_URL_LENGTH reason as
-    test_oversized_query_param_does_not_crash."""
+def test_lan_changes_oversized_body_rejected_cleanly(tmp_path, monkeypatch):
+    """LAN-11 moved the auth envelope into the POST body, so the old ?auth= URL-length hazard is gone.
+    A large non-envelope POST body must still be refused cleanly (400) with no scan and no leak."""
     c, key, sync_dir = _lan_client(tmp_path, monkeypatch)
-    resp = c.get("/lan/changes", params={"auth": "X" * 50_000})
+    resp = c.post("/lan/changes", content=b"X" * 50_000)
     assert resp.status_code == 400
     _assert_clean_4xx(resp, tmp_path)
 
@@ -855,9 +779,7 @@ def test_lan_changes_oversized_auth_param_rejected_cleanly(tmp_path, monkeypatch
 def test_lan_push_wrong_secret_stages_nothing(tmp_path, monkeypatch):
     """Re-confirms the s23 403 AND the no-partial-write oracle for this audit."""
     c, key, sync_dir = _lan_client(tmp_path, monkeypatch)
-    env = lan_crypto.seal(json.dumps({"secret": "WRONG", "op_id": "op1", "note_id": "n",
-                                      "base_rev": None, "device": "d", "modified": "",
-                                      "body": "x"}), key)
+    env = _push_env(key, _fetch_nonce(c, key), lan_secret="WRONG")
     resp = c.post("/lan/push", json=env)
     assert resp.status_code == 403
     _assert_clean_4xx(resp, tmp_path)

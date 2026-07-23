@@ -38,11 +38,16 @@ _IDLE_POLL_S = 60
 
 
 def auto_sync_disabled(cfg: object) -> bool:
-    """True when [sync] interval_minutes = 0 -- the user asked for no automatic passes.
+    """True when [sync] interval_minutes = 0 -- the user hasn't chosen a real interval yet
+    (or explicitly picked "never").
 
-    Gates ALL THREE automatic triggers (the timed loop, sync_on_launch, and server.py's
-    sync_after_capture); gating fewer would make the option a lie. Manual POST /sync/run is
-    deliberately NOT gated by this -- "never auto-sync" still allows an explicit Sync now.
+    Gates the two INTERVAL-driven automatic triggers: the timed loop here, and server.py's
+    sync_after_capture. It deliberately does NOT gate sync_on_launch (ISS-003, 2026-07-22):
+    a startup pass is a distinct trigger from "run on a timer", and the product default is
+    interval-auto OFF until the user picks an interval, but on-launch ON regardless -- see
+    `_loop()` below, which checks `sync_on_launch` on its own, unconditioned by this sentinel.
+    Manual POST /sync/run is also NOT gated by this -- "never auto-sync" still allows an
+    explicit Sync now.
     """
     return int(getattr(cfg, "interval_minutes", 60)) <= AUTO_SYNC_NEVER
 
@@ -119,8 +124,10 @@ class SyncScheduler:
     # ---- the loop ----
     def _loop(self) -> None:
         cfg = self._cfg_fn()
-        if (getattr(cfg, "enabled", False) and getattr(cfg, "sync_on_launch", True)
-                and not auto_sync_disabled(cfg)):
+        # ISS-003: on-launch is independent of the interval sentinel -- it must fire on the
+        # product default (interval_minutes=0 / no interval chosen yet, sync_on_launch=True)
+        # as long as the system-wide master switch (`enabled`) is on.
+        if getattr(cfg, "enabled", False) and getattr(cfg, "sync_on_launch", True):
             self._safe_pass()
         backoff = 1
         while not self._stop.is_set():
@@ -160,6 +167,10 @@ class SyncScheduler:
 # Module-level singleton the server wires at startup and the endpoints read. None until started.
 _scheduler: Optional[SyncScheduler] = None
 
+# SYNC-28: the check-then-set below was unguarded, so two concurrent callers could each construct
+# a SyncScheduler and start() a thread — two loops, two passes, single-flight defeated.
+_scheduler_lock = threading.Lock()
+
 
 def get_scheduler() -> Optional[SyncScheduler]:
     return _scheduler
@@ -167,7 +178,13 @@ def get_scheduler() -> Optional[SyncScheduler]:
 
 def start_scheduler(pass_fn: Callable[[], dict], cfg_fn: Callable[[], object]) -> SyncScheduler:
     global _scheduler
-    if _scheduler is None:
-        _scheduler = SyncScheduler(pass_fn, cfg_fn)
+    with _scheduler_lock:
+        if _scheduler is None:
+            _scheduler = SyncScheduler(pass_fn, cfg_fn)
+        # SYNC-28: always start(). After stop() the singleton is non-None but its _loop has
+        # exited, so the old early return handed back a DEAD scheduler that never ran another
+        # pass — sync silently stopped until a server restart. start() is already idempotent
+        # (it returns immediately while the thread is_alive), so calling it unconditionally is
+        # safe and is what makes a stop()/start() cycle actually restart the loop.
         _scheduler.start()
-    return _scheduler
+        return _scheduler

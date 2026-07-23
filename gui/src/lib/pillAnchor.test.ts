@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ANCHOR_ORDER, anchoredMenuPosition, isPillDraggable } from "./pillAnchor";
+import { ANCHOR_LABELS, ANCHOR_ORDER, anchoredMenuPosition, isPillDraggable } from "./pillAnchor";
 
 const area = { x: 0, y: 0, w: 1920, h: 1080, scale: 1 };
 
@@ -39,5 +39,28 @@ describe("isPillDraggable", () => {
     for (const anchor of ANCHOR_ORDER) {
       expect(isPillDraggable(anchor, true)).toBe(false);
     }
+  });
+});
+
+// ISS-039: the placement grid's raw two-letter codes ("tl", "tc", ...) must
+// never reach assistive tech as the accessible name.
+describe("ANCHOR_LABELS", () => {
+  it("has a human-readable label for every anchor in ANCHOR_ORDER", () => {
+    for (const a of ANCHOR_ORDER) {
+      expect(ANCHOR_LABELS[a]).toBeTruthy();
+      expect(ANCHOR_LABELS[a]).not.toBe(a);
+    }
+  });
+
+  it("labels read as plain English", () => {
+    expect(ANCHOR_LABELS.tl).toBe("Top left");
+    expect(ANCHOR_LABELS.tc).toBe("Top center");
+    expect(ANCHOR_LABELS.tr).toBe("Top right");
+    expect(ANCHOR_LABELS.lc).toBe("Left center");
+    expect(ANCHOR_LABELS.custom).toBe("Custom (last position)");
+    expect(ANCHOR_LABELS.rc).toBe("Right center");
+    expect(ANCHOR_LABELS.bl).toBe("Bottom left");
+    expect(ANCHOR_LABELS.bc).toBe("Bottom center");
+    expect(ANCHOR_LABELS.br).toBe("Bottom right");
   });
 });

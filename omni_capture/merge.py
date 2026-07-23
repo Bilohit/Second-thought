@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+from atomic_io import atomic_write_verbatim
 from dedup import _vault_lock
 
 # ---------------------------------------------------------------------------
@@ -34,15 +35,32 @@ def _merge_lock_path(vault_root: Path) -> Path:
 
 def _append_general(path: Path, new_content: str, vault_root: Path) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    sep = f"\n\n---\n*Captured: {ts}*\n\n"
+    sep_lf = f"\n\n---\n*Captured: {ts}*\n\n"
     # ponytail: one vault-wide merge lock (not per-target-file) held only for
     # this short read-then-write -- keeps lock granularity narrow (an append
     # is fast, so unrelated captures still barely serialize) without the
     # bookkeeping of a lock-file-per-target. Revisit with per-file locks only
     # if a vault sees enough concurrent merge-append traffic to contend here.
     with _vault_lock(_merge_lock_path(vault_root)):
-        existing = path.read_text(encoding="utf-8")
-        path.write_text(existing.rstrip() + sep + new_content + "\n", encoding="utf-8")
+        # SYNC-13: read and write both byte-verbatim (newline="") -- the default mode
+        # translated CRLF->LF on read and LF->os.linesep on write, churning the whole
+        # file's newline convention on every append. Write is atomic (temp sibling +
+        # os.replace) so a crash mid-append cannot leave a torn capture file.
+        #
+        # The `.rstrip()` stays: `_append_general` is provably CAPTURE-ONLY. Both gates
+        # into it exclude synced notes via `_is_synced_note` (find_merge_target's
+        # candidate filter and `_is_same_topic`'s early return), so no user-authored
+        # body is ever reachable here and trailing-whitespace trimming is not a
+        # body-sacred violation. Do not "fix" it without re-checking that invariant.
+        existing = path.read_text(encoding="utf-8", newline="")
+        # Now that the write no longer translates, the appended text has to adopt the
+        # file's OWN newline convention -- otherwise a CRLF capture file gains LF-only
+        # sections. (Before this fix the write translated everything, which churned the
+        # file but at least left it internally consistent.)
+        i = existing.find("\n")
+        nl = "\r\n" if i > 0 and existing[i - 1] == "\r" else "\n"
+        appended = (sep_lf + new_content + "\n").replace("\r\n", "\n").replace("\n", nl)
+        atomic_write_verbatim(path, existing.rstrip() + appended)
 
 
 # ---------------------------------------------------------------------------
@@ -56,22 +74,13 @@ def _read_note_tags(path: Path) -> set:
     except Exception:
         return set()
 
-    tags: set = set()
-
-    # Inline form
-    import re
-    inline = re.search(r"^tags:[ \t]*(.+)$", text, re.MULTILINE)
-    if inline:
-        raw = inline.group(1).strip().strip("[]")
-        tags.update(
-            t.strip().strip("'\"").lower()
-            for t in raw.split(",") if t.strip()
-        )
-
-    # Block form
-    for t in re.findall(r"^[ \t]*-[ \t]+(.+)$", text[:1000], re.MULTILINE):
-        tags.add(t.strip().strip("'\"").lower())
-
+    # SYNC-24: both scans used to run over the WHOLE file — the block-form scan over
+    # `text[:1000]` swept the first 1000 chars of the body, so ordinary markdown bullets became
+    # "tags", which fed _is_same_topic below and made smart-merge pick an unrelated note and
+    # append a capture into its body. tag_index.parse_tags is the existing frontmatter-scoped
+    # parser and already handles BOTH shapes (inline `tags: [a, b]` and block `tags:` / `  - a`).
+    from tag_index import parse_tags
+    tags = {t.strip().strip("'\"").lower() for t in parse_tags(text)}
     return {t for t in tags if t and not t.startswith("-")}
 
 

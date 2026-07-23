@@ -14,6 +14,21 @@ export type PillAnchor = "tl" | "tc" | "tr" | "lc" | "custom" | "rc" | "bl" | "b
 /** Row-major 3x3 order, matching the Settings anchor-grid layout. */
 export const ANCHOR_ORDER: PillAnchor[] = ["tl", "tc", "tr", "lc", "custom", "rc", "bl", "bc", "br"];
 
+/** Human-readable per-cell names (ISS-039) — the raw two-letter anchor codes
+ *  are an internal storage/geometry shorthand, not something a screen reader
+ *  should ever speak. */
+export const ANCHOR_LABELS: Record<PillAnchor, string> = {
+  tl: "Top left",
+  tc: "Top center",
+  tr: "Top right",
+  lc: "Left center",
+  custom: "Custom (last position)",
+  rc: "Right center",
+  bl: "Bottom left",
+  bc: "Bottom center",
+  br: "Bottom right",
+};
+
 const MARGIN = 12;
 
 /** Returns the top-left screen position for a pill of size (w, h) at the

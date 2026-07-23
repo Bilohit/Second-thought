@@ -52,7 +52,11 @@ const FLUSH_INTERVAL_MS = 400;
 const MAX_QUEUE_LINES = 5000;
 
 /** Sensitive-looking keys get their value replaced before anything is logged. */
-const SENSITIVE_KEY_RE = /secret|token|password|authorization|api[_-]?key|cookie/i;
+// The trailing alternative matches a key literally named `key` (and `lan_key`,
+// `key-id`, ...) — that is exactly what the LAN secretbox key is called — while
+// the surrounding [^a-z0-9] boundaries keep it off unrelated words like
+// "monkey", "keyboard" or "keywords".
+export const SENSITIVE_KEY_RE = /secret|token|password|authorization|api[_-]?key|cookie|(?:^|[^a-z0-9])key(?:[^a-z0-9]|$)/i;
 
 /** Long string values (e.g. base64 image/clipboard payloads) are truncated. */
 const MAX_VALUE_LEN = 2000;

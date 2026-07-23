@@ -52,6 +52,19 @@ _RESERVED_FOLDERS = {"_trash", "_mobile_inbox", "_attachments", "_templates", ".
 _NO_BASE_BODY = "\x00<no common base — sidecar lost>\x00"
 
 
+def _strip_bom(text: str) -> str:
+    """SYNC-08: a UTF-8 BOM survives `read_text(encoding="utf-8")` as U+FEFF, and
+    frontmatter._FM_RE is anchored `\\A---`, so a BOM'd note parsed to `{}` fields — no id —
+    and read_vault_notes skipped it. Invisible to sync forever, one log line.
+
+    Parse AROUND the BOM, never rewrite it away: the file is not re-encoded (that would churn
+    bytes the user never typed) and `content`/`hash` stay byte-verbatim against disk, so no
+    re-upload loop. The BOM sits ABOVE the frontmatter, so it is not body — which is why the
+    body-sacred guard in _upload_note compares de-BOM'd text too.
+    """
+    return text[1:] if text.startswith("﻿") else text
+
+
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -197,7 +210,8 @@ def read_vault_notes(vault_path: str, mirror_captures: bool = False) -> Dict[str
         except Exception as e:  # unreadable file — skip, never crash the mirror
             print(f"[mobile_sync_agent] skip {md_file}: {e}")
             continue
-        fields = read_all_fields(content)
+        parsed = _strip_bom(content)   # SYNC-08: parse around a UTF-8 BOM; content stays verbatim
+        fields = read_all_fields(parsed)
         is_capture = fields.get("origin") != "note"
         if is_capture and not mirror_captures:
             continue  # opt-in mirroring off (default) — captures stay desktop-local
@@ -205,8 +219,8 @@ def read_vault_notes(vault_path: str, mirror_captures: bool = False) -> Dict[str
         note_id = fields.get("id")
         if is_capture and mirror_captures and not note_id:
             new_id = _mint_capture_id()
-            new_content = add_fields(content, {"id": new_id, "origin": "capture"})
-            if strip_frontmatter(new_content) != strip_frontmatter(content):
+            new_content = add_fields(parsed, {"id": new_id, "origin": "capture"})
+            if strip_frontmatter(new_content) != strip_frontmatter(parsed):
                 print(f"[mobile_sync_agent] mint-id would alter body, skip {md_file}")
                 continue
             try:
@@ -214,8 +228,11 @@ def read_vault_notes(vault_path: str, mirror_captures: bool = False) -> Dict[str
             except Exception as e:
                 print(f"[mobile_sync_agent] mint-id write failed {md_file}: {e}")
                 continue
-            content = new_content
-            fields = read_all_fields(content)
+            # SYNC-08: this path already rewrites the file (to mint the id), so the BOM is
+            # dropped here as part of that single atomic write — body bytes are asserted
+            # identical above. Every other path leaves the BOM on disk untouched.
+            content = parsed = new_content
+            fields = read_all_fields(parsed)
             note_id = new_id
 
         if not note_id:
@@ -227,7 +244,7 @@ def read_vault_notes(vault_path: str, mirror_captures: bool = False) -> Dict[str
             "id": note_id,
             "path": str(md_file),
             "content": content,
-            "body": strip_frontmatter(content),
+            "body": strip_frontmatter(parsed),
             "hash": _sha256(content),
             "category": fields.get("category") or folder_cat,
             "title": fields.get("title", ""),
@@ -363,6 +380,20 @@ def _delete_file(drive, file_id: str) -> None:
     drive.files().delete(fileId=file_id).execute()
 
 
+def _move_file_to_folder(drive, file_id: str, dest_folder_id: str) -> None:
+    """Re-parent a hub file into `dest_folder_id` (used to move a note into the hub `_trash/` on an
+    outbound soft-delete, ISS-005 A follow-up). METADATA-ONLY: no media_body, so the file's bytes on
+    Drive are never re-uploaded — body-sacred holds (a delete is a MOVE, never a rewrite). Its current
+    parents are read first so removeParents severs every existing link (a Drive file can be multi-parented)."""
+    meta = drive.files().get(fileId=file_id, fields="parents").execute()
+    prev_parents = ",".join(meta.get("parents", []))
+    body = {}
+    kwargs = {"fileId": file_id, "addParents": dest_folder_id, "fields": "id, parents"}
+    if prev_parents:
+        kwargs["removeParents"] = prev_parents
+    drive.files().update(body=body, **kwargs).execute()
+
+
 # OF-16: 30-day trash purge. Retention window; keep in lockstep with trash.py `_PURGE_AFTER_SECONDS`
 # and the phone's trash.ts `PURGE_WINDOW_MS`.
 _PURGE_AFTER_SECONDS = 30 * 24 * 3600
@@ -426,9 +457,17 @@ def get_hub_notes(drive, hub_folder_id: str) -> Dict[str, Dict]:
                       f"appProperties.noteId; keying by filename stem {note_id} (legacy/foreign)")
             key = note_id
             f["category"] = cat_name
-            # ponytail: assumes hub-level note-id uniqueness (ids are ULIDs). Two files sharing an
-            # id stem across category folders would collide here, last-wins; add a warn/dedup pass
-            # only if a corrupted hub ever produces duplicate ids.
+            # SYNC-22 (graduates the ponytail here — ceiling reached): this dict is flat across
+            # every category folder, so two files keyed to the same id in different folders used
+            # to silently last-wins, and the loser became invisible to reconcile. Real for files
+            # with no appProperties.noteId, which fall back to the filename stem above: two
+            # legacy/foreign notes sharing a title in different categories collide. First-wins +
+            # a warning, matching the root scan's `setdefault` below.
+            if key in files:
+                print(f"[mobile_sync_agent] duplicate hub note id {key!r}: keeping "
+                      f"{files[key].get('category')}/{files[key]['name']}, skipping "
+                      f"{cat_name}/{f['name']}")
+                continue
             files[key] = f
     # B-5: also scan root-level .md notes. `_resolve_dest_folder` uploads uncategorised notes to the
     # hub ROOT; without this pass get_hub_notes never saw them → invisible to the phone AND never
@@ -477,7 +516,10 @@ def _upload_note(drive, note: Dict, dest_folder_id: str, existing: Optional[Dict
     content = note["content"]
     # Body-sacred: we upload the source bytes verbatim; the body must be unchanged.
     # Explicit check (not `assert`) — must not be strippable under python -O.
-    if strip_frontmatter(content) != note["body"]:
+    # SYNC-08: de-BOM before the compare — the BOM sits ABOVE the frontmatter so it is not body,
+    # and read_vault_notes now derives `body` from the de-BOM'd text. The bytes UPLOADED below are
+    # still `content` verbatim, BOM included, so nothing on disk or on the hub is rewritten.
+    if strip_frontmatter(_strip_bom(content)) != note["body"]:
         raise RuntimeError("body-sacred violation: body bytes changed before upload")
 
     name = hub_name or _hub_filename(note.get("title") or "", note.get("created") or "")
@@ -527,6 +569,13 @@ def _maybe_rename_local(local_path: str, hub_name: Optional[str],
     if Path(local_path).name == hub_name:
         return local_path
     new_path = str(Path(local_path).with_name(hub_name))
+    # SYNC-06: os.replace silently overwrites an existing destination. _resolve_hub_names only
+    # dedups among the notes IN THIS PASS — a pre-existing on-disk file at that name (a capture,
+    # an untracked note, a file the user created) is unchecked, and renaming onto it destroys a
+    # whole note including its body. Refuse and keep the current name; the next pass retries.
+    if Path(new_path).exists():
+        print(f"[mobile_sync_agent] rename {note_id} -> {hub_name!r} skipped: destination exists")
+        return local_path
     os.replace(local_path, new_path)
     print(f"[mobile_sync_agent] local rename {note_id}: {Path(local_path).name!r} -> {hub_name!r}")
     return new_path
@@ -702,11 +751,12 @@ def reconcile_changes(
     # (pre-merge) title: the common case is a user retitling on this device; a title that changed
     # ONLY on the remote side during this same pass keeps its prior local name here (simplification —
     # the next pass's mirror/pull sees the merged title and converges it).
-    hub_names = _resolve_hub_names([
+    _name_rows = [
         {"id": nid, "title": n.get("title", ""), "created": n.get("created", ""),
          "category": n.get("category")}
         for nid, n in vault_notes.items()
-    ])
+    ]
+    hub_names = _resolve_hub_names(_name_rows)
 
     for note_id, local in vault_notes.items():
         prior = state.get(note_id)
@@ -770,12 +820,34 @@ def reconcile_changes(
                 # falls to the hub — the canonical side — since we cannot tell who edited what.
                 base = replace(local_note, body=_NO_BASE_BODY)
             else:
-                base = parse_note(_download_revision(drive, file_id, prior["base_rev"]))
+                try:
+                    base = parse_note(_download_revision(drive, file_id, prior["base_rev"]))
+                except Exception as rev_exc:
+                    # SYNC-02: Drive prunes old revisions. This raise used to reach the blanket
+                    # `except` below, which never writes new_state[note_id] — so base_rev stayed
+                    # the dead revision, the next pass failed identically, and mirror_to_hub's
+                    # advanced-head guard kept blocking the upload: a permanent, silent two-way
+                    # stall. Fall through to the same no-common-base path `adopted` uses, which
+                    # is conservative (divergent bodies become a conflicted copy, both intact).
+                    print(f"[mobile_sync_agent] base revision {prior.get('base_rev')!r} "
+                          f"unavailable for {note_id} ({rev_exc}); reconciling with no base")
+                    base = replace(local_note, body=_NO_BASE_BODY)
             merged_result = reconcile(
                 base, local_note, parse_note(remote_text), new_id()
             )
             merged_text = serialize_note(merged_result.merged)
             hub_name = hub_names.get(note_id)
+            # SYNC-20: `hub_names` above was resolved from the PRE-merge local title, so a title
+            # that changed only on the remote side named the file from the stale title and only
+            # self-healed a pass later. Re-resolve post-merge with the merged title substituted,
+            # over the same row set so same-folder clash resolution still holds. _resolve_hub_names
+            # is pure (no Drive calls) — the second resolve costs CPU only.
+            merged_title = getattr(merged_result.merged, "title", "") or ""
+            if merged_title != (local.get("title") or ""):
+                hub_name = _resolve_hub_names([
+                    dict(row, title=merged_title) if row["id"] == note_id else row
+                    for row in _name_rows
+                ]).get(note_id, hub_name)
             local_path = _maybe_rename_local(
                 local["path"], hub_name, prior.get("hub_name"), note_id
             )
@@ -815,6 +887,11 @@ def reconcile_changes(
                     "drive_file_id": up_cc["id"],
                     "base_rev": up_cc.get("headRevisionId"),
                     "local_hash": _sha256(cc_text),
+                    # SYNC-21: record the name we actually uploaded under (the hub_name passed
+                    # above). Without it the next pass sees prev_hub_name=None, so
+                    # _maybe_rename_local returns early and _upload_note never renames — the
+                    # conflicted copy's local and hub names diverge permanently.
+                    "hub_name": f"{cc.id}.md",
                 }
                 conflicts += 1
         except Exception as e:
@@ -962,7 +1039,20 @@ def pull_new_hub_notes(
             except ValueError:
                 hub_name = None
             local_name = hub_name or f"{note_id}.md"
-            dest = str(Path(vault_root) / sub / local_name)
+            dest_path = Path(vault_root) / sub / local_name
+            # SYNC-01: the skip guard at the top of this loop is keyed by hub ID, not by
+            # filesystem path, and _atomic_write_note does an unconditional os.replace --
+            # so a hub note whose local name collided with an UNRELATED local file
+            # silently destroyed that file's content. Disambiguate rather than skip:
+            # skipping would strand this note forever, since it never enters `state` and
+            # so the id-level guard above would never start covering it.
+            if dest_path.exists():
+                dest_path = dest_path.with_name(f"{dest_path.stem}.{note_id}{dest_path.suffix}")
+                if dest_path.exists():
+                    raise ValueError(
+                        f"pull target still occupied after disambiguation: {dest_path.name}"
+                    )
+            dest = str(dest_path)
             write_file(dest, content)
             new_state[note_id] = {
                 "drive_file_id": hub_file["id"],
@@ -1005,6 +1095,21 @@ def intake_mobile_inbox(
     Captures enter the pipeline UNCHANGED (dedup/merge/scratchpad apply — the notes-are-not-
     captures lock). Returns (ingested, skipped, failed).
     """
+    def _pipeline_wrote(result) -> bool:
+        """SYNC-26: the hub file is deleted right after run_pipeline, irreversibly. The return
+        value used to be discarded, so a pipeline that produced no vault file still lost the
+        capture. Every non-raising path of main.run_pipeline sets `_written_to` to a real path
+        (vision-fail and LLM-fail both route to the scratchpad), so this only fires on dry_run
+        or an injected seam — cheap insurance on an irreversible delete.
+
+        An EMPTY or non-dict return (None, `{}`, a test double) carries no information about
+        where the capture went, so it is treated as UNKNOWN and allowed through — the pipeline
+        is an injected seam and failing those closed would strand every capture in the inbox
+        forever. Only a POPULATED result that reports no `_written_to` is a real "nothing was
+        written", which is exactly the dry_run / injected-seam case this guards.
+        """
+        return not isinstance(result, dict) or not result or bool(result.get("_written_to"))
+
     if download_bytes is None:
         download_bytes = lambda fid: _download_bytes(drive, fid)  # noqa: E731
     if delete_file is None:
@@ -1023,7 +1128,13 @@ def intake_mobile_inbox(
             body = strip_frontmatter(stub_text).strip()
             m = _ATTACH_RE.match(body)
             if m:
-                sibling_name = m.group(1)
+                # SYNC-09: `sibling_name` comes out of the stub BODY -- untrusted hub
+                # content -- and is used below as a path component under stage_dir.
+                # Worse than temp pollution: the staged file is then read back by
+                # run_pipeline(audio=/image=), making an unguarded name a
+                # write-then-read-back gadget. Same guard the block above already
+                # applies to note_id / category / hub_name. ValueError -> failed++.
+                sibling_name = _safe_path_component(m.group(1))
                 sibling = by_name.get(sibling_name)
                 if sibling is None:
                     skipped += 1          # bytes not arrived yet — retry next cycle
@@ -1034,19 +1145,25 @@ def intake_mobile_inbox(
                 staged.parent.mkdir(parents=True, exist_ok=True)
                 staged.write_bytes(data)
                 if ext in _AUDIO_EXTS:
-                    run_pipeline(audio=str(staged))
+                    result = run_pipeline(audio=str(staged))
                 elif ext in _IMAGE_EXTS:
-                    run_pipeline(image=str(staged))
+                    result = run_pipeline(image=str(staged))
                 else:
                     # unknown binary kind — leave it, flag once, don't fake-ingest
                     print(f"[mobile_sync_agent] intake: unknown ext {ext!r} for {sibling_name}, skip")
                     skipped += 1
                     continue
+                if not _pipeline_wrote(result):
+                    failed += 1
+                    continue
                 delete_file(f["id"])
                 delete_file(sibling["id"])
                 ingested += 1
             else:
-                run_pipeline(text=body)   # text/URL capture; the router shape-detects URLs
+                result = run_pipeline(text=body)   # text/URL capture; the router shape-detects URLs
+                if not _pipeline_wrote(result):
+                    failed += 1
+                    continue
                 delete_file(f["id"])
                 ingested += 1
         except Exception as e:
@@ -1186,6 +1303,35 @@ def run_once(
     vault_notes = read_vault_notes(vault_path, mirror_captures)
     hub_files = get_hub_notes(drive, hub_id)
 
+    # ISS-005 B/C: delete detection, best-effort and NON-DESTRUCTIVE by default (a failure must never
+    # abort a sync pass). Kept OUT of reconcile_changes/mirror_to_hub so those tested loops are
+    # untouched. Two signals: an out-of-band FS delete of a once-synced note (absent from the vault
+    # AND local _trash/) propagates as a real hub delete, gated by a two-pass confirm; a peer's delete
+    # of a note the desktop still holds raises a durable, non-destructive DELETE-PROMPT (kept in the
+    # sibling delete_prompts.json). See delete_detect.process_deletes. Skips the whole pass cheaply
+    # (no Drive calls) when there are no candidates and nothing is held.
+    try:
+        from delete_detect import process_deletes
+        _now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        state, _fs_del, _prompts = process_deletes(
+            vault_path, state_path, state, vault_notes, hub_files,
+            reserved.get("_trash"), _now_iso,
+            list_children=lambda fid: _list_children(drive, fid, mime_is_folder=False),
+            delete_file=lambda fid: _delete_file(drive, fid),
+            # ISS-005 A follow-up: OUTBOUND soft-delete propagation (desktop local _trash/ → hub _trash/).
+            # ensure_hub_trash find-or-creates the hub `_trash/` (the desktop may be the first to soft-
+            # delete); move_file re-parents metadata-only (body-sacred). Both are only INVOKED when a
+            # note actually sits in local _trash/ with a live hub copy — a clean pass calls neither.
+            move_file=lambda fid, dest: _move_file_to_folder(drive, fid, dest),
+            ensure_hub_trash=lambda: _find_or_create_subfolder(drive, hub_id, "_trash"),
+            vault_root=vault_root,
+        )
+        if _fs_del or _prompts:
+            print(f"[mobile_sync_agent] delete-detect: {_fs_del} permanent (out-of-band FS) "
+                  f"delete(s), {_prompts} inbound delete-prompt(s) held")
+    except Exception as e:  # noqa: BLE001 — delete detection must never break a sync pass
+        print(f"[mobile_sync_agent] delete detection failed: {e}")
+
     if first_migration_pass:
         # Local half of Task 3.1: rename each already-tracked note's local vault mirror to the
         # hub_name migrate_hub_filenames just resolved for it — os.replace, body untouched. Done
@@ -1201,7 +1347,19 @@ def run_once(
             if not resolved or Path(local["path"]).name == resolved:
                 continue
             new_path = str(Path(local["path"]).with_name(resolved))
-            os.replace(local["path"], new_path)
+            # SYNC-23: save_state is OUTSIDE this loop, so an unguarded raise here left N notes
+            # renamed with `hub_names_migrated` never persisted — the one-time migration then
+            # re-ran next pass against a half-renamed vault. Log and continue so the loop always
+            # reaches save_state below. Also refuses to clobber an existing file (SYNC-06 class).
+            if Path(new_path).exists():
+                print(f"[mobile_sync_agent] migrate local rename {note_id} skipped: "
+                      f"{resolved!r} already exists")
+                continue
+            try:
+                os.replace(local["path"], new_path)
+            except OSError as exc:
+                print(f"[mobile_sync_agent] migrate local rename {note_id} failed: {exc}")
+                continue
             print(f"[mobile_sync_agent] migrate local rename {note_id}: "
                   f"{Path(local['path']).name!r} -> {resolved!r}")
             local["path"] = new_path
@@ -1364,6 +1522,14 @@ def run_pass() -> dict:
     _default_state = Path(vault_path) / ".omni_capture" / "mobile_sync_state.json"
     _default_state.parent.mkdir(parents=True, exist_ok=True)
     state_path = os.environ.get("OMNI_SYNC_STATE", str(_default_state))
+
+    # SYNC-12: refuse the whole pass when the local-only ignore set does not parse. A corrupt
+    # sidecar previously degraded to the empty set, which made filter_ignored_notes a
+    # pass-through and uploaded every note the user marked private to Drive — silent and
+    # irreversible. Raising here is recorded by sync_scheduler as an `ok:false` row.
+    from sync_ignore import assert_ignore_set_readable
+    assert_ignore_set_readable(Path(vault_path))
+
     drive = get_drive_service()
 
     bound_pipeline = partial(run_pipeline, vault_root=vault_path)

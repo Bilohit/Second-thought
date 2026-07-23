@@ -83,9 +83,10 @@ check_interval_seconds = 30
 hotkey = "ctrl+shift+space"
 # Phone pairing bind host (D5, P8 safety gate). ABSENT or 127.0.0.1 => the
 # FastAPI server binds loopback only (default, not reachable by the phone).
-# The Settings "Pairing" toggle writes your Tailscale IP here to expose the
-# chat plane to the phone over Tailscale. Remove it (toggle off) to go back
-# to loopback-only. `secret` (the X-Omni-Secret) is generated and written here
+# Legacy field, superseded: the Settings "Pairing" toggle now writes
+# `[lan] enabled` / `[lan] host` (the same-WiFi LAN file-sync accelerator).
+# Remove this host (or leave it absent) to stay loopback-only.
+# `secret` (the X-Omni-Secret) is generated and written here
 # automatically on first launch — never commit a real value here.
 # host = "100.x.y.z"
 

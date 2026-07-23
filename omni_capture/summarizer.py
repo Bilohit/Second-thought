@@ -269,11 +269,11 @@ def digest_chunks(
     chunk -- a failed chunk contributes ([], "") rather than aborting the
     whole large-text branch.
     """
-    import os as _os
-    from llm_engine import _make_client
+    from llm_engine import _make_client, _ollama_setting
 
     client = _make_client()
-    keep_alive = _os.getenv("OLLAMA_KEEP_ALIVE", "30m")
+    # SRV-16: env-first-then-config, same resolver the rest of the LLM path uses.
+    keep_alive = _ollama_setting("OLLAMA_KEEP_ALIVE", "keep_alive", "30m")
     out: List[Tuple[List[str], str]] = []
     for chunk in chunks:
         try:

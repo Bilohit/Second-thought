@@ -5,7 +5,11 @@
  *
  *   · Toggle: enable/disable the LAN listener (accelerator only; Drive
  *     remains the sync fallback — see CLAUDE.md "Amendment 2026-07-11").
- *   · QR: encodes {v:3,host,port,key,secret,device} (contract §9/§11.4) for the phone to scan.
+ *   · QR: encodes {v:4,host,port,lan_secret,key,device} (contract §11.4) for the phone to scan.
+ *     The QR carries a LIVE credential (`lan_secret` + the NaCl `key`), so it is gated behind an
+ *     explicit reveal (GUI-19): it is not encoded — never enters the DOM — until the user asks for
+ *     it, and it reseals itself after a bounded window (see lib/pairingReveal.ts). This defends
+ *     against a glance, a screenshot, or a screen-share catching the code.
  *   · Rotate secret: writes a new [gui] secret; effective after restart.
  *
  * Kept out of the 1000+ line SettingsPanel per plan Task 6.
@@ -19,7 +23,7 @@
  * `onHeaderActionsChange`).
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import {
   getPairingInfo, setPairingEnabled, rotateSecret, buildPairingPayload,
@@ -27,6 +31,9 @@ import {
 } from "../lib/tauri";
 import { getLanDeviceId } from "../lib/api";
 import { resolveLanTone } from "../lib/syncSetup";
+import {
+  REVEAL_WINDOW_MS, tickRemaining, revealFraction, formatCountdown, barColor,
+} from "../lib/pairingReveal";
 import { BTN_SECONDARY } from "./ui/styles";
 import { Toggle } from "./ui/Toggle";
 import { TONE_COLOR } from "./Sync/parts";
@@ -52,6 +59,19 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+// ── Reveal-gate lock glyph (inline SVG, house icon spec: stroke=currentColor,
+//    ~1.7 weight, 24 grid, sharp — never emoji). ──────────────────────────────
+function LockIcon({ size = 26 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="4.5" y="10.5" width="15" height="10" />
+      <path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" />
+      <circle cx="12" cy="15.2" r="1.1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 /** What the host needs to render LAN status outside this panel. */
 export interface PairingState {
   info: PairingInfo | null;
@@ -74,6 +94,15 @@ export default function PairingPanel({
   const [error, setError] = useState<string | null>(null);
   const [restartHint, setRestartHint] = useState(false);
 
+  // GUI-19 reveal gate. `revealed` gates the ENCODE (so a sealed QR is never in the DOM);
+  // `remaining` drives the reseal loading bar + countdown; `paused` (hover) freezes it so
+  // reading the code never races the user. Refs keep the rAF loop off React's dependency churn.
+  const [revealed, setRevealed] = useState(false);
+  const [remaining, setRemaining] = useState(REVEAL_WINDOW_MS);
+  const [paused, setPaused] = useState(false);
+  const hoverRef = useRef(false);
+  const remainingRef = useRef(REVEAL_WINDOW_MS); // mirrors `remaining` so the rAF loop reads it without re-subscribing
+
   const qrSize = compact ? 160 : 220;
 
   // Fetches PairingInfo (Rust get_pairing_info) once on mount only — this call spawns a
@@ -82,8 +111,8 @@ export default function PairingPanel({
   const refresh = useCallback(async () => {
     const i = await getPairingInfo();
     setInfo(i);
-    // Device-id (v3 QR anchor) is stable; fetch once — a failure just leaves the QR unrendered
-    // until retry, rather than emitting a v2 payload the phone would reject.
+    // Device-id (v4 QR anchor) is stable; fetch once — a failure just leaves the QR unrendered
+    // until retry, rather than emitting a v3 payload the phone would reject.
     try { setDevice(await getLanDeviceId()); } catch { /* leave null; QR waits for it */ }
   }, []);
 
@@ -96,24 +125,68 @@ export default function PairingPanel({
     onStateChange?.({ info, restartRequired: restartHint });
   }, [info, restartHint, onStateChange]);
 
-  // QR re-encode is pure client-side work — safe to rerun whenever info/device/size changes.
-  // v3 requires `device`; hold the QR until it's fetched (the phone rejects any v1/v2 payload).
+  const conceal = useCallback(() => {
+    setRevealed(false);
+    setQr(null);                 // drop the credential out of the DOM
+    remainingRef.current = REVEAL_WINDOW_MS;
+    setRemaining(REVEAL_WINDOW_MS);
+    setPaused(false);
+    hoverRef.current = false;
+  }, []);
+
+  const reveal = useCallback(() => {
+    remainingRef.current = REVEAL_WINDOW_MS;
+    setRemaining(REVEAL_WINDOW_MS);
+    setRevealed(true);
+  }, []);
+
+  // QR encode is GATED on `revealed` — the credential is only ever computed once the user asks.
+  // Pure client-side work otherwise; v4 requires `device`, so hold until it's fetched.
   useEffect(() => {
-    if (!info || !device) return;
-    if (!info.enabled) { setQr(null); return; }
+    if (!info || !device || !info.enabled || !revealed) { setQr(null); return; }
     let cancelled = false;
     QRCode.toDataURL(buildPairingPayload(info, device), { margin: 1, width: qrSize }).then((d) => {
       if (!cancelled) setQr(d);
     });
     return () => { cancelled = true; };
-  }, [info, device, qrSize]);
+  }, [info, device, qrSize, revealed]);
+
+  // Reseal countdown: one rAF loop while revealed, driving the bar + clock. Pauses on hover or a
+  // hidden tab; reseals when it hits zero. Reads hover through a ref so the loop never restarts.
+  useEffect(() => {
+    if (!revealed) return;
+    let raf = 0;
+    let last: number | null = null;
+    const step = (ts: number) => {
+      if (last == null) last = ts;
+      const dt = ts - last; last = ts;
+      const isPaused = hoverRef.current || document.hidden;
+      const next = tickRemaining(remainingRef.current, dt, isPaused);
+      remainingRef.current = next;
+      setPaused(isPaused);
+      setRemaining(next);
+      if (next <= 0) { conceal(); return; }   // window closed — reseal and stop the loop
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [revealed, conceal]);
+
+  // A window blur (alt-tab, screen-share picker, lock) reseals at once — the screen-share defence.
+  useEffect(() => {
+    if (!revealed) return;
+    const onBlur = () => conceal();
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, [revealed, conceal]);
 
   const onToggle = async (next: boolean) => {
     setBusy(true); setError(null);
     try {
       const i = await setPairingEnabled(next);
-      setInfo(i); // QR re-encode handled by the info/qrSize effect above
-      setRestartHint(true); // bind change applies next launch
+      setInfo(i);
+      if (!next) conceal();       // turning LAN off also reseals
+      setRestartHint(true);       // bind change applies next launch
     } catch (e) {
       setError(String(e));
     } finally {
@@ -146,6 +219,10 @@ export default function PairingPanel({
     restartRequired: restartHint,
   });
 
+  const hasLanIp = Boolean(info.lan_ip ?? info.host);
+  const frac = revealFraction(remaining, REVEAL_WINDOW_MS);
+  const tileW = qrSize + 20;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: compact ? 12 : 16 }}>
       <Field label="Same-WiFi sync">
@@ -175,13 +252,57 @@ export default function PairingPanel({
         <div style={{ fontSize: 11, color: "var(--red)" }}>{error}</div>
       )}
 
-      {info.enabled && qr && (
+      {info.enabled && hasLanIp && (
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, textAlign: "center" }}>
           <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-1)" }}>Pair your phone</div>
-          {/* Light quiet-zone tile — a QR on the dark surface risks failing to scan. */}
-          <div style={{ width: qrSize + 20, height: qrSize + 20, background: "#fafafa", display: "flex", alignItems: "center", justifyContent: "center", padding: 10 }}>
-            <img src={qr} alt="Pairing QR code" width={qrSize} height={qrSize} />
+
+          {/* Fixed QR footprint — reserved whether sealed or revealed, so the panel never jumps. */}
+          <div style={{ position: "relative", width: tileW, height: tileW }}>
+            {revealed && qr ? (
+              // Light quiet-zone tile — a QR on the dark surface risks failing to scan.
+              <div
+                onMouseEnter={() => { hoverRef.current = true; }}
+                onMouseLeave={() => { hoverRef.current = false; }}
+                style={{
+                  width: tileW, height: tileW, background: "#fafafa",
+                  display: "flex", alignItems: "center", justifyContent: "center", padding: 10,
+                }}
+              >
+                <img
+                  src={qr} alt="Pairing QR code" width={qrSize} height={qrSize}
+                  style={{ animation: "fadeIn 240ms var(--hover-ease-out) both" }}
+                />
+                {/* Reseal loading bar — flush at the tile's bottom edge; drains over the window. */}
+                <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 3, background: "var(--accent-d)" }}>
+                  <div
+                    style={{
+                      height: "100%", width: "100%", transformOrigin: "left center",
+                      transform: `scaleX(${frac})`, background: barColor(frac),
+                      transition: "transform 90ms linear, background-color 400ms ease",
+                    }}
+                  />
+                </div>
+              </div>
+            ) : (
+              // Sealed: no QR in the DOM. One click reveals it.
+              <button
+                type="button"
+                onClick={reveal}
+                aria-label="Reveal pairing code"
+                style={{
+                  width: tileW, height: tileW, cursor: "pointer",
+                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10,
+                  background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-1)",
+                  font: "inherit",
+                }}
+              >
+                <LockIcon />
+                <span style={{ fontSize: 12 }}>Reveal pairing code</span>
+                <span style={{ fontSize: 10, color: "var(--text-2)" }}>contains a live credential</span>
+              </button>
+            )}
           </div>
+
           <ol style={{ listStyle: "none", margin: 0, padding: 0, textAlign: "left", display: "flex", flexDirection: "column", gap: 5 }}>
             {[
               "Open Second Thought on your phone",
@@ -193,9 +314,31 @@ export default function PairingPanel({
             ))}
             <li style={{ fontSize: 11, color: "var(--text-2)", display: "flex", gap: 8 }}>
               <span style={{ color: "var(--accent)", fontWeight: 600 }}>3</span>
-              <span>Scan · <span style={{ color: "var(--text-3)", fontVariantNumeric: "tabular-nums" }}>{info.lan_ip ?? info.host}:{info.port}</span></span>
+              <span>Reveal &amp; scan · <span style={{ color: "var(--text-3)", fontVariantNumeric: "tabular-nums" }}>{info.lan_ip ?? info.host}:{info.port}</span></span>
             </li>
           </ol>
+
+          {/* Revealed-only meta: the exposure warning + the countdown + an explicit reseal. */}
+          {revealed && (
+            <div style={{ width: tileW, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minHeight: 20 }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, color: "var(--yellow)" }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 9v4" /><path d="M12 17h.01" />
+                  <path d="M10.3 3.9 2.4 18a1.9 1.9 0 0 0 1.7 2.9h15.8a1.9 1.9 0 0 0 1.7-2.9L13.7 3.9a1.9 1.9 0 0 0-3.4 0z" />
+                </svg>
+                {paused ? "Paused — reading" : "Secret is on screen"}
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 11, color: "var(--text-2)", fontVariantNumeric: "tabular-nums" }}>
+                  Hides in {formatCountdown(remaining)}
+                </span>
+                <button className="btn-hover" style={BTN_SECONDARY} onClick={conceal}>
+                  Hide now
+                </button>
+              </span>
+            </div>
+          )}
+
           <button
             className="btn-hover"
             style={BTN_SECONDARY}
@@ -207,7 +350,7 @@ export default function PairingPanel({
         </div>
       )}
 
-      {info.enabled && !qr && !info.lan_ip && (
+      {info.enabled && !hasLanIp && (
         <div style={{ fontSize: 11, color: "var(--yellow)" }}>
           LAN IP not found — connect to WiFi and toggle again.
         </div>

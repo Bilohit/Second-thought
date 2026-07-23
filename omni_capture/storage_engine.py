@@ -729,6 +729,14 @@ def ensure_category(vault_root: Path, name: str, description: str) -> Path:
 # human-readable placeholder text, since postprocessing could alter the latter.
 _YOUTUBE_SUMMARY_SENTINEL = "<!-- ST:SUMMARY -->"
 
+# SYNC-03: the transcript region needs its own stable sentinel for the same reason the summary
+# does. finalize_youtube_note used to locate the transcript by the literal heading "\n## Transcript";
+# rename or postprocess that heading and the lookup returned -1, `after` became "", and the ENTIRE
+# transcript was replaced by the summary. New notes carry this marker; the heading lookup stays as a
+# legacy fallback for notes written before it, and when NEITHER is found the summary is APPENDED
+# rather than truncating anything.
+_YOUTUBE_TRANSCRIPT_SENTINEL = "<!-- ST:TRANSCRIPT -->"
+
 
 def create_youtube_note(
     title: Optional[str],
@@ -770,6 +778,7 @@ def create_youtube_note(
         "## Summary\n"
         f"{_YOUTUBE_SUMMARY_SENTINEL}\n"
         "⏳ Summarizing transcript…\n\n"
+        f"{_YOUTUBE_TRANSCRIPT_SENTINEL}\n"
         "## Transcript\n"
         f"{transcript_md}\n"
     )
@@ -812,6 +821,7 @@ def create_voice_note(
         "## Summary\n"
         f"{_YOUTUBE_SUMMARY_SENTINEL}\n"
         "⏳ Summarizing transcript…\n\n"
+        f"{_YOUTUBE_TRANSCRIPT_SENTINEL}\n"
         "## Transcript\n"
         f"{transcript_md}\n"
     )
@@ -843,10 +853,18 @@ def finalize_youtube_note(
     if sentinel_idx == -1:
         new_text = text.rstrip() + "\n\n## Summary\n" + processed_summary + "\n"
     else:
-        transcript_idx = text.find("\n## Transcript", sentinel_idx)
-        before = text[:sentinel_idx]
-        after = text[transcript_idx:] if transcript_idx != -1 else ""
-        new_text = before + processed_summary + "\n" + after
+        # SYNC-03: anchor on the transcript sentinel first, fall back to the literal heading for
+        # notes written before it existed. If NEITHER is found the tail is unknown, so keep the
+        # whole remainder and append the summary — never silently truncate a transcript.
+        transcript_idx = text.find(_YOUTUBE_TRANSCRIPT_SENTINEL, sentinel_idx)
+        if transcript_idx == -1:
+            transcript_idx = text.find("\n## Transcript", sentinel_idx)
+        if transcript_idx == -1:
+            new_text = text.rstrip() + "\n\n## Summary\n" + processed_summary + "\n"
+        else:
+            before = text[:sentinel_idx]
+            after = text[transcript_idx:]
+            new_text = before + processed_summary + "\n" + after
 
     new_text = re.sub(
         r"^status:\s*summarizing\s*$", "status: done", new_text, count=1, flags=re.MULTILINE,

@@ -39,7 +39,12 @@ def read_all_fields(text: str) -> dict[str, str]:
         return {}
     fields: dict[str, str] = {}
     for line in m.group(1).splitlines():
-        hit = re.match(r"^([A-Za-z0-9_]+):\s*(.*)$", line)
+        # SYNC-29: hyphenated keys (`remind-at`, foreign/plugin keys) were dropped entirely by the
+        # narrower `[A-Za-z0-9_]+` class, while note_model._KEY_LINE — the peer-parity codec, a port
+        # of the phone's frontmatter.ts — accepts them. Widen to match it. Only this key class
+        # changes: _FM_RE is deliberately untouched because note_editor._split uses its `m.end()`
+        # as the frontmatter/body boundary on the body-sacred write path.
+        hit = re.match(r"^([A-Za-z0-9_][A-Za-z0-9_-]*):\s*(.*)$", line)
         if hit:
             fields[hit.group(1)] = hit.group(2).strip().strip('"').strip("'")
     return fields

@@ -6,7 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { readText, readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { readFile, readTextFile } from "@tauri-apps/plugin-fs";
-import { streamCapture, getJobStatus, HttpError, type StepName, type StepStatus, type ContentType, type ReminderOfferEvent } from "../lib/api";
+import { streamCapture, getJobStatus, checkOllamaReachable, HttpError, type StepName, type StepStatus, type ContentType, type ReminderOfferEvent } from "../lib/api";
 import { logger, setRunId } from "../lib/logger";
 import { isConnectionFailure, nextRetryDelayMs } from "../lib/captureRetry";
 import { fileKind } from "../lib/fileIngest";
@@ -70,6 +70,14 @@ export interface CaptureState {
   /** Future date/time mentions detected in the just-written note, offered as
    *  one-click reminders. Reset to null at the start of every run. */
   reminderOffer: ReminderOfferEvent | null;
+  /** True once the fast Ollama reachability pre-check (ISS-018) has come back
+   *  negative for THIS run. The server-side pipeline still runs and still
+   *  saves the note (with its existing needs_llm_retry / confidence:0
+   *  frontmatter) -- this only swaps the "decide" step's copy (via
+   *  `applyAiOfflineOverride`) so the ~8-11s LLM timeout isn't spent showing
+   *  a plain "Deciding" spinner with zero feedback. Reset to false at the
+   *  start of every run. */
+  aiOffline: boolean;
 }
 
 const STEP_DEFS: CaptureStep[] = [
@@ -85,6 +93,26 @@ const INITIAL_STEPS: Record<StepName, StepState> = {
   decide:    "pending",
   write:     "pending",
 };
+
+/** Pure (ISS-018): swap the "decide" step's copy when the fast Ollama
+ *  reachability pre-check has come back negative for this run. Every other
+ *  step (and the decide step's `id`) is left untouched -- the real SSE
+ *  "decide" step event still lands and flips it to "done"/"error" exactly as
+ *  before, just now reading this label instead of "Deciding category" while
+ *  it does. Exported for its sibling unit test. */
+export function applyAiOfflineOverride(defs: CaptureStep[], aiOffline: boolean): CaptureStep[] {
+  if (!aiOffline) return defs;
+  return defs.map((def) =>
+    def.id === "decide"
+      ? {
+          ...def,
+          label: "AI offline — saved for retry",
+          pillLabel: "AI offline",
+          detail: "Ollama isn't reachable. The note will still save; enrichment retries once it's back.",
+        }
+      : def,
+  );
+}
 
 // Tied to the footer's `fadeIn 0.22s` animation (CaptureOverlay.tsx Footer) plus
 // a brief moment to actually read "Saved to …" — not an arbitrary long wait.
@@ -265,6 +293,7 @@ const BLANK_STATE: CaptureState = {
   backgroundJob: null,
   starting: false,
   reminderOffer: null,
+  aiOffline: false,
 };
 
 const JOB_POLL_MS = 1500;
@@ -280,11 +309,20 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
   const [state, setState] = useState<CaptureState>(BLANK_STATE);
   const abortRef = useRef<AbortController | null>(null);
   const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The post-hide settle timer is nested inside dismissTimer's callback, so
+  // clearing dismissTimer alone cannot cancel it once it has been scheduled —
+  // it would fire after unmount and wipe in-flight state. Tracked separately.
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const jobPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // Set synchronously (before any await) so two trigger-capture events that
   // fire milliseconds apart can't both pass the check -- a useState flag
   // would still be stale for the second callback at that point.
   const inFlightRef = useRef(false);
+  // ISS-018: identifies which run the fire-and-forget Ollama reachability
+  // check belongs to, so a check that resolves after its run has already
+  // finished (or a newer run has started) can't bleed `aiOffline: true`
+  // into a state that no longer represents it.
+  const activeRunIdRef = useRef<string | null>(null);
 
   const setStep = useCallback((step: StepName, status: StepStatus) => {
     setState((prev) => ({
@@ -298,6 +336,7 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
 
   const scheduleDismiss = useCallback((delayMs: number) => {
     if (dismissTimer.current) clearTimeout(dismissTimer.current);
+    if (settleTimer.current) clearTimeout(settleTimer.current);
     dismissTimer.current = setTimeout(async () => {
       if (holdOpenRef?.current) {
         // Pinned pill: stay visible, just settle back to idle.
@@ -305,7 +344,7 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
         return;
       }
       await getCurrentWindow().hide();
-      setTimeout(() => setState(BLANK_STATE), 300);
+      settleTimer.current = setTimeout(() => setState(BLANK_STATE), 300);
     }, delayMs);
   }, [holdOpenRef]);
 
@@ -378,11 +417,23 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
 
     const runId = newRunId();
     setRunId(runId);
+    activeRunIdRef.current = runId;
     logger.info("capture", "runCapture invoked", { runId });
     const stopRun = logger.time("capture", "full capture session");
     const controller = new AbortController();
     abortRef.current = controller;
     setState({ ...BLANK_STATE, phase: "capturing" });
+
+    // ISS-018: fire the fast Ollama reachability pre-check alongside the real
+    // capture, never gating it -- the server-side pipeline already saves the
+    // note correctly (confidence:0, needs_llm_retry:true) when Ollama is down,
+    // so this only changes how quickly the user learns that, not whether the
+    // capture proceeds. Fire-and-forget; guarded by activeRunIdRef so a check
+    // that resolves late can't stomp a newer or already-finished run.
+    checkOllamaReachable().then((reachable) => {
+      if (reachable || activeRunIdRef.current !== runId) return;
+      setState((prev) => (prev.phase === "capturing" ? { ...prev, aiOffline: true } : prev));
+    });
 
     try {
       const { contentType, content, preview } = await getPayload();
@@ -503,15 +554,24 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
   );
 
   useEffect(() => {
+    // Under StrictMode the cleanup runs before listen()'s promise resolves,
+    // so assigning in .then() would leave the listener attached forever and
+    // leak a duplicate hotkey handler. Detach immediately if that happened.
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
-    listen<void>("trigger-capture", () => { runCapture(); }).then((fn) => { unlisten = fn; });
+    listen<void>("trigger-capture", () => { runCapture(); }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
     return () => {
+      cancelled = true;
       unlisten?.();
       abortRef.current?.abort();
       if (dismissTimer.current) clearTimeout(dismissTimer.current);
+      if (settleTimer.current) clearTimeout(settleTimer.current);
       stopJobPolling();
     };
   }, [runCapture, stopJobPolling]);
 
-  return { state, stepDefs: STEP_DEFS, captureFile, captureAudio };
+  return { state, stepDefs: applyAiOfflineOverride(STEP_DEFS, state.aiOffline), captureFile, captureAudio, captureNow: runCapture };
 }

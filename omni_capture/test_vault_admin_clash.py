@@ -17,7 +17,15 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
-os.environ.setdefault("OMNI_GUI_SECRET", "")
+# SRV-01: server._require_secret now fails CLOSED, so an empty OMNI_GUI_SECRET
+# 403s every route instead of disabling auth. Every server test module uses this
+# SAME literal on purpose: the env var is process-global and pytest imports all
+# modules before running any test, so differing values would make the suite
+# order-dependent.
+GUI_SECRET = "omni-test-secret-0123456789abcdef"
+os.environ["OMNI_GUI_SECRET"] = GUI_SECRET
+_AUTH = {"X-Omni-Secret": GUI_SECRET}
+
 
 from fastapi.testclient import TestClient
 
@@ -36,7 +44,7 @@ def gui(tmp_path, monkeypatch):
         '[vault]\nroot = "' + str(vault).replace("\\", "/") + '"\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr(server, "_GUI_SECRET", SECRET)
+    monkeypatch.setenv("OMNI_GUI_SECRET", SECRET)
     monkeypatch.setattr(server, "CONFIG_PATH", cfg_file)
     monkeypatch.setattr(server, "_get_vault_root", lambda: vault)
     monkeypatch.setattr(server, "reload_config", lambda *a, **k: None)

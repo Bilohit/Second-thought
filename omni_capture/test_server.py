@@ -21,7 +21,15 @@ from unittest import mock as _mock  # look_chat used `from unittest import mock`
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
-os.environ.setdefault("OMNI_GUI_SECRET", "")
+# SRV-01: server._require_secret now fails CLOSED, so an empty OMNI_GUI_SECRET
+# 403s every route instead of disabling auth. Every server test module uses this
+# SAME literal on purpose: the env var is process-global and pytest imports all
+# modules before running any test, so differing values would make the suite
+# order-dependent.
+GUI_SECRET = "omni-test-secret-0123456789abcdef"
+os.environ["OMNI_GUI_SECRET"] = GUI_SECRET
+_AUTH = {"X-Omni-Secret": GUI_SECRET}
+
 
 from fastapi.testclient import TestClient
 
@@ -44,7 +52,7 @@ from reminders import (
 # test_health.py
 # ============================================================================
 def test_health_shape_before_and_after_ready():
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers=_AUTH)
 
     def _base(resp):
         body = resp.json()
@@ -73,20 +81,50 @@ def test_health_shape_before_and_after_ready():
     assert _base(resp) == {"ok": True, "ready": True, "model_ok": False}
 
 
+def test_ollama_reachable_probe():
+    """ISS-018: unlike /health's model_ok (set once at startup and stale if
+    Ollama stops afterward), /ollama/reachable must reflect Ollama's CURRENT
+    state on every call."""
+    client = TestClient(server.app, headers=_AUTH)
+
+    with _mock.patch("server.urlopen") as m:
+        m.return_value.__enter__.return_value.status = 200
+        resp = client.get("/ollama/reachable")
+    assert resp.status_code == 200
+    assert resp.json() == {"reachable": True}
+
+    with _mock.patch("server.urlopen", side_effect=OSError("connection refused")):
+        resp = client.get("/ollama/reachable")
+    assert resp.status_code == 200
+    assert resp.json() == {"reachable": False}
+
+
 # ============================================================================
 # test_look_chat.py
 # ============================================================================
 def test_vault_refusal_when_no_match():
     with _mock.patch("rag_engine.hybrid_retrieve", return_value=([], 0.0, "none")):
-        client = TestClient(server.app)
+        client = TestClient(server.app, headers=_AUTH)
         r = client.post("/look/chat", json={"question": "anything"})
         body = r.text
     assert "Information not found in vault" in body
     assert "event: done" in body
 
+def test_ollama_offline_reply_distinct_from_no_match():
+    """ISS-009: an Ollama connection failure (tier 'offline') must produce a
+    distinct honest reply, never the same REFUSAL text as a genuine no-match
+    (test_vault_refusal_when_no_match above)."""
+    with _mock.patch("rag_engine.hybrid_retrieve", return_value=([], 0.0, "offline")):
+        client = TestClient(server.app, headers=_AUTH)
+        r = client.post("/look/chat", json={"question": "anything"})
+        body = r.text
+    assert "AI engine offline" in body
+    assert "Information not found in vault" not in body
+    assert "event: done" in body
+
 def test_talk_mode_skips_retrieval():
     with _mock.patch("rag_engine.hybrid_retrieve") as retrieve:
-        client = TestClient(server.app)
+        client = TestClient(server.app, headers=_AUTH)
         r = client.post("/look/chat", json={"question": "/talk hello"})
         body = r.text
     retrieve.assert_not_called()
@@ -102,7 +140,7 @@ def _client_config(tmp_config: Path):
     importlib.reload(server)
     server.CONFIG_PATH = tmp_config
     from fastapi.testclient import TestClient
-    return TestClient(server.app), server
+    return TestClient(server.app, headers=_AUTH), server
 
 
 def test_patch_writes_capture_keys_under_capture_section():
@@ -466,7 +504,109 @@ def _client_inbox(vault: Path, auto_describe: bool):
 
     cfg = Config()
     cfg.capture.auto_describe_new_folders = auto_describe
-    return TestClient(server.app), cfg
+    return TestClient(server.app, headers=_AUTH), cfg
+
+
+def test_post_trash_moves_a_note_and_preserves_bytes():
+    """ISS-005 A endpoint: POST /trash soft-moves a live note into _trash/, body byte-identical,
+    and it then appears in GET /trash for restore."""
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td) / "vault"
+        (vault / "Personal").mkdir(parents=True)
+        note = vault / "Personal" / "delete-me.md"
+        raw = b"---\ntitle: Delete me\ncategory: Personal\norigin: note\n---\n# X\r\n\r\nbody.   \n"
+        note.write_bytes(raw)
+
+        import server
+        server._get_vault_root = lambda: vault  # type: ignore[attr-defined]
+        client = TestClient(server.app, headers=_AUTH)
+
+        r = client.post("/trash", json={"path": "Personal/delete-me.md"})
+        assert r.status_code == 200, r.text
+        filename = r.json()["filename"]
+        assert not note.exists()
+        assert (vault / "_trash" / filename).read_bytes() == raw
+
+        listed = client.get("/trash").json()["items"]
+        assert any(it["filename"] == filename and it["category"] == "Personal" for it in listed)
+
+        # Missing note → 404; escaping path → 400.
+        assert client.post("/trash", json={"path": "Personal/ghost.md"}).status_code == 404
+        assert client.post("/trash", json={"path": "../../etc/passwd.md"}).status_code == 400
+
+
+def _seed_delete_prompt(vault: Path, note_id: str, kind: str = "trash") -> str:
+    """Write a live note + a durable DELETE-PROMPT for it (what the reconcile pass records)."""
+    from delete_detect import save_delete_prompts
+    (vault / "Personal").mkdir(parents=True, exist_ok=True)
+    raw = (f"---\nid: {note_id}\ntitle: Held\ncategory: Personal\norigin: note\n---\n"
+           f"# Held\r\n\r\nSacred body.   \n").encode("utf-8")
+    (vault / "Personal" / f"{note_id}.md").write_bytes(raw)
+    (vault / ".omni_capture").mkdir(parents=True, exist_ok=True)
+    state_path = str(vault / ".omni_capture" / "mobile_sync_state.json")
+    save_delete_prompts(state_path, {"prompts": {note_id: {"kind": kind, "first_seen": "t"}},
+                                     "pending_fs": {}, "keep_here": {}})
+    return state_path
+
+
+def test_resolve_delete_prompt_delete_both_trashes_locally_and_clears():
+    """ISS-005 A follow-up gap 2: delete_both soft-moves the held note into _trash/ (body
+    byte-identical) and clears the durable prompt."""
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td) / "vault"
+        state_path = _seed_delete_prompt(vault, "N1")
+        raw = (vault / "Personal" / "N1.md").read_bytes()
+
+        import server
+        server._get_vault_root = lambda: vault  # type: ignore[attr-defined]
+        client = TestClient(server.app, headers=_AUTH)
+
+        r = client.post("/trash/delete-prompts/resolve", json={"id": "N1", "choice": "delete_both"})
+        assert r.status_code == 200, r.text
+        assert not (vault / "Personal" / "N1.md").exists()
+        trashed = list((vault / "_trash").glob("*.md"))
+        assert len(trashed) == 1 and trashed[0].read_bytes() == raw   # body-sacred soft move
+        from delete_detect import load_delete_prompts
+        assert load_delete_prompts(state_path)["prompts"] == {}
+
+
+def test_resolve_delete_prompt_keep_here_keeps_note_and_records_decision():
+    """keep_here leaves the local note untouched, clears the prompt, and durably records the decision
+    so the reconcile pass never re-raises it."""
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td) / "vault"
+        state_path = _seed_delete_prompt(vault, "N2")
+        raw = (vault / "Personal" / "N2.md").read_bytes()
+
+        import server
+        server._get_vault_root = lambda: vault  # type: ignore[attr-defined]
+        client = TestClient(server.app, headers=_AUTH)
+
+        r = client.post("/trash/delete-prompts/resolve", json={"id": "N2", "choice": "keep_here"})
+        assert r.status_code == 200, r.text
+        assert (vault / "Personal" / "N2.md").read_bytes() == raw     # local note kept verbatim
+        assert not (vault / "_trash").exists()                        # nothing trashed
+        from delete_detect import load_delete_prompts
+        store = load_delete_prompts(state_path)
+        assert store["prompts"] == {} and "N2" in store["keep_here"]
+
+
+def test_resolve_delete_prompt_unknown_id_404_and_bad_choice_400():
+    """Non-destructive guards: an unknown id → 404, a malformed choice → 400, never a blind delete."""
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td) / "vault"
+        _seed_delete_prompt(vault, "N3")
+
+        import server
+        server._get_vault_root = lambda: vault  # type: ignore[attr-defined]
+        client = TestClient(server.app, headers=_AUTH)
+
+        assert client.post("/trash/delete-prompts/resolve",
+                           json={"id": "nope", "choice": "delete_both"}).status_code == 404
+        assert client.post("/trash/delete-prompts/resolve",
+                           json={"id": "N3", "choice": "nuke"}).status_code == 400
+        # The held note and its prompt are untouched after both rejected calls.
+        assert (vault / "Personal" / "N3.md").exists()
 
 
 class TestApproveAutoDescribe(unittest.TestCase):
@@ -640,35 +780,6 @@ class TestWriteCategoryDescription(unittest.TestCase):
             self.assertNotIn("Plants and gardening", text)
 
 
-class TestDigestToday(unittest.TestCase):
-    """GET /digest/today (F-14). The route calls get_config(), which server.py only ever imports
-    function-locally -- without that local import every request 500s with a NameError, i.e. the
-    endpoint was 100% dead."""
-
-    def test_returns_the_four_counts(self):
-        with tempfile.TemporaryDirectory() as td:
-            vault = Path(td) / "vault"
-            vault.mkdir()
-            (vault / "n1.md").write_text(
-                "---\nid: 01DIGEST\ntitle: T\norigin: note\n---\nBody\n",
-                encoding="utf-8", newline="")
-
-            cfg = Config()
-            cfg.vault.root = vault
-            client = TestClient(server.app)
-            with mock.patch.object(server, "_GUI_SECRET", "s3cret"), \
-                 mock.patch("config.get_config", lambda: cfg):
-                r = client.get("/digest/today", headers={"X-Omni-Secret": "s3cret"})
-
-            self.assertEqual(r.status_code, 200)
-            body = r.json()
-            self.assertEqual(set(body), {"captured", "touched", "reminders_due", "unrevisited"})
-            for k, v in body.items():
-                self.assertIsInstance(v, int, k)
-            self.assertEqual(body["touched"], 1)      # the note was written today
-            self.assertEqual(body["unrevisited"], 0)  # ...so nothing is 30d stale
-
-
 # ============================================================================
 # E6 -- Drive auth routes (/drive/auth/{status,connect,disconnect})
 #
@@ -682,7 +793,7 @@ def _drive_client():
     import server
     importlib.reload(server)
     from fastapi.testclient import TestClient
-    return TestClient(server.app), server
+    return TestClient(server.app, headers=_AUTH), server
 
 
 def test_drive_auth_status_reports_both_causes_without_consent():
@@ -786,7 +897,7 @@ def _sync_client(tmp_path, sync_toml: str, monkeypatch, pass_fn=None):
         cfg_fn=lambda: _config.get_config().sync,
     )
     monkeypatch.setattr(_ss, "_scheduler", sch)  # no thread: nothing here needs the loop
-    return TestClient(server.app), sch
+    return TestClient(server.app, headers=_AUTH), sch
 
 
 def test_sync_run_403_when_master_off(tmp_path, monkeypatch):

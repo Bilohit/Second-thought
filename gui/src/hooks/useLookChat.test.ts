@@ -1,5 +1,8 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { formatChatFailure, getInitialIgnoreHistory, setIgnoreHistoryPref, getRetryTarget } from "./useLookChat";
+import {
+  formatChatFailure, getInitialIgnoreHistory, setIgnoreHistoryPref, getRetryTarget,
+  loadPersistedMessages, savePersistedMessages, getInitialMessages,
+} from "./useLookChat";
 import type { ChatMessage } from "./useLookChat";
 
 beforeEach(() => {
@@ -24,6 +27,39 @@ describe("ignore history pref", () => {
     expect(getInitialIgnoreHistory()).toBe(true);
     setIgnoreHistoryPref(false);
     expect(getInitialIgnoreHistory()).toBe(false);
+  });
+});
+
+describe("chat history persistence (ISS-016)", () => {
+  it("round-trips messages through localStorage", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "what is the vault path" },
+      { role: "assistant", content: "It's ~/vault", sources: [], tier: "high" },
+    ];
+    savePersistedMessages(messages);
+    expect(loadPersistedMessages()).toEqual(messages);
+  });
+
+  it("clears the stored key when saving an empty list", () => {
+    savePersistedMessages([{ role: "user", content: "hi" }]);
+    expect(loadPersistedMessages().length).toBe(1);
+    savePersistedMessages([]);
+    expect(loadPersistedMessages()).toEqual([]);
+  });
+
+  it("returns [] when nothing has been persisted yet", () => {
+    expect(loadPersistedMessages()).toEqual([]);
+  });
+
+  it("getInitialMessages restores the transcript when history is kept", () => {
+    const messages: ChatMessage[] = [{ role: "user", content: "hello" }];
+    savePersistedMessages(messages);
+    expect(getInitialMessages(false)).toEqual(messages);
+  });
+
+  it("getInitialMessages starts empty when the policy is ignore-history, even with a persisted transcript", () => {
+    savePersistedMessages([{ role: "user", content: "hello" }]);
+    expect(getInitialMessages(true)).toEqual([]);
   });
 });
 

@@ -31,6 +31,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from atomic_io import atomic_write_text, atomic_write_verbatim
 from filelock import FileLock
 
 # ---------------------------------------------------------------------------
@@ -77,15 +78,24 @@ def _load_dedup_index(vault_root: Path) -> dict:
     if p.exists():
         try:
             return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            # SYNC-18: the swallow STAYS -- dedup_index.json is a documented rebuildable
+            # cache and a capture must not fail because it is unreadable. But it is now
+            # LOUD: silently returning {} made a torn or corrupt index look like a fresh
+            # one, so the resulting partial rebuild was invisible.
+            print(f"[dedup] WARNING: dedup index unreadable ({type(e).__name__}), "
+                  f"treating as EMPTY -- duplicates may be re-filed until "
+                  f"rebuild_dedup_index() runs: {p}")
             return {}
     return {}
 
 
 def _save_dedup_index(vault_root: Path, index: dict) -> None:
+    # SYNC-18: atomic (temp sibling + os.replace). A bare write_text truncates and
+    # streams, so a crash mid-write left a torn JSON file that _load_dedup_index then
+    # read as an empty index.
     p = _dedup_index_path(vault_root)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(index, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_text(p, json.dumps(index, indent=2, ensure_ascii=False))
 
 
 def _normalize_url(url: str) -> str:
@@ -314,9 +324,14 @@ def register_in_dedup_index(
         # could not be re-read, yet a silent miss here would quietly cost this
         # note its rebuildability, which is exactly the R-1 defect returning.
         try:
-            out = inject_capture_keys(note_path.read_text(encoding="utf-8"), [h])
+            # SYNC-07: newline="" on BOTH ends. inject_capture_keys splices the body back
+            # byte-for-byte, but the default universal-newline mode translated CRLF->LF on
+            # read and LF->os.linesep on write, so every dedup registration silently
+            # rewrote the whole body's line endings on Windows. Atomic for the same reason
+            # as every other note write: a torn body must be impossible.
+            out = inject_capture_keys(note_path.read_text(encoding="utf-8", newline=""), [h])
             if out is not None:
-                note_path.write_text(out, encoding="utf-8")
+                atomic_write_verbatim(note_path, out)
         except Exception as e:
             print(f"[dedup] WARNING: capture_keys not persisted to {rel}: {e!r} "
                   f"-- index entry is intact, but this note will be skipped by "

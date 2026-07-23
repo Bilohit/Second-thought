@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 import shutil
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -49,7 +50,10 @@ def _trash_file(vault_root: Path, path: Path) -> Path:
     trash_dir = _vault_trash_dir(vault_root)
     dest = trash_dir / path.name
     if dest.exists():
-        dest = trash_dir / f"{path.stem}.{int(time.time())}{path.suffix}"
+        # SYNC-17: `int(time.time())` is second-granular, so two resolves inside the same second
+        # produced the SAME trash name and shutil.move overwrote the first file outright. A uuid4
+        # suffix cannot collide. The timestamp is kept for human readability.
+        dest = trash_dir / f"{path.stem}.{int(time.time())}.{uuid.uuid4().hex[:8]}{path.suffix}"
     shutil.move(str(path), str(dest))
     # F-2: bump mtime to the actual trash time (shutil.move preserves the
     # original mtime otherwise) so trash.py's Library view can show an
@@ -143,7 +147,15 @@ def resolve_conflict(
         # Guard first (may raise NoteConflictError); only trash the copy once
         # the original note actually took the remote body.
         write_note_body(vault_root, path_str, remote_body, expected_mtime)
-        _trash_file(vault_root, conflict_path)
+        # SYNC-17: the body write above already succeeded and IS the user's intent. A raise from
+        # _trash_file here used to propagate, so the caller saw a failed resolve while the note
+        # had in fact taken the remote body — leaving the original holding the remote body AND
+        # the conflicted copy still on disk, i.e. an apparently-unresolved conflict that re-resolves
+        # into a second copy. Log instead; the copy stays and can be dismissed again.
+        try:
+            _trash_file(vault_root, conflict_path)
+        except OSError as exc:
+            print(f"[conflict_resolver] body written but trashing {conflict_path} failed: {exc}")
         return {"ok": True, "action": "theirs"}
 
     raise ValueError(f"unknown resolve action: {action!r}")

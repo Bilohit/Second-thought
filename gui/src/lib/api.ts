@@ -6,13 +6,57 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { getGuiSecret } from "./tauri";
 import { logger } from "./logger";
 import { parseSseFrame } from "./sse";
+import { arrayField } from "./jsonGuard";
+import { isInsideRoot } from "./pathGuard";
 
-/** Open a file or folder with the OS default handler (cross-platform host API). */
-// ponytail: $HOME/** scope; tighten to the live vault root if a user keeps notes outside home
-export async function openFilePath(path: string): Promise<void> { await openPath(path); }
+/** Cached vault root for `openFilePath`'s containment check. One fetch per
+ *  session — the root only changes via a Settings save, which restarts the
+ *  backend. `null` means "not yet known"; a failed lookup is not cached. */
+let vaultRootCache: string | null = null;
+
+async function vaultRoot(): Promise<string | null> {
+  if (vaultRootCache !== null) return vaultRootCache;
+  try {
+    const { vault_root } = await getVaultCategories();
+    if (vault_root) vaultRootCache = vault_root;
+    return vault_root || null;
+  } catch {
+    return null; // not cached — retried on the next open
+  }
+}
+
+/** Open a file with the OS default handler (cross-platform host API).
+ *
+ *  The path arrives from the server (`r.path` on a search/inbox row) and is
+ *  handed to the OS launcher, so it is confirmed to live inside the vault
+ *  first — the Tauri `$HOME/**` capability scope alone would happily launch
+ *  anything else in the user's home directory. */
+export async function openFilePath(path: string): Promise<void> {
+  const root = await vaultRoot();
+  if (root && !isInsideRoot(root, path)) {
+    // Not thrown: every call site is fire-and-forget, and rejecting here would
+    // surface as an unhandled rejection rather than anything the user can act on.
+    logger.warn("api", "refused to open a path outside the vault root", { path, root });
+    return;
+  }
+  if (!root) logger.warn("api", "vault root unknown — opening without containment check", { path });
+  await openPath(path);
+}
 export async function openVaultPath(path: string): Promise<void> { await openPath(path); }
 
 const BASE = "http://localhost:7070";
+
+/** Hang-guard for the two long-lived SSE POSTs (`/capture`, `/look/chat`).
+ *  Not a latency budget — a slow local LLM legitimately takes minutes — just a
+ *  ceiling so a wedged server can never leave the UI streaming forever the way
+ *  it does today. `checkHealth` uses a much tighter 2s for the same reason. */
+const STREAM_TIMEOUT_MS = 300_000;
+
+/** Compose the caller's abort signal (if any) with the hang-guard timeout. */
+function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
+  const timeout = AbortSignal.timeout(ms);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
 
 async function assertOk(r: Response, fallback: string): Promise<Response> {
   if (r.ok) return r;
@@ -165,15 +209,23 @@ export interface Stats {
   recent: SearchResult[];
 }
 
+/** P-DSEARCH: `tier`/`score` fuse FTS ("exact"/"substring", bm25-ranked) and
+ *  semantic (cosine similarity) hits into one scored, tier-labeled list from
+ *  GET /search (see vault_admin.py's _shape_search_row/_shape_semantic_row).
+ *  A "semantic" row carries no captures.db metadata, so id/timestamp/
+ *  source_url/confidence/tags are optional; a blank-query "browse" result
+ *  carries tier/score as null (nothing to rank by relevance). */
 export interface SearchResult {
-  id: number;
-  timestamp: string;
-  category: string;
+  id?: number | null;
+  timestamp?: string | null;
+  category: string | null;
   path: string;
   filename: string | null;
-  source_url: string | null;
-  confidence: number;
-  tags: string;
+  source_url?: string | null;
+  confidence?: number | null;
+  tags?: string | null;
+  tier?: "exact" | "substring" | "semantic" | null;
+  score?: number | null;
 }
 
 export type LlmStatus = "loading" | "ready" | "disconnected";
@@ -200,6 +252,27 @@ export async function checkHealth(): Promise<{ serverOk: boolean; llmStatus: Llm
   }
 }
 
+/** Fast LIVE Ollama reachability probe (ISS-018) -- distinct from `checkHealth`'s
+ *  `llmStatus`, which reflects the server's one-time startup warmup and goes stale
+ *  the moment Ollama stops afterward. Used as a pre-capture stall guard so a
+ *  capture with Ollama down doesn't sit silently through the full LLM timeout
+ *  before the user learns anything. Tight client-side timeout + fail-closed
+ *  (any error/non-OK reads as unreachable) -- this only ever changes *feedback
+ *  timing*, never whether the capture itself proceeds or how the note is saved. */
+export async function checkOllamaReachable(): Promise<boolean> {
+  try {
+    const r = await fetch(`${BASE}/ollama/reachable`, {
+      headers: await authHeaders(),
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!r.ok) return false;
+    const body = await r.json() as { reachable?: boolean };
+    return body.reachable === true;
+  } catch {
+    return false;
+  }
+}
+
 export async function* streamCapture(
   contentType: ContentType,
   content: string,
@@ -215,7 +288,7 @@ export async function* streamCapture(
       ...(runId ? { "X-Capture-Run-Id": runId } : {}),
     }),
     body: JSON.stringify({ content_type: contentType, content }),
-    signal,
+    signal: withTimeout(signal, STREAM_TIMEOUT_MS),
   });
 
   if (!response.ok || !response.body) {
@@ -426,10 +499,56 @@ export async function patchConfig(patch: {
   if (!r.ok) throw new Error("Failed to save config");
 }
 
+// -- P-WIZARD: first-run vault-setup wizard (ISS-002) -------------------------
+
+export interface VaultSetupFolder {
+  name: string;
+  description: string;
+}
+
+export interface VaultSetupCheckResult {
+  exists: boolean;
+  has_categories: boolean;
+  categories: string[];
+}
+
+export interface VaultSetupResult {
+  ok: boolean;
+  root: string;
+  folders: { name: string; description: string | null }[];
+}
+
+/** Read-only: checks whether *root* (a candidate path, not yet the configured
+ *  vault) already looks like an existing vault with user categories, so the
+ *  wizard can skip its folder-picker step. Never mutates config. */
+export async function checkVaultSetup(root: string): Promise<VaultSetupCheckResult> {
+  const params = new URLSearchParams({ root });
+  const r = await fetch(`${BASE}/vault/setup/check?${params.toString()}`, { headers: await authHeaders() });
+  await assertOk(r, "Failed to check vault path");
+  return r.json();
+}
+
+/** Sets the vault root, eagerly runs init_vault, and creates every chosen
+ *  starter folder WITH its .category.toml description written at creation
+ *  time -- see vault_admin.py's POST /vault/setup. */
+export async function postVaultSetup(root: string, folders: VaultSetupFolder[]): Promise<VaultSetupResult> {
+  const r = await fetch(`${BASE}/vault/setup`, {
+    method: "POST",
+    headers: await authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ root, folders }),
+  });
+  await assertOk(r, "Failed to set up vault");
+  return r.json();
+}
+
 export async function getVaultCategories(): Promise<{ categories: VaultCategory[]; vault_root: string }> {
   const r = await fetch(`${BASE}/vault/categories`, { headers: await authHeaders() });
   if (!r.ok) throw new Error("Failed to list vault categories");
-  return r.json();
+  const body = await r.json();
+  return {
+    categories: arrayField<VaultCategory>(body, "categories"),
+    vault_root: typeof body?.vault_root === "string" ? body.vault_root : "",
+  };
 }
 
 export async function createVaultCategory(name: string): Promise<void> {
@@ -500,7 +619,9 @@ export async function searchCaptures(
       logger.error("look", "search request failed", { status: r.status, q });
       throw new Error("Search failed");
     }
-    const data = await r.json();
+    const body = await r.json();
+    const results = arrayField<SearchResult>(body, "results");
+    const data = { results, count: results.length, query: q };
     stop({ count: data.count });
     logger.debug("look", "search results", { count: data.count, query: data.query });
     return data;
@@ -514,21 +635,21 @@ export async function searchCaptures(
 export async function getStats(): Promise<Stats> {
   const r = await fetch(`${BASE}/stats`, { headers: await authHeaders() });
   if (!r.ok) throw new Error("Failed to fetch stats");
-  return r.json();
+  // All three arrays are .map()'d straight into the dashboard/stats panels.
+  const body = await r.json();
+  return {
+    total: typeof body?.total === "number" ? body.total : 0,
+    by_category: arrayField<Stats["by_category"][number]>(body, "by_category"),
+    by_day: arrayField<Stats["by_day"][number]>(body, "by_day"),
+    recent: arrayField<SearchResult>(body, "recent"),
+  };
 }
 
 export async function getInbox(): Promise<{ inbox: InboxItem[]; count: number }> {
   const r = await fetch(`${BASE}/inbox`, { headers: await authHeaders() });
   if (!r.ok) throw new Error("Failed to fetch inbox");
-  return r.json();
-}
-
-export interface DigestStats { captured: number; touched: number; reminders_due: number; unrevisited: number; }
-
-export async function getDigestToday(): Promise<DigestStats> {
-  const r = await fetch(`${BASE}/digest/today`, { headers: await authHeaders() });
-  if (!r.ok) throw new Error("Failed to fetch digest");
-  return r.json();
+  const inbox = arrayField<InboxItem>(await r.json(), "inbox");
+  return { inbox, count: inbox.length };
 }
 
 /** LAN provisional overlay row (contract §11) -- mirrors provisional_store.list_provisional(). */
@@ -577,8 +698,7 @@ export async function discardInboxItem(noteId: string): Promise<void> {
 export async function listReminders(): Promise<Reminder[]> {
   const r = await fetch(`${BASE}/reminders`, { headers: await authHeaders() });
   await assertOk(r, "Failed to fetch reminders");
-  const data = await r.json() as { reminders: Reminder[] };
-  return data.reminders;
+  return arrayField<Reminder>(await r.json(), "reminders");
 }
 
 export async function createReminder(notePath: string, label: string, whenIso: string, notify = false): Promise<number> {
@@ -601,7 +721,7 @@ export async function deleteReminder(id: number): Promise<void> {
 }
 
 export interface LookSource { n: number; path: string; category: string; filename: string; snippet: string; }
-export type LookTier = "high" | "none" | "talk";
+export type LookTier = "high" | "none" | "talk" | "offline";
 export type LookChatEvent =
   | { kind: "meta"; confidence: number; tier: LookTier; answerable: boolean }
   | { kind: "sources"; sources: LookSource[] }
@@ -639,7 +759,7 @@ export async function* streamLookChat(
     method: "POST",
     headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ question, history: ignoreHistory ? [] : history, ignore_history: ignoreHistory }),
-    signal,
+    signal: withTimeout(signal, STREAM_TIMEOUT_MS),
   });
   if (!response.ok || !response.body) {
     const text = await response.text().catch(() => "unknown error");
@@ -856,6 +976,19 @@ export async function getTrash(): Promise<TrashItem[]> {
   return data.items;
 }
 
+// ISS-005 A: user-originated soft-delete — move a live note into `_trash/` (body untouched, the
+// original category preserved for restore). `path` is any /vault or /search note path. The Library
+// row/toolbar delete button (P-VAULTUI) calls this; restoreFromTrash is the reverse.
+export async function moveToTrash(path: string): Promise<{ ok: boolean; filename: string; trashed_path: string }> {
+  const r = await fetch(`${BASE}/trash`, {
+    method: "POST",
+    headers: await authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ path }),
+  });
+  await assertOk(r, "Failed to move note to trash");
+  return r.json();
+}
+
 export async function restoreFromTrash(filename: string): Promise<{ ok: boolean; category: string; path: string }> {
   const r = await fetch(`${BASE}/trash/restore`, {
     method: "POST",
@@ -864,6 +997,36 @@ export async function restoreFromTrash(filename: string): Promise<{ ok: boolean;
   });
   await assertOk(r, "Failed to restore note");
   return r.json();
+}
+
+// -- ISS-005 C follow-up B: cross-device DELETE-PROMPTs -------------------------
+// A peer soft-deleted a note this desktop still holds; delete_detect.py records a durable, non-
+// destructive hold (both copies kept) surfaced here for the user to resolve. See vault_admin.py
+// GET /trash/delete-prompts + POST /trash/delete-prompts/resolve — those endpoints are untouched by
+// this UI-only pass.
+
+export interface DeletePromptItem {
+  note_id: string;
+  kind: string | null;
+  first_seen: string | null;
+}
+
+export async function getDeletePrompts(): Promise<DeletePromptItem[]> {
+  const r = await fetch(`${BASE}/trash/delete-prompts`, { headers: await authHeaders() });
+  await assertOk(r, "Failed to load delete prompts");
+  const data = await r.json() as { prompts: DeletePromptItem[]; count: number };
+  return data.prompts;
+}
+
+export type DeletePromptChoice = "delete_both" | "keep_here";
+
+export async function resolveDeletePrompt(id: string, choice: DeletePromptChoice): Promise<void> {
+  const r = await fetch(`${BASE}/trash/delete-prompts/resolve`, {
+    method: "POST",
+    headers: await authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ id, choice }),
+  });
+  await assertOk(r, "Failed to resolve delete prompt");
 }
 
 // -- F-5: per-note sync-ignore (desktop-local) ---------------------------------
@@ -899,18 +1062,31 @@ export async function getSemanticSearch(q: string, limit = 5): Promise<SemanticR
   const params = new URLSearchParams({ q, limit: String(limit) });
   const r = await fetch(`${BASE}/search/semantic?${params.toString()}`, { headers: await authHeaders() });
   if (!r.ok) return [];
-  const data = await r.json() as { results: SemanticResult[] };
-  return data.results;
+  return arrayField<SemanticResult>(await r.json(), "results");
 }
 
 // -- F-13 (desktop half): attachments ------------------------------------------
 
-/** URL for inline display (image `<img src>` / audio `<audio src>`) — the
- *  browser/webview issues this GET itself, so no auth header is attached;
- *  matches how other file surfaces (openFilePath) already work locally. */
+/** URL of the attachment route. NOT usable as an `<img>`/`<audio>` `src`:
+ *  `/note/attachment` is behind `_require_secret`, and a `src` GET is issued by
+ *  the DOM itself with no headers, so it 403s. Use `fetchAttachmentBlob`.
+ *  Exported for logging/diagnostics only. */
 export function attachmentUrl(notePath: string, filename: string): string {
   const params = new URLSearchParams({ path: notePath, filename });
   return `${BASE}/note/attachment?${params.toString()}`;
+}
+
+/** Fetch an attachment *with* the auth header and return a `blob:` URL the DOM
+ *  can load directly (GUI-07 — inline attachments have never rendered because
+ *  the bare URL above was used as a `src`).
+ *
+ *  The caller owns the returned URL and MUST `URL.revokeObjectURL` it; blob
+ *  lifetime is bounded by the attachment count of one open note. Requires
+ *  `blob:` in `img-src`/`media-src` in tauri.conf.json's CSP. */
+export async function fetchAttachmentBlob(notePath: string, filename: string): Promise<string> {
+  const r = await fetch(attachmentUrl(notePath, filename), { headers: await authHeaders() });
+  if (!r.ok) throw new HttpError(`Failed to load attachment ${filename}`, r.status);
+  return URL.createObjectURL(await r.blob());
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

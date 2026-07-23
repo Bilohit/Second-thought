@@ -47,10 +47,6 @@ function load(): RadialTuning {
 let current: RadialTuning = load();
 const listeners = new Set<(t: RadialTuning) => void>();
 
-export function getRadialTuning(): RadialTuning {
-  return current;
-}
-
 export function setRadialTuning(next: Partial<RadialTuning>) {
   current = { ...current, ...next };
   try { localStorage.setItem(RADIAL_TUNING_KEY, JSON.stringify(current)); } catch { /* ignore */ }

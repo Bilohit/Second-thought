@@ -137,6 +137,14 @@ def _connect(vault_root: Path) -> Iterator[sqlite3.Connection]:
 
 # ── Ollama embedding ──────────────────────────────────────────────────────────
 
+class OllamaConnectionError(RuntimeError):
+    """Raised when Ollama could not be reached at all (connection refused/
+    timed out/DNS failure), as opposed to a reachable-but-erroring Ollama
+    (404, bad model, malformed response -> plain RuntimeError). Callers use
+    this to distinguish "the engine is offline" from "the engine answered
+    but found nothing" -- see rag_engine.hybrid_retrieve."""
+
+
 def _post_json(url: str, payload: dict) -> dict:
     """POST a JSON body and return the decoded JSON response.
 
@@ -216,6 +224,12 @@ def _embed(text: str, base_url: str,
         new_was_404 = True
     except RuntimeError:
         raise
+    except urllib.error.URLError as exc:
+        # A true connection failure (refused/timed out/DNS) rather than an
+        # HTTP error response -- Ollama isn't reachable at all.
+        raise OllamaConnectionError(
+            f"Cannot reach Ollama at {new_url}: {exc.reason}"
+        ) from exc
     except Exception as exc:
         raise RuntimeError(f"Ollama embedding call failed ({new_url}): {exc}") from exc
 
@@ -236,6 +250,10 @@ def _embed(text: str, base_url: str,
             ) from exc
         raise RuntimeError(
             f"Ollama embedding call failed on both {new_url} and {old_url}: {exc}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise OllamaConnectionError(
+            f"Cannot reach Ollama at {old_url}: {exc.reason}"
         ) from exc
     except Exception as exc:
         raise RuntimeError(

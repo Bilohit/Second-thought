@@ -40,7 +40,10 @@ use rand::Rng;
 
 struct AppState {
     python_child: Arc<Mutex<Option<Child>>>,
-    gui_secret: String,
+    /// SRV-21/GUI-12: mutable, because `rotate_secret` must be visible to every
+    /// later `get_gui_secret` / `get_pairing_info` read. It was a plain `String`
+    /// captured at boot, so rotation left both handing out the dead value.
+    gui_secret: Mutex<String>,
     active_shortcut: Mutex<Option<Shortcut>>,
 }
 
@@ -233,7 +236,15 @@ fn log_line(level_num: u32, level: &str, scope: &str, msg: &str) {
     log_line_raw(level, scope, msg);
 }
 
-#[tauri::command]
+// `(async)` is load-bearing: a plain command runs on the main thread (the tao
+// event loop), so this synchronous file append froze the window under frontend
+// log volume — it is the highest-call-count blocking command in the file. Async
+// dispatches it to the runtime pool; the append stays synchronous behind the
+// shared LOG mutex, which already serializes every writer. The panic hook and
+// Rust-origin `log_line` deliberately keep the synchronous `append_to_log` path:
+// a panic must flush before the default handler aborts the process, which a
+// deferred/threaded write could not guarantee.
+#[tauri::command(async)]
 fn append_log(line: String) {
     append_to_log(&line);
 }
@@ -294,7 +305,7 @@ fn generate_gui_secret() -> String {
 
 #[tauri::command]
 fn get_gui_secret(state: tauri::State<AppState>) -> String {
-    state.gui_secret.clone()
+    state.gui_secret.lock().map(|s| s.clone()).unwrap_or_default()
 }
 
 /// Pick the first private IPv4 address (RFC-1918: 10.0.0.0/8, 172.16.0.0/12,
@@ -357,10 +368,47 @@ fn parse_lan_ip(s: &str) -> Option<String> {
     best.map(|(_, ip)| ip)
 }
 
+/// Keep only an RFC-1918 IPv4 — the LAN-pairing contract advertises a private
+/// address or nothing (a public/CGNAT/loopback/APIPA address is never reachable
+/// by the phone as a peer). Pure — the testable half of `lan_ip_via_route`.
+fn private_ipv4(ip: std::net::IpAddr) -> Option<String> {
+    match ip {
+        std::net::IpAddr::V4(v4)
+            if v4.is_private() && !v4.is_loopback() && !v4.is_link_local() =>
+        {
+            Some(v4.to_string())
+        }
+        _ => None,
+    }
+}
+
+/// LAN IPv4 of the NIC holding the default route, via the UDP-connect trick:
+/// `connect` on a UDP socket sends NO packet — it only asks the OS to pick a
+/// route — so this is a microsecond kernel routing-table lookup, no process
+/// spawn, no network traffic, no crate. More correct than ranking NICs by
+/// address range (`parse_lan_ip`), because it picks the adapter the machine
+/// actually routes through instead of guessing from a multi-homed list.
+fn lan_ip_via_route() -> Option<String> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    // Any routable off-LAN address works; nothing is ever sent to it.
+    sock.connect("8.8.8.8:80").ok()?;
+    private_ipv4(sock.local_addr().ok()?.ip())
+}
+
 /// Primary LAN IPv4 (contract §11.4: the QR `host` field for same-WiFi pairing).
-/// ponytail: ipconfig-parse LAN IP; swap for a socket-connect trick or the
-/// `local-ip-address` crate if a multi-adapter box ever picks the wrong NIC.
+/// Route lookup first; `ipconfig` parsing survives as the fallback for the cases
+/// the socket cannot answer (no default route configured, a route out a NIC with
+/// no private address). Both may fail — `None` is a supported outcome, LAN sync
+/// is an accelerator and Drive remains the reachability plane.
+/// ponytail: the fallback still spawns `ipconfig` (~150-600ms, main-thread-unsafe)
+///           and is Windows-only. It fires only when the route lookup fails, and
+///           both callers are `#[tauri::command(async)]` so it can no longer stall
+///           the event loop. Delete it if the route path proves sufficient in the
+///           field; port it if a non-Windows desktop ever ships.
 fn get_lan_ip() -> Option<String> {
+    if let Some(ip) = lan_ip_via_route() {
+        return Some(ip);
+    }
     let out = std::process::Command::new("ipconfig").output().ok()?;
     if !out.status.success() {
         return None;
@@ -393,7 +441,11 @@ struct PairingInfo {
     enabled: bool,
     host: Option<String>,
     port: u16,
+    // `secret` is the GUI X-Omni-Secret, retained on this struct for the panel's own use; it is NO
+    // longer written into the v4 pairing QR (LAN-17). `lan_secret` (`[lan] secret`) is the LAN-plane
+    // credential the QR now carries — the two gate different planes and are never interchangeable.
     secret: String,
+    lan_secret: String,
     key: String,
     lan_ip: Option<String>,
 }
@@ -402,7 +454,12 @@ fn config_path() -> PathBuf {
     compute_project_root().join("omni_capture").join("config.toml")
 }
 
-#[tauri::command]
+/// `(async)` is load-bearing, not decoration: a plain `#[tauri::command]` runs on
+/// the MAIN thread, which is also the tao event loop, so every config-file read
+/// below (plus `load_or_create_lan_key`, plus any `get_lan_ip` fallback) froze the
+/// whole window while the Sync settings tab mounted. `(async)` moves the body to a
+/// worker thread; the body itself stays synchronous and `tauri::State` still works.
+#[tauri::command(async)]
 fn get_pairing_info(state: tauri::State<AppState>) -> PairingInfo {
     let cp = config_path();
     let host = read_config_value(&cp, "gui", "host");
@@ -419,7 +476,8 @@ fn get_pairing_info(state: tauri::State<AppState>) -> PairingInfo {
         enabled,
         host,
         port,
-        secret: state.gui_secret.clone(),
+        secret: state.gui_secret.lock().map(|s| s.clone()).unwrap_or_default(),
+        lan_secret: load_or_create_lan_secret(&cp),
         key: load_or_create_lan_key(&cp),
         lan_ip: get_lan_ip(),
     }
@@ -430,7 +488,9 @@ fn get_pairing_info(state: tauri::State<AppState>) -> PairingInfo {
 /// pairing QR always has a usable payload once enabled. Repurposed from the
 /// old Tailscale-chat `set_pairing_enabled` (same command name kept to avoid
 /// churning the invoke_handler registration / frontend call site).
-#[tauri::command]
+/// `(async)` for the same reason as `get_pairing_info` — this one also WRITES the
+/// config file, which must never happen on the UI thread.
+#[tauri::command(async)]
 fn set_pairing_enabled(state: tauri::State<AppState>, enabled: bool) -> Result<PairingInfo, String> {
     let cp = config_path();
     upsert_config_value(&cp, "lan", "enabled", Some(if enabled { "true" } else { "false" }))
@@ -443,13 +503,54 @@ fn set_pairing_enabled(state: tauri::State<AppState>, enabled: bool) -> Result<P
         upsert_config_value(&cp, "lan", "host", None).map_err(|e| e.to_string())?;
     }
     let _ = load_or_create_lan_key(&cp); // ensure a key exists even before first enable
+    let _ = load_or_create_lan_secret(&cp); // LAN-17: mint `[lan] secret` alongside the key, before QR
     Ok(get_pairing_info(state))
 }
 
-#[tauri::command]
-fn rotate_secret() -> Result<String, String> {
+/// Rotate the X-Omni-Secret. All THREE stores that hold it must move together
+/// (SRV-21 / GUI-12) or rotation is cosmetic:
+///   1. `config.toml [gui] secret` — the persistent store read at next boot.
+///   2. `state.gui_secret` — what `get_gui_secret` / `get_pairing_info` hand to
+///      the webview and the pairing QR. Previously never updated, so the GUI
+///      kept authenticating with the dead secret.
+///   3. the RUNNING Python child's `OMNI_GUI_SECRET` — baked into its env at
+///      spawn time and unreachable afterwards, so the live server kept
+///      enforcing the old secret no matter what 1 and 2 agreed on. Re-armed by
+///      killing and re-spawning the child; `_require_secret` reads `os.getenv`
+///      per request, so the new process picks the new value up immediately.
+///
+/// Order matters: config first (so a crash mid-rotation boots into the new
+/// secret rather than an orphaned one), then the child, then state.
+///
+/// `(async)` for the same reason as `get_pairing_info`: the body kills and
+/// re-spawns the Python child (`old.wait()` + server boot = seconds of blocking
+/// work) and must not run on the event loop, or the whole window freezes for the
+/// duration of a rotation. No `AppHandle`/window ops here, so a worker thread is
+/// safe and `tauri::State` still resolves.
+#[tauri::command(async)]
+fn rotate_secret(state: tauri::State<AppState>) -> Result<String, String> {
+    let cp = config_path();
     let secret = generate_gui_secret();
-    upsert_config_value(&config_path(), "gui", "secret", Some(&secret)).map_err(|e| e.to_string())?;
+    upsert_config_value(&cp, "gui", "secret", Some(&secret)).map_err(|e| e.to_string())?;
+
+    // Kill BEFORE re-spawning: both bind port 7070, so an overlapping pair
+    // leaves the new child dead on arrival and the old one still serving.
+    if let Ok(mut guard) = state.python_child.lock() {
+        if let Some(mut old) = guard.take() {
+            let _ = old.kill();
+            let _ = old.wait();
+        }
+    }
+    let bind_host = read_config_value(&cp, "gui", "host")
+        .as_deref()
+        .and_then(validate_bind_host)
+        .unwrap_or("127.0.0.1")
+        .to_string();
+    start_python_server(&compute_project_root(), &bind_host, &secret, &state.python_child)
+        .map_err(|e| format!("secret rotated in config, but the Python server could not be re-armed: {e}"))?;
+
+    *state.gui_secret.lock().map_err(|_| "internal lock error".to_string())? = secret.clone();
+    log_line(LVL_INFO, "INFO", "server", "X-Omni-Secret rotated; Python child re-armed");
     Ok(secret)
 }
 
@@ -545,6 +646,65 @@ fn read_config_value(config_path: &PathBuf, section: &str, key: &str) -> Option<
     None
 }
 
+/// Interpreters to try, in order, when spawning the Python server (GUI-26).
+///
+/// A bare `Command::new("python")` resolves through `PATH`, so any writable
+/// directory earlier on `PATH` can shadow the real interpreter and the app
+/// spawns it happily (the `python3` fallback only fires on spawn *failure*,
+/// never on a successful spawn of the wrong binary). The first candidate is
+/// therefore an absolute path to the Windows launcher in the system
+/// directory, which `PATH` cannot shadow; the bare names remain only as a
+/// last-resort fallback for machines with no launcher installed.
+///
+/// Each entry is `(program, leading_args)`.
+fn python_candidates() -> Vec<(String, Vec<&'static str>)> {
+    let mut out: Vec<(String, Vec<&'static str>)> = Vec::new();
+    #[cfg(windows)]
+    {
+        // %SystemRoot%\py.exe — the per-machine Python launcher, installed
+        // outside any PATH-writable directory.
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+        let launcher = PathBuf::from(&system_root).join("py.exe");
+        if launcher.is_file() {
+            out.push((launcher.to_string_lossy().into_owned(), vec!["-3"]));
+        }
+    }
+    out.push(("python".to_string(), Vec::new()));
+    out.push(("python3".to_string(), Vec::new()));
+    out
+}
+
+/// Loopback allowlist for the `[gui] host` uvicorn bind (GUI-15). The config
+/// value is user-editable, and anything outside this set would expose the
+/// localhost-only API (and its `X-Omni-Secret` gate) to the network. Anything
+/// unrecognised falls back to `127.0.0.1`.
+fn validate_bind_host(host: &str) -> Option<&'static str> {
+    match host.trim() {
+        "127.0.0.1" => Some("127.0.0.1"),
+        "localhost" => Some("localhost"),
+        "::1" => Some("::1"),
+        _ => None,
+    }
+}
+
+/// Strip the characters that would break out of a double-quoted TOML basic
+/// string written by `upsert_config_value` (GUI-27). Escaping is deliberately
+/// NOT used: `read_config_value` above is a `trim_matches('"')` with no
+/// unescape step, so an escaped value would round-trip wrong. Rejecting is
+/// safe because every key this writer touches — `lan.enabled`, `lan.host`,
+/// `gui.secret`, `lan.key` — is machine-generated (bool / base64 / IP) and
+/// can never legitimately contain `"`, `\`, CR or LF.
+///
+/// Severity note: a value that escapes the quotes yields a malformed
+/// `config.toml`, and `config.py` calls `tomllib.load` with no `try`/`except`
+/// — the Python backend then fails to start at all.
+fn sanitize_config_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n'))
+        .collect()
+}
+
 /// Set (or remove, when `value` is None) `key` under `[section]`, preserving
 /// every other line. Creates the section at EOF if missing. Hand-rolled — no
 /// toml crate (desktop doctrine). ponytail: line-oriented rewrite, fine for a
@@ -556,6 +716,10 @@ fn upsert_config_value(
     key: &str,
     value: Option<&str>,
 ) -> std::io::Result<()> {
+    // GUI-27: sanitize once, here, so all three write sites below are covered
+    // by construction rather than by three parallel call-site guards.
+    let sanitized = value.map(sanitize_config_value);
+    let value = sanitized.as_deref();
     let text = std::fs::read_to_string(config_path).unwrap_or_default();
     let header = format!("[{section}]");
     let mut out: Vec<String> = Vec::new();
@@ -645,6 +809,21 @@ fn load_or_create_lan_key(config_path: &PathBuf) -> String {
     key
 }
 
+/// The LAN-plane credential shared via the pairing QR (contract §11.4, LAN-17), persisted in
+/// `[lan] secret` and read by the Python listener via `get_config().lan.secret`. Distinct from the GUI
+/// `X-Omni-Secret` (`[gui] secret`): that value gates the loopback API and never reaches the LAN
+/// listener. Mirrors `load_or_create_lan_key`, but the payload is the 32-char alphanumeric secret
+/// charset (reusing `generate_gui_secret`), not a NaCl key — it is compared with `hmac.compare_digest`
+/// on the desktop, not used as an encryption key.
+fn load_or_create_lan_secret(config_path: &PathBuf) -> String {
+    if let Some(existing) = read_config_value(config_path, "lan", "secret") {
+        return existing;
+    }
+    let secret = generate_gui_secret();
+    let _ = upsert_config_value(config_path, "lan", "secret", Some(&secret));
+    secret
+}
+
 /// Convert a hotkey string like "ctrl+shift+space" into a Tauri Shortcut.
 fn parse_shortcut(hotkey: &str) -> Option<Shortcut> {
     let mut modifiers = Modifiers::empty();
@@ -707,10 +886,11 @@ mod noactivate {
     use tauri::{AppHandle, Emitter, Manager};
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW, SetWindowPos,
-        SetWindowsHookExW, UnhookWindowsHookEx, GWL_EXSTYLE, HHOOK, MSLLHOOKSTRUCT, SWP_FRAMECHANGED,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WH_MOUSE_LL, WM_LBUTTONDOWN,
-        WM_RBUTTONDOWN, WS_EX_NOACTIVATE,
+        CallNextHookEx, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW,
+        SetWindowPos, SetWindowsHookExW, UnhookWindowsHookEx, GWL_EXSTYLE, HHOOK, MSLLHOOKSTRUCT,
+        SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WH_MOUSE_LL,
+        WM_LBUTTONDOWN, WM_RBUTTONDOWN, WS_EX_NOACTIVATE,
     };
 
     /// Inclusive on the top/left edges, exclusive on bottom/right — matches
@@ -852,10 +1032,48 @@ mod noactivate {
     pub fn set_window_bounds(window: tauri::Window, x: i32, y: i32, w: i32, h: i32) -> Result<(), String> {
         let raw = window.hwnd().map_err(|e| e.to_string())?;
         let hwnd = raw.0 as HWND;
+        // GUI-22: SetWindowPos bypasses the window's own min-size/placement
+        // constraints, so a bad caller can produce a 0px or off-screen window
+        // that can never be recovered without a restart. Clamp here — this is
+        // already the one sanctioned physical-coordinate path, so it adds no
+        // new path. Virtual-screen geometry ONLY: nothing here re-derives a
+        // logical coordinate or duplicates monitor.ts's edge-stable rounding.
+        let (x, y, w, h) = unsafe {
+            let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            clamp_window_bounds(x, y, w, h, vx, vy, vw, vh)
+        };
         unsafe {
             SetWindowPos(hwnd, std::ptr::null_mut(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
         }
         Ok(())
+    }
+
+    /// Smallest window this command will ever produce, in physical px. Below
+    /// this the pill is unclickable and the user cannot recover it.
+    const MIN_WIN_PX: i32 = 24;
+
+    /// Pure clamp for `set_window_bounds` (GUI-22). Sizes get a floor and are
+    /// capped to the virtual screen; the origin is bounded so at least
+    /// `MIN_WIN_PX` of the window stays inside the virtual desktop on every
+    /// edge. Virtual-screen geometry only — see the caller's note.
+    #[allow(clippy::too_many_arguments)]
+    pub fn clamp_window_bounds(
+        x: i32, y: i32, w: i32, h: i32,
+        vx: i32, vy: i32, vw: i32, vh: i32,
+    ) -> (i32, i32, i32, i32) {
+        // A zero/negative virtual screen means the metrics call failed; in
+        // that case only the size floor is meaningful.
+        if vw <= 0 || vh <= 0 {
+            return (x, y, w.max(MIN_WIN_PX), h.max(MIN_WIN_PX));
+        }
+        let w = w.clamp(MIN_WIN_PX, vw);
+        let h = h.clamp(MIN_WIN_PX, vh);
+        let x = x.clamp(vx - w + MIN_WIN_PX, vx + vw - MIN_WIN_PX);
+        let y = y.clamp(vy - h + MIN_WIN_PX, vy + vh - MIN_WIN_PX);
+        (x, y, w, h)
     }
 
     #[cfg(test)]
@@ -874,6 +1092,43 @@ mod noactivate {
         #[test]
         fn left_top_edges_are_inside() {
             assert!(point_in_rect(&rect(), 10, 10));
+        }
+
+        // GUI-22: the clamp is pure and virtual-screen-only.
+        const VS: (i32, i32, i32, i32) = (0, 0, 1920, 1080);
+
+        #[test]
+        fn clamp_leaves_a_sane_rect_untouched() {
+            let (vx, vy, vw, vh) = VS;
+            assert_eq!(clamp_window_bounds(100, 200, 400, 60, vx, vy, vw, vh), (100, 200, 400, 60));
+        }
+
+        #[test]
+        fn clamp_floors_degenerate_size() {
+            let (vx, vy, vw, vh) = VS;
+            let (_, _, w, h) = clamp_window_bounds(10, 10, 0, -5, vx, vy, vw, vh);
+            assert_eq!((w, h), (MIN_WIN_PX, MIN_WIN_PX));
+        }
+
+        #[test]
+        fn clamp_pulls_offscreen_origin_back_to_the_edge() {
+            let (vx, vy, vw, vh) = VS;
+            let (x, y, _, _) = clamp_window_bounds(999_999, -999_999, 400, 60, vx, vy, vw, vh);
+            assert_eq!(x, vw - MIN_WIN_PX);
+            assert_eq!(y, -60 + MIN_WIN_PX);
+        }
+
+        #[test]
+        fn clamp_caps_size_to_the_virtual_screen() {
+            let (vx, vy, vw, vh) = VS;
+            let (_, _, w, h) = clamp_window_bounds(0, 0, 99_999, 99_999, vx, vy, vw, vh);
+            assert_eq!((w, h), (vw, vh));
+        }
+
+        #[test]
+        fn clamp_only_floors_size_when_metrics_are_unavailable() {
+            assert_eq!(clamp_window_bounds(-5000, -5000, 0, 0, 0, 0, 0, 0),
+                       (-5000, -5000, MIN_WIN_PX, MIN_WIN_PX));
         }
 
         #[test]
@@ -1042,6 +1297,95 @@ mod jobkill {
 /// hook firing right after the tray "quit" arm already killed it) is a no-op.
 /// This is the ONE kill implementation; both the tray "quit" arm and the
 /// app-level exit hook call it so there's never a divergent second copy.
+/// Spawn `uvicorn omni_capture.server:app` and park the handle in `slot`.
+///
+/// Factored out of `.setup()` because SRV-21 needs a SECOND caller: the child's
+/// `OMNI_GUI_SECRET` is baked in at spawn time, so `rotate_secret` re-arms the
+/// running server by killing and re-spawning it with the new value. Without
+/// that, rotation updates Rust + config.toml while the live Python process goes
+/// on enforcing the old secret forever. This is the ONE spawn implementation —
+/// both callers go through it so the interpreter search (GUI-26), job-object
+/// assignment, and log piping can never diverge.
+fn start_python_server(
+    project_root: &Path,
+    bind_host: &str,
+    secret: &str,
+    slot: &Arc<Mutex<Option<Child>>>,
+) -> std::io::Result<()> {
+    let server_args: Vec<&str> = vec![
+        "-m", "uvicorn",
+        "omni_capture.server:app",
+        "--host", bind_host,
+        "--port", "7070",
+        "--log-level", "error",
+    ];
+
+    #[cfg(windows)]
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    // GUI-26: walk the candidate list (launcher-first, absolute where
+    // possible) instead of a bare PATH lookup for "python".
+    let mut child: std::io::Result<Child> =
+        Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no python interpreter found"));
+    for (program, leading) in python_candidates() {
+        let mut cmd = std::process::Command::new(&program);
+        cmd.args(&leading)
+            .args(server_args.clone())
+            .current_dir(project_root)
+            .env("OMNI_GUI_SECRET", secret)
+            .env("PYTHONPATH", project_root)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        child = cmd.spawn();
+        if child.is_ok() {
+            log_line(LVL_INFO, "INFO", "server", &format!("python interpreter = {program}"));
+            break;
+        }
+    }
+
+    let mut c = child?;
+    log_line(LVL_INFO, "INFO", "server", &format!("Python server spawned (pid {})", c.id()));
+
+    // Assign the child to a kill-on-job-close Job Object so an ungraceful
+    // parent death (crash / Task Manager kill, where no Rust hook runs) still
+    // reaps it — the OS-level backstop to the RunEvent::Exit hook. No-op on
+    // non-Windows.
+    match jobkill::assign_child_to_kill_on_close_job(&c) {
+        Ok(()) => log_line(LVL_INFO, "INFO", "server", "child assigned to kill-on-close job object"),
+        Err(e) => log_line(LVL_WARN, "WARN", "server", &format!("job object assignment failed (child may orphan on crash): {e}")),
+    }
+
+    // uvicorn/server.py write to stdout/stderr; pipe both into the same unified
+    // log file instead of letting them vanish into the (often invisible, in a
+    // packaged build) parent console.
+    if let Some(stdout) = c.stdout.take() {
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().flatten() {
+                log_line(LVL_INFO, "INFO", "python:stdout", &line);
+            }
+        });
+    }
+    if let Some(stderr) = c.stderr.take() {
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().flatten() {
+                log_line(LVL_WARN, "WARN", "python:stderr", &line);
+            }
+        });
+    }
+
+    if let Ok(mut guard) = slot.lock() {
+        if let Some(mut old) = guard.replace(c) {
+            let _ = old.kill();
+        }
+    }
+    Ok(())
+}
+
 fn kill_python_child<R: Runtime>(app: &AppHandle<R>) {
     if let Some(state) = app.try_state::<AppState>() {
         if let Ok(mut guard) = state.python_child.lock() {
@@ -1188,8 +1532,17 @@ pub fn run() {
     let gui_secret = load_or_create_secret(&boot_config_path);
     let gui_secret_for_spawn = gui_secret.clone();
     // Opt-in bind (P8): [gui] host present => bind it; absent => 127.0.0.1.
-    let bind_host = read_config_value(&boot_config_path, "gui", "host")
-        .unwrap_or_else(|| "127.0.0.1".to_string());
+    // GUI-15: the config value is advisory — only a loopback address is honoured.
+    let configured_host = read_config_value(&boot_config_path, "gui", "host");
+    let bind_host_rejected = configured_host
+        .as_deref()
+        .filter(|h| validate_bind_host(h).is_none())
+        .map(|h| h.to_string());
+    let bind_host = configured_host
+        .as_deref()
+        .and_then(validate_bind_host)
+        .unwrap_or("127.0.0.1")
+        .to_string();
 
     // Install the file logger + panic hook before anything else can log or panic.
     init_logging();
@@ -1214,7 +1567,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .manage(AppState { python_child, gui_secret, active_shortcut: Mutex::new(None) })
+        .manage(AppState { python_child, gui_secret: Mutex::new(gui_secret), active_shortcut: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![
             get_gui_secret, get_pairing_info, set_pairing_enabled, rotate_secret,
             set_hotkey, append_log, log_file_path, get_log_level, set_log_level,
@@ -1229,91 +1582,18 @@ pub fn run() {
             // In release mode: walk up from the exe path.
             let project_root = compute_project_root();
 
+            if let Some(rejected) = &bind_host_rejected {
+                log_line(LVL_WARN, "WARN", "server",
+                    &format!("[gui] host = \"{rejected}\" is not a loopback address — falling back to 127.0.0.1"));
+            }
             log_line(LVL_INFO, "INFO", "server", &format!("uvicorn bind host = {bind_host}"));
 
-            // Try "python" first, fall back to "python3". Vec<&str> (not a
-            // fixed array) because bind_host is a runtime String (D5 P8 gate).
-            let bind_host_ref = bind_host.as_str();
-            let server_args: Vec<&str> = vec![
-                "-m", "uvicorn",
-                "omni_capture.server:app",
-                "--host", bind_host_ref,
-                "--port", "7070",
-                "--log-level", "error",
-            ];
-
-            #[cfg(windows)]
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-            let mut cmd = std::process::Command::new("python");
-            cmd.args(server_args.clone())
-                .current_dir(&project_root)
-                .env("OMNI_GUI_SECRET", &gui_secret_for_spawn)
-                .env("PYTHONPATH", &project_root)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(CREATE_NO_WINDOW);
-            }
-
-            let child = cmd.spawn().or_else(|_| {
-                let mut cmd = std::process::Command::new("python3");
-                cmd.args(server_args)
-                    .current_dir(&project_root)
-                    .env("OMNI_GUI_SECRET", &gui_secret_for_spawn)
-                    .env("PYTHONPATH", &project_root)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
-                #[cfg(windows)]
-                {
-                    use std::os::windows::process::CommandExt;
-                    cmd.creation_flags(CREATE_NO_WINDOW);
-                }
-                cmd.spawn()
-            });
-
-            match child {
-                Ok(mut c) => {
-                    log_line(LVL_INFO, "INFO", "server", &format!("Python server spawned (pid {})", c.id()));
-
-                    // Assign the child to a kill-on-job-close Job Object so an
-                    // ungraceful parent death (crash / Task Manager kill, where
-                    // no Rust hook runs) still reaps it — the OS-level backstop
-                    // to the RunEvent::Exit hook. No-op on non-Windows.
-                    match jobkill::assign_child_to_kill_on_close_job(&c) {
-                        Ok(()) => log_line(LVL_INFO, "INFO", "server", "child assigned to kill-on-close job object"),
-                        Err(e) => log_line(LVL_WARN, "WARN", "server", &format!("job object assignment failed (child may orphan on crash): {e}")),
-                    }
-
-                    // uvicorn/server.py write to stdout/stderr; pipe both into the
-                    // same unified log file instead of letting them vanish into the
-                    // (often invisible, in a packaged build) parent console.
-                    if let Some(stdout) = c.stdout.take() {
-                        thread::spawn(move || {
-                            for line in BufReader::new(stdout).lines().flatten() {
-                                log_line(LVL_INFO, "INFO", "python:stdout", &line);
-                            }
-                        });
-                    }
-                    if let Some(stderr) = c.stderr.take() {
-                        thread::spawn(move || {
-                            for line in BufReader::new(stderr).lines().flatten() {
-                                log_line(LVL_WARN, "WARN", "python:stderr", &line);
-                            }
-                        });
-                    }
-
-                    if let Ok(mut guard) = python_child_clone.lock() {
-                        *guard = Some(c);
-                    }
-                }
-                Err(e) => {
-                    log_line(LVL_ERROR, "ERROR", "server", &format!("could not start Python server: {e}"));
-                    eprintln!("[Second Thought] Warning: could not start Python server: {e}");
-                    eprintln!("  Make sure 'python' is in PATH and uvicorn + fastapi are installed.");
-                }
+            if let Err(e) = start_python_server(
+                &project_root, &bind_host, &gui_secret_for_spawn, &python_child_clone,
+            ) {
+                log_line(LVL_ERROR, "ERROR", "server", &format!("could not start Python server: {e}"));
+                eprintln!("[Second Thought] Warning: could not start Python server: {e}");
+                eprintln!("  Make sure 'python' is in PATH and uvicorn + fastapi are installed.");
             }
 
             // ── 2. Register global hotkey ──────────────────────────────────
@@ -1437,6 +1717,63 @@ mod config_tests {
         assert_eq!(s1, s2);
     }
 
+    // ── GUI-27: the writer must never emit a value that can escape its quotes ──
+
+    #[test]
+    fn sanitize_strips_quotes_backslashes_and_newlines() {
+        assert_eq!(sanitize_config_value("a\"b\\c\r\nd"), "abcd");
+    }
+
+    #[test]
+    fn sanitize_leaves_the_real_key_shapes_untouched() {
+        // The only four keys this writer ever sets: bool, IP, base64 secret, base64 key.
+        for v in ["true", "192.168.1.6", "aGVsbG8rL3dvcmxkPT0", "AbC123+/=="] {
+            assert_eq!(sanitize_config_value(v), v);
+        }
+    }
+
+    #[test]
+    fn injected_value_cannot_add_a_key_and_round_trips_through_the_reader() {
+        let p = tmp_config("[lan]\nenabled = \"true\"\n");
+        // Classic injection: close the quote, open a new line, define a new key.
+        upsert_config_value(&p, "lan", "host", Some("1.2.3.4\"\nroot = \"/evil")).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        // The payload survives as inert text *inside* the quoted value; what must
+        // not happen is it becoming a key of its own on a line of its own.
+        assert!(
+            !text.lines().any(|l| l.trim_start().starts_with("root")),
+            "injected key reached the file: {text}"
+        );
+        assert_eq!(text.lines().filter(|l| l.contains('=')).count(), 2);
+        // And the reader (trim_matches('"'), no unescape) sees exactly what was written.
+        assert_eq!(read_config_value(&p, "lan", "host").as_deref(), Some("1.2.3.4root = /evil"));
+    }
+
+    // ── GUI-15: only loopback may reach uvicorn --host ──
+
+    #[test]
+    fn validate_bind_host_accepts_loopback_only() {
+        assert_eq!(validate_bind_host("127.0.0.1"), Some("127.0.0.1"));
+        assert_eq!(validate_bind_host(" localhost "), Some("localhost"));
+        assert_eq!(validate_bind_host("::1"), Some("::1"));
+        assert_eq!(validate_bind_host("0.0.0.0"), None);
+        assert_eq!(validate_bind_host("192.168.1.6"), None);
+        assert_eq!(validate_bind_host(""), None);
+    }
+
+    // ── GUI-26: interpreter resolution never relies on PATH alone ──
+
+    #[test]
+    fn python_candidates_end_with_the_bare_name_fallbacks() {
+        let c = python_candidates();
+        let names: Vec<&str> = c.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(names.ends_with(&["python", "python3"]));
+        // Any launcher entry must be an absolute path (PATH cannot shadow it).
+        for (program, _) in c.iter().take(c.len() - 2) {
+            assert!(PathBuf::from(program).is_absolute(), "{program} is not absolute");
+        }
+    }
+
     #[test]
     fn parse_lan_ip_picks_first_private_ipv4() {
         // Given `ipconfig`/`ip addr`-style lines, pick the first RFC-1918 IPv4.
@@ -1457,5 +1794,34 @@ mod config_tests {
         // (N2 live-QA bug 2026-07-12: QR advertised Ethernet 2 10.194.220.24, phone was on WiFi.)
         let sample = "   IPv4 Address. . . : 10.194.220.24\n   IPv4 Address. . . : 192.168.1.6\n";
         assert_eq!(parse_lan_ip(sample), Some("192.168.1.6".to_string()));
+    }
+
+    // The socket half of `lan_ip_via_route` cannot be unit-tested without depending on the host's
+    // routing table (the result differs on a laptop, a CI box, and an offline machine). Its pure
+    // half — deciding which address the route lookup is allowed to advertise — is extracted into
+    // `private_ipv4` and tested exhaustively here instead.
+    #[test]
+    fn private_ipv4_accepts_all_rfc1918_ranges() {
+        for ip in ["192.168.1.6", "172.16.0.1", "172.31.255.254", "10.0.0.5"] {
+            assert_eq!(private_ipv4(ip.parse().unwrap()), Some(ip.to_string()), "{ip}");
+        }
+    }
+
+    #[test]
+    fn private_ipv4_rejects_non_lan_addresses() {
+        // Public, loopback, APIPA/link-local, CGNAT, and any IPv6 are all unusable as the
+        // pairing-QR `host` — each must fall through to the ipconfig fallback, not be advertised.
+        for ip in ["8.8.8.8", "127.0.0.1", "169.254.10.2", "100.64.0.1", "172.32.0.1", "::1"] {
+            assert_eq!(private_ipv4(ip.parse().unwrap()), None, "{ip}");
+        }
+    }
+
+    #[test]
+    fn lan_ip_via_route_returns_private_or_nothing() {
+        // Host-dependent by nature, so this asserts the one invariant that holds everywhere,
+        // including offline: it never yields an address the phone could not reach on the LAN.
+        if let Some(ip) = lan_ip_via_route() {
+            assert_eq!(private_ipv4(ip.parse().unwrap()), Some(ip));
+        }
     }
 }

@@ -417,7 +417,15 @@ export default function PillOverlay({
       onToggle={() => { if (showReminderToast) { reminderToast!.onUndo(); return; } if (isRecording) { onVoiceToggle(); return; } onToggleMenu(); }}
       onContextMenu={(e) => { e.preventDefault(); if (!menuOpen && !showReminderToast) onVoiceToggle(); }}
       onSelect={onSelect}
-      onHide={onHide}
+      onHide={() => {
+        // ISS-028: Hide while a compact panel is open used to leave the bar
+        // stuck as `capsule-menu open exiting` (both classes fighting each
+        // other in index.css) because the panel's own open state lingered
+        // through the hide. Closing the panel first collapses back to the
+        // plain bar-only close, the one path CSS already handles cleanly.
+        if (compactPanel && onClosePanel) onClosePanel();
+        onHide();
+      }}
       voicePhase={voicePhase}
       voiceElapsedMs={voiceElapsedMs}
       readWaveform={readWaveform}

@@ -183,16 +183,20 @@ def test_hostile_vault_never_crashes_a_sync_pass_and_never_touches_disk_bytes(tm
         assert p.read_bytes() == raw, f"{p.name}: a read-only sync pass rewrote the file"
 
 
-def test_bom_prefixed_note_is_skipped_from_sync_not_corrupted(tmp_path):
-    """DOCUMENTED behavior (not fixed here): a UTF-8 BOM defeats the `\\A---` frontmatter match, so
-    the file reads as having NO frontmatter → `origin` is absent → read_vault_notes classifies it
-    as a desktop CAPTURE and skips it (mirror_captures defaults off). Degrades to skip; the file is
-    left byte-identical. The cost is that the note silently never reaches the hub."""
+def test_bom_prefixed_note_syncs_and_is_left_byte_identical(tmp_path):
+    """SYNC-08 (fixed in Batch 7): a UTF-8 BOM used to defeat the `\\A---` frontmatter match, so the
+    file read as having NO frontmatter → no `id` → read_vault_notes skipped it and the note was
+    invisible to sync forever. read_vault_notes now parses AROUND the BOM: the note is seen, its
+    body excludes the frontmatter, and the file on disk is still byte-identical (the BOM is never
+    rewritten away — that would churn bytes and cause a re-upload loop)."""
     p = tmp_path / "bom.md"
     text = "﻿---\nid: 01BOM\ntitle: T\norigin: note\n---\nbody\n"
     p.write_text(text, encoding="utf-8", newline="")
-    assert read_vault_notes(str(tmp_path)) == {}          # skipped, not crashed
-    assert p.read_text(encoding="utf-8", newline="") == text  # and untouched
+    notes = read_vault_notes(str(tmp_path))
+    assert list(notes) == ["01BOM"]
+    assert notes["01BOM"]["body"] == "body\n"
+    assert notes["01BOM"]["content"] == text              # hashed/uploaded bytes stay verbatim
+    assert p.read_text(encoding="utf-8", newline="") == text  # and untouched on disk
 
 
 def test_unreadable_note_degrades_to_skip_not_crash(tmp_path):

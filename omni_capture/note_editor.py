@@ -19,17 +19,26 @@ overwrite if the file has moved on since, raising `NoteConflictError`
 instead of clobbering. The next scheduled Drive sync pass reconciles the
 hub side exactly as it already does for every other note.
 
-ponytail: mtime-resolution races (two writes inside the same tick) are not
-disambiguated by content hash — acceptable ceiling for a single-user local
-editor; revisit if this ever gates a multi-writer path.
+SYNC-25 graduates the `ponytail:` that used to sit here — its stated ceiling
+("revisit if this ever gates a multi-writer path") was reached: sync_scheduler
+runs reconcile_changes -> _atomic_write_note on a daemon thread, so this IS a
+multi-writer path. The old `abs(current - expected) > 0.002` test was a
+NO-CONFLICT WINDOW, not a resolution floor: a scheduler write landing inside
+2 ms passed the guard and was silently clobbered. The guard is now exact mtime
+equality, plus an optional `expected_hash` (`_content_hash` of the whole
+frontmatter+body read at open time) that callers can echo back for a check that
+does not depend on filesystem timestamp resolution at all. Tightening a guard
+only ever REFUSES writes — it never changes the bytes of one that proceeds.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from pathlib import Path
 from typing import Optional
 
+from atomic_io import atomic_write_verbatim
 from frontmatter import _FM_RE, read_all_fields
 
 
@@ -69,8 +78,42 @@ def _read_verbatim(path: Path) -> str:
 def _write_verbatim(path: Path, text: str) -> None:
     """Write *text* byte-verbatim -- no newline translation. The default
     (newline=None) rewrites every `\\n` as `\\r\\n` on Windows, silently
-    flipping an LF note to CRLF on the first editor save."""
-    path.write_text(text, encoding="utf-8", newline="")
+    flipping an LF note to CRLF on the first editor save.
+
+    SRV-07: this is ATOMIC (temp sibling + os.replace). It is the one function
+    licensed to write below the frontmatter of an `origin: note` file, reached
+    from `write_note_body` behind `PUT /note` -- a bare write_text truncates the
+    target and streams, so a crash mid-write left the user's note body TRUNCATED
+    but still parsing, which the sync layer then treats as a real edit and
+    uploads. Same failure mode `_atomic_write_note` was introduced to kill on the
+    sync side (S4-1); the user-edit side had it too."""
+    atomic_write_verbatim(path, text)
+
+
+def _content_hash(text: str) -> str:
+    """SYNC-25: hash of the note's whole verbatim text (frontmatter + body) as read at open
+    time. Unlike mtime this has no resolution floor, so a same-tick write cannot slip past it."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _guard_unchanged(path: Path, expected_mtime: float, expected_hash: Optional[str]) -> None:
+    """SYNC-25: refuse the write unless the file is provably the one the editor opened.
+
+    Exact mtime equality (never a tolerance window — see the module docstring) AND, when the
+    caller echoes back the `hash` read_note gave it, an exact content match. Raises
+    NoteConflictError carrying the current body so the GUI can show a diff.
+    """
+    current_mtime = path.stat().st_mtime
+    current_text = None
+    conflict = current_mtime != expected_mtime
+    if not conflict and expected_hash is not None:
+        current_text = _read_verbatim(path)
+        conflict = _content_hash(_to_lf(current_text)) != expected_hash
+    if conflict:
+        if current_text is None:
+            current_text = _read_verbatim(path)
+        _, current_body = _split(_to_lf(current_text))
+        raise NoteConflictError(path, expected_mtime, current_mtime, current_body)
 
 
 def _newline_of(text: str) -> str:
@@ -132,27 +175,23 @@ def read_note(vault_root: Path, path_str: str) -> dict:
         "tags": tags,
         "body": body,
         "mtime": stat.st_mtime,
+        # SYNC-25: echo this back as `expected_hash` on a write for a guard that does not
+        # depend on filesystem mtime resolution. Optional — mtime equality alone still applies.
+        "hash": _content_hash(text),
         "has_frontmatter": bool(fm_block),
     }
 
 
-def write_note_body(vault_root: Path, path_str: str, new_body: str, expected_mtime: float) -> dict:
+def write_note_body(vault_root: Path, path_str: str, new_body: str, expected_mtime: float,
+                    expected_hash: Optional[str] = None) -> dict:
     """Overwrite only the body region of a note, preserving its frontmatter
-    block byte-for-byte. Refuses (NoteConflictError) if the file's mtime has
-    moved since the editor last read it."""
+    block byte-for-byte. Refuses (NoteConflictError) if the file changed since
+    the editor last read it — see `_guard_unchanged` (SYNC-25)."""
     path = resolve_note_path(vault_root, path_str)
     if not path.is_file():
         raise FileNotFoundError(str(path))
 
-    current_mtime = path.stat().st_mtime
-    # Sub-second float mtimes can drift a hair on some filesystems on pure
-    # re-read with no write in between; 2ms tolerance absorbs that without
-    # weakening the real-conflict case (a genuine external edit moves mtime
-    # by whole seconds in practice).
-    if abs(current_mtime - expected_mtime) > 0.002:
-        current_text = _to_lf(_read_verbatim(path))
-        _, current_body = _split(current_text)
-        raise NoteConflictError(path, expected_mtime, current_mtime, current_body)
+    _guard_unchanged(path, expected_mtime, expected_hash)
 
     raw = _read_verbatim(path)
     newline = _newline_of(raw)
@@ -191,7 +230,8 @@ def _upsert_attachments_field(fm_block: str, filenames: list[str]) -> str:
     return "".join(lines[:-1]) + value_line + "\n" + lines[-1]
 
 
-def add_attachment(vault_root: Path, path_str: str, filename: str, data: bytes, expected_mtime: float) -> dict:
+def add_attachment(vault_root: Path, path_str: str, filename: str, data: bytes,
+                   expected_mtime: float, expected_hash: Optional[str] = None) -> dict:
     """Write *data* into `_attachments/<note-id>/<filename>`, record it in the
     note's `attachments` frontmatter list, and append a `[attachment:
     <filename>]` link line to the body. A single normal user file-write
@@ -203,11 +243,7 @@ def add_attachment(vault_root: Path, path_str: str, filename: str, data: bytes, 
     if not path.is_file():
         raise FileNotFoundError(str(path))
 
-    current_mtime = path.stat().st_mtime
-    if abs(current_mtime - expected_mtime) > 0.002:
-        current_text = _to_lf(_read_verbatim(path))
-        _, current_body = _split(current_text)
-        raise NoteConflictError(path, expected_mtime, current_mtime, current_body)
+    _guard_unchanged(path, expected_mtime, expected_hash)   # SYNC-25
 
     raw = _read_verbatim(path)
     newline = _newline_of(raw)
@@ -232,7 +268,19 @@ def add_attachment(vault_root: Path, path_str: str, filename: str, data: bytes, 
     new_fm = _upsert_attachments_field(fm_block, existing)
     link_line = f"[attachment: {dest.name}]"
     new_body = (body.rstrip("\n") + f"\n\n{link_line}\n") if body.strip() else f"{link_line}\n"
-    _write_verbatim(path, _apply_newlines(new_fm + new_body, newline))
+    # SRV-20: the attachment bytes are already on disk at this point, and the note
+    # rewrite is what makes them reachable. If the rewrite fails (permissions, disk
+    # full, the note vanishing between the guard and here) the blob would linger in
+    # _attachments/<note-id>/ with nothing referencing it -- invisible garbage that
+    # the next add_attachment would then have to disambiguate. Roll the blob back so
+    # the pair is all-or-nothing. The note write itself is already atomic
+    # (_write_verbatim -> atomic_io.atomic_write_verbatim), so a failure here leaves
+    # the note file byte-identical to what it was before the call.
+    try:
+        _write_verbatim(path, _apply_newlines(new_fm + new_body, newline))
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
     return {"filename": dest.name, "mtime": path.stat().st_mtime}
 
 

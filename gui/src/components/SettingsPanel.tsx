@@ -25,7 +25,7 @@ import ThemeCustomEditor from "./ThemeCustomEditor";
 import { PlusIcon } from "./PillMenu/icons";
 import type { PillMode, PillCorner } from "../lib/pillTypes";
 import type { PillAnchor } from "../lib/pillAnchor";
-import { ANCHOR_ORDER } from "../lib/pillAnchor";
+import { ANCHOR_LABELS, ANCHOR_ORDER } from "../lib/pillAnchor";
 import type { MonitorInfo } from "../lib/monitor";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
@@ -191,8 +191,8 @@ function AnchorGrid({ anchor, onSelect }: { anchor: PillAnchor; onSelect: (a: Pi
             type="button"
             role="radio"
             aria-checked={active}
-            aria-label={isCustom ? "Custom (last position)" : a}
-            title={isCustom ? "Custom — keep last position" : a}
+            aria-label={ANCHOR_LABELS[a]}
+            title={isCustom ? "Custom — keep last position" : ANCHOR_LABELS[a]}
             onClick={() => onSelect(a)}
             className="btn-hover"
             style={{

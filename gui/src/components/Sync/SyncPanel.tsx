@@ -31,8 +31,13 @@ import { Toggle } from "../ui/Toggle";
 // omni_capture/config.py:SyncConfig — the fallbacks when [sync] is absent from the
 // TOML entirely. Kept in sync with the server's dataclass by hand, deliberately: a
 // wrong guess here would auto-save a value the user never chose.
+//
+// ISS-003 (2026-07-22): interval-based auto-sync stays OFF until the user picks a real
+// interval (intervalMinutes 0 = the `Never` sentinel, matching the server default), but
+// syncOnLaunch defaults ON regardless — the scheduler no longer gates on-launch on the
+// interval sentinel, so this fallback must not imply an interval was already chosen.
 const DEFAULTS: SyncSettings = {
-  intervalMinutes: 60,
+  intervalMinutes: 0,
   syncOnLaunch: true,
   syncAfterCapture: false,
   mirrorCaptures: false,
@@ -41,11 +46,17 @@ const DEFAULTS: SyncSettings = {
 const POLL_MS = 4000;
 
 export default function SyncPanel({ compact }: { compact: boolean }) {
-  const [master, setMaster] = useState(false);
+  // Pre-fetch fallback matches config.py's SyncConfig.enabled default (true, ISS-003) so
+  // the master toggle doesn't flash "off" for the beat before getConfig() resolves.
+  const [master, setMaster] = useState(true);
   const [settings, setSettings] = useState<SyncSettings>(DEFAULTS);
   const [drive, setDrive] = useState<DriveAuthStatus | null>(null);
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [lan, setLan] = useState<PairingState>({ info: null, restartRequired: false });
+  // ISS-032: true once the first drive/status poll has resolved (success or
+  // failure) — gates SyncDashboard so it never renders "not connected" as a
+  // false first frame while the real state is still in flight.
+  const [statusLoaded, setStatusLoaded] = useState(false);
 
   const [connecting, setConnecting] = useState(false);
   const [driveError, setDriveError] = useState<string | null>(null);
@@ -95,6 +106,9 @@ export default function SyncPanel({ compact }: { compact: boolean }) {
       // flag alone would strand the spinner if the pass finished in another window.
       setRunning(s.value.running);
     }
+    // Settled either way — a failed fetch is still a resolved "we now know" state,
+    // not a reason to keep showing the loading skeleton forever.
+    setStatusLoaded(true);
   }, []);
 
   useEffect(() => {
@@ -288,6 +302,7 @@ export default function SyncPanel({ compact }: { compact: boolean }) {
       ) : (
         <SyncDashboard
           compact={compact}
+          loaded={statusLoaded}
           masterOff={resolution.masterOff}
           drive={drive}
           driveTone={driveTone}

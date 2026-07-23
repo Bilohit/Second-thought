@@ -14,7 +14,6 @@
  */
 import type { CSSProperties, ReactNode } from "react";
 import type { StatusTone } from "../../lib/syncSetup";
-import type { SyncPassRow } from "../../lib/api";
 
 // ── Tone -> token ───────────────────────────────────────────────────────────
 // `none` is the unknown/neutral tone and is --text-3, NEVER green. This map is
@@ -155,43 +154,4 @@ export function Note({
       {children}
     </p>
   );
-}
-
-/** A state line: dot + the same state in words. */
-export function StatusLine({ tone, children }: { tone: StatusTone; children: ReactNode }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 11, color: "var(--text-2)" }}>
-      <StatusDot tone={tone} />
-      {children}
-    </span>
-  );
-}
-
-// ── Pass formatting ─────────────────────────────────────────────────────────
-
-/** `hh:mm` from an ISO timestamp; falls back to the raw string rather than lying. */
-export function passTime(iso: string): string {
-  const ms = Date.parse(iso);
-  if (!Number.isFinite(ms)) return iso;
-  const d = new Date(ms);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
-
-/**
- * One-line summary of a pass. `ok:false` is a first-class outcome here, not an
- * afterthought — a failed pass reads as its error, never as a count of zero.
- */
-export function passSummary(row: SyncPassRow): string {
-  const secs = `${row.duration_s.toFixed(1)}s`;
-  if (!row.ok) return `failed after ${secs}${row.error ? ` · ${row.error}` : ""}`;
-  // run_pass() merges arbitrary display-only counts in; show the ones that are
-  // present and numeric rather than asserting a fixed shape.
-  const counts = ["pulled", "pushed", "conflicts"]
-    .map((k) => (typeof row[k] === "number" ? `${k} ${row[k] as number}` : null))
-    .filter((s): s is string => s !== null);
-  return [...counts, secs].join(" · ");
-}
-
-export function passTone(row: SyncPassRow): StatusTone {
-  return row.ok ? "ok" : "fail";
 }

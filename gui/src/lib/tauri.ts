@@ -22,11 +22,28 @@ export async function getGuiSecret(): Promise<string> {
     logger.debug("tauri", "GUI secret resolved", { present: secret.length > 0 });
     return secret;
   } catch (err) {
-    // Not running inside Tauri (browser dev) or the command isn't ready yet.
-    // Fall back to no secret so dev against a no-secret server still works.
-    logger.warn("tauri", "get_gui_secret failed — falling back to empty secret", err);
+    // GUI-23: this used to be a debug-grade warning, and the empty string it
+    // returns makes authHeaders() omit X-Omni-Secret entirely. That was
+    // invisible while the server failed OPEN — the unauthenticated request just
+    // succeeded. Now that SRV-01 fails closed it surfaces as a 403 on every
+    // call, so the cause has to be legible in the log at error level. Still
+    // non-throwing (and deliberately not cached): plain `vite dev` outside
+    // Tauri has no such command, and every caller is a fetch that will report
+    // its own 403.
+    logger.error(
+      "tauri",
+      "get_gui_secret failed — requests will be sent WITHOUT X-Omni-Secret and will 403",
+      err,
+    );
     return "";
   }
+}
+
+/** Drop the cached secret so the next getGuiSecret() re-reads it from Rust.
+ *  Required after rotation (GUI-12): the cache is resolved once per app run,
+ *  so without this the webview keeps authenticating with the retired secret. */
+export function invalidateGuiSecretCache(): void {
+  cachedSecret = null;
 }
 
 export async function setHotkey(hotkey: string): Promise<void> {
@@ -117,7 +134,10 @@ export type PairingInfo = {
   enabled: boolean;
   host: string | null;
   port: number;
+  /** GUI X-Omni-Secret — retained for the panel, NOT written into the v4 QR (LAN-17). */
   secret: string;
+  /** LAN-plane credential (`[lan] secret`) — the QR field the phone uses to seal LAN writes. */
+  lan_secret: string;
   key: string;
   lan_ip?: string;
 };
@@ -130,16 +150,22 @@ export async function setPairingEnabled(enabled: boolean): Promise<PairingInfo> 
   return invoke<PairingInfo>("set_pairing_enabled", { enabled });
 }
 
+/** Rotate the X-Omni-Secret. Rust writes config, re-arms the Python child, and
+ *  updates its own state; the webview's own cache is the fourth store holding
+ *  the old value, so drop it here (GUI-12). */
 export async function rotateSecret(): Promise<string> {
-  return invoke<string>("rotate_secret");
+  const secret = await invoke<string>("rotate_secret");
+  invalidateGuiSecretCache();
+  return secret;
 }
 
 /** QR payload — MUST match phone/src/lib/pairing.ts parsePairingPayload (contract §9/§11.4,
- *  PairingPayload v3). LAN file-sync accelerator, not Tailscale chat: host is the desktop's LAN
- *  IPv4, key is the base64 NaCl secretbox key. `device` is the desktop's stable device-id (from
- *  GET /lan/device-id) — the anchor mDNS/hub-hint discovery matches against (§11.8). The phone
- *  rejects v1/v2, so `device` is required. */
+ *  PairingPayload v4). LAN file-sync accelerator, not Tailscale chat: host is the desktop's LAN
+ *  IPv4, key is the base64 NaCl secretbox key, `lan_secret` is the LAN-plane credential (LAN-17 —
+ *  distinct from the GUI X-Omni-Secret, which is NO LONGER in the payload). `device` is the desktop's
+ *  stable device-id — the anchor mDNS/hub-hint discovery matches against (§11.8). The phone rejects
+ *  v1/v2/v3, so every field is required. */
 export function buildPairingPayload(info: PairingInfo, device: string): string {
   const host = info.lan_ip ?? info.host ?? "";
-  return JSON.stringify({ v: 3, host, port: info.port, key: info.key, secret: info.secret, device });
+  return JSON.stringify({ v: 4, host, port: info.port, lan_secret: info.lan_secret, key: info.key, device });
 }

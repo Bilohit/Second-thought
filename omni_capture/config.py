@@ -153,14 +153,26 @@ class LanConfig:
     host: str     = ""
     port: int     = 7071
     key: str      = ""
+    # LAN-17: the LAN-plane credential, distinct from the GUI X-Omni-Secret (contract §11.4). Read
+    # per request via get_config().lan.secret, exactly as `key` is; minted into `[lan] secret` by
+    # lib.rs alongside `[lan] key`. An empty value is ALWAYS rejected at the listener (never key-only).
+    secret: str   = ""
 
 
 @dataclass
 class SyncConfig:
     """Drive batched-sync scheduler (phase-5 §1.1). Interval config is a per-device LOCAL
-    preference — deliberately NOT synced. Off by default until OAuth is configured."""
-    enabled: bool            = False
-    interval_minutes: int    = 60     # min 5 (clamped on read); 0 = never auto-sync (sentinel)
+    preference — deliberately NOT synced.
+
+    ISS-003 ruling (2026-07-22): interval-based auto-sync stays OFF until the user picks a
+    real interval (interval_minutes defaults to the 0/never sentinel), but sync-on-launch
+    runs one pass at startup ON by default regardless of whether an interval has been
+    chosen — see sync_scheduler.py's `_loop()`, which no longer gates sync_on_launch on
+    `auto_sync_disabled()`. `enabled` is the system-wide master switch (GUI "Syncing
+    system" toggle / manual Sync now); it defaults on so that default on-launch pass and
+    the first-run Drive-connect wizard actually run out of the box."""
+    enabled: bool            = True
+    interval_minutes: int    = 0      # 0 = never auto-sync (sentinel) until the user chooses an interval; min 5 (clamped on read) once they do
     sync_on_launch: bool     = True
     sync_after_capture: bool = False  # a capture burst shouldn't thrash Drive; interval covers it
     mirror_captures: bool    = False  # K-2: opt-in — mirror origin:capture files to the hub
@@ -330,14 +342,15 @@ def load_config(config_path: Path | None = None) -> Config:
     cfg.lan.host    = str(lan_raw.get("host", ""))
     cfg.lan.port    = int(lan_raw.get("port", 7071))
     cfg.lan.key     = str(lan_raw.get("key", ""))
+    cfg.lan.secret  = str(lan_raw.get("secret", ""))
 
     sync_raw = raw.get("sync", {})
     # Same string-vs-bool hazard as [lan] (GUI's hand-rolled TOML writer may quote bools) — parse
     # explicitly so a quoted "false" never arms the scheduler. Interval clamped to >=5 min, EXCEPT
     # 0 — the "never auto-sync" sentinel (sync_scheduler.AUTO_SYNC_NEVER). Clamping here would
     # silently turn "never" into "every 5 minutes", so the sentinel passes through unclamped.
-    _interval = int(sync_raw.get("interval_minutes", 60))
-    cfg.sync.enabled            = _parse_bool(sync_raw.get("enabled", False))
+    _interval = int(sync_raw.get("interval_minutes", 0))
+    cfg.sync.enabled            = _parse_bool(sync_raw.get("enabled", True))
     cfg.sync.interval_minutes   = 0 if _interval <= 0 else max(5, _interval)
     cfg.sync.sync_on_launch     = _parse_bool(sync_raw.get("sync_on_launch", True))
     cfg.sync.sync_after_capture = _parse_bool(sync_raw.get("sync_after_capture", False))

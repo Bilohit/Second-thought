@@ -28,6 +28,48 @@ _DEFAULT_CLIENT_SECRET_PATH = str(Path(__file__).parent / "client_secret.json")
 _DEFAULT_TOKEN_PATH = str(Path(__file__).parent / ".drive_token.json")
 
 
+def _write_token(token_path: str, creds: Credentials) -> None:
+    """LAN-08: persist the refresh token 0600.
+
+    The cached token is a long-lived Drive credential; a plain `open()` wrote it
+    with the process umask (world-readable on a shared box). Both write sites go
+    through here so they cannot drift. Best-effort: on Windows the POSIX mode is
+    largely advisory, so the chmod is not allowed to fail the write."""
+    data = creds.to_json()
+    fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+    finally:
+        try:
+            os.chmod(token_path, 0o600)   # pre-existing file keeps its old mode otherwise
+        except OSError:
+            pass
+
+
+def _load_cached(token_path: str) -> Optional[Credentials]:
+    """LAN-23: read the cached token WITHOUT overriding its recorded scopes.
+
+    `from_authorized_user_file(path, [DRIVE_SCOPE])` *asserts* the scope list
+    rather than reading it, so a token minted under the superseded broad `drive`
+    grant read back as if it were narrowly `drive.file` — the app then believed
+    it held least privilege while actually wielding full-Drive access.
+
+    Reading the real scopes and checking them explicitly also preserves OF-34's
+    outcome by a deterministic path: a stale-scope token used to surface as an
+    `invalid_scope` exception on refresh, which load_credentials caught and
+    turned into fresh consent. Now the mismatch is detected here (returns None →
+    same fresh-consent branch) instead of depending on which error Google
+    happens to raise."""
+    try:
+        creds = Credentials.from_authorized_user_file(token_path)
+    except Exception:  # noqa: BLE001 — an unreadable/corrupt cache is just "no cache"
+        return None
+    if DRIVE_SCOPE not in (creds.scopes or []):
+        return None
+    return creds
+
+
 def load_credentials(
     client_secret_path: str = _DEFAULT_CLIENT_SECRET_PATH,
     token_path: str = _DEFAULT_TOKEN_PATH,
@@ -35,7 +77,7 @@ def load_credentials(
     """Resolve credentials: cached token → refresh if stale → interactive flow."""
     creds: Optional[Credentials] = None
     if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, [DRIVE_SCOPE])
+        creds = _load_cached(token_path)
 
     if creds and creds.valid:
         return creds
@@ -51,15 +93,17 @@ def load_credentials(
             # token was revoked. This is the interactive Connect path (unlike has_cached_credentials,
             # which must stay browser-free), so drop to a fresh consent instead of propagating and
             # wedging Connect until the cached token file is manually deleted.
-            print(f"[drive_auth] token refresh failed ({exc}); running interactive consent")
+            # LAN-22: the exception text can carry the token/client id and the
+            # raw Google error body straight into the unified log file. The type
+            # name is all that is actionable here.
+            print(f"[drive_auth] token refresh failed ({type(exc).__name__}); running interactive consent")
     if not refreshed:
         flow = InstalledAppFlow.from_client_secrets_file(
             client_secret_path, [DRIVE_SCOPE]
         )
         creds = flow.run_local_server(port=0)
 
-    with open(token_path, "w", encoding="utf-8") as f:
-        f.write(creds.to_json())
+    _write_token(token_path, creds)
     return creds
 
 
@@ -83,9 +127,8 @@ def has_cached_credentials(token_path: str = _DEFAULT_TOKEN_PATH) -> bool:
     same as get_drive_service would do) and the refreshed token re-cached."""
     if not os.path.exists(token_path):
         return False
-    try:
-        creds = Credentials.from_authorized_user_file(token_path, [DRIVE_SCOPE])
-    except Exception:
+    creds = _load_cached(token_path)
+    if creds is None:
         return False
     if creds.valid:
         return True
@@ -94,8 +137,7 @@ def has_cached_credentials(token_path: str = _DEFAULT_TOKEN_PATH) -> bool:
             creds.refresh(Request())
         except Exception:
             return False
-        with open(token_path, "w", encoding="utf-8") as f:
-            f.write(creds.to_json())
+        _write_token(token_path, creds)
         return True
     return False
 

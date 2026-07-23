@@ -52,7 +52,9 @@ import { useVoiceRecording } from "./hooks/useVoiceRecording";
 import { useLookChat } from "./hooks/useLookChat";
 import { useLlmStatus } from "./hooks/useLlmStatus";
 import { logger } from "./lib/logger";
-import { getInbox, openFilePath, createReminder, deleteReminder } from "./lib/api";
+import { getInbox, getConfig, openFilePath, createReminder, deleteReminder } from "./lib/api";
+import { isFirstRun } from "./lib/vaultSetup";
+import VaultSetup from "./components/Onboarding/VaultSetup";
 import { makeReminderUndoState, reminderUndoRemainingMs, type ReminderUndoState } from "./lib/reminderUndoToast";
 import { formatWhen } from "./lib/reminderFormat";
 import { type PillAnchor, anchorPosition, anchoredMenuPosition, capsuleZoneFromPillAnchor, isPillDraggable } from "./lib/pillAnchor";
@@ -64,6 +66,7 @@ import { setWindowNoactivate, armMenuClickAway, disarmMenuClickAway, setWindowBo
 import { geoSnapshot, geoClamp } from "./lib/geoLog";
 import { useToasts } from "./hooks/useToasts";
 import ToastHost from "./components/ToastHost";
+import DeletePromptModal from "./components/DeletePromptModal";
 import { EDITABLE_ORDER, type EditableSlot } from "./lib/themeCode";
 import { deriveCustom } from "./lib/themeDerive";
 
@@ -202,7 +205,9 @@ function getInitialPillCorner(): PillCorner {
     const saved = localStorage.getItem(PILL_CORNER_KEY);
     if (saved === "sharp" || saved === "rounded") return saved;
   } catch { /* ignore */ }
-  return "sharp";
+  // Rounded is now the shipped default (P-CHROME) — Sharp stays available
+  // as a preference via the Corner Style control.
+  return "rounded";
 }
 function getInitialPillPinned(): boolean {
   try { return localStorage.getItem(PILL_PINNED_KEY) !== "0"; } catch { return true; }
@@ -409,6 +414,27 @@ export default function App() {
   const [inboxCount, setInboxCount]       = useState(0);
   const lookChat = useLookChat();
 
+  // P-WIZARD (ISS-002): first-run vault setup. `null` = still checking GET
+  // /config (render nothing rather than flashing the normal app first);
+  // `true` shows VaultSetup BEFORE the pill/capture view; `false` proceeds
+  // into the app normally. Checked once on boot -- VaultSetup itself flips
+  // this to `false` on its own onComplete, no need to re-poll.
+  const [needsVaultSetup, setNeedsVaultSetup] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getConfig()
+      .then((cfg) => { if (!cancelled) setNeedsVaultSetup(isFirstRun(cfg)); })
+      .catch(() => { if (!cancelled) setNeedsVaultSetup(false); }); // server unreachable -- don't block on a guess
+    return () => { cancelled = true; };
+  }, []);
+  // The OS window starts pill-sized (tauri.conf.json); the wizard needs real
+  // room to show its 3-step layout, so grow it once when the wizard appears.
+  // The normal pill/full-window reconcile effects take back over once
+  // onComplete flips needsVaultSetup false.
+  useEffect(() => {
+    if (needsVaultSetup) setWindowGeometryInstant({ w: 760, h: 640 }, null).catch(() => {});
+  }, [needsVaultSetup]);
+
   // Display Mode (Item 2) state — persisted like theme, applied immediately.
   const [displayMode, setDisplayMode] = useState<DisplayMode>(getInitialDisplayMode);
   const [pillCorner, setPillCorner]   = useState<PillCorner>(getInitialPillCorner);
@@ -606,7 +632,7 @@ export default function App() {
   const compactPanelRef = useRef(compactPanel);
   useEffect(() => { compactPanelRef.current = compactPanel; }, [compactPanel]);
 
-  const { state: captureState, stepDefs, captureFile, captureAudio } = useCapture(holdOpenRef);
+  const { state: captureState, stepDefs, captureFile, captureAudio, captureNow } = useCapture(holdOpenRef);
   const voice = useVoiceRecording(captureAudio);
   const llmStatus = useLlmStatus();
   const { toasts, pushToast, dismiss: dismissToast } = useToasts();
@@ -2307,6 +2333,15 @@ export default function App() {
     onSelectLookChatPersist: setLookChatPersist,
   };
 
+  // P-WIZARD gate: a first run shows the setup wizard instead of the
+  // pill/capture view entirely -- checked once above; `null` (still
+  // checking GET /config) renders nothing rather than flashing the normal
+  // app for a frame first.
+  if (needsVaultSetup === null) return null;
+  if (needsVaultSetup) {
+    return <VaultSetup pillCorner={pillCorner} onComplete={() => setNeedsVaultSetup(false)} />;
+  }
+
   if (renderPill) {
     // Capsule open: push the bar to whichever edge it's pinned to, leaving
     // the free space (the click-to-close padding) on the inner side
@@ -2555,6 +2590,7 @@ export default function App() {
               ? () => getCurrentWindow().hide()
               : () => setView("capture")}
             onCaptureFile={captureFile}
+            onCaptureNow={captureNow}
             pillCorner={pillCorner}
             voicePhase={voice.phase}
             voiceElapsedMs={voice.elapsedMs}
@@ -2569,6 +2605,9 @@ export default function App() {
 
         {/* Hidden dev-only troubleshooting tuner (Ctrl+Shift+Alt+G) */}
         <DevTuner />
+        {/* ISS-005 C follow-up B: cross-device delete-prompt queue (Full window only — the pill/compact
+            surface is too small for a decision this deliberate). */}
+        <DeletePromptModal />
         {/* Toast notifications */}
         <div style={{ position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", width: 408, pointerEvents: "none" }}>
           <div style={{ pointerEvents: "all" }}>

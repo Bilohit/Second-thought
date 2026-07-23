@@ -41,6 +41,10 @@ from fastapi import APIRouter, HTTPException
 # ---------------------------------------------------------------------------
 _jobs: dict[str, dict] = {}   # job_id -> {status, kind, category, path, error, created, updated}
 _jobs_lock = threading.Lock()
+_DEFAULT_JOB_TTL_S = 3600
+# SRV-23: per-job retention, kept beside _jobs rather than inside the entry so it
+# never leaks into a persisted row or a /jobs/{id} response. Guarded by _jobs_lock.
+_job_ttl: dict[str, int] = {}
 
 _JOBS_DDL = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -145,7 +149,7 @@ def load_jobs() -> int:
 _bg_executor = ThreadPoolExecutor(max_workers=2)
 
 
-def _set_job(job_id: str, ttl_seconds: int = 3600, **fields) -> None:
+def _set_job(job_id: str, ttl_seconds: int = _DEFAULT_JOB_TTL_S, **fields) -> None:
     now = time.time()
     with _jobs_lock:
         entry = _jobs.setdefault(job_id, {"created": now})
@@ -153,7 +157,18 @@ def _set_job(job_id: str, ttl_seconds: int = 3600, **fields) -> None:
         entry["updated"] = now
         snapshot = dict(entry)
 
-        stale = [k for k, v in _jobs.items() if now - v.get("updated", now) > ttl_seconds]
+        # SRV-23: the sweep used to apply THIS caller's ttl_seconds to every entry in
+        # the registry, so one _set_job(ttl_seconds=60) evicted every other job older
+        # than a minute -- including hour-lived ones whose owner had asked for 3600 --
+        # and a long-ttl call conversely resurrected the lifetime of short-ttl jobs.
+        # Each job's own ttl is remembered at set time and only that ttl retires it.
+        _job_ttl[job_id] = ttl_seconds
+        stale = [
+            k for k, v in _jobs.items()
+            if now - v.get("updated", now) > _job_ttl.get(k, _DEFAULT_JOB_TTL_S)
+        ]
+        for k in stale:
+            _job_ttl.pop(k, None)
         for k in stale:
             del _jobs[k]
     # DB writes outside the lock -- sqlite has its own; don't serialize callers on it.
@@ -313,12 +328,23 @@ def _run_transcript_job(
             except Exception as exc:
                 print(f"[server] {kind} job {job_id} vector index skipped: {exc}", flush=True)
 
+        # SRV-22: the dedup ledger is a rebuildable cache, so a registration failure
+        # must not fail a capture whose note is already written -- but it must not be
+        # invisible either. The old bare `except: pass` let the very next line report
+        # an unqualified "done" while this note stayed absent from the ledger, so a
+        # re-capture of the same video would silently duplicate it. Log it, record it
+        # against index_health (surfaced by /health), and carry a `warning` on the
+        # terminal status so "done" is honest about what did not happen.
+        dedup_warning = None
         try:
             register_in_dedup_index(summary, fetched.dedup_source, cfg.vault.root, path)
-        except Exception:
-            pass
+        except Exception as exc:
+            dedup_warning = f"dedup registration failed: {exc}"
+            print(f"[server] {kind} job {job_id} {dedup_warning}", flush=True)
+            import index_health
+            index_health.record_failure("dedup", exc)
 
-        set_status("done", category=fetched.category, path=str(path))
+        set_status("done", category=fetched.category, path=str(path), warning=dedup_warning)
 
         try:
             from notifier import notify_capture_success
@@ -441,6 +467,9 @@ async def get_job(job_id: str):
         "chunk_index": job.get("chunk_index"),
         "chunk_total": job.get("chunk_total"),
         "detail": job.get("detail"),
+        # SRV-22: non-fatal degradation recorded alongside a successful terminal
+        # status (e.g. the note was written but dedup registration failed).
+        "warning": job.get("warning"),
     }
 
 

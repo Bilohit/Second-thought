@@ -65,12 +65,17 @@ function InboxRow({
   onApprove,
   onDiscard,
   leaving,
+  pending,
 }: {
   item: InboxItem;
   categories: string[];
   onApprove: (noteId: string, target?: string) => void;
   onDiscard: (noteId: string) => void;
   leaving: boolean;
+  /** ISS-035: true from the click that started Approve/Discard until the
+   *  server confirms (or fails) — disables both buttons immediately instead
+   *  of leaving the row inert-looking for the ~1s round trip. */
+  pending: boolean;
 }) {
   const fallbackTarget = categories.includes(item.category) ? item.category : (categories[0] ?? "");
   const [target, setTarget] = useState(fallbackTarget);
@@ -147,7 +152,7 @@ function InboxRow({
             onChange={(e) => setNewName(e.target.value)}
             placeholder="New folder name"
             aria-label={`New folder name for ${item.filename}`}
-            style={{ ...INPUT_STYLE, flex: 1, padding: "5px 8px", fontSize: 11 }}
+            style={{ ...INPUT_STYLE, flex: 1, minWidth: 0, padding: "5px 8px", fontSize: 11 }}
             onFocus={focusRing}
             onBlur={blurRing}
             onKeyDown={(e) => { if (e.key === "Escape") setCreatingNew(false); }}
@@ -162,6 +167,7 @@ function InboxRow({
             aria-label={`Target category for ${item.filename}`}
             style={{
               flex: 1,
+              minWidth: 0,
               background: "var(--surface-2)",
               border: "1px solid var(--border)",
               borderRadius: "var(--radius-sm)",
@@ -180,24 +186,25 @@ function InboxRow({
         )}
         <button
           onClick={() => effectiveTarget && onApprove(item.note_id, effectiveTarget)}
-          disabled={!effectiveTarget}
+          disabled={!effectiveTarget || pending}
           style={{
             ...BTN_PRIMARY,
             padding: "5px 12px",
             fontSize: 11,
             whiteSpace: "nowrap",
-            opacity: effectiveTarget ? 1 : 0.5,
-            cursor: effectiveTarget ? "pointer" : "not-allowed",
+            opacity: pending ? 0.5 : effectiveTarget ? 1 : 0.5,
+            cursor: pending ? "default" : effectiveTarget ? "pointer" : "not-allowed",
           }}
         >
-          Approve
+          {pending ? "Filing…" : "Approve"}
         </button>
         <button
           onClick={() => onDiscard(item.note_id)}
+          disabled={pending}
           title="Discard"
           aria-label="Discard"
           className="btn-hover hover-danger"
-          style={BTN_GHOST}
+          style={{ ...BTN_GHOST, opacity: pending ? 0.5 : 1, cursor: pending ? "default" : "pointer" }}
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="3 6 5 6 21 6" />
@@ -250,6 +257,11 @@ export default function InboxPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [leavingIds, setLeavingIds] = useState<Set<string>>(new Set());
+  // ISS-035: marked synchronously at click time (before the network await),
+  // so Approve/Discard give immediate feedback instead of sitting inert for
+  // the ~1s round trip. Cleared on error so a failed row is retryable;
+  // success clears it implicitly via removeItem dropping the item entirely.
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
   const [internalTab, setInternalTab] = useState<InboxTab>(initialTab);
   const tab = tabProp ?? internalTab;
   const setTab = onTabChange ?? setInternalTab;
@@ -305,6 +317,7 @@ export default function InboxPanel({
 
   const handleApprove = async (noteId: string, target?: string) => {
     setError(null);
+    setPendingIds((s) => new Set(s).add(noteId));
     try {
       await approveInboxItem(noteId, target);
       removeItem(noteId);
@@ -317,16 +330,19 @@ export default function InboxPanel({
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to approve item");
+      setPendingIds((s) => { const n = new Set(s); n.delete(noteId); return n; });
     }
   };
 
   const handleDiscard = async (noteId: string) => {
     setError(null);
+    setPendingIds((s) => new Set(s).add(noteId));
     try {
       await discardInboxItem(noteId);
       removeItem(noteId);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to discard item");
+      setPendingIds((s) => { const n = new Set(s); n.delete(noteId); return n; });
     }
   };
 
@@ -444,6 +460,7 @@ export default function InboxPanel({
               onApprove={handleApprove}
               onDiscard={handleDiscard}
               leaving={leavingIds.has(item.note_id)}
+              pending={pendingIds.has(item.note_id)}
             />
           ))}
         </div>

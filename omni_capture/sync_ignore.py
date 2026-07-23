@@ -22,6 +22,18 @@ import json
 from pathlib import Path
 from typing import Dict
 
+from atomic_io import atomic_write_text
+
+
+class IgnoreSetUnreadable(Exception):
+    """SYNC-12: the ignore sidecar exists but does not parse.
+
+    This set is NOT a rebuildable cache like captures.db — it is the only record of an
+    irreversible confidentiality decision, and "empty" reads as "ignore nothing", which
+    would upload every private local-only note to Drive in one pass. Callers on the
+    outbound path must REFUSE to sync rather than treat a corrupt set as empty.
+    """
+
 
 def _ignore_file(vault_root: Path) -> Path:
     d = vault_root.resolve() / ".omni_capture"
@@ -45,14 +57,29 @@ def load_ignored(vault_root: Path) -> set[str]:
         return set()
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        return set(data.get("ignored", []))
-    except (json.JSONDecodeError, OSError):
-        return set()  # derived cache — safe to treat as empty on corruption
+    except json.JSONDecodeError as exc:
+        # SYNC-12: a torn/truncated sidecar must NOT degrade to "ignore nothing" — that
+        # turns filter_ignored_notes into a pass-through and uploads every private note.
+        raise IgnoreSetUnreadable(f"{p}: {exc}") from exc
+    except OSError as exc:
+        raise IgnoreSetUnreadable(f"{p}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise IgnoreSetUnreadable(f"{p}: top level is {type(data).__name__}, expected object")
+    return set(data.get("ignored", []))
 
 
 def save_ignored(vault_root: Path, ignored: set[str]) -> None:
-    p = _ignore_file(vault_root)
-    p.write_text(json.dumps({"ignored": sorted(ignored)}, indent=2), encoding="utf-8")
+    # SYNC-12: temp sibling + os.replace. A bare write_text truncates and streams, so a
+    # crash mid-write leaves the JSON above unparseable — the very corruption this whole
+    # finding is about. Machine-owned sidecar → atomic_write_text (not verbatim).
+    atomic_write_text(_ignore_file(vault_root), json.dumps({"ignored": sorted(ignored)}, indent=2))
+
+
+def assert_ignore_set_readable(vault_root: Path) -> None:
+    """SYNC-12: pass-level precondition. `run_pass` calls this BEFORE touching Drive so a
+    corrupt ignore set surfaces as a loud `ok:false` scheduler row instead of a silent
+    pass-through that uploads private notes. Raises IgnoreSetUnreadable."""
+    load_ignored(vault_root)
 
 
 def is_ignored(vault_root: Path, path_str: str) -> bool:
@@ -74,8 +101,17 @@ def set_ignored(vault_root: Path, path_str: str, ignored: bool) -> set[str]:
 def filter_ignored_notes(vault_notes: Dict[str, Dict], vault_root: Path) -> Dict[str, Dict]:
     """Drop entries from a `read_vault_notes()`-shaped dict whose vault-relative
     path is in the local ignore set. Used at the mirror_to_hub / reconcile_changes
-    call sites (see module docstring) — never mutates the input dict."""
-    ignored = load_ignored(vault_root)
+    call sites (see module docstring) — never mutates the input dict.
+
+    SYNC-12: an UNREADABLE ignore set returns an EMPTY dict, not the input. Refusing to
+    sync anything is the only safe failure for a confidentiality control — the alternative
+    (treating corruption as "ignore nothing") uploads every private note irreversibly.
+    Callers surface this via `sync_ignore_unreadable` in the pass summary."""
+    try:
+        ignored = load_ignored(vault_root)
+    except IgnoreSetUnreadable as exc:
+        print(f"[sync_ignore] REFUSING outbound sync — ignore set unreadable: {exc}")
+        return {}
     if not ignored:
         return vault_notes
     root = vault_root.resolve()

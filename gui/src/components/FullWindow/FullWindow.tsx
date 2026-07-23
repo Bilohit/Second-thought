@@ -7,10 +7,9 @@ import DashboardView from "./DashboardView";
 import LibraryView from "./LibraryView";
 import { railSliderFromElement } from "../../lib/railSelection";
 import { MenuIcon, DashboardIcon } from "../PillMenu/icons";
-import { syncVaultIndex, getStats, getInbox, getDigestToday, type DigestStats } from "../../lib/api";
+import { syncVaultIndex, getStats, getInbox } from "../../lib/api";
 import InboxPanel, { type InboxTab } from "../InboxPanel";
 import ErrorBoundary from "../ErrorBoundary";
-import DailyDigest from "../DailyDigest";
 import NoteEditor from "../NoteEditor";
 import type { CaptureState, CaptureStep } from "../../hooks/useCapture";
 import type { LlmStatus } from "../../lib/api";
@@ -32,11 +31,16 @@ interface LookChatHook {
 type MainView = "dashboard" | "look" | "library";
 type RailView = MainView | "settings" | "inbox";
 const MAIN_VIEWS: MainView[] = ["dashboard", "look", "library"];
+// ISS-022: the folder-panel nav label is "Vault" everywhere — was "Library"
+// here vs "Vault" in Capsule/Minimal mode. The container still holds the
+// Vault/Tags/Trash sub-tabs (segmented toggle below); its own "Vault"
+// sub-tab was renamed to "Folders" so the title bar and the tab directly
+// under it don't repeat the same word.
 const TITLES: Record<RailView, [string, string]> = {
   dashboard: ["Dashboard", "capture · recent · inbox"],
   look:      ["Look", "search · chat over vault"],
-  library:   ["Library", "vault · category · rhythm"],
-  settings:  ["Settings", "preferences"],
+  library:   ["Vault", "folders · category · rhythm"],
+  settings:  ["Settings", ""],
   inbox:     ["Inbox", "review · reminders"],
 };
 
@@ -76,6 +80,7 @@ interface FullWindowProps {
   onOpenFile: (path: string) => void;
   onHideToTray: () => void;
   onCaptureFile: (path: string) => void;
+  onCaptureNow: () => void;
   pillCorner: PillCorner;
   settingsProps: SettingsForward;
   voicePhase: VoicePhase;
@@ -150,24 +155,6 @@ export default function FullWindow(props: FullWindowProps) {
   }, [syncing]);
 
   useEffect(() => () => { if (syncTimerRef.current) clearTimeout(syncTimerRef.current); }, []);
-
-  // ponytail: full-window-mode only — pill modes + phone parity get their own
-  // digest surface later (F-14 remainder). Show-once keys off calendar day in
-  // localStorage; the frontend owns this trigger, no coupling to the sync
-  // scheduler (matches the backend's no-memo /digest/today design).
-  const [digest, setDigest] = useState<DigestStats | null>(null);
-  const [digestOpen, setDigestOpen] = useState(false);
-  useEffect(() => {
-    const today = new Date().toISOString().slice(0, 10);
-    if (localStorage.getItem("omni-digest-shown") !== today) {
-      getDigestToday().then((d) => { setDigest(d); setDigestOpen(true); }).catch(() => {});
-    }
-  }, []);
-  const closeDigest = useCallback(() => {
-    setDigestOpen(false);
-    try { localStorage.setItem("omni-digest-shown", new Date().toISOString().slice(0, 10)); } catch { /* noop */ }
-  }, []);
-  const digestDateLabel = new Date().toLocaleString("en-US", { month: "short", day: "numeric" }).toUpperCase();
 
   // F-7: full-window note editor overlay. FullWindow-exclusive entry point
   // (recent-note row, dashboard-only) -- deliberately does NOT repoint
@@ -263,8 +250,8 @@ export default function FullWindow(props: FullWindowProps) {
             <button
               className="btn-hover rail-btn rail-btn--footer"
               onClick={props.onHideToTray}
-              title="Hide to tray"
-              aria-label="Hide to tray"
+              title="Hide"
+              aria-label="Hide"
               aria-pressed={false}
             >
               <MenuIcon target="hide" size={16} />
@@ -310,9 +297,9 @@ export default function FullWindow(props: FullWindowProps) {
           {view === "library" && (
             <div className="no-drag" style={{ display: "flex", alignItems: "center" }}>
               <SegmentedToggle
-                ariaLabel="Library section"
+                ariaLabel="Vault section"
                 options={[
-                  { key: "vault" as const, label: "Vault" },
+                  { key: "vault" as const, label: "Folders" },
                   { key: "tags" as const, label: "Tags" },
                   { key: "trash" as const, label: "Trash" },
                 ]}
@@ -336,6 +323,7 @@ export default function FullWindow(props: FullWindowProps) {
               stepDefs={props.stepDefs}
               onOpenFile={setEditorPath}
               onCaptureFile={props.onCaptureFile}
+              onCaptureNow={props.onCaptureNow}
               llmStatus={props.llmStatus}
               onNavigate={(t) => {
                 if (t === "library") { setView("library"); return; }
@@ -384,7 +372,6 @@ export default function FullWindow(props: FullWindowProps) {
           </div>
         )}
         </ErrorBoundary>
-        <DailyDigest open={digestOpen} stats={digest} dateLabel={digestDateLabel} onClose={closeDigest} />
         <NoteEditor
           open={editorPath !== null}
           path={editorPath}

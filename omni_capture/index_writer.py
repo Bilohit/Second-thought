@@ -631,7 +631,7 @@ def upsert_capture_from_file(vault_root: Path, abs_path: Path) -> None:
 # see vector_store.py's best_match() for the enforced exclusion. Plain
 # index_writer.search() intentionally does NOT exclude provisional -- that is
 # precisely where the LAN overlay is meant to surface. stats()/reindex_bodies()
-# DO exclude provisional=1: dashboard/digest counts and the FTS body backfill
+# DO exclude provisional=1: dashboard counts and the FTS body backfill
 # are canonical-only (contract §11) -- provisional rows have no real vault
 # path to read a body from, and must not inflate stats.
 
@@ -684,6 +684,50 @@ def clear_provisional(db: sqlite3.Connection, op_id: str) -> None:
 
 # ── Search ────────────────────────────────────────────────────────────────────
 
+# ponytail: fixed relevance score for the raw LIKE substring net (no bm25
+# available outside FTS) -- placed below any FTS-derived score so exact/FTS
+# hits still win a tie; revisit with a real ranking if this net ever needs to
+# out-rank a weak FTS match instead of just catching what FTS missed.
+_SUBSTRING_LIKE_SCORE = 0.35
+
+
+def _normalize_bm25(raw_rank: float) -> float:
+    """SQLite's bm25() returns MORE NEGATIVE == more relevant. Fold that onto a
+    0..1 scale (higher == more relevant) so it can be merged/sorted against
+    cosine similarity (already 0..1, higher-is-better) at the API layer
+    (vault_admin.search_captures fuses in the semantic tier)."""
+    return abs(raw_rank) / (1.0 + abs(raw_rank))
+
+
+def _like_escape(s: str) -> str:
+    """Escape SQLite LIKE metacharacters in free-text user input so a query
+    containing literal % or _ is matched literally, not as a wildcard."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _row_filter_clauses(
+    category: Optional[str],
+    since: Optional[str],
+    tag_paths,
+    prefix: str = "",
+) -> tuple[list[str], list]:
+    """Shared category/since/tag WHERE-clause builder for the three search
+    passes below. *prefix* is the table alias to qualify columns with (e.g.
+    "c." for the FTS-joined queries, "" for the plain-table ones)."""
+    clauses: list[str] = []
+    params: list = []
+    if category:
+        clauses.append(f"{prefix}category = ?")
+        params.append(category)
+    if since:
+        clauses.append(f"{prefix}timestamp >= ?")
+        params.append(since)
+    if tag_paths:
+        clauses.append(f"{prefix}path IN ({_binds(tag_paths)})")
+        params.extend(sorted(tag_paths))
+    return clauses, params
+
+
 def search(
     query: str,
     vault_root: Path,
@@ -693,11 +737,42 @@ def search(
     tag: Optional[str]      = None,
 ) -> list[dict]:
     """
-    Full-text search over captures.  Returns up to *limit* rows, newest first.
+    Search over captures, tiered and scored (P-DSEARCH).
+
+    A non-blank *query* is run through three passes, each row tagged with a
+    `tier` and a 0..1 `score` (higher == more relevant), unioned (a path
+    already claimed by a higher-priority tier is not repeated by a lower one)
+    and returned sorted by score descending, capped at *limit*:
+
+      1. "exact"     -- FTS5 phrase query: the raw query text wrapped in
+                        quotes. FTS5 tokenizes phrase content with the same
+                        tokenizer used at index time (unicode61, which splits
+                        on hyphens), so "QA-CLIPTEST" tokenizes to adjacent
+                        terms "qa","cliptest" that match the identically
+                        hyphen-split index terms (ISS-011) -- no manual
+                        splitting needed for this tier. bm25-ranked.
+      2. "substring"  -- broader recall, two sub-passes merged under one tier
+                        label: (a) the historic per-token AND/prefix FTS match
+                        (_sanitize_fts_query, now hyphen-split -- see there --
+                        so it also independently satisfies ISS-011), bm25
+                        ranked; then (b) a plain `LIKE '%query%'` scan over
+                        the raw columns for anything neither FTS pass can find
+                        at all (a substring that isn't a token boundary, e.g.
+                        BUG inside "deBUGger"). (b) uses a fixed score, not
+                        bm25 (no FTS involved).
+                        # ponytail: LIKE substring scan is O(n); add a trigram
+                        # index if a vault ever holds 100k+ notes.
+      3. "semantic"   -- NOT computed here; vault_admin.search_captures fuses
+                        vector_store.semantic_search's cosine-scored rows in
+                        at the API layer (index_writer has no embeddings/RAG
+                        dependency).
+
+    A blank *query* keeps the previous "browse everything" behavior --
+    newest-first, tier/score both None (nothing to rank by relevance).
 
     Parameters
     ----------
-    query     FTS5 query string (supports prefix/phrase matching).
+    query     Free-text query (or blank to browse).
     category  Optional category filter.
     since     ISO-8601 timestamp lower-bound (inclusive).
     limit     Max rows to return.
@@ -733,48 +808,96 @@ def search(
         return []
     cursor = conn.cursor()
 
-    if query.strip():
-        sql = """
-            SELECT c.*
-            FROM captures c
-            JOIN captures_fts fts ON fts.rowid = c.id
-            WHERE captures_fts MATCH ?
-        """
-        params: list = [_sanitize_fts_query(query)]
-        if category:
-            sql    += " AND c.category = ?"
-            params.append(category)
-        if since:
-            sql    += " AND c.timestamp >= ?"
-            params.append(since)
-        if tag_paths:
-            sql    += f" AND c.path IN ({_binds(tag_paths)})"
-            params.extend(sorted(tag_paths))
-    else:
-        sql    = "SELECT * FROM captures WHERE 1=1"
-        params = []
-        if category:
-            sql    += " AND category = ?"
-            params.append(category)
-        if since:
-            sql    += " AND timestamp >= ?"
-            params.append(since)
-        if tag_paths:
-            sql    += f" AND path IN ({_binds(tag_paths)})"
-            params.extend(sorted(tag_paths))
+    if not query.strip():
+        sql = "SELECT * FROM captures WHERE 1=1"
+        clauses, params = _row_filter_clauses(category, since, tag_paths)
+        for c in clauses:
+            sql += f" AND {c}"
+        sql += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        try:
+            rows = cursor.execute(sql, params).fetchall()
+        except sqlite3.DatabaseError as exc:
+            print(f"[IndexWriter] Non-fatal DB error (search query): {exc}", file=sys.stderr)
+            index_health.record_failure("captures", exc)
+            rows = []
+        conn.close()
+        out = [dict(r) for r in rows]
+        for r in out:
+            r["tier"] = None
+            r["score"] = None
+        return out
 
-    sql += " ORDER BY timestamp DESC LIMIT ?"
-    params.append(limit)
+    seen_paths: set[str] = set()
+    combined: list[dict] = []
 
+    def _fts_pass(match_query: str, tier: str, exclude: bool) -> None:
+        sql = (
+            "SELECT c.*, bm25(captures_fts) AS _rank FROM captures c "
+            "JOIN captures_fts fts ON fts.rowid = c.id WHERE captures_fts MATCH ?"
+        )
+        params: list = [match_query]
+        clauses, extra = _row_filter_clauses(category, since, tag_paths, prefix="c.")
+        for c in clauses:
+            sql += f" AND {c}"
+        params.extend(extra)
+        sql += " ORDER BY _rank ASC, c.timestamp DESC LIMIT ?"
+        params.append(limit)
+        try:
+            rows = cursor.execute(sql, params).fetchall()
+        except sqlite3.DatabaseError as exc:
+            print(f"[IndexWriter] Non-fatal DB error (search {tier} tier): {exc}", file=sys.stderr)
+            index_health.record_failure("captures", exc)
+            rows = []
+        for r in rows:
+            d = dict(r)
+            raw_rank = d.pop("_rank")
+            if exclude and d["path"] in seen_paths:
+                continue
+            d["tier"] = tier
+            d["score"] = round(_normalize_bm25(raw_rank), 4)
+            combined.append(d)
+            seen_paths.add(d["path"])
+
+    # 1. exact -- adjacent phrase match (ISS-011 fixed for free by FTS5's own tokenizer).
+    _fts_pass(_fts_phrase_query(query), "exact", exclude=False)
+
+    # 2a. substring -- loose per-token AND/prefix match (also independently hyphen-fixed).
+    _fts_pass(_sanitize_fts_query(query), "substring", exclude=True)
+
+    # 2b. substring -- raw LIKE net for anything neither FTS pass could find at all.
+    like_val = f"%{_like_escape(query)}%"
+    like_sql = (
+        "SELECT * FROM captures WHERE "
+        "(body_excerpt LIKE ? ESCAPE '\\' OR filename LIKE ? ESCAPE '\\' "
+        "OR category LIKE ? ESCAPE '\\' OR source_url LIKE ? ESCAPE '\\' "
+        "OR tags LIKE ? ESCAPE '\\')"
+    )
+    like_params: list = [like_val] * 5
+    clauses, extra = _row_filter_clauses(category, since, tag_paths)
+    for c in clauses:
+        like_sql += f" AND {c}"
+    like_params.extend(extra)
+    like_sql += " ORDER BY timestamp DESC LIMIT ?"
+    like_params.append(limit)
     try:
-        rows = cursor.execute(sql, params).fetchall()
-    except sqlite3.DatabaseError:
-        # DatabaseError, not OperationalError: it is the shared base of both the
-        # OperationalError the _binds ceiling below relies on AND the
-        # DatabaseError("file is not a database") a corrupt file raises.
-        rows = []
+        like_rows = cursor.execute(like_sql, like_params).fetchall()
+    except sqlite3.DatabaseError as exc:
+        print(f"[IndexWriter] Non-fatal DB error (search substring-like tier): {exc}", file=sys.stderr)
+        index_health.record_failure("captures", exc)
+        like_rows = []
+    for r in like_rows:
+        d = dict(r)
+        if d["path"] in seen_paths:
+            continue
+        d["tier"] = "substring"
+        d["score"] = _SUBSTRING_LIKE_SCORE
+        combined.append(d)
+        seen_paths.add(d["path"])
+
     conn.close()
-    return [dict(r) for r in rows]
+    combined.sort(key=lambda d: d["score"], reverse=True)
+    return combined[:limit]
 
 
 def _binds(values) -> str:
@@ -795,16 +918,36 @@ def _sanitize_fts_query(query: str) -> str:
     token uses prefix matching (``token*``) so singular queries match plurals
     (e.g. ``dinosaur`` → ``dinosaurs``). Tokens with FTS metacharacters are
     wrapped in double quotes (embedded quotes doubled) instead.
+
+    ISS-011: a hyphenated token (e.g. ``QA-CLIPTEST``) is split on the hyphen
+    into its own prefix-matched sub-terms (``qa* cliptest*``, ANDed by the
+    space) before being handed to FTS5. The unicode61 tokenizer used at INDEX
+    time already splits on hyphens, so a query that kept the hyphen whole
+    (``QA-CLIPTEST*``) never matched -- neither half of the compound is a
+    real index term. Splitting the query the same way the index already is
+    tokenized fixes it.
     """
     tokens = query.split()
     parts: list[str] = []
     for t in tokens:
-        escaped = t.replace('"', '""')
         if re.fullmatch(r"[\w\-]+", t, flags=re.ASCII):
-            parts.append(f"{escaped}*")
+            subtokens = [s for s in t.split("-") if s]
+            parts.extend(f"{s}*" for s in subtokens)
         else:
+            escaped = t.replace('"', '""')
             parts.append(f'"{escaped}"')
     return " ".join(parts)
+
+
+def _fts_phrase_query(query: str) -> str:
+    """Exact-phrase FTS5 query (the "exact" tier): wrap the raw query text in
+    quotes so FTS5 tokenizes it with the SAME tokenizer used at index time
+    (unicode61, which splits on hyphens -- this independently fixes ISS-011
+    for this tier, no manual splitting needed) and requires the resulting
+    terms to appear ADJACENT, in order -- distinct from _sanitize_fts_query's
+    loose per-token AND/prefix match above."""
+    escaped = query.replace('"', '""')
+    return f'"{escaped}"'
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────

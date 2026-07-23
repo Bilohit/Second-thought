@@ -11,12 +11,19 @@ import re
 from pathlib import Path
 from typing import TypedDict
 
-from vector_store import _embed, _connect, _MAX_SNIPPET_CHARS, _cosine_all, _dedupe_to_parent  # reuse Ollama embed + DB
+from vector_store import (  # reuse Ollama embed + DB
+    _embed, _connect, _MAX_SNIPPET_CHARS, _cosine_all, _dedupe_to_parent, OllamaConnectionError,
+)
 from index_writer import search as fts_search
 from look_log import look_debug, look_warn
 from frontmatter import strip_frontmatter
 
 REFUSAL = "Information not found in vault"
+# ISS-009: distinct from REFUSAL -- a genuine no-match means retrieval ran and
+# found nothing; this means retrieval couldn't run at all because Ollama is
+# unreachable. Conflating the two told a user with Ollama stopped that their
+# notes weren't being read, when the engine simply never answered.
+OFFLINE_REPLY = "AI engine offline — is Ollama running?"
 _RRF_K = 60
 _CITE_SNIPPET_CHARS = 1500
 
@@ -59,18 +66,22 @@ class Source(TypedDict):
 
 
 def _semantic_ranked(vault_root: Path, query: str, base_url: str, embed_model: str,
-                     limit: int) -> tuple[list[str], float, dict[str, float]]:
-    """Return ([vault_relative_path,...] best-first, best_similarity, path->sim)."""
+                     limit: int) -> tuple[list[str], float, dict[str, float], bool]:
+    """Return ([vault_relative_path,...] best-first, best_similarity, path->sim,
+    ollama_unreachable). ollama_unreachable is True only when Ollama itself
+    could not be connected to (see OllamaConnectionError) -- distinct from an
+    empty/no-match result, which every other failure/empty-index path below
+    still collapses to."""
     try:
         with _connect(vault_root) as conn:
             rows = conn.execute(
                 "SELECT id, embedding, document, category FROM embeddings").fetchall()
         if not rows:
-            return [], 0.0, {}
+            return [], 0.0, {}, False
         q = _embed(query, base_url, embed_model)
         results = _cosine_all(q, rows)
         if not results:
-            return [], 0.0, {}
+            return [], 0.0, {}, False
         best = results[0][0]
         # Chunk rows (id `f"{rel}::c{i}"`) must collapse to their parent note
         # -- one row per real path, keeping only the best-scoring chunk --
@@ -79,10 +90,13 @@ def _semantic_ranked(vault_root: Path, query: str, base_url: str, embed_model: s
         deduped = _dedupe_to_parent(results, len(results))
         paths = [rel for _s, rel, _doc in deduped[:limit]]
         sim_by_abs = {str(vault_root / rel): sim for sim, rel, _doc in deduped}
-        return paths, best, sim_by_abs
+        return paths, best, sim_by_abs, False
+    except OllamaConnectionError as exc:
+        look_warn(f"semantic retrieval: Ollama unreachable: {exc}")
+        return [], 0.0, {}, True
     except Exception as exc:
         look_warn(f"semantic retrieval failed: {exc}")
-        return [], 0.0, {}
+        return [], 0.0, {}, False
 
 
 def _read_snippet(p: Path, query: str = "") -> str:
@@ -137,7 +151,9 @@ def hybrid_retrieve(
 ) -> tuple[list[Source], float, str]:
     """
     Return (sources, confidence, tier).
-    tier: "high" when sources found, else "none".
+    tier: "high" when sources found, "offline" when Ollama could not be
+    reached at all (ISS-009 — distinct from a genuine no-match so the caller
+    can be honest instead of claiming the vault has nothing), else "none".
     Sources below min_similarity_floor are dropped — FTS-only noise never injected.
     """
     question = (question or "").strip()
@@ -145,9 +161,10 @@ def hybrid_retrieve(
         return [], 0.0, "none"
 
     retrieval_query = _expand_query(question, history)
-    sem_paths, best_sim, sim_by_abs = _semantic_ranked(
+    sem_paths, best_sim, sim_by_abs, ollama_unreachable = _semantic_ranked(
         vault_root, retrieval_query, base_url, embed_model, top_k * 2,
     )
+    no_match_tier = "offline" if ollama_unreachable else "none"
     fts_rows = fts_search(retrieval_query, vault_root, limit=top_k * 2)
     fts_paths = [r["path"] for r in fts_rows]
 
@@ -165,7 +182,7 @@ def hybrid_retrieve(
         meta[r["path"]] = {"category": r.get("category", ""), "filename": r.get("filename") or ""}
 
     if not rrf:
-        return [], best_sim, "none"
+        return [], best_sim, no_match_tier
 
     ranked = sorted(rrf, key=lambda p: rrf[p], reverse=True)[:top_k]
     sources: list[Source] = []
@@ -184,7 +201,7 @@ def hybrid_retrieve(
         ))
 
     if not sources:
-        return [], best_sim, "none"
+        return [], best_sim, no_match_tier
 
     confidence = best_sim
 

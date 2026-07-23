@@ -76,9 +76,14 @@ def test_status_reflects_config():
 # ---------------------------------------------------------------------------
 # E6: interval_minutes = 0 -> "never auto-sync"
 #
-# The sentinel gates the two AUTOMATIC triggers that live here (the timed loop and sync_on_launch);
-# the third, server.py's sync_after_capture, is covered in test_server.py. Manual run_now() is
+# The sentinel gates the ONE interval-driven automatic trigger that lives here (the timed
+# loop); server.py's sync_after_capture is covered in test_server.py. Manual run_now() is
 # deliberately NOT gated -- that is the whole difference between "Never" and master-off.
+#
+# ISS-003 (2026-07-22): sync_on_launch is a DIFFERENT trigger and is deliberately NOT gated
+# by this sentinel -- the product default is interval-auto OFF until the user picks an
+# interval, but on-launch ON regardless of that choice. See test_sync_on_launch_fires_*
+# below (replaces the old test_sentinel_blocks_sync_on_launch, which asserted the opposite).
 # ---------------------------------------------------------------------------
 
 
@@ -126,20 +131,40 @@ def test_sentinel_blocks_the_timed_loop():
     assert waits == [sync_scheduler._IDLE_POLL_S] * 3, "sentinel must idle-poll, not sleep an interval"
 
 
-def test_sentinel_blocks_sync_on_launch():
-    """Trigger 2. sync_on_launch runs before the loop's first wait, so it needs its own gate."""
+def test_sync_on_launch_fires_on_the_product_default_even_with_no_interval_chosen():
+    """ISS-003: the shipping default is interval_minutes=0 (no interval chosen yet) with
+    sync_on_launch=True and enabled=True. On-launch must still fire -- it is not gated by
+    the interval sentinel. (This replaces the old test_sentinel_blocks_sync_on_launch,
+    which asserted the pre-ISS-003 behavior this change deliberately reverses.)"""
     passes: list = []
     s = _mk(_counting_pass(passes), cfg=FakeCfg(interval_minutes=0, sync_on_launch=True))
     _run_loop(s, stop_after=1)
-    assert passes == [], "sync_on_launch fired despite interval_minutes = 0"
+    assert passes == [1], "sync_on_launch did not fire on the interval-unset default"
 
 
 def test_sync_on_launch_still_fires_for_a_real_interval():
-    """The positive control for the gate above — it must block "never", not sync_on_launch itself."""
+    """The positive control — on-launch fires whether or not a real interval is chosen."""
     passes: list = []
     s = _mk(_counting_pass(passes), cfg=FakeCfg(interval_minutes=60, sync_on_launch=True))
     _run_loop(s, stop_after=1)
     assert passes == [1]
+
+
+def test_sync_on_launch_still_gated_by_the_master_switch():
+    """`enabled=False` (the system-wide master) must still block on-launch even though the
+    interval sentinel no longer does."""
+    passes: list = []
+    s = _mk(_counting_pass(passes), cfg=FakeCfg(enabled=False, interval_minutes=0, sync_on_launch=True))
+    _run_loop(s, stop_after=1)
+    assert passes == [], "on-launch fired despite the master switch being off"
+
+
+def test_sync_on_launch_off_still_skips_the_launch_pass():
+    """`sync_on_launch=False` must still suppress the launch pass regardless of interval."""
+    passes: list = []
+    s = _mk(_counting_pass(passes), cfg=FakeCfg(interval_minutes=60, sync_on_launch=False))
+    _run_loop(s, stop_after=1)
+    assert passes == [], "on-launch fired despite sync_on_launch=False"
 
 
 @pytest.mark.parametrize("mins,expected_s", [(1, 300), (4, 300), (5, 300), (15, 900), (60, 3600)])
@@ -220,8 +245,10 @@ if __name__ == "__main__":
     test_status_reflects_config()
     test_auto_sync_disabled_only_for_the_zero_sentinel()
     test_sentinel_blocks_the_timed_loop()
-    test_sentinel_blocks_sync_on_launch()
+    test_sync_on_launch_fires_on_the_product_default_even_with_no_interval_chosen()
     test_sync_on_launch_still_fires_for_a_real_interval()
+    test_sync_on_launch_still_gated_by_the_master_switch()
+    test_sync_on_launch_off_still_skips_the_launch_pass()
     test_interval_above_zero_still_clamps_to_5_minutes(1, 300)
     test_interval_above_zero_still_clamps_to_5_minutes(60, 3600)
     test_flipping_the_sentinel_at_runtime_needs_no_restart()

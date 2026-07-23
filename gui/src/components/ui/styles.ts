@@ -14,9 +14,6 @@ import type { CSSProperties } from "react";
 /** One header padding shared by every panel header row. */
 export const HEADER_PAD = "14px 16px 12px";
 
-/** One body horizontal inset shared by every panel body. */
-export const BODY_PAD_X = "16px";
-
 // ── Full-window secondary-panel frame (Settings/Vault/Inbox/Stats) ─────────
 // Intentionally opaque, no blur — index.css's --glass-bg is now a fully
 // opaque card colour (no translucency/backdrop-filter), so these panels and
@@ -50,8 +47,6 @@ export const PANEL_HEADER: CSSProperties = {
   borderBottom: "1px solid var(--border-2)",
   flexShrink: 0,
 };
-
-export const PANEL_BODY_PAD = `0 ${BODY_PAD_X}` as const;
 
 // ── Controls ─────────────────────────────────────────────────────────────
 // All radius tokens (--radius, --radius-sm, --radius-lg, --radius-xl) resolve

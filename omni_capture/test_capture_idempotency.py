@@ -22,7 +22,15 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
-os.environ.setdefault("OMNI_GUI_SECRET", "")
+# SRV-01: server._require_secret now fails CLOSED, so an empty OMNI_GUI_SECRET
+# 403s every route instead of disabling auth. Every server test module uses this
+# SAME literal on purpose: the env var is process-global and pytest imports all
+# modules before running any test, so differing values would make the suite
+# order-dependent.
+GUI_SECRET = "omni-test-secret-0123456789abcdef"
+os.environ["OMNI_GUI_SECRET"] = GUI_SECRET
+_AUTH = {"X-Omni-Secret": GUI_SECRET}
+
 
 from fastapi.testclient import TestClient
 
@@ -43,7 +51,7 @@ def _fake_pipeline_factory(call_counter: dict, path: str = "C:/vault/Notes/fake.
 def test_retry_with_same_run_id_short_circuits_pipeline():
     server._capture_results.clear()
     call_counter = {"n": 0}
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers=_AUTH)
 
     with mock.patch.object(server, "_run_pipeline_blocking", side_effect=_fake_pipeline_factory(call_counter)):
         r1 = client.post(
@@ -78,7 +86,7 @@ def test_retry_with_same_run_id_short_circuits_pipeline():
 def test_different_run_id_is_not_deduped():
     server._capture_results.clear()
     call_counter = {"n": 0}
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers=_AUTH)
 
     with mock.patch.object(server, "_run_pipeline_blocking", side_effect=_fake_pipeline_factory(call_counter)):
         client.post(
@@ -99,7 +107,7 @@ def test_no_run_id_behaves_as_before():
     run the pipeline every time -- idempotency is opt-in via the header."""
     server._capture_results.clear()
     call_counter = {"n": 0}
-    client = TestClient(server.app)
+    client = TestClient(server.app, headers=_AUTH)
 
     with mock.patch.object(server, "_run_pipeline_blocking", side_effect=_fake_pipeline_factory(call_counter)):
         client.post("/capture", json={"content_type": "text", "content": "no id 1"})

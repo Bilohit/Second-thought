@@ -34,6 +34,18 @@ import pytest
 # Make omni_capture importable when running from repo root.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# SRV-01: these four TestClient tests used to set OMNI_GUI_SECRET="" and rely on
+# server._require_secret returning early — i.e. they were exercising the
+# fail-OPEN path as if it were the product. _require_secret now fails closed, so
+# each of them configures a real secret and presents it on every request. Keep
+# the header explicit at the call sites (rather than defaulting it on the
+# TestClient) so a route that silently stops being authenticated shows up here.
+TEST_SECRET = "e2e-test-secret-1234567890"
+
+
+def _auth_headers() -> dict[str, str]:
+    return {"X-Omni-Secret": TEST_SECRET}
+
 # ── Shared fixtures ────────────────────────────────────────────────────────────
 
 
@@ -277,7 +289,7 @@ def test_share_endpoint_url_only(vault: Path):
     os.environ["OMNI_VAULT_ROOT"] = str(vault)
     os.environ["OLLAMA_MODEL"] = "llama3.2"
     os.environ["OLLAMA_BASE_URL"] = "http://localhost:11434/v1"
-    os.environ["OMNI_GUI_SECRET"] = ""
+    os.environ["OMNI_GUI_SECRET"] = TEST_SECRET
 
     fake_html = b"<html><body><p>Async guide.</p></body></html>"
     fake_resp = mock.MagicMock()
@@ -297,6 +309,7 @@ def test_share_endpoint_url_only(vault: Path):
         resp = client.post(
             "/share",
             json={"url": "https://realpython.com/async-io-python/", "title": "Async IO"},
+            headers=_auth_headers(),
         )
 
     assert resp.status_code == 200
@@ -331,7 +344,7 @@ def test_share_endpoint_with_selection(vault: Path):
     os.environ["OMNI_VAULT_ROOT"] = str(vault)
     os.environ["OLLAMA_MODEL"] = "llama3.2"
     os.environ["OLLAMA_BASE_URL"] = "http://localhost:11434/v1"
-    os.environ["OMNI_GUI_SECRET"] = ""
+    os.environ["OMNI_GUI_SECRET"] = TEST_SECRET
 
     fake_out = _fake_capture_output(filename="selection-share-note")
 
@@ -349,6 +362,7 @@ def test_share_endpoint_with_selection(vault: Path):
                 "title": "Example Article",
                 "selection": "The most important paragraph from this page.",
             },
+            headers=_auth_headers(),
         )
 
     # Web fetch should NOT have been called (text path was taken instead)
@@ -375,7 +389,7 @@ def test_capture_audio_b64_endpoint(vault: Path, tmp_path: Path):
     os.environ["OMNI_VAULT_ROOT"] = str(vault)
     os.environ["OLLAMA_MODEL"] = "llama3.2"
     os.environ["OLLAMA_BASE_URL"] = "http://localhost:11434/v1"
-    os.environ["OMNI_GUI_SECRET"] = ""
+    os.environ["OMNI_GUI_SECRET"] = TEST_SECRET
 
     fake_audio_bytes = b"\x00" * 44
     audio_b64 = base64.b64encode(fake_audio_bytes).decode()
@@ -398,6 +412,7 @@ def test_capture_audio_b64_endpoint(vault: Path, tmp_path: Path):
         resp = client.post(
             "/capture",
             json={"content_type": "audio_b64", "content": audio_b64},
+            headers=_auth_headers(),
         )
 
     assert resp.status_code == 200
@@ -425,7 +440,7 @@ def test_capture_image_b64_routes_to_llava(vault: Path):
     os.environ["OMNI_VAULT_ROOT"] = str(vault)
     os.environ["OLLAMA_MODEL"] = "llama3.2"
     os.environ["OLLAMA_BASE_URL"] = "http://localhost:11434/v1"
-    os.environ["OMNI_GUI_SECRET"] = ""
+    os.environ["OMNI_GUI_SECRET"] = TEST_SECRET
 
     tiny_png = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
@@ -450,6 +465,7 @@ def test_capture_image_b64_routes_to_llava(vault: Path):
         resp = client.post(
             "/capture",
             json={"content_type": "image_b64", "content": image_b64},
+            headers=_auth_headers(),
         )
 
     assert resp.status_code == 200

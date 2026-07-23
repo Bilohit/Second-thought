@@ -31,17 +31,36 @@ import {
   createReminder,
   getSyncIgnore,
   setSyncIgnore,
+  moveToTrash,
   type VaultCategory,
   type VaultFile,
   type ProvisionalItem,
 } from "../lib/api";
 import { mergeProvisional, type CanonicalNoteRow } from "../lib/provisional";
+import { middleEllipsis } from "../lib/middleEllipsis";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
   INPUT_STYLE, BTN_GHOST, ROW_CARD, ROW_DIVIDER,
   focusRing, blurRing,
 } from "./ui/styles";
 import { MenuIcon } from "./PillMenu/icons";
+
+// `_scratchpad` is a real category folder (still returned by GET
+// /vault/categories, by design) — this relabels it for display only. The
+// underlying identity used for every API call (drill-in, delete, etc.)
+// stays `cat.name` ("_scratchpad"); only the rendered text changes.
+function categoryDisplayName(name: string): string {
+  return name === "_scratchpad" ? "Needs review" : name;
+}
+
+// ISS-026: budget the vault-path header to a single legible line at
+// 125%/150% display scale instead of CSS `wordBreak: break-all` (which
+// wrapped mid-word, e.g. "STORA/GE"). Char counts are a pragmatic estimate
+// for the embedded (has flex room) vs. full-window (fixed max-width) header,
+// not a pixel-measured value — the orchestrator's CDP pass at 736/613px is
+// the actual verification of these numbers.
+const PATH_MAX_CHARS_EMBEDDED = 56;
+const PATH_MAX_CHARS_FULL = 26;
 
 interface Props {
   visible: boolean;
@@ -89,6 +108,7 @@ function CategoryCard({
   confirming, onRequestDelete, onCancelDelete, onConfirmDelete,
 }: CategoryCardProps) {
   const isSystem = cat.name.startsWith("_");
+  const displayName = categoryDisplayName(cat.name);
 
   return (
     <div
@@ -107,14 +127,17 @@ function CategoryCard({
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
         </svg>
 
-        {/* Name + count + description */}
-        <div style={{ flex: 1, minWidth: 0 }}>
+        {/* Name + count + description. ISS-026: minWidth keeps the name
+            readable (not squeezed to an unreadable stub like ".omni_c…")
+            at 125%/150% display scale — it wins width priority over the
+            (fixed-width) actions cluster and the vault-path header above. */}
+        <div style={{ flex: "1 1 auto", minWidth: 72 }}>
           <div style={{
             fontSize: 12, fontWeight: 500,
             color: isSystem ? "var(--text-3)" : "var(--text-1)",
             whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
           }}>
-            {cat.name}
+            {displayName}
           </div>
           <div style={{ fontSize: 10, color: "var(--text-3)", marginTop: 1 }}>
             {cat.file_count} {cat.file_count === 1 ? "note" : "notes"}
@@ -201,7 +224,7 @@ function CategoryCard({
           }}
         >
           <span style={{ fontSize: 12, color: "var(--text-2)" }}>
-            Delete <strong style={{ color: "var(--text-1)" }}>{cat.name}</strong>?
+            Delete <strong style={{ color: "var(--text-1)" }}>{displayName}</strong>?
             {cat.file_count > 0 && (
               <> It contains <strong style={{ color: "var(--yellow)" }}>{cat.file_count} file{cat.file_count !== 1 ? "s" : ""}</strong>.</>
             )}
@@ -264,97 +287,171 @@ function GhostDot({ ignored, onClick }: { ignored: boolean; onClick: () => void 
 }
 
 function FileRow({
-  file, highlighted, hasConflict, ignored, onOpen, onRemind, onToggleIgnore,
+  file, highlighted, hasConflict, ignored, rowsReady, confirmingDelete,
+  onOpen, onRemind, onToggleIgnore, onRequestDelete, onCancelDelete, onConfirmDelete,
 }: {
   file: VaultFile;
   highlighted?: boolean;
   hasConflict?: boolean;
   ignored?: boolean;
+  /** ISS-036: false for the one render right after this list (re)populates —
+   *  see the `rowsReady` effect in VaultManager for why the open handler is
+   *  withheld until settled. */
+  rowsReady: boolean;
+  confirmingDelete?: boolean;
   onOpen?: (path: string) => void;
   onRemind?: (file: VaultFile) => void;
   onToggleIgnore?: (file: VaultFile) => void;
+  onRequestDelete?: (file: VaultFile) => void;
+  onCancelDelete?: () => void;
+  onConfirmDelete?: (file: VaultFile) => void;
 }) {
   const kb = (file.size_bytes / 1024).toFixed(1);
   const date = new Date(file.modified * 1000).toLocaleDateString(undefined, {
     month: "short", day: "numeric", year: "numeric",
   });
+  const openEnabled = !!onOpen && rowsReady && !confirmingDelete;
 
   return (
-    <div
-      className="row-hover-flat"
-      onClick={onOpen ? () => onOpen(file.path) : undefined}
-      style={{
-        ...ROW_DIVIDER,
-        margin: "0 -6px",
-        padding: "7px 6px",
-        borderRadius: "var(--radius-sm)",
-        cursor: onOpen ? "pointer" : undefined,
-        // The highlight flash owns `background`/`transition` inline (and
-        // therefore wins over the hover class's CSS) only while it's
-        // actually playing — at rest those properties are left to
-        // .row-hover-flat so the bold hover tint isn't shadowed by an
-        // always-on inline background.
-        ...(highlighted
-          ? { background: "var(--accent-d)", transition: "background 0.6s ease-out" }
-          : {}),
-      }}
-    >
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-        <polyline points="14 2 14 8 20 8" />
-      </svg>
-      <span style={{ flex: 1, fontSize: 12, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {file.name}
-      </span>
-      {hasConflict && (
-        <span title="Conflicted copy exists" style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--red)", flexShrink: 0 }} />
-      )}
-      {onToggleIgnore && (
-        <GhostDot ignored={!!ignored} onClick={() => onToggleIgnore(file)} />
-      )}
-      {/* Task 2.6: server-authoritative name-clash. hub_name is the note's
-          STORED (suffixed) filename it would resolve to on the hub — shown
-          as-is in the row's meta text, yellow, no left icon / row tint. */}
-      {file.name_clash && (
-        <span
-          title={file.hub_name}
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      <div
+        className={confirmingDelete ? undefined : "row-hover-flat"}
+        onClick={openEnabled ? () => onOpen!(file.path) : undefined}
+        style={{
+          ...ROW_DIVIDER,
+          margin: "0 -6px",
+          padding: "7px 6px",
+          borderRadius: "var(--radius-sm)",
+          cursor: openEnabled ? "pointer" : undefined,
+          opacity: confirmingDelete ? 0.5 : 1,
+          transition: "opacity 0.18s",
+          // The highlight flash owns `background`/`transition` inline (and
+          // therefore wins over the hover class's CSS) only while it's
+          // actually playing — at rest those properties are left to
+          // .row-hover-flat so the bold hover tint isn't shadowed by an
+          // always-on inline background.
+          ...(highlighted
+            ? { background: "var(--accent-d)", transition: "background 0.6s ease-out" }
+            : {}),
+        }}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+        </svg>
+        <span style={{ flex: 1, fontSize: 12, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {file.name}
+        </span>
+        {hasConflict && (
+          <span title="Conflicted copy exists" style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--red)", flexShrink: 0 }} />
+        )}
+        {onToggleIgnore && (
+          <GhostDot ignored={!!ignored} onClick={() => onToggleIgnore(file)} />
+        )}
+        {/* Task 2.6: server-authoritative name-clash. hub_name is the note's
+            STORED (suffixed) filename it would resolve to on the hub — shown
+            as-is in the row's meta text, yellow, no left icon / row tint. */}
+        {file.name_clash && (
+          <span
+            title={file.hub_name}
+            style={{
+              fontSize: 10, color: "var(--yellow)", whiteSpace: "nowrap",
+              overflow: "hidden", textOverflow: "ellipsis",
+              // Row is a single nowrap flex line (ROW_DIVIDER, gap 8, no wrap) —
+              // this is the one variable-width addition to it, so it needs its
+              // own shrink + cap or a long suffixed filename pushes the KB/date/
+              // remind/warning-icon cluster past the row's right edge instead of
+              // truncating in place.
+              flexShrink: 1, minWidth: 0, maxWidth: 140,
+            }}
+          >
+            {file.hub_name}
+          </span>
+        )}
+        <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap" }}>{kb} KB</span>
+        <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap" }}>{date}</span>
+        {onRemind && (
+          <button
+            className="btn-hover"
+            style={{ ...BTN_GHOST, flexShrink: 0 }}
+            title="Remind me"
+            aria-label="Remind me"
+            onClick={(e) => { e.stopPropagation(); onRemind(file); }}
+          >
+            <BellIcon size={12} />
+          </button>
+        )}
+        {/* Bare warning triangle at the row's right edge — no text label, no tint. */}
+        {file.name_clash && (
+          <span
+            role="img"
+            aria-label="Filename clash — rename this note"
+            title="Filename clash — rename this note"
+            style={{ display: "inline-flex", flexShrink: 0, color: "var(--yellow)" }}
+          >
+            <WarningTriangleIcon size={12} />
+          </span>
+        )}
+        {/* ISS-005: desktop delete affordance — moves the note into the
+            existing 30-day trash (see moveToTrash in lib/api.ts). Restore
+            plumbing already exists on the Trash tab. */}
+        {onRequestDelete && (
+          <button
+            className="btn-hover hover-danger"
+            style={{ ...BTN_GHOST, flexShrink: 0 }}
+            title="Move to trash"
+            aria-label="Move to trash"
+            onClick={(e) => { e.stopPropagation(); onRequestDelete(file); }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6l-1 14H6L5 6" />
+              <path d="M10 11v6M14 11v6" />
+              <path d="M9 6V4h6v2" />
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {/* Inline delete confirmation — same pattern as CategoryCard's. */}
+      {confirmingDelete && (
+        <div
           style={{
-            fontSize: 10, color: "var(--yellow)", whiteSpace: "nowrap",
-            overflow: "hidden", textOverflow: "ellipsis",
-            // Row is a single nowrap flex line (ROW_DIVIDER, gap 8, no wrap) —
-            // this is the one variable-width addition to it, so it needs its
-            // own shrink + cap or a long suffixed filename pushes the KB/date/
-            // remind/warning-icon cluster past the row's right edge instead of
-            // truncating in place.
-            flexShrink: 1, minWidth: 0, maxWidth: 140,
+            marginTop: 4,
+            marginBottom: 2,
+            background: "color-mix(in srgb, var(--red) 8%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--red) 25%, var(--border))",
+            borderRadius: "var(--radius)",
+            padding: "8px 10px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            animation: "fadeIn 0.2s cubic-bezier(0.16,1,0.3,1) both",
           }}
         >
-          {file.hub_name}
-        </span>
-      )}
-      <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap" }}>{kb} KB</span>
-      <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap" }}>{date}</span>
-      {onRemind && (
-        <button
-          className="btn-hover"
-          style={{ ...BTN_GHOST, flexShrink: 0 }}
-          title="Remind me"
-          aria-label="Remind me"
-          onClick={(e) => { e.stopPropagation(); onRemind(file); }}
-        >
-          <BellIcon size={12} />
-        </button>
-      )}
-      {/* Bare warning triangle at the row's right edge — no text label, no tint. */}
-      {file.name_clash && (
-        <span
-          role="img"
-          aria-label="Filename clash — rename this note"
-          title="Filename clash — rename this note"
-          style={{ display: "inline-flex", flexShrink: 0, color: "var(--yellow)" }}
-        >
-          <WarningTriangleIcon size={12} />
-        </span>
+          <span style={{ fontSize: 11, color: "var(--text-2)" }}>
+            Move <strong style={{ color: "var(--text-1)" }}>{file.name}</strong> to trash?
+          </span>
+          <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+            <button
+              onClick={onCancelDelete}
+              className="btn-hover"
+              style={{ ...BTN_GHOST, color: "var(--text-2)", fontSize: 11, padding: "4px 8px" }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => onConfirmDelete?.(file)}
+              style={{
+                padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: "var(--radius)",
+                border: "none", background: "var(--red)", color: "var(--on-accent)", cursor: "pointer",
+              }}
+            >
+              Move to trash
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -630,6 +727,13 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
   // F-6: inline "Remind me" prompt target for the currently drilled-in file list.
   const [remindTarget, setRemindTarget] = useState<VaultFile | null>(null);
   const [remindDone, setRemindDone] = useState<string | null>(null);
+  // ISS-005: path of the file row whose inline "move to trash" confirm is open.
+  const [deleteConfirmPath, setDeleteConfirmPath] = useState<string | null>(null);
+  // ISS-036: gates FileRow's onClick until one animation frame after the
+  // drilled-in list settles, closing a hit-test race where a click landing
+  // right as the list replaces a "Loading…" placeholder (fast tab-switch +
+  // immediate click) could land on the outgoing element instead of the row.
+  const [rowsReady, setRowsReady] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -697,6 +801,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
   const drillInto = useCallback(async (name: string, highlightPath?: string) => {
     setDrillCat(name);
     setDrillLoading(true);
+    setDeleteConfirmPath(null);
     try {
       const data = await getVaultCategoryFiles(name);
       setDrillFiles(data.files);
@@ -708,6 +813,28 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
       setDrillFiles([]);
     } finally {
       setDrillLoading(false);
+    }
+  }, []);
+
+  // ISS-036: only flip rowsReady on once the list has actually stopped
+  // loading AND a frame has had a chance to paint it — a click that fires
+  // in the same tick the list replaces the old view can otherwise hit-test
+  // against the outgoing DOM and no-op.
+  useEffect(() => {
+    setRowsReady(false);
+    if (drillLoading) return;
+    const raf = requestAnimationFrame(() => setRowsReady(true));
+    return () => cancelAnimationFrame(raf);
+  }, [drillLoading, drillFiles]);
+
+  const handleDeleteFile = useCallback(async (file: VaultFile) => {
+    setActionError(null);
+    try {
+      await moveToTrash(file.path);
+      setDeleteConfirmPath(null);
+      setDrillFiles((cur) => cur.filter((f) => f.path !== file.path));
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Failed to move note to trash");
     }
   }, []);
 
@@ -730,6 +857,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
       setConfirmingDeleteName(null);
       setRemindTarget(null);
       setRemindDone(null);
+      setDeleteConfirmPath(null);
     }
     wasVisible.current = visible;
   }, [visible]);
@@ -907,17 +1035,22 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
             )}
             {(drillCat || !embedded) && (
               <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
-                {drillCat ? drillCat : "Vault"}
+                {drillCat ? categoryDisplayName(drillCat) : "Vault"}
               </span>
             )}
+            {/* ISS-026: single-line middle-ellipsis instead of CSS
+                `wordBreak: break-all`, which wrapped mid-word ("STORA/GE")
+                into the header action icons at 125%/150% display scale. */}
             {!compactHeader && !drillCat && vaultRoot && (
-              <span style={{
-                fontSize: 10, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.08em",
-                ...(embedded
-                  ? { flex: 1, wordBreak: "break-all" }
-                  : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }),
-              }}>
-                {vaultRoot}
+              <span
+                title={vaultRoot}
+                style={{
+                  fontSize: 10, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.08em",
+                  whiteSpace: "nowrap", overflow: "hidden",
+                  ...(embedded ? { flex: 1, minWidth: 0 } : { maxWidth: 160 }),
+                }}
+              >
+                {middleEllipsis(vaultRoot, embedded ? PATH_MAX_CHARS_EMBEDDED : PATH_MAX_CHARS_FULL)}
               </span>
             )}
           </div>
@@ -1076,9 +1209,14 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
                 highlighted={highlightFile === f.filename}
                 hasConflict={conflictPaths.has(f.path)}
                 ignored={ignoredRelPaths.has(toRelPath(f.path))}
+                rowsReady={rowsReady}
+                confirmingDelete={deleteConfirmPath === f.path}
                 onOpen={onOpenNote}
                 onRemind={(file) => { setActionError(null); setRemindTarget(file); }}
                 onToggleIgnore={handleToggleIgnore}
+                onRequestDelete={(file) => { setActionError(null); setDeleteConfirmPath(file.path); }}
+                onCancelDelete={() => { setActionError(null); setDeleteConfirmPath(null); }}
+                onConfirmDelete={handleDeleteFile}
               />
             ))}
             {remindDone && (

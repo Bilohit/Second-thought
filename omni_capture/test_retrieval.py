@@ -510,6 +510,38 @@ def test_refusal_when_no_index():
     assert sources == []
     assert tier == "none"
 
+def test_ollama_unreachable_is_not_no_match():
+    """ISS-009: a connection failure to Ollama must return a distinct
+    'offline' tier, not silently collapse into the same 'none' tier as a
+    genuine no-match (test_refusal_when_no_index above) -- server.py uses
+    this to choose an honest offline reply instead of REFUSAL."""
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = pathlib.Path(tmp)
+        (vault / "Tech").mkdir()
+        note = vault / "Tech" / "note.md"
+        note.write_text("some content")
+        # A non-empty embeddings index -- _semantic_ranked only reaches (and
+        # can fail inside) the _embed() call when there's something to embed
+        # a query against; an empty index short-circuits before ever calling it.
+        with vs._connect(vault) as conn:
+            vec = _fake_embed_rag("some content", "http://localhost:11434")
+            conn.execute(
+                "INSERT OR REPLACE INTO embeddings (id, embedding, document, category) "
+                "VALUES (?,?,?,?)",
+                ("Tech/note.md", np.array(vec, dtype=np.float32).tobytes(), "some content", "Tech"),
+            )
+
+        def _raise_connection_error(*_a, **_kw):
+            raise vs.OllamaConnectionError("connection refused")
+
+        with mock.patch.object(rag_engine, "_embed", _raise_connection_error):
+            sources, confidence, tier = hybrid_retrieve(
+                vault, "totally unrelated query with no fts hits",
+                "http://localhost:11434", "all-minilm")
+    assert sources == []
+    assert tier == "offline"
+    assert tier != "none"
+
 def test_chunked_note_resolves_to_parent_and_appears_once():
     # Large notes are stored as chunk rows (id rel::c0, rel::c1, ...) by
     # vector_store.index_note. _semantic_ranked must strip the "::c<N>"

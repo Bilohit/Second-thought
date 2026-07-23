@@ -7,7 +7,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { searchCaptures, getSemanticSearch, openFilePath, syncVaultIndex, checkHealth, type SearchResult, type SemanticResult } from "../lib/api";
+import { searchCaptures, openFilePath, syncVaultIndex, checkHealth, type SearchResult } from "../lib/api";
 import { slideDirection } from "../lib/segmentedToggle";
 import { parseCitations } from "../lib/citations";
 import type { ChatMessage } from "../hooks/useLookChat";
@@ -54,15 +54,33 @@ function resultSnippet(r: SearchResult): string {
   return r.filename || r.source_url || r.path.split(/[\\/]/).pop() || r.path;
 }
 
+/** P-DSEARCH: badge for the fused list's tier label (distinct from the chat
+ *  confidence tiers above — same visual language, different vocabulary). */
+function searchTierLabel(tier: SearchResult["tier"]): string | null {
+  if (tier === "exact") return "Exact";
+  if (tier === "substring") return "Match";
+  if (tier === "semantic") return "Semantic";
+  return null;
+}
+
+function searchTierColor(tier: SearchResult["tier"]): string {
+  if (tier === "exact") return "var(--green, #4ade80)";
+  if (tier === "semantic") return "var(--yellow, #facc15)";
+  return "var(--text-3)";
+}
+
 function tierColor(tier: string | undefined): string {
   if (tier === "high") return "var(--green, #4ade80)";
   if (tier === "talk") return "var(--text-3)";
+  if (tier === "offline") return "var(--yellow, #facc15)";
   return "var(--red, #f87171)";
 }
 
 function tierLabel(tier: string | undefined): string {
   if (tier === "high") return "Vault";
   if (tier === "talk") return "General knowledge";
+  // ISS-009: distinct from a genuine no-match -- Ollama itself is unreachable.
+  if (tier === "offline") return "AI engine offline";
   return "No vault match";
 }
 
@@ -83,9 +101,6 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
-  // F-10: semantic band beneath FTS results -- top-k related notes, deduped
-  // against `results` by path so nothing shows twice.
-  const [semanticResults, setSemanticResults] = useState<SemanticResult[]>([]);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -156,7 +171,6 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
     const q = query.trim();
     if (!q) {
       setResults([]);
-      setSemanticResults([]);
       setSearching(false);
       setSearchError(null);
       return;
@@ -164,6 +178,8 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
     setSearching(true);
     debounceRef.current = setTimeout(async () => {
       try {
+        // P-DSEARCH: server fuses exact/substring (FTS, bm25-ranked) and
+        // semantic (cosine) hits into one scored, tier-labeled list.
         const res = await searchCaptures(q, { limit: 30 });
         setResults(res.results);
         setSearchError(null);
@@ -173,18 +189,9 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
       } finally {
         setSearching(false);
       }
-      // Best-effort, never blocks/fails the FTS results above.
-      getSemanticSearch(q, 5).then(setSemanticResults).catch(() => setSemanticResults([]));
     }, 150);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [query, visible, mode]);
-
-  // Dedupe the semantic band against FTS hits by path (semantic paths are
-  // vault-relative; FTS paths are absolute) -- never show the same note twice.
-  const dedupedSemantic = semanticResults.filter((s) => {
-    const relNorm = s.path.replace(/\\/g, "/");
-    return !results.some((r) => r.path.replace(/\\/g, "/").endsWith(relNorm));
-  });
 
   // Auto-scroll transcript to bottom on new messages
   useEffect(() => {
@@ -444,10 +451,11 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
               )}
               {results.map((r, idx) => {
                 const isActive = idx === activeIdx;
+                const tierLabel = searchTierLabel(r.tier);
                 return (
                   <div
-                    key={r.id}
-                    id={`lp-result-${r.id}`}
+                    key={r.id ?? r.path}
+                    id={`lp-result-${r.id ?? idx}`}
                     role="option"
                     aria-selected={isActive}
                     data-idx={idx}
@@ -483,55 +491,29 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                     <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {resultSnippet(r)}
                     </span>
+                    {/* P-DSEARCH: fused tier label + normalized relevance score
+                        (0..1, higher = better) -- exact/substring (bm25) and
+                        semantic (cosine) share this one scale. */}
+                    {tierLabel && (
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          fontSize: 9,
+                          fontWeight: 600,
+                          letterSpacing: "0.04em",
+                          color: searchTierColor(r.tier),
+                          flexShrink: 0,
+                          whiteSpace: "nowrap",
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                      >
+                        {tierLabel}
+                        {typeof r.score === "number" ? ` · ${Math.round(r.score * 100)}%` : ""}
+                      </span>
+                    )}
                   </div>
                 );
               })}
-
-              {/* F-10: Semantic band beneath FTS results — retrieve_related
-                  top-k, deduped against the FTS hits above by path. */}
-              {query.trim() && dedupedSemantic.length > 0 && (
-                <div style={{ marginTop: 4 }}>
-                  <div style={{
-                    fontSize: 10, color: "var(--text-3)", textTransform: "uppercase",
-                    letterSpacing: "0.08em", padding: "8px 14px 4px",
-                    borderTop: "1px solid var(--border-2)",
-                  }}>
-                    Semantic
-                  </div>
-                  {dedupedSemantic.map((s) => (
-                    <div
-                      key={s.path}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => { openFilePath(s.path); onClose(); }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          openFilePath(s.path);
-                          onClose();
-                        }
-                      }}
-                      style={{
-                        display: "flex", alignItems: "flex-start", gap: 10,
-                        padding: "9px 14px", cursor: "pointer",
-                      }}
-                      className="row-hover-flat"
-                    >
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {s.path.split(/[\\/]/).pop()}
-                        </div>
-                        <div style={{ fontSize: 11, color: "var(--text-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {s.excerpt}
-                        </div>
-                      </div>
-                      <span style={{ fontSize: 10, color: "var(--text-3)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
-                        {Math.round(s.similarity * 100)}%
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
           </div>
         ) : (
@@ -656,7 +638,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                         color: tierColor(msg.tier),
                         paddingLeft: 2,
                       }}>
-                        {msg.tier === "talk"
+                        {msg.tier === "talk" || msg.tier === "offline"
                           ? tierLabel(msg.tier)
                           : `${tierLabel(msg.tier)} · ${Math.round((msg.confidence ?? 0) * 100)}%`}
                       </div>

@@ -63,15 +63,20 @@ def test_stale_eviction_removes_from_db(monkeypatch):
         _use_temp_vault(monkeypatch, Path(td))
         jobs._jobs.clear()
 
-        jobs._set_job("old", status="done", kind="voice",
+        # "old" asks for ttl=0, so the NEXT write's sweep retires it from both cache
+        # and DB. "new" takes the default hour and must survive that same sweep.
+        # (SRV-23: this used to read `_set_job("new", ttl_seconds=0, ...)` evicting a
+        # default-ttl "old" -- i.e. it asserted the bug, one caller's ttl applied to
+        # every entry in the registry. A job is now retired only by its own ttl.)
+        jobs._set_job("old", ttl_seconds=0, status="done", kind="voice",
                       category=None, path=None, error=None)
-        # Next write with ttl=0 evicts "old" from both cache and DB.
-        jobs._set_job("new", ttl_seconds=0, status="running", kind="youtube",
+        jobs._set_job("new", status="running", kind="youtube",
                       category=None, path=None, error=None)
 
         jobs._jobs.clear()
         jobs.load_jobs()
         assert jobs._get_job("old") is None
+        assert jobs._get_job("new") is not None
 
         config.reload_config()
 

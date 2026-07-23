@@ -9,6 +9,13 @@ const $ = (id) => document.getElementById(id);
 
 const STEPS = ["intercept", "enrich", "decide", "write"];
 
+/** Ceiling on the injected selection before it is prepended to the capture
+ *  (GUI-17). A page can hand back a multi-megabyte `window.getSelection()`;
+ *  the pipeline caps injected text everywhere else, so cap it here too. */
+const MAX_SELECTION_CHARS = 20000;
+
+const capSelection = (s) => (s.length > MAX_SELECTION_CHARS ? s.slice(0, MAX_SELECTION_CHARS) : s);
+
 // ── Initialise ────────────────────────────────────────────────────────────────
 
 async function init() {
@@ -22,16 +29,23 @@ async function init() {
       target: { tabId: tab.id },
       func: () => window.getSelection()?.toString() || "",
     });
-    if (result) $("selection").value = result;
+    if (result) $("selection").value = capSelection(result);
   } catch (_) { /* restricted pages */ }
 
   // Load saved settings
+  // GUI-04: local, not sync — see background.js. The secret must not be
+  // replicated to Google's servers and every other signed-in Chrome.
   const { serverUrl = "http://localhost:7070", secret = "" } =
-    await chrome.storage.sync.get(["serverUrl", "secret"]);
+    await chrome.storage.local.get(["serverUrl", "secret"]);
   $("server-url").value = serverUrl;
   $("secret-input").value = secret;
 
-  // Check server reachability
+  // Check server reachability. GUI-03: same loopback gate as the capture path —
+  // this request carries the secret too.
+  if (!isLoopbackUrl(serverUrl)) {
+    setStatus("Server URL must be on localhost.", "err");
+    return;
+  }
   try {
     const resp = await fetch(`${serverUrl}/health`, {
       headers: secret ? { "X-Omni-Secret": secret } : {},
@@ -44,7 +58,7 @@ async function init() {
 
 $("btn-capture").addEventListener("click", async () => {
   const url       = $("page-url").value.trim();
-  const selection = $("selection").value.trim();
+  const selection = capSelection($("selection").value.trim());
   const title     = document.title || "";
 
   if (!url) {
@@ -81,7 +95,14 @@ $("btn-settings").addEventListener("click", () => {
 $("btn-save").addEventListener("click", async () => {
   const serverUrl = $("server-url").value.trim() || "http://localhost:7070";
   const secret    = $("secret-input").value.trim();
-  await chrome.storage.sync.set({ serverUrl, secret });
+  // GUI-03: reject at the point of entry so the user sees why, rather than a
+  // silent failure on the next capture.
+  if (!isLoopbackUrl(serverUrl)) {
+    setStatus("Server URL must be on localhost (e.g. http://localhost:7070).", "err");
+    return;
+  }
+  // GUI-04: local, not sync.
+  await chrome.storage.local.set({ serverUrl, secret });
   setStatus("Settings saved.", "ok");
   $("settings-panel").style.display = "none";
 });

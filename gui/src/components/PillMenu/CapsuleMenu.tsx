@@ -18,7 +18,7 @@
  * Closed is draggable, open is not (for_sonnet.md Problem 2) — the
  * `drag-region` class is only applied while closed.
  */
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { PillCorner } from "../PillOverlay";
 import { ALL_TARGETS, MENU_LABELS, MenuIcon, type MenuTarget } from "./icons";
 import { sliderRect } from "./capsuleSlider";
@@ -128,6 +128,21 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
   // immediately so it doesn't visibly collapse with them.
   useEffect(() => { if (!open) hideSlider(); }, [open]);
 
+  // ISS-028 fallback: `exiting` is driven by App.tsx's close-morph timer, but
+  // if a panel-close interrupts that timeline the prop can get stuck true
+  // indefinitely — the bar then renders `capsule-menu open exiting`
+  // simultaneously, a combination index.css never expects to resolve on its
+  // own. This local timeout is a hard backstop: however `exiting` got stuck,
+  // it self-clears once the morph should long since have finished, so the
+  // bar always settles instead of wedging half-closed.
+  const [forceExitClear, setForceExitClear] = useState(false);
+  useEffect(() => {
+    if (!exiting) { setForceExitClear(false); return; }
+    const t = setTimeout(() => setForceExitClear(true), CAPSULE_EXIT_MS + 200);
+    return () => clearTimeout(t);
+  }, [exiting]);
+  const effectiveExiting = exiting && !forceExitClear;
+
   // Task 2.4/M2 (pick c — sliding background pill): index of the icon whose
   // compact panel is currently open, or -1 while none is. Icon slots are
   // fixed 44px flex items (index.css:1035) so `activeIndex * 44` is exact —
@@ -158,7 +173,7 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
     // button's native click bubbles up to this onClick, and each menuitem
     // stops propagation so selecting one doesn't also re-toggle.
     <div
-      className={`capsule-menu${open ? " open" : ""}${exiting ? " exiting" : ""}${draggable ? " pill-drag-handle" : ""}${dragging ? " pill-grabbed" : ""}`}
+      className={`capsule-menu${open ? " open" : ""}${effectiveExiting ? " exiting" : ""}${draggable ? " pill-drag-handle" : ""}${dragging ? " pill-grabbed" : ""}`}
       data-corner={corner}
       data-near={nearEdge}
       data-panel-zone={panelZone}

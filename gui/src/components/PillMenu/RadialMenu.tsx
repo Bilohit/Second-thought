@@ -24,10 +24,6 @@ import { ALL_TARGETS, MENU_LABELS, MenuIcon, type MenuTarget } from "./icons";
 // Production defaults (for_sonnet.md "Constants table") — overridable live
 // by the dev tuner once it lands.
 export const RADIAL_RADIUS = 100;
-export const RADIAL_CHIP_MAX = 36;
-export const RADIAL_CHIP_MIN = 33;
-export const RADIAL_PAD = 0;
-export const RADIAL_MIN_SPACING_DEG = 34;
 export const RADIAL_ICON_SIZE = 16;
 export const RADIAL_STAGGER_MS = 45;
 export const RADIAL_ANIM_MS = 260;

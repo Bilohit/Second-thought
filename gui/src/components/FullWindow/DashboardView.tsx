@@ -6,11 +6,13 @@ import { MicIcon, CloseIcon, ChevronRightIcon } from "../PillMenu/icons";
 import { formatElapsed } from "../../lib/voiceLimits";
 import {
   getStats, getInbox, approveInboxItem, discardInboxItem,
-  listReminders, deleteReminder,
+  listReminders, deleteReminder, getConfig,
   type Stats, type InboxItem, type Reminder,
 } from "../../lib/api";
 import { fileKind } from "../../lib/fileIngest";
+import { logger } from "../../lib/logger";
 import { formatWhen } from "../../lib/reminderFormat";
+import { formatHotkey, DEFAULT_HOTKEY } from "../../lib/hotkey";
 import type { CaptureState, CaptureStep } from "../../hooks/useCapture";
 import type { VoicePhase } from "../../hooks/useVoiceRecording";
 import type { LlmStatus } from "../../lib/api";
@@ -21,6 +23,9 @@ interface DashboardViewProps {
   stepDefs: CaptureStep[];
   onOpenFile: (path: string) => void;
   onCaptureFile: (path: string) => void;
+  /** ISS-001: click/paste on the capture tile captures the clipboard right
+   *  now — the same clipboard-read path the global hotkey triggers. */
+  onCaptureNow: () => void;
   /** Header clicks jump to the full view for that card. */
   onNavigate: (target: "library" | "inbox" | "reminders") => void;
   llmStatus: LlmStatus;
@@ -34,7 +39,7 @@ interface DashboardViewProps {
 }
 
 export default function DashboardView({
-  visible, captureState, stepDefs, onOpenFile, onCaptureFile, onNavigate,
+  visible, captureState, stepDefs, onOpenFile, onCaptureFile, onCaptureNow, onNavigate,
   llmStatus, voicePhase, voiceElapsedMs, readWaveform, readSpectrum, sampleRate, onVoiceToggle, onVoiceCancel,
 }: DashboardViewProps) {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -42,7 +47,15 @@ export default function DashboardView({
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [rejected, setRejected] = useState(false);
+  const [hotkey, setHotkey] = useState(DEFAULT_HOTKEY);
   const rejectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ISS-001: read the configured hotkey once (falls back to the shipped
+  // default if [gui] is absent from config.toml) so the tile's own copy
+  // never drifts from Settings -> Function.
+  useEffect(() => {
+    getConfig().then((cfg) => setHotkey(cfg.gui?.hotkey ?? DEFAULT_HOTKEY)).catch(() => {});
+  }, []);
 
   // Refetch when the view opens AND whenever a capture settles (done/error),
   // so Recent activity / Inbox / Reminders reflect the note just written.
@@ -50,9 +63,9 @@ export default function DashboardView({
   useEffect(() => {
     if (!visible) return;
     if (captureState.phase === "capturing" || captureState.phase === "background") return;
-    getStats().then(setStats).catch(() => {});
-    getInbox().then((r) => setInbox(r.inbox)).catch(() => {});
-    listReminders().then(setReminders).catch(() => {});
+    getStats().then(setStats).catch((err) => logger.warn("dashboard", "stats fetch failed", err));
+    getInbox().then((r) => setInbox(r.inbox)).catch((err) => logger.warn("dashboard", "inbox fetch failed", err));
+    listReminders().then(setReminders).catch((err) => logger.warn("dashboard", "reminders fetch failed", err));
   }, [visible, captureState.phase, llmStatus]);
 
   useEffect(() => {
@@ -84,22 +97,40 @@ export default function DashboardView({
 
   if (!visible) return null;
 
-  const handleApprove = (noteId: string) =>
-    approveInboxItem(noteId).then(() => setInbox((rows) => rows.filter((r) => r.note_id !== noteId))).catch(() => {});
-  const handleDiscard = (noteId: string) =>
-    discardInboxItem(noteId).then(() => setInbox((rows) => rows.filter((r) => r.note_id !== noteId))).catch(() => {});
+  // ISS-035: File gave no feedback for ~1s (row sat unchanged until the
+  // network call resolved). Mark the row "filing" synchronously on click so
+  // the buttons disable immediately; only actually drop the row once the
+  // server confirms (or un-mark it on failure so the user can retry).
+  const [filingIds, setFilingIds] = useState<Set<string>>(new Set());
+  const handleApprove = (noteId: string) => {
+    setFilingIds((s) => new Set(s).add(noteId));
+    approveInboxItem(noteId).then(() => setInbox((rows) => rows.filter((r) => r.note_id !== noteId)))
+      .catch((err) => {
+        logger.warn("dashboard", "inbox approve failed", { noteId, err });
+        setFilingIds((s) => { const n = new Set(s); n.delete(noteId); return n; });
+      });
+  };
+  const handleDiscard = (noteId: string) => {
+    setFilingIds((s) => new Set(s).add(noteId));
+    discardInboxItem(noteId).then(() => setInbox((rows) => rows.filter((r) => r.note_id !== noteId)))
+      .catch((err) => {
+        logger.warn("dashboard", "inbox discard failed", { noteId, err });
+        setFilingIds((s) => { const n = new Set(s); n.delete(noteId); return n; });
+      });
+  };
   const handleDeleteReminder = (id: number) =>
-    deleteReminder(id).then(() => setReminders((rows) => rows.filter((r) => r.id !== id))).catch(() => {});
+    deleteReminder(id).then(() => setReminders((rows) => rows.filter((r) => r.id !== id)))
+      .catch((err) => logger.warn("dashboard", "reminder delete failed", { id, err }));
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "1fr 280px", gap: 14, padding: 14, overflow: "hidden" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 14, minHeight: 0, overflow: "hidden" }}>
-        {renderCaptureCard(captureState, stepDefs, dragOver, rejected, voicePhase, voiceElapsedMs, readWaveform, readSpectrum, sampleRate, onVoiceToggle, onVoiceCancel)}
+        {renderCaptureCard(captureState, stepDefs, dragOver, rejected, voicePhase, voiceElapsedMs, readWaveform, readSpectrum, sampleRate, onVoiceToggle, onVoiceCancel, onCaptureNow, hotkey)}
         {renderRecentCard(stats, onOpenFile, () => onNavigate("library"))}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 14, minHeight: 0, overflow: "hidden" }}>
         {renderRemindersCard(reminders, handleDeleteReminder, () => onNavigate("reminders"))}
-        {renderInboxCard(inbox, handleApprove, handleDiscard, () => onNavigate("inbox"))}
+        {renderInboxCard(inbox, filingIds, handleApprove, handleDiscard, () => onNavigate("inbox"))}
       </div>
     </div>
   );
@@ -129,6 +160,8 @@ function renderCaptureCard(
   sampleRate: number,
   onVoiceToggle: () => void,
   onVoiceCancel: () => void,
+  onCaptureNow: () => void,
+  hotkey: string,
 ) {
   const last = captureState.result;
   const isIdle = captureState.phase === "idle";
@@ -151,7 +184,12 @@ function renderCaptureCard(
             className="btn-hover"
             onClick={onVoiceToggle}
             disabled={!isIdle}
-            title={isIdle ? "Record voice note" : "Finish current capture first"}
+            // ISS-008: static hint, surfaced right where REC is pressed —
+            // no backend probe exists for ffmpeg presence outside --self-check,
+            // so this is a deliberate always-shown reminder rather than a
+            // dynamic check. ponytail: revisit if a health endpoint ever
+            // exposes ffmpeg availability; wire a real conditional then.
+            title={isIdle ? "Record voice note (needs ffmpeg on PATH — winget install Gyan.FFmpeg)" : "Finish current capture first"}
             aria-label="Record voice note"
             style={micButtonStyle(!isIdle)}
           >
@@ -190,10 +228,29 @@ function renderCaptureCard(
         <div style={dropBoxStyle(false, false)}>Sending voice note…</div>
       )}
       {voiceIdle && isIdle && (
-        <div style={dropBoxStyle(dragOver, rejected)}>
-          {rejected
-            ? "Unsupported file type"
-            : "Drop a file, paste, or auto-capture clipboard / URL / audio"}
+        // ISS-001: the tile is now a real capture target — click or paste
+        // captures the clipboard right now (same path the global hotkey
+        // triggers), file drop already worked via onDragDropEvent above.
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={onCaptureNow}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onCaptureNow(); } }}
+          onPaste={(e) => { e.preventDefault(); onCaptureNow(); }}
+          aria-label="Capture clipboard now, or paste, or drop a file"
+          title="Click or paste to capture the clipboard now"
+          style={{ ...dropBoxStyle(dragOver, rejected), cursor: "pointer", flexDirection: "column", gap: 4 }}
+        >
+          <span>
+            {rejected
+              ? "Unsupported file type"
+              : "Click, drop a file, or paste to capture — or auto-capture clipboard / URL / audio"}
+          </span>
+          {!rejected && (
+            <span style={{ fontSize: 10, color: "var(--text-3)" }}>
+              or press {formatHotkey(hotkey)} anywhere
+            </span>
+          )}
         </div>
       )}
       {voiceIdle && !isIdle && <StepIndicator steps={captureState.steps} stepDefs={stepDefs} />}
@@ -308,21 +365,24 @@ function renderRemindersCard(reminders: Reminder[], onDelete: (id: number) => vo
   );
 }
 
-function renderInboxCard(inbox: InboxItem[], onApprove: (id: string) => void, onDiscard: (id: string) => void, onHeader: () => void) {
+function renderInboxCard(inbox: InboxItem[], filingIds: Set<string>, onApprove: (id: string) => void, onDiscard: (id: string) => void, onHeader: () => void) {
   return (
     <div style={cardStyle(true)}>
       <div style={CLABEL}>{headerLink("Review", onHeader)}<span style={{ flex: 1 }} />{inbox.length > 0 && <span style={chipStyle(false)}>{inbox.length} need review</span>}</div>
       <div style={{ overflowY: "auto", overflowX: "hidden", flex: 1, minWidth: 0 }}>
-        {inbox.map((item) => (
-          <div key={item.note_id} style={{ border: "1px solid var(--border-2)", borderRadius: "var(--radius-sm)", background: "var(--glass-bg)", padding: "8px 10px", marginBottom: 8 }}>
-            <div style={{ fontSize: 12, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.filename}</div>
-            <div style={{ fontSize: 10, color: "var(--text-3)", marginTop: 2 }}>{item.category}</div>
-            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-              <button onClick={() => onApprove(item.note_id)} style={miniBtnStyle(true)}>File</button>
-              <button onClick={() => onDiscard(item.note_id)} style={miniBtnStyle(false)}>Dismiss</button>
+        {inbox.map((item) => {
+          const filing = filingIds.has(item.note_id);
+          return (
+            <div key={item.note_id} style={{ border: "1px solid var(--border-2)", borderRadius: "var(--radius-sm)", background: "var(--glass-bg)", padding: "8px 10px", marginBottom: 8, opacity: filing ? 0.5 : 1, transition: "opacity 0.15s ease" }}>
+              <div style={{ fontSize: 12, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.filename}</div>
+              <div style={{ fontSize: 10, color: "var(--text-3)", marginTop: 2 }}>{item.category}</div>
+              <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                <button onClick={() => onApprove(item.note_id)} disabled={filing} style={{ ...miniBtnStyle(true), cursor: filing ? "default" : "pointer" }}>{filing ? "Filing…" : "File"}</button>
+                <button onClick={() => onDiscard(item.note_id)} disabled={filing} style={{ ...miniBtnStyle(false), cursor: filing ? "default" : "pointer" }}>Dismiss</button>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         {inbox.length === 0 && <div style={{ fontSize: 11, color: "var(--text-3)", padding: "12px 0", textAlign: "center" }}>No items need review</div>}
       </div>
     </div>

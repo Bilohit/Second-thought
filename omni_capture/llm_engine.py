@@ -69,11 +69,35 @@ def _normalize_base_url(base_url: str) -> str:
     return base
 
 
+def _ollama_setting(env_name: str, attr: str, default: str) -> str:
+    """Resolve one Ollama setting: explicit process env first (main.py's CLI
+    overrides and tests set these), then the loaded config, then the built-in
+    default.
+
+    SRV-16: server.py used to publish cfg into os.environ before every capture
+    so these getenv() reads would see it. Two concurrent captures shared that
+    one mutable global, and the write also pinned the value against later
+    config.toml edits (config.py treats the same vars as overrides). Reading
+    config here instead removes the shared mutation without threading base_url/
+    model through every call site.
+    """
+    val = os.getenv(env_name)
+    if val:
+        return val
+    try:
+        from config import get_config
+        return getattr(get_config().ollama, attr, "") or default
+    except Exception:
+        return default
+
+
 def _make_client() -> instructor.Instructor:
-    # OLLAMA_BASE_URL is now always bare (canonical host) -- normalize here
+    # The resolved base_url is always bare (canonical host) -- normalize here
     # so the OpenAI-compatible text client still gets "/v1" regardless of
-    # whether the env var happens to already have it (idempotent).
-    base_url = _normalize_base_url(os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
+    # whether the value happens to already have it (idempotent).
+    base_url = _normalize_base_url(
+        _ollama_setting("OLLAMA_BASE_URL", "base_url", "http://localhost:11434")
+    )
     raw = OpenAI(base_url=base_url, api_key=OLLAMA_API_KEY)
     return instructor.from_openai(raw, mode=instructor.Mode.JSON_SCHEMA)
 
@@ -320,8 +344,8 @@ def run_llm_engine(
     user_parts.append(f"\n--- CONTENT TO CAPTURE ---\n{enriched.enriched_text}")
 
     user_message = "\n".join(user_parts)
-    model = os.getenv("OLLAMA_MODEL", "llama3.2")
-    keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
+    model = _ollama_setting("OLLAMA_MODEL", "model", "llama3.2")
+    keep_alive = _ollama_setting("OLLAMA_KEEP_ALIVE", "keep_alive", "30m")
 
     response: CaptureOutput = _make_client().chat.completions.create(
         model=model,

@@ -54,10 +54,16 @@ class ReconcileResult:
 T = TypeVar("T")
 
 
-def _lww(base: T, local: T, remote: T) -> T:
-    """Last-writer-wins, three-way. Both diverged from base → advancing (remote) side wins.
-    Works for scalars AND lists (Python `==` is value equality, unlike JS reference equality —
-    so this covers both the TS `lww` and `lwwList` helpers)."""
+def _lww(base: T, local: T, remote: T, local_device: str, remote_device: str) -> T:
+    """Last-writer-wins, three-way. Both diverged from base → the LOWEST `device` string wins.
+
+    "Remote wins" was NOT a convergent rule: `remote` is a role, and the two peers assign the roles
+    oppositely, so peer A (local=A, remote=B) kept B while peer B (local=B, remote=A) kept A — each
+    then saw the other as changed, forever (SYNC-04). The device tie-break is role-INDEPENDENT: both
+    peers compare the same two device strings and reach the same answer.
+
+    Works for scalars AND lists (Python `==` is value equality, unlike JS reference equality — so
+    this one helper covers both the TS `lww` and `lwwList` mirrors, which must each carry the arm)."""
     if local == remote:
         return local
     changed_local = local != base
@@ -66,17 +72,20 @@ def _lww(base: T, local: T, remote: T) -> T:
         return local
     if changed_remote and not changed_local:
         return remote
-    return remote
+    return local if local_device < remote_device else remote
 
 
 def _union(a: list[str], b: list[str]) -> list[str]:
-    """Union two lists, deduped, `a` order then `b`'s extras. Nothing is ever dropped — this is why
-    a tag removed on one device but present on the other survives (edge-case C3)."""
-    out = list(a)
-    for x in b:
-        if x not in out:
-            out.append(x)
-    return out
+    """Union two lists, deduped and SORTED. Nothing is ever dropped — this is why a tag removed on
+    one device but present on the other survives (edge-case C3).
+
+    Sorted because the ORDER must not depend on which side happens to be `local`: the old "a's order
+    then b's extras" made `union(A, B) != union(B, A)`, so the two peers serialized different bytes
+    for the same logical note, hashed differently, and each saw "the other side changed" on every
+    cycle (SYNC-05). The TS mirror is `[...new Set([...a, ...b])].sort()` — JS sorts by UTF-16 code
+    unit and Python by code point, which agree across the whole BMP; a shared fixture in both suites
+    pins that agreement so an astral-plane divergence fails loudly instead of silently."""
+    return sorted(set(a) | set(b))
 
 
 def _instant(iso: str) -> float:
@@ -86,6 +95,28 @@ def _instant(iso: str) -> float:
         return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
     except ValueError:
         return 0.0  # empty/invalid stamp → epoch, so reconcile never crashes on a bad `modified`
+
+
+def _newest(a: str, b: str) -> str:
+    """The newer of two ISO stamps, compared as INSTANTS. A raw string compare lies on mixed
+    precision — "…:00Z" beats "…:00.500Z" because 'Z' (0x5A) > '.' (0x2E), so the EARLIER whole-second
+    stamp won (SYNC-15). Equal instants fall back to `max()` of the raw text, which is symmetric:
+    both peers max the same two strings regardless of which one they call `local`."""
+    ia, ib = _instant(a), _instant(b)
+    if ia != ib:
+        return a if ia > ib else b
+    return max(a, b)
+
+
+def _local_is_newer(local: Note, remote: Note) -> bool:
+    """True when `local` holds the authoritative newer revision. Instants first (see `_newest`);
+    equal instants break on the LOWEST `device` string. Both steps are role-independent, so peer A
+    asking about (A, B) and peer B asking about (B, A) reach the same verdict — resolving to `remote`
+    on a tie did not, and made the peers pick opposite winners (SYNC-15/SYNC-27)."""
+    il, ir = _instant(local.modified), _instant(remote.modified)
+    if il != ir:
+        return il > ir
+    return local.device < remote.device
 
 
 def reconcile(
@@ -124,13 +155,17 @@ def reconcile(
         category = remote.category
         category_source = "user"
     elif local_cat_user and remote_cat_user:
-        # both user-set → newest edit wins (note-level modified, instants), tie → remote
-        category = (
-            local.category
-            if _instant(local.modified) > _instant(remote.modified)
-            else remote.category
-        )
+        # both user-set → newest edit wins (note-level modified, instants); equal instants break on
+        # the lowest device, because "tie → remote" is a role and the peers disagree about the roles.
+        category = local.category if _local_is_newer(local, remote) else remote.category
         category_source = "user"
+    elif remote_auth and local_auth:
+        # BOTH sides carry a desktop-llm value, so both are equally authoritative and the
+        # desktop-authoritative lock has nothing to protect here — there is no phone heuristic being
+        # overridden. Testing `remote_auth` first made this arm role-dependent, so the peers picked
+        # opposite winners (SYNC-27). Lowest device is the same choice on both sides.
+        category = local.category if local.device < remote.device else remote.category
+        category_source = "machine"
     elif remote_auth:
         category = remote.category
         category_source = "machine"
@@ -138,7 +173,9 @@ def reconcile(
         category = local.category
         category_source = "machine"
     else:
-        category = _lww(base.category, local.category, remote.category)
+        category = _lww(
+            base.category, local.category, remote.category, local.device, remote.device
+        )
         category_source = "machine"
     enriched = remote_auth or local_auth
     if enriched:
@@ -149,34 +186,36 @@ def reconcile(
         enrich_source = remote.enrich_source
 
     # remind_at: one-side-changed → that side; BOTH changed → newest edit wins (user ruling
-    # 2026-07-09), tie → remote. Note-level `modified` proxies the field's edit time. Compared as
-    # instants, NOT strings — peers emit mixed ISO precision where lexicographic order lies.
+    # 2026-07-09), equal instants → lowest device. Note-level `modified` proxies the field's edit
+    # time. Compared as instants, NOT strings — peers emit mixed ISO precision where lexicographic
+    # order lies.
     if (
         local.remind_at != base.remind_at
         and remote.remind_at != base.remind_at
         and local.remind_at != remote.remind_at
     ):
-        remind_at = (
-            local.remind_at
-            if _instant(local.modified) > _instant(remote.modified)
-            else remote.remind_at
-        )
+        remind_at = local.remind_at if _local_is_newer(local, remote) else remote.remind_at
     else:
-        remind_at = _lww(base.remind_at, local.remind_at, remote.remind_at)
+        remind_at = _lww(
+            base.remind_at, local.remind_at, remote.remind_at, local.device, remote.device
+        )
 
     merged = Note(
-        id=base.id,  # immutable
+        # immutable — but a legacy revision with no `id` would write `id: ""`, which
+        # `read_vault_notes` skips, making the note permanently invisible to sync (SYNC-10). Fall
+        # through to the live sides rather than propagate the empty id.
+        id=base.id or local.id or remote.id,
         created=base.created,  # immutable
         origin=base.origin,  # immutable
-        title=_lww(base.title, local.title, remote.title),
-        aliases=_lww(base.aliases, local.aliases, remote.aliases),
+        title=_lww(base.title, local.title, remote.title, local.device, remote.device),
+        aliases=_lww(base.aliases, local.aliases, remote.aliases, local.device, remote.device),
         tags=_union(local.tags, remote.tags),  # set-union; user-typed tags always survive (C3)
         remind_at=remind_at,
         category=category,
         enriched=enriched,
         enrich_source=enrich_source,
-        # informational: newest string wins (matches the TS — plain string compare, not instant).
-        modified=local.modified if local.modified > remote.modified else remote.modified,
+        # informational: newest INSTANT wins (a string compare mis-ranks mixed precision — SYNC-15).
+        modified=_newest(local.modified, remote.modified),
         device=local.device,  # the reconciling device stamps; informational only
         attachments=_union(local.attachments, remote.attachments),  # additive; never lose one
         # preserve both (local wins collisions); K-1 category_source follows the category winner
@@ -194,11 +233,15 @@ def reconcile(
         )
 
     # Real body-vs-body conflict → keep-both. Never delete or overwrite either body (edge-case C1).
+    # The copy's title is prefixed with the MERGED title, not the remote one: conflict_resolver
+    # (`find_conflict_sibling`, `list_vault_conflicts`) matches siblings on the title of the note
+    # that stayed at its path. When only the local side retitled, `merged.title` is `local.title`,
+    # a `remote.title` prefix never matched, and the conflict was invisible to the resolver (SYNC-14).
     suffix = f"(conflicted copy {remote.device} {remote.modified})"
     conflicted_copy = replace(
         remote,
         id=fresh_conflict_id,  # caller mints a fresh id; "" = "not yet assigned"
-        title=f"{remote.title} {suffix}",
+        title=f"{merged.title} {suffix}",
         enriched=False,  # new id → needs its own enrichment/embedding pass
         enrich_source=None,
         extra={**remote.extra},

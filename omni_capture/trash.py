@@ -21,17 +21,55 @@ authority, note-features §6 "purge runs only on the online device"). The
 """
 from __future__ import annotations
 
+import os
 import shutil
 import time
+import uuid
 from pathlib import Path
 
 from frontmatter import read_all_fields
+from path_safety import safe_subdir
 
 _PURGE_AFTER_SECONDS = 30 * 24 * 3600
 
 
 def _trash_dir(vault_root: Path) -> Path:
     return vault_root.resolve() / "_trash"
+
+
+def move_to_trash(vault_root: Path, path: Path) -> dict:
+    """ISS-005 A: user-originated soft-delete. Move a live note `.md` into `_trash/`.
+
+    This is the DESKTOP half of the symmetric soft-move (data-model §3 "Delete is symmetric"):
+    the phone already queues a `delete` op that re-parents the hub file into `_trash/`; this gives
+    the desktop the identical local effect so both peers delete the same way. It mirrors
+    conflict_resolver._trash_file (a plain byte-verbatim `shutil.move` + an mtime bump so the
+    Trash view's "deleted N days ago" / 30-day purge countdown is accurate) but is a USER delete
+    rather than a conflict artifact.
+
+    BODY-SACRED: a filesystem move never opens or rewrites the file, so the frontmatter and the
+    sacred body are byte-identical afterwards (asserted in the sibling test). `category` stays in
+    the note's own frontmatter, which is exactly what restore_from_trash reads to put it back.
+
+    *path* is the caller-resolved, in-vault note path (route handlers resolve+guard it first).
+    Returns {ok, filename, trashed_path}. Raises FileNotFoundError if the note is absent."""
+    path = path.resolve()
+    if not path.is_file():
+        raise FileNotFoundError(str(path))
+
+    trash_dir = _trash_dir(vault_root)
+    trash_dir.mkdir(exist_ok=True)
+    dest = trash_dir / path.name
+    if dest.exists():
+        # SYNC-17 idiom: second-granular int(time) can collide within one second, and a uuid4
+        # suffix cannot — never overwrite an existing trashed note.
+        dest = trash_dir / f"{path.stem}.{int(time.time())}.{uuid.uuid4().hex[:8]}{path.suffix}"
+    shutil.move(str(path), str(dest))
+    # Bump mtime to the trash time (shutil.move preserves the original otherwise) so list_trash's
+    # "deleted N days ago" + purge countdown is accurate — same as conflict_resolver._trash_file.
+    now = time.time()
+    os.utime(dest, (now, now))
+    return {"ok": True, "filename": dest.name, "trashed_path": str(dest)}
 
 
 def list_trash(vault_root: Path) -> list[dict]:
@@ -90,8 +128,17 @@ def restore_from_trash(vault_root: Path, filename: str) -> dict:
         raise FileNotFoundError(str(src))
 
     fields = read_all_fields(src.read_text(encoding="utf-8", errors="ignore"))
-    category = fields.get("category") or "Uncategorized"
-    dest_dir = vault_root.resolve() / category
+    # SRV-04: `category` is raw frontmatter text, and frontmatter arrives from the
+    # Drive hub / phone sync -- it is untrusted. Joining it directly let a restore
+    # write outside the vault. Fall back to Uncategorized rather than raising: one
+    # hostile note must not make the restore surface unusable.
+    # (The FILENAME half of this path is already guarded by the caller -- do not
+    # add a second check for it here.)
+    try:
+        dest_dir = safe_subdir(vault_root, fields.get("category") or "Uncategorized")
+    except ValueError:
+        dest_dir = safe_subdir(vault_root, "Uncategorized")
+    category = dest_dir.name
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / filename
     if dest.exists():
@@ -153,5 +200,25 @@ if __name__ == "__main__":
         assert not old.exists()
         assert fresh.exists()
         print("[T4] purge_expired  PASS")
+
+        # T5: move_to_trash soft-moves a live note into _trash/, body byte-identical (ISS-005 A).
+        cat = vault / "Personal"
+        cat.mkdir(exist_ok=True)
+        live = cat / "keep-me.md"
+        original_bytes = (
+            "---\ntitle: Keep me\ncategory: Personal\norigin: note\n---\n"
+            "# Keep me\r\n\r\nSacred body with CRLF and trailing spaces.   \n"
+        )
+        live.write_bytes(original_bytes.encode("utf-8"))
+        result = move_to_trash(vault, live)
+        assert not live.exists(), "note left its category folder"
+        trashed = trash_dir / result["filename"]
+        assert trashed.is_file()
+        # BODY-SACRED: the whole file (frontmatter + body) is byte-identical after the move.
+        assert trashed.read_bytes() == original_bytes.encode("utf-8"), "move rewrote bytes"
+        # And it now shows up in the Trash listing with its original category intact for restore.
+        listed = [r for r in list_trash(vault) if r["filename"] == result["filename"]]
+        assert listed and listed[0]["category"] == "Personal"
+        print("[T5] move_to_trash body-sacred  PASS")
 
     print("\nAll trash.py smoke tests passed.")

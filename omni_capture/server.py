@@ -64,13 +64,20 @@ content_type values accepted by /capture:
 Security
   CORS       restricted to OMNI_TAURI_ORIGIN (default: http://tauri.localhost).
   Secret     every request must carry X-Omni-Secret matching OMNI_GUI_SECRET.
-             If OMNI_GUI_SECRET is unset the check is skipped with a startup warning.
+             SRV-01: if OMNI_GUI_SECRET is unset the server fails CLOSED (403 on
+             every route), matching lan_sync._check_secret. It never degrades to
+             an unauthenticated localhost API.
 """
 from __future__ import annotations
 import asyncio, base64, hashlib, hmac, json, os, sys, threading, time, uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import AsyncIterator, List, Optional
+from urllib.parse import urlparse
+from urllib.request import urlopen
+
+# SRV-15: the only hosts PATCH /config may point [ollama] base_url at.
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -85,6 +92,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from atomic_io import atomic_write_text
 from config import reload_config
 import index_health
 
@@ -103,7 +111,6 @@ _DEFAULT_ORIGINS = [
 ]
 _env_origin = os.getenv("OMNI_TAURI_ORIGIN", "").strip()
 _ALLOWED_ORIGINS = ([_env_origin] if _env_origin else []) + _DEFAULT_ORIGINS
-_GUI_SECRET   = os.getenv("OMNI_GUI_SECRET", "")
 
 app = FastAPI(title="Second Thought GUI Server", version="1.0.0")
 app.add_middleware(
@@ -119,10 +126,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-if not _GUI_SECRET:
+if not os.getenv("OMNI_GUI_SECRET", ""):
     print(
         "[server] WARNING: OMNI_GUI_SECRET is not set -- "
-        "X-Omni-Secret header validation is DISABLED.",
+        "every route will reject with 403 until it is.",
         flush=True,
     )
 
@@ -309,17 +316,20 @@ def _startup_lan_listener() -> None:
     SEPARATE listener/app (lan_server.build_lan_app()) exposing ONLY /lan/*; it
     never touches this loopback GUI app or its routes.
     # ponytail: LAN listener lifecycle rides the main process; a restart re-reads
-    # [lan] config -- no hot-reload of host/port."""
+    # [lan] config -- no hot-reload of the [lan] PORT. The HOST is now self-healing
+    # (lan_server's rebind supervisor follows a DHCP/WiFi address change)."""
     try:
         import lan_server
         enabled, host, port = lan_server.lan_config()
         if enabled and host:
-            # Bind 0.0.0.0, not the single configured host: a multi-homed desktop can't know which
-            # NIC the phone shares, so listen on all of them (auth is unchanged — the NaCl key +
-            # in-envelope secret double-gate every /lan/push). `host` stays the advertised/QR IP only.
-            # ponytail: all-interfaces bind; the double-gate is the security boundary, not the bind addr.
-            lan_server.start_lan_listener("0.0.0.0", port)
-            print(f"[LAN] listener on 0.0.0.0:{port} (advertised {host})", flush=True)
+            # LAN-05: bind the single configured [lan] host, not 0.0.0.0. The reversal of the
+            # previous all-interfaces bind — and the reasoning it replaces — is recorded on the
+            # ponytail block in lan_server.py; the rebind supervisor started here keeps the socket
+            # on a live address across network changes.
+            if lan_server.start_lan_listener(host, port) is None:
+                print(f"[LAN] listener not started: [lan] host {host!r} is not bindable", flush=True)
+                return
+            print(f"[LAN] listener on {host}:{port}", flush=True)
             try:
                 # mDNS advertise (contract §11.8-A) — same gate as the listener itself
                 # ([lan] enabled + host configured); best-effort, never blocks startup.
@@ -477,12 +487,21 @@ def _require_secret(x_omni_secret: Optional[str] = Header(default=None)) -> None
     FastAPI dependency injected on every route.
 
     Validates the X-Omni-Secret header sent by the Tauri GUI.
-    Skipped entirely when OMNI_GUI_SECRET env var is not configured
-    (development convenience -- warning logged at startup).
+
+    SRV-01: fails CLOSED. An unset/empty OMNI_GUI_SECRET is a misconfiguration,
+    not a development convenience -- degrading to "no auth" would leave every
+    route (incl. DELETE /vault/categories/{name}?force=true, a shutil.rmtree,
+    and PUT /note) open to any local process. Same shape as
+    lan_sync._check_secret, which has always refused to degrade.
+
+    SRV-21: read via os.getenv on EVERY call, not once at import, so a rotated
+    secret takes effect on the running server without a re-import. The Tauri
+    shell re-arms the child process on rotation (lib.rs:rotate_secret).
     """
-    if not _GUI_SECRET:
-        return
-    if not hmac.compare_digest(x_omni_secret or "", _GUI_SECRET):
+    secret = os.getenv("OMNI_GUI_SECRET", "")
+    if not secret:
+        raise HTTPException(status_code=403, detail="gui secret not configured")
+    if not hmac.compare_digest(x_omni_secret or "", secret):
         raise HTTPException(status_code=403, detail="Invalid or missing X-Omni-Secret.")
 
 
@@ -504,6 +523,14 @@ class LookChatRequest(BaseModel):
     question: str
     history: Optional[list[dict]] = None   # [{"role":"user"|"assistant","content":str}], last turns only
     ignore_history: bool = False           # when true, treat question as standalone (no prior turns)
+
+# SRV-12: the pipeline's dispatch is an if/elif chain whose final `else` is the
+# text branch, so an unrecognised content_type used to be silently captured AS
+# TEXT and answered 200 -- a base64 image sent under a typo'd type landed in the
+# vault as a wall of base64. The set is the trust boundary; /capture rejects
+# anything outside it with a 400 before the SSE stream opens.
+_VALID_CONTENT_TYPES = frozenset({"text", "url", "image_b64", "audio_b64"})
+
 
 class CaptureRequest(BaseModel):
     content_type: str   # text | url | image_b64 | audio_b64
@@ -597,15 +624,20 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
     try:
         from config import reload_config
         cfg = reload_config()
-        os.environ["OMNI_VAULT_ROOT"] = str(cfg.vault.root)
-        os.environ["OLLAMA_MODEL"] = cfg.ollama.model
-        # Keep OLLAMA_BASE_URL bare (canonical host). "/v1" is appended only
-        # at the moment an OpenAI-compatible client is constructed (see
-        # llm_engine._normalize_base_url) -- never written back here, or it
-        # leaks into cfg.ollama.base_url on the next reload_config() and
-        # poisons the native Ollama vision/embeddings endpoints (/api/...).
-        os.environ["OLLAMA_BASE_URL"] = cfg.ollama.base_url.rstrip("/")
-        os.environ["OLLAMA_KEEP_ALIVE"] = cfg.ollama.keep_alive
+        # SRV-16: this used to publish cfg into os.environ (OMNI_VAULT_ROOT,
+        # OLLAMA_MODEL/BASE_URL/KEEP_ALIVE) on every capture. os.environ is
+        # process-global and _executor runs two captures at once, so two
+        # concurrent pipelines raced on it -- and because config.py reads those
+        # same vars as OVERRIDES, the first capture permanently pinned them,
+        # making a later config.toml edit invisible. The writes are gone; the
+        # readers (llm_engine._ollama_setting, used by _make_client /
+        # run_llm_engine / summarizer) now resolve env-first-then-config
+        # themselves, so an explicit CLI/test env var still wins and nothing
+        # mutates shared state per request.
+        # Keep cfg.ollama.base_url BARE (canonical host) everywhere -- "/v1" is
+        # appended only at the moment an OpenAI-compatible client is constructed
+        # (llm_engine._normalize_base_url), never written back, or it poisons the
+        # native Ollama vision/embeddings endpoints (/api/...).
 
         from interceptor import InputPayload
         from enrichment_router import route_and_enrich, _YOUTUBE_RE
@@ -992,11 +1024,16 @@ async def _stream_capture(content_type: str, content: str, run_id: Optional[str]
             # instead of dispatching a second run that would write the note twice.
             print(f"[server] [run:{run_id}] retry while first attempt still in flight "
                   f"-- waiting for it instead of re-running the pipeline", flush=True)
-            loop = asyncio.get_running_loop()
-            # ponytail: block a default-executor thread on the owner's completion,
-            # capped at the dedup TTL. The owner ALWAYS releases (finally), so this
-            # only nears the cap if the executor thread is killed -- then we time out.
-            await loop.run_in_executor(None, obj.wait, _CAPTURE_DEDUP_TTL_S)
+            # SRV-19 (replaces the former `ponytail: block a default-executor thread
+            # on the owner's completion` shortcut -- its stated ceiling was reached).
+            # That version parked a thread from the SHARED default executor for up to
+            # _CAPTURE_DEDUP_TTL_S per waiter, and nothing capped the waiter count, so
+            # enough retries of an in-flight run_id starved every other
+            # run_in_executor/to_thread user in the process. Polling the Event costs no
+            # thread at all and wakes within one tick of the owner's release.
+            deadline = time.monotonic() + _CAPTURE_DEDUP_TTL_S
+            while not obj.is_set() and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
             prior = _get_capture_terminal(run_id)
             if prior is not None:
                 yield _sse(prior["event"], **prior["payload"])
@@ -1077,12 +1114,41 @@ async def health():
         "index_health": index_health.snapshot(),
     }
 
+@app.get("/ollama/reachable")
+async def ollama_reachable(_: None = Depends(_require_secret)):
+    """Fast, LIVE Ollama reachability probe for the pre-capture stall guard (ISS-018).
+
+    Distinct from /health's `model_ok`: that flag is set once by the startup warmup
+    and goes stale the moment Ollama stops afterward (the common repro -- Ollama was
+    up at launch, stopped later). This hits Ollama directly with a short timeout so
+    a capture never waits on the probe longer than the wait it's meant to avoid.
+    """
+    from llm_engine import _ollama_setting
+    base_url = _ollama_setting("OLLAMA_BASE_URL", "base_url", "http://localhost:11434").rstrip("/")
+
+    def _ping() -> bool:
+        try:
+            with urlopen(f"{base_url}/api/tags", timeout=1.5) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    reachable = await asyncio.to_thread(_ping)
+    return {"reachable": reachable}
+
+
 @app.post("/capture")
 async def capture(
     req: CaptureRequest,
     _: None = Depends(_require_secret),
     x_capture_run_id: Optional[str] = Header(default=None, alias="X-Capture-Run-Id"),
 ):
+    if req.content_type not in _VALID_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported content_type {req.content_type!r}. "
+                   f"Expected one of: {', '.join(sorted(_VALID_CONTENT_TYPES))}.",
+        )
     return StreamingResponse(
         _stream_capture(req.content_type, req.content, run_id=x_capture_run_id),
         media_type="text/event-stream",
@@ -1207,37 +1273,35 @@ async def drive_auth_disconnect(_: None = Depends(_require_secret)):
     return {"connected": False, "removed": forget_credentials()}
 
 
-@app.get("/digest/today")
-async def digest_today(_: None = Depends(_require_secret)):
-    """F-14: the 4 counts for the ephemeral daily-digest pop-in (mock 06-daily-digest-v2) — captured /
-    touched / reminders_due / unrevisited for today. Ephemeral by contract: computed on demand, NEVER
-    written to the vault. The GUI owns 'show the pop-in once per day'; this endpoint just serves the
-    counts. Runs off the event loop — the vault mtime scan can be slow on a large vault.
-    # ponytail: recomputes per call (no memo). Fine because the pop-in fetches ~once/day; add a per-day
-    # cache only if something starts polling this."""
-    from datetime import date
-
-    from config import get_config
-    from daily_digest import digest_stats
-    vault_root = get_config().vault.root
-    return await asyncio.get_event_loop().run_in_executor(
-        _executor, lambda: digest_stats(date.today(), vault_root))
-
-
 @app.get("/lan/device-id")
-async def lan_device_id(_: None = Depends(_require_secret)):
+def lan_device_id(_: None = Depends(_require_secret)):
     """Stable desktop device-id (contract §11.4 pairing-payload `device` anchor). The GUI reads this
     to build the v3 pairing QR so the phone can match mDNS/hub-hint discovery to THIS desktop. Same
-    value lan_discovery advertises + writes into `.sync/lan_endpoint.json`."""
+    value lan_discovery advertises + writes into `.sync/lan_endpoint.json`.
+
+    Deliberately a plain `def`, not `async def`: `get_or_create_device_id` reads (and on first call
+    writes) a file, and as a coroutine that blocked the event loop — stalling the /config,
+    /sync/status and /drive/auth/status calls the Sync settings panel fires alongside it on mount.
+    FastAPI runs a sync endpoint in its threadpool, so the blocking I/O stays off the loop."""
     import lan_discovery
     return {"device": lan_discovery.get_or_create_device_id(str(_get_vault_root()))}
 
 
 @app.get("/config")
 async def get_config_endpoint(_: None = Depends(_require_secret)):
-    if CONFIG_PATH.exists():
-        return tomlkit.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    return {}
+    """SRV-02: config.toml holds two credentials -- `[gui] secret` (this API's own
+    X-Omni-Secret) and `[lan] key` (the base64 NaCl secretbox key gating /lan/push
+    and /lan/changes). Neither is ever served. The GUI reads the secret from the
+    `get_gui_secret` / `get_pairing_info` Tauri commands, which are the only
+    sanctioned source; nothing reads either key from this endpoint."""
+    if not CONFIG_PATH.exists():
+        return {}
+    doc = tomlkit.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    for section, key in (("gui", "secret"), ("lan", "key")):
+        table = doc.get(section)
+        if isinstance(table, dict) and key in table:
+            del table[key]
+    return doc
 
 @app.patch("/config")
 async def patch_config(patch: ConfigPatch, _: None = Depends(_require_secret)):
@@ -1258,10 +1322,21 @@ async def patch_config(patch: ConfigPatch, _: None = Depends(_require_secret)):
         doc[section][key] = value
 
     if patch.vault_root is not None:
+        # SRV-15: a relative root resolves against whatever CWD uvicorn happens to
+        # have been launched from, which silently points the whole pipeline at a
+        # different (or nonexistent) tree. Absolute only.
+        if not Path(patch.vault_root).is_absolute():
+            raise HTTPException(status_code=400, detail="vault_root must be an absolute path")
         _set("vault", "root", patch.vault_root)
     if patch.ollama_model is not None:
         _set("ollama", "model", patch.ollama_model)
     if patch.ollama_base_url is not None:
+        # SRV-15: loopback only. This URL receives every capture body, every note
+        # excerpt fed to chat, and every embedding -- pointing it at a remote host
+        # turns a local-first pipeline into an exfiltration channel with one PATCH.
+        parsed = urlparse(patch.ollama_base_url)
+        if parsed.scheme not in ("http", "https") or (parsed.hostname or "").lower() not in _LOOPBACK_HOSTS:
+            raise HTTPException(status_code=400, detail="ollama_base_url must be an http(s) URL on localhost/127.0.0.1/::1")
         _set("ollama", "base_url", patch.ollama_base_url)
     if patch.hotkey is not None:
         _set("gui", "hotkey", patch.hotkey)
@@ -1288,8 +1363,12 @@ async def patch_config(patch: ConfigPatch, _: None = Depends(_require_secret)):
         _set("look", "chat_system_prompt", patch.chat_system_prompt)
     if patch.reminders_delivery is not None:
         delivery = patch.reminders_delivery.strip().lower()
-        if delivery in ("app", "os"):
-            _set("reminders", "delivery", delivery)
+        # SRV-18: mirrors the llm_scrutiny sibling above. Without the else, an
+        # invalid value was silently dropped and the GUI reported success while
+        # the setting never changed.
+        if delivery not in ("app", "os"):
+            raise HTTPException(status_code=400, detail="reminders_delivery must be app|os")
+        _set("reminders", "delivery", delivery)
     if patch.sync_enabled is not None:
         _set("sync", "enabled", bool(patch.sync_enabled))
     if patch.sync_interval_minutes is not None:
@@ -1306,7 +1385,10 @@ async def patch_config(patch: ConfigPatch, _: None = Depends(_require_secret)):
     if patch.sync_mirror_captures is not None:
         _set("sync", "mirror_captures", bool(patch.sync_mirror_captures))
 
-    CONFIG_PATH.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    # SRV-14: atomic. This runs on EVERY PATCH /config, and a bare write_text truncates
+    # the file that holds the vault root, the Ollama settings, and the LAN key -- a crash
+    # mid-write left the app unable to find its own vault.
+    atomic_write_text(CONFIG_PATH, tomlkit.dumps(doc))
 
     reload_config()
 
@@ -1349,7 +1431,7 @@ def _run_look_chat_blocking(question, history, ignore_history, q, loop, verbose=
     set_look_verbose(verbose)
     try:
         from config import reload_config
-        from rag_engine import hybrid_retrieve, build_system_prompt, parse_chat_mode, REFUSAL
+        from rag_engine import hybrid_retrieve, build_system_prompt, parse_chat_mode, REFUSAL, OFFLINE_REPLY
         effective_history = [] if ignore_history else history
         question, chat_mode = parse_chat_mode(question)
         if not question:
@@ -1376,6 +1458,16 @@ def _run_look_chat_blocking(question, history, ignore_history, q, loop, verbose=
                 min_similarity_floor=cfg.look.chat_min_similarity_floor,
                 history=effective_history or None,
             )
+            if tier == "offline":
+                # ISS-009: Ollama couldn't be reached at all -- distinct from a
+                # genuine no-match so the user knows to check the engine, not
+                # to distrust their own notes.
+                emit("meta", confidence=round(confidence, 4), tier="offline", answerable=False)
+                emit("sources", sources=[])
+                emit("token", text=OFFLINE_REPLY)
+                look_info("POST /look/chat Ollama unreachable — offline reply")
+                emit("done")
+                return
             if tier == "none":
                 emit("meta", confidence=round(confidence, 4), tier="none", answerable=False)
                 emit("sources", sources=[])
@@ -1475,14 +1567,18 @@ async def approve_inbox(
     root = _get_vault_root()
     cfg = get_config()
 
-    if body.target_category:
-        vault_admin._safe_category_dir(root, body.target_category)  # raises HTTP 400 on traversal
+    # SRV-03: the guard's RETURN VALUE is the sanitized name -- calling it only for
+    # its raising side effect and then passing the raw `body.target_category` on to
+    # approve_scratchpad_item let a traversal segment through to the join site.
+    target_category = body.target_category
+    if target_category:
+        target_category = vault_admin._safe_category_dir(root, target_category).name
 
-    is_new = bool(body.target_category) and not (root / body.target_category).exists()
+    is_new = bool(target_category) and not (root / target_category).exists()
     sample_text = get_scratchpad_item_text(note_id, root, cfg.vault.scratchpad_folder) if is_new else None
 
     try:
-        dest = approve_scratchpad_item(note_id, root, cfg.vault.scratchpad_folder, target_category=body.target_category)
+        dest = approve_scratchpad_item(note_id, root, cfg.vault.scratchpad_folder, target_category=target_category)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -1503,10 +1599,10 @@ async def approve_inbox(
         # the partial for the sample_text kwarg.
         from functools import partial
         generated = await anyio.to_thread.run_sync(
-            partial(generate_category_description, body.target_category, sample_text=sample_text)
+            partial(generate_category_description, target_category, sample_text=sample_text)
         )
         if generated:
-            write_category_description(root / body.target_category, generated)
+            write_category_description(root / target_category, generated)
 
     return {"ok": True, "note_id": note_id, "path": str(dest)}
 
