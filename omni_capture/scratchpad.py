@@ -168,7 +168,9 @@ def list_scratchpad(vault_root: Path, scratchpad_folder: str = "_scratchpad") ->
         if f.is_file() and f.suffix == ".md":
             text = f.read_text(encoding="utf-8", errors="ignore")
             note_id = _extract_frontmatter_field(text, "note_id") or f.stem
-            category = _extract_frontmatter_field(text, "category") or "unknown"
+            # v2.2 (data-model §1.2): category IS the parent folder, not a frontmatter field.
+            # Scratchpad items sit in the scratchpad folder until the user files them on approve.
+            category = f.parent.name
             items.append({
                 "note_id":  note_id,
                 "filename": f.name,
@@ -318,7 +320,9 @@ def _rewrite_frontmatter_for_approval(text: str, category: str) -> str:
         if re.match(r"^note_id:\s*", line):
             continue  # drop
         out.append(line)
-        if default_status and not inserted and re.match(r"^category:\s*", line):
+        # v2.2: captures no longer carry a `category:` frontmatter line, so anchor the default
+        # post-approval status on `created:` (always the first frontmatter field a capture writes).
+        if default_status and not inserted and re.match(r"^created:\s*", line):
             out.append(f"status: {default_status}")
             inserted = True
     return "\n".join(out)

@@ -304,6 +304,7 @@ def test_mirror_creates_missing_note():
     assert new_state["01ABC"] == {
         "drive_file_id": "F1", "base_rev": "rev1", "local_hash": "hashA",
         "hub_name": "Untitled.md",   # no title in this fixture -> Untitled fallback
+        "base_parent": None,         # v2.3: created at the hub root (fixture has no category)
     }
 
 
@@ -488,7 +489,8 @@ def test_reconcile_adopts_hub_file_when_state_empty_and_bytes_match():
     assert (reconciled, conflicts, failed) == (0, 0, 0)   # nothing changed on either side
     drive.files().update().execute.assert_not_called()
     assert new_state["01ABC"] == {
-        "drive_file_id": "HUBF1", "base_rev": "rev9", "local_hash": "H1"
+        "drive_file_id": "HUBF1", "base_rev": "rev9", "local_hash": "H1",
+        "base_parent": None,   # v2.3: hub folder at last sync (this fixture's hub record has none)
     }
 
 
@@ -712,17 +714,21 @@ def test_get_hub_notes_prefers_appProperties_noteId_and_logs_filename_stem_fallb
     assert out.count("no appProperties") == 1     # only the fallback (01J9.md), not the F1 note
 
 
-def test_read_vault_notes_category_from_frontmatter_then_folder(tmp_path):
-    # note in a category subfolder, no category field → folder name is the category
+def test_read_vault_notes_category_is_the_parent_folder(tmp_path):
+    # v2.2 (§1.2): category IS the parent folder. A note in a subfolder → that folder name.
     workd = tmp_path / "work"
     workd.mkdir()
     (workd / "a.md").write_text("---\nid: 01A\ntitle: T\norigin: note\n---\nB", encoding="utf-8", newline="")
-    # note with explicit category frontmatter → field wins
+    # a legacy `category: ideas` frontmatter is IGNORED — a root-level note is uncategorised (None).
     (tmp_path / "b.md").write_text(
         "---\nid: 01B\ntitle: T\norigin: note\ncategory: ideas\n---\nB", encoding="utf-8", newline="")
+    # a subfolder note whose legacy frontmatter disagrees with its folder → folder wins.
+    (workd / "c.md").write_text(
+        "---\nid: 01C\ntitle: T\norigin: note\ncategory: ideas\n---\nB", encoding="utf-8", newline="")
     notes = read_vault_notes(str(tmp_path))
     assert notes["01A"]["category"] == "work"
-    assert notes["01B"]["category"] == "ideas"
+    assert notes["01B"]["category"] is None      # root note, legacy frontmatter ignored
+    assert notes["01C"]["category"] == "work"    # folder beats the disagreeing frontmatter
 
 
 def test_mirror_places_new_note_in_category_folder():
@@ -761,12 +767,14 @@ def test_pull_places_new_note_under_the_hub_resolved_title_name():
         write_file=lambda p, c: written.__setitem__(p, c),
     )
     assert (pulled, failed) == (1, 0)
-    # placement uses the FRONTMATTER category ("work"), filename = the hub's resolved name (T.md)
-    assert written == {str(Path("/vault/work/T.md")): _hub_note_text("01NEW", "work")}
+    # v2.2: placement uses the HUB FOLDER category ("personal"), NOT the note's legacy frontmatter
+    # `category: work` (which is ignored). Filename = the hub's resolved name (T.md). Body verbatim.
+    assert written == {str(Path("/vault/personal/T.md")): _hub_note_text("01NEW", "work")}
     assert new_state["01NEW"] == {
         "drive_file_id": "F1", "base_rev": "r1",
         "local_hash": _sha256(_hub_note_text("01NEW", "work")),
         "hub_name": "T.md",
+        "base_parent": "personal",   # v2.3: the hub folder it was pulled from
     }
 
 
@@ -782,16 +790,20 @@ def test_pull_falls_back_to_id_name_when_hub_record_has_no_name():
         write_file=lambda p, c: written.__setitem__(p, c),
     )
     assert (pulled, failed) == (1, 0)
-    assert written == {str(Path("/vault/work/01NEW.md")): _hub_note_text("01NEW", "work")}
+    # v2.2: folder-derived category ("personal") drives placement, not the frontmatter ("work").
+    assert written == {str(Path("/vault/personal/01NEW.md")): _hub_note_text("01NEW", "work")}
     assert new_state["01NEW"] == {
         "drive_file_id": "F1", "base_rev": "r1",
         "local_hash": _sha256(_hub_note_text("01NEW", "work")),
         "hub_name": None,
+        "base_parent": "personal",   # v2.3
     }
 
 
 def test_pull_falls_back_to_scratchpad_without_category():
-    hub_files = {"01NC": {"id": "F2", "headRevisionId": "r2", "category": "personal", "name": "T.md"}}
+    # v2.2: "no category" = a hub note at the ROOT (get_hub_notes carries category=None), NOT a
+    # missing frontmatter field. Such a note falls back to the scratchpad.
+    hub_files = {"01NC": {"id": "F2", "headRevisionId": "r2", "category": None, "name": "T.md"}}
     drive = MagicMock()
     drive.files().get_media().execute.return_value = _hub_note_text("01NC").encode("utf-8")
     written = {}
@@ -815,13 +827,37 @@ def test_pull_skips_notes_already_local_or_tracked():
     assert p1 == 0 and p2 == 0
 
 
+def test_pull_skips_a_locally_trashed_id(tmp_path):
+    """ISS-046: a hub note whose id is sitting in the local `_trash/` must NOT be re-pulled as a
+    fresh active copy (which would leave a duplicate active+trashed pair). A live hub copy going
+    live again — peer restore / out-of-order delete after the state row was dropped — is skipped
+    when local_trashed_ids carries that id; a note NOT locally trashed still pulls normally."""
+    content = "---\nid: 01TR\ntitle: Trashed\norigin: note\ncategory: personal\n---\nbody"
+    hub_files = {"01TR": {"id": "F1", "headRevisionId": "r1", "category": "personal", "name": "Trashed.md"}}
+    vault = tmp_path / "vault"
+    # id is in local _trash/ → skipped, nothing written, no active copy minted
+    pulled, failed, new_state = pull_new_hub_notes(
+        {}, hub_files, {}, MagicMock(), str(vault), "_scratchpad",
+        download=lambda fid: content, local_trashed_ids={"01TR"},
+    )
+    assert (pulled, failed) == (0, 0)
+    assert "01TR" not in new_state
+    assert not (vault / "personal" / "Trashed.md").exists()
+    # sanity: the SAME note with no local-trash entry pulls as before (guard is scoped, not blanket)
+    pulled2, _, state2 = pull_new_hub_notes(
+        {}, hub_files, {}, MagicMock(), str(vault), "_scratchpad",
+        download=lambda fid: content, local_trashed_ids=set(),
+    )
+    assert pulled2 == 1 and "01TR" in state2
+
+
 def test_pull_writes_hub_resolved_name_not_id_and_pins_hub_name_in_state(tmp_path):
     """Task 2.4 focused test: a hub note titled 'Pulled Note' with no local file → after
     pull_new_hub_notes the local file exists at <vault>/<cat>/Pulled Note.md (NOT <id>.md),
     body byte-identical to the hub content, and the new sync-state entry carries
     hub_name='Pulled Note.md' — so a later reconcile/_maybe_rename_local never renames it."""
     content = "---\nid: 01PN\ntitle: Pulled Note\norigin: note\ncategory: personal\n---\nphone body"
-    hub_files = {"01PN": {"id": "F9", "headRevisionId": "r9", "name": "Pulled Note.md"}}
+    hub_files = {"01PN": {"id": "F9", "headRevisionId": "r9", "category": "personal", "name": "Pulled Note.md"}}
     drive = MagicMock()
     drive.files().get_media().execute.return_value = content.encode("utf-8")
     vault = tmp_path / "vault"
@@ -1135,14 +1171,21 @@ def test_enrich_notes_enriches_unenriched_note(tmp_path):
     assert (enriched, failed) == (1, 0)
     from note_model import parse_note
     from frontmatter import strip_frontmatter
+    from machine_tags import strip_trailing_tags_line
     written = (tmp_path / "n1.md").read_text(encoding="utf-8")
     note = parse_note(written)
     assert note.enriched is True
     assert note.enrich_source == "desktop-llm"
-    assert note.category == "research"
-    assert set(note.tags) == {"keep", "ml"}          # existing 'keep' unioned with key_signals
-    assert strip_frontmatter(written) == body        # BODY SACRED — byte-identical
-    assert captured["text"] == body                  # classify saw the body, not frontmatter
+    assert note.origin_device == "desktop"           # legacy null note backfilled + stamped (§2.1)
+    # v2.2: enrichment does NOT write category; the legacy `category: personal` seed is DROPPED at
+    # save (folder is now the category, classify's "research" is not applied — deferred move op).
+    assert note.category is None
+    assert "category:" not in written
+    # v2.2 §3: machine tags in the body trailing line; frontmatter tags: is the recomputed cache
+    assert set(note.tags) == {"keep", "ml"}
+    assert "\ntags: #" in strip_frontmatter(written)
+    assert strip_trailing_tags_line(strip_frontmatter(written)) == body  # BODY SACRED above the line
+    assert captured["text"] == body                  # classify saw the user body, not frontmatter
     assert embedded == [(str(tmp_path / "n1.md"), written)]
     assert vault_notes["n1"]["content"] == written   # in-memory dict updated for same-pass mirror
     assert vault_notes["n1"]["hash"] == _sha256(written)
@@ -1184,12 +1227,109 @@ def test_enrich_notes_failsoft_on_classify_error(tmp_path):
     assert (tmp_path / "n1.md").read_text(encoding="utf-8") == before   # untouched, retried next pass
 
 
+def test_enrich_writes_machine_tags_to_trailing_body_line(tmp_path):
+    # ISS-051 §3: desktop machine tags land in the BODY as a trailing `tags:` line, not frontmatter.
+    body = "# My note\n\nSome body text.\n"
+    _note_file(tmp_path, "n1.md",
+               "id: n1\norigin: note\norigin_device: desktop\nenriched: false", body)
+    vault_notes = _vault_notes_from(tmp_path)
+    seen = {}
+
+    def classify(text):
+        seen["text"] = text
+        return (["ml", "research"], "papers")
+
+    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify, vocab={})
+    assert (enriched, failed) == (1, 0)
+    from note_model import parse_note
+    from frontmatter import strip_frontmatter
+    from machine_tags import strip_trailing_tags_line
+    written = (tmp_path / "n1.md").read_text(encoding="utf-8")
+    note = parse_note(written)
+    assert note.enriched is True and note.enrich_source == "desktop-llm"
+    assert note.origin_device == "desktop"
+    # the machine tags are in the body trailing line...
+    assert "\ntags: #ml #research\n" in strip_frontmatter(written)
+    # ...the user body ABOVE it is byte-identical (body-sacred, amended §3)...
+    assert strip_trailing_tags_line(strip_frontmatter(written)) == body
+    # ...and frontmatter tags: is the recomputed derived cache (§1.2).
+    assert set(note.tags) == {"ml", "research"}
+    assert seen["text"] == body  # classify saw the user body
+
+
+def test_enrich_skips_phone_origin_note(tmp_path):
+    # Provenance gate (§2.2): the desktop never enriches phone-origin content.
+    body = "phone note body\n"
+    _note_file(tmp_path, "p1.md",
+               "id: p1\norigin: note\norigin_device: phone\nenriched: false", body)
+    vault_notes = _vault_notes_from(tmp_path)
+    before = (tmp_path / "p1.md").read_text(encoding="utf-8")
+
+    def classify(text):
+        raise AssertionError("must not classify a phone-origin note")
+
+    assert enrich_notes(vault_notes, str(tmp_path), classify, vocab={}) == (0, 0)
+    assert (tmp_path / "p1.md").read_text(encoding="utf-8") == before  # untouched
+
+
+def test_enrich_backfills_phone_from_heuristic_marker_and_skips(tmp_path):
+    # A legacy null-origin note carrying the phone-heuristic marker backfills to phone → gate skips it.
+    _note_file(tmp_path, "p2.md",
+               "id: p2\norigin: note\nenriched: false\nenrich_source: phone-heuristic", "hi\n")
+    vault_notes = _vault_notes_from(tmp_path)
+    before = (tmp_path / "p2.md").read_text(encoding="utf-8")
+
+    def classify(text):
+        raise AssertionError("phone-heuristic legacy note must not be enriched by desktop")
+
+    assert enrich_notes(vault_notes, str(tmp_path), classify, vocab={}) == (0, 0)
+    assert (tmp_path / "p2.md").read_text(encoding="utf-8") == before
+
+
+def test_enrich_backfills_desktop_and_stamps_legacy_null_note(tmp_path):
+    # A legacy null-origin note with no phone marker is a desktop-vault note → enriched + stamped.
+    _note_file(tmp_path, "d1.md", "id: d1\norigin: note\nenriched: false", "desktop note\n")
+    vault_notes = _vault_notes_from(tmp_path)
+
+    def classify(text):
+        return (["work"], "tasks")
+
+    assert enrich_notes(vault_notes, str(tmp_path), classify, vocab={}) == (1, 0)
+    from note_model import parse_note
+    note = parse_note((tmp_path / "d1.md").read_text(encoding="utf-8"))
+    assert note.origin_device == "desktop"
+    assert note.enriched is True
+
+
+def test_enrich_re_enrich_replaces_trailing_line_user_body_survives(tmp_path):
+    # A note already carrying a machine trailing line, re-enriched: the line is replaced, the user
+    # body above it stays byte-identical.
+    user_body = "the real content\n"
+    _note_file(tmp_path, "r1.md",
+               "id: r1\norigin: note\norigin_device: desktop\nenriched: false",
+               user_body + "\ntags: #stale\n")
+    vault_notes = _vault_notes_from(tmp_path)
+
+    def classify(text):
+        assert text == user_body  # never the prior machine line
+        return (["fresh"], "cat")
+
+    assert enrich_notes(vault_notes, str(tmp_path), classify, vocab={}) == (1, 0)
+    from frontmatter import strip_frontmatter
+    from machine_tags import strip_trailing_tags_line
+    written = (tmp_path / "r1.md").read_text(encoding="utf-8")
+    assert "\ntags: #fresh\n" in strip_frontmatter(written)
+    assert "#stale" not in written
+    assert strip_trailing_tags_line(strip_frontmatter(written)) == user_body
+
+
 def test_enrich_notes_empty_body_skips_llm_and_marks_enriched(tmp_path):
     # A note with an empty body is the recurring poison: classify has nothing to work with and the
     # model times out synthesizing every schema field from nothing. Guard: mark it enriched WITHOUT
     # an LLM call so it stops re-hitting Ollama every pass. Body stays byte-identical (empty).
+    # A DESKTOP-origin empty note (phone-origin empties are handled by the provenance gate instead).
     _note_file(tmp_path, "n1.md",
-               "id: n1\norigin: note\nenriched: false\nenrich_source: phone-heuristic\ncategory: _scratchpad", "")
+               "id: n1\norigin: note\norigin_device: desktop\nenriched: false\nenrich_source: phone-heuristic\ncategory: _scratchpad", "")
     vault_notes = _vault_notes_from(tmp_path)
 
     def classify(text):
@@ -1203,7 +1343,8 @@ def test_enrich_notes_empty_body_skips_llm_and_marks_enriched(tmp_path):
     note = parse_note(written)
     assert note.enriched is True                 # marked done → not retried next pass
     assert note.enrich_source == "phone-heuristic"  # left as-is (no desktop-LLM pass actually ran)
-    assert note.category == "_scratchpad"        # category left as-is (nothing to classify)
+    assert note.category is None                 # v2.2: legacy `category: _scratchpad` dropped at save
+    assert "category:" not in written            # never re-emitted to frontmatter
     assert strip_frontmatter(written) == ""      # BODY SACRED — still empty, byte-identical
 
 
@@ -1295,7 +1436,7 @@ def test_run_once_runs_enrich_between_pull_and_mirror(tmp_path, monkeypatch):
     monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
 
     calls = []
-    def fake_enrich_fn(vault_notes, vault_root):
+    def fake_enrich_fn(vault_notes, vault_root, refile=None):
         calls.append(sorted(vault_notes.keys()))
         from note_model import parse_note, serialize_note
         n = parse_note(vault_notes["n1"]["content"])
@@ -1322,6 +1463,226 @@ def test_run_once_enrich_none_skips(tmp_path, monkeypatch):
                       vault_root=str(tmp_path))   # enrich_fn defaults None
     assert len(result) == 7
     assert result[6] == 0        # enriched == 0 when no enrich_fn
+
+
+# ---------------------------------------------------------------------------
+# v2.3 machine refile (contract §1.2 move-op, s71): at FIRST enrichment the desktop
+# moves a desktop/shared-origin note into the classified category folder — the mover
+# stamps frontmatter modified/device in the SAME atomic enrich write; hub move is a
+# metadata-only re-parent; base_parent starts being recorded in sync state.
+# ---------------------------------------------------------------------------
+
+_STAMP_RE = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
+
+
+def test_enrich_refile_fires_with_stamp_in_same_write_when_category_differs(tmp_path):
+    import re as _re
+    body = "# Note\n\nBody text.\n"
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    _note_file(inbox, "n1.md",
+               "id: n1\norigin: note\norigin_device: desktop\nenriched: false", body)
+    vault_notes = _vault_notes_from(tmp_path)
+    assert vault_notes["n1"]["category"] == "inbox"   # sanity: folder-derived
+
+    def classify(text):
+        return (["ml"], "research")
+
+    calls = []
+    def refile(note_id, entry, dest_cat):
+        # The stamp must ride the SAME atomic enrich write — by the time refile fires,
+        # the note ON DISK already carries modified/device + enriched:true (Gotcha 5).
+        from note_model import parse_note
+        on_disk = parse_note(Path(entry["path"]).read_text(encoding="utf-8"))
+        assert _re.match(_STAMP_RE, on_disk.modified)
+        assert on_disk.device == "desktop"
+        assert on_disk.enriched is True
+        calls.append((note_id, dest_cat))
+
+    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify,
+                                    vocab={}, refile=refile)
+    assert (enriched, failed) == (1, 0)
+    assert calls == [("n1", "research")]
+    from note_model import parse_note
+    from machine_tags import strip_trailing_tags_line
+    written = (inbox / "n1.md").read_text(encoding="utf-8")
+    note = parse_note(written)
+    assert _re.match(_STAMP_RE, note.modified)        # UTC-Z stamp (contract v2.3)
+    assert note.device == "desktop"
+    # BODY SACRED across the stamp: user body above the trailing tags line is byte-identical.
+    assert strip_trailing_tags_line(strip_frontmatter(written)) == body
+
+
+def test_enrich_refile_not_called_and_no_stamp_when_category_matches(tmp_path):
+    body = "Body.\n"
+    research = tmp_path / "research"
+    research.mkdir()
+    _note_file(research, "n1.md",
+               "id: n1\norigin: note\norigin_device: desktop\nenriched: false", body)
+    vault_notes = _vault_notes_from(tmp_path)
+
+    def classify(text):
+        return (["ml"], "research")   # classifier agrees with the current folder
+
+    def refile(note_id, entry, dest_cat):
+        raise AssertionError("refile must not fire when the note is already in place")
+
+    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify,
+                                    vocab={}, refile=refile)
+    assert (enriched, failed) == (1, 0)
+    from note_model import parse_note
+    note = parse_note((research / "n1.md").read_text(encoding="utf-8"))
+    assert note.modified == ""        # no move → no mover stamp
+    assert note.enriched is True
+
+
+def test_enrich_refile_failure_is_failsoft_note_stays_enriched(tmp_path):
+    body = "Body.\n"
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    _note_file(inbox, "n1.md",
+               "id: n1\norigin: note\norigin_device: desktop\nenriched: false", body)
+    vault_notes = _vault_notes_from(tmp_path)
+
+    def classify(text):
+        return (["ml"], "research")
+
+    def refile(note_id, entry, dest_cat):
+        raise RuntimeError("drive down mid-move")
+
+    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify,
+                                    vocab={}, refile=refile)
+    assert (enriched, failed) == (1, 0)   # enrichment itself succeeded (move is best-effort)
+    from note_model import parse_note
+    note = parse_note((inbox / "n1.md").read_text(encoding="utf-8"))
+    assert note.enriched is True          # never re-enriched → never re-moved (enriched-once)
+
+
+def test_enrich_refile_never_fires_for_phone_origin_or_enriched(tmp_path):
+    # Provenance gate + enriched-once: neither note reaches classify, so neither can move.
+    _note_file(tmp_path, "p1.md",
+               "id: p1\norigin: note\norigin_device: phone\nenriched: false", "phone body\n")
+    _note_file(tmp_path, "d1.md",
+               "id: d1\norigin: note\norigin_device: desktop\nenriched: true\n"
+               "enrich_source: desktop-llm", "done body\n")
+    vault_notes = _vault_notes_from(tmp_path)
+
+    def classify(text):
+        raise AssertionError("must not classify phone-origin or already-enriched notes")
+
+    def refile(note_id, entry, dest_cat):
+        raise AssertionError("must not refile phone-origin or already-enriched notes")
+
+    assert enrich_notes(vault_notes, str(tmp_path), classify, vocab={}, refile=refile) == (0, 0)
+
+
+def _refile_enrich_fn(classified="research"):
+    """A run_once-injectable enrich_fn forwarding to the real enrich_notes with a fake classifier."""
+    def enrich_fn(vault_notes, vault_root, refile=None):
+        return enrich_notes(vault_notes, vault_root,
+                            lambda text: (["ml"], classified), vocab={}, refile=refile)
+    return enrich_fn
+
+
+def test_run_once_refile_moves_synced_note_reparents_hub_and_records_base_parent(
+        tmp_path, monkeypatch):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    p = _note_file(inbox, "n1.md",
+                   "id: n1\norigin: note\norigin_device: desktop\nenriched: false", "Body.\n")
+    content = p.read_text(encoding="utf-8", newline="")
+    state_path = tmp_path / ".state.json"
+    # hub_name = the resolved title-based name (titleless → Untitled.md) so no rename interleaves;
+    # hub_names_migrated pre-set so the one-time Task 3.1 migration doesn't rename mid-test.
+    save_state(str(state_path), {"hub_names_migrated": True,
+                                 "n1": {"drive_file_id": "FID1", "base_rev": "r1",
+                                        "local_hash": _sha256(content),
+                                        "hub_name": "Untitled.md"}})
+    monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
+    drive = _mock_empty_drive()
+    drive.files().get().execute.return_value = {"parents": ["OLDFOLDER"]}  # _move_file_to_folder read
+
+    result = run_once(str(tmp_path), str(state_path), drive,
+                      vault_root=str(tmp_path), enrich_fn=_refile_enrich_fn())
+
+    assert result[6] == 1                                  # enriched
+    assert not (inbox / "n1.md").exists()                  # moved out of inbox/
+    moved = tmp_path / "research" / "n1.md"
+    assert moved.exists()                                  # into the classified folder
+    from note_model import parse_note
+    note = parse_note(moved.read_text(encoding="utf-8"))
+    assert note.enriched is True and note.device == "desktop" and note.modified
+    # Hub side: a METADATA-ONLY re-parent happened (addParents, no media_body).
+    reparents = [c for c in drive.files().update.call_args_list
+                 if c.kwargs.get("addParents")]
+    assert len(reparents) == 1
+    assert reparents[0].kwargs["fileId"] == "FID1"
+    assert reparents[0].kwargs.get("removeParents") == "OLDFOLDER"
+    assert "media_body" not in reparents[0].kwargs         # bytes never re-uploaded on the move
+    # base_parent recorded in the saved sidecar (survives mirror's row rewrite).
+    final = load_state(str(state_path))
+    assert final["n1"]["base_parent"] == "research"
+
+
+def test_run_once_refile_unsynced_note_moves_locally_and_uploads_into_category(
+        tmp_path, monkeypatch):
+    # A note the hub has never seen: local move only (no re-parent call), mirror then
+    # CREATES it directly inside the classified hub folder and records base_parent.
+    _note_file(tmp_path, "n1.md",
+               "id: n1\norigin: note\norigin_device: desktop\nenriched: false", "Body.\n")
+    monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
+    drive = _mock_empty_drive()
+    state_path = tmp_path / ".state.json"
+
+    result = run_once(str(tmp_path), str(state_path), drive,
+                      vault_root=str(tmp_path), enrich_fn=_refile_enrich_fn())
+
+    assert result[6] == 1
+    assert (tmp_path / "research" / "n1.md").exists()      # local move from vault root
+    assert not (tmp_path / "n1.md").exists()
+    # No hub re-parent for an unsynced note (nothing to move yet)...
+    assert not [c for c in drive.files().update.call_args_list if c.kwargs.get("addParents")]
+    # ...instead the upload creates it inside the classified folder (find-or-create id "F1").
+    note_creates = [c for c in drive.files().create.call_args_list
+                    if c.kwargs.get("body") and c.kwargs["body"].get("appProperties")]
+    assert len(note_creates) == 1
+    assert note_creates[0].kwargs["body"]["parents"] == ["F1"]
+    final = load_state(str(state_path))
+    assert final["n1"]["base_parent"] == "research"
+
+
+def test_reconcile_pull_records_base_parent():
+    # base_parent starts being recorded at every state-row rewrite (contract v2.3 rollout):
+    # reconcile's pull path stores the hub file's parent folder.
+    remote = "---\nid: n1\norigin: note\n---\nRemote body"
+    vault_notes = {
+        "n1": {"id": "n1", "path": "/v/n1.md", "content": "---\nid: n1\norigin: note\n---\nOld",
+               "body": "Old", "hash": "h1", "category": None, "title": "", "created": ""}
+    }
+    hub_files = {"n1": {"id": "F1", "headRevisionId": "r2", "category": "research"}}
+    state = {"n1": {"drive_file_id": "F1", "base_rev": "r1", "local_hash": "h1"}}
+    drive = MagicMock()
+    drive.files().get_media().execute.return_value = remote.encode("utf-8")
+    writes = []
+    reconciled, conflicts, failed, new_state = reconcile_changes(
+        vault_notes, hub_files, state, drive, "hub",
+        write_file=lambda p, c: writes.append((p, c)),
+    )
+    assert (reconciled, conflicts, failed) == (1, 0, 0)
+    assert new_state["n1"]["base_parent"] == "research"
+
+
+def test_pull_new_hub_notes_records_base_parent(tmp_path):
+    from mobile_sync_agent import pull_new_hub_notes
+    remote = "---\nid: n1\norigin: note\n---\nBody"
+    hub_files = {"n1": {"id": "F1", "headRevisionId": "r1", "category": "research",
+                        "name": "n1.md"}}
+    pulled, failed, new_state = pull_new_hub_notes(
+        {}, hub_files, {}, None, str(tmp_path), "_scratchpad",
+        download=lambda fid: remote,
+    )
+    assert (pulled, failed) == (1, 0)
+    assert new_state["n1"]["base_parent"] == "research"
 
 
 def test_run_once_reconciles_reminders_with_vault_notes(tmp_path, monkeypatch):

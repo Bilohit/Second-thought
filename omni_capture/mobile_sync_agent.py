@@ -20,12 +20,14 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from googleapiclient.http import MediaInMemoryUpload
 
 from frontmatter import add_fields, read_all_fields, strip_frontmatter
 from note_model import parse_note, serialize_note
+from body_tags import extract_body_tags
+from machine_tags import apply_trailing_tags_line, strip_trailing_tags_line
 from reconcile import reconcile
 from sync_ignore import filter_ignored_notes
 
@@ -246,7 +248,9 @@ def read_vault_notes(vault_path: str, mirror_captures: bool = False) -> Dict[str
             "content": content,
             "body": strip_frontmatter(parsed),
             "hash": _sha256(content),
-            "category": fields.get("category") or folder_cat,
+            # v2.2: category IS the parent folder (data-model §1.2). Frontmatter `category:` is a
+            # legacy field, ignored on read — the folder is the single source of truth.
+            "category": folder_cat,
             "title": fields.get("title", ""),
             "created": fields.get("created", ""),
         }
@@ -796,6 +800,9 @@ def reconcile_changes(
                     "drive_file_id": file_id,
                     "base_rev": remote_rev,
                     "local_hash": local["hash"],
+                    # v2.3: base_parent = the note's hub folder at last sync (recorded at every
+                    # row rewrite; the three-way divergent-move merge lands with PKG-CAT-PHONE).
+                    "base_parent": hub_file.get("category"),
                 }
                 continue
             if not local_changed:
@@ -805,6 +812,7 @@ def reconcile_changes(
                     "drive_file_id": file_id,
                     "base_rev": remote_rev,
                     "local_hash": _sha256(remote_text),
+                    "base_parent": hub_file.get("category"),   # v2.3 (see above)
                 }
                 reconciled += 1
                 continue
@@ -865,6 +873,9 @@ def reconcile_changes(
                 "base_rev": up.get("headRevisionId"),
                 "local_hash": _sha256(merged_text),
                 "hub_name": hub_name,
+                # v2.3: _upload_note updates in place (never re-parents), so the hub folder
+                # after a merge is whatever it already was.
+                "base_parent": hub_file.get("category"),
             }
             reconciled += 1
 
@@ -892,6 +903,8 @@ def reconcile_changes(
                     # _maybe_rename_local returns early and _upload_note never renames — the
                     # conflicted copy's local and hub names diverge permanently.
                     "hub_name": f"{cc.id}.md",
+                    # v2.3: the conflicted copy was just CREATED under `dest` = the local folder.
+                    "base_parent": local.get("category"),
                 }
                 conflicts += 1
         except Exception as e:
@@ -964,6 +977,9 @@ def mirror_to_hub(
                 "base_rev": result.get("headRevisionId"),
                 "local_hash": note["hash"],
                 "hub_name": hub_name,
+                # v2.3 base_parent: an UPDATE never re-parents (_upload_note ponytail), so the hub
+                # folder stays hub_file's; a CREATE lands in the note's own category folder.
+                "base_parent": hub_file.get("category") if hub_file else note.get("category"),
             }
             uploaded += 1
         except Exception as e:
@@ -990,6 +1006,7 @@ def pull_new_hub_notes(
     scratchpad_folder: str,
     write_file: Optional[Callable[[str, str], None]] = None,
     download: Optional[Callable[[str], str]] = None,
+    local_trashed_ids: Optional[Set[str]] = None,
 ) -> Tuple[int, int, Dict[str, Dict]]:
     """Pull hub notes the desktop has never seen (phone-created / first sync) into the vault.
 
@@ -1026,9 +1043,19 @@ def pull_new_hub_notes(
             note_id = fields.get("id") or key
             if note_id in vault_notes or note_id in new_state:
                 continue  # id-level dedupe (key may have been a filename stem)
-            category = fields.get("category")
+            if local_trashed_ids and note_id in local_trashed_ids:
+                # ISS-046: the note is soft-deleted locally (sitting in the vault's `_trash/`). Its hub
+                # copy going live again — a peer restore, or a delete arriving out of order after the
+                # desktop already dropped its state row on outbound soft-delete propagation — must NOT
+                # resurrect it as a fresh ACTIVE copy alongside the trashed one (the observed
+                # active-in-personal/ + trashed-in-_trash/ duplicate). Honor the local soft-delete: skip.
+                # If the user wants it back they restore from `_trash/`. Non-destructive (trash copy kept).
+                continue
+            # v2.2: category IS the hub parent folder (get_hub_notes carries it), not frontmatter.
+            # A phone note may still emit a legacy `category:`; it is ignored — the folder wins.
+            category = hub_file.get("category")
             sub = category if category else scratchpad_folder
-            # Hub frontmatter is untrusted input — `id`/`category` become path components (B-12
+            # Hub folder name is untrusted input — `id`/`category` become path components (B-12
             # class). Reject anything that could step outside vault/<category>/<local_name>.
             _safe_path_component(note_id)
             _safe_path_component(sub)
@@ -1059,6 +1086,7 @@ def pull_new_hub_notes(
                 "base_rev": hub_file.get("headRevisionId"),
                 "local_hash": _sha256(content),
                 "hub_name": hub_name,
+                "base_parent": hub_file.get("category"),   # v2.3 (recorded at every row rewrite)
             }
             pulled += 1
         except Exception as e:
@@ -1186,10 +1214,22 @@ def enrich_notes(
     classify: Callable[[str], Tuple[List[str], str]],
     vocab: Dict[str, str],
     embed: Optional[Callable[[str, str], None]] = None,
+    refile: Optional[Callable[[str, Dict, str], None]] = None,
 ) -> Tuple[int, int]:
-    """Note-only enrichment (contract §7). For every origin:note, enriched:false note,
-    refine tags + pick a category via `classify`, embed via `embed`, and write a
-    frontmatter-ONLY patch { tags, category, enriched:true, enrich_source:desktop-llm }.
+    """Note-only enrichment (contract §7). For every origin:note, enriched:false note the desktop
+    ORIGINATED (provenance gate, §2.2), refine tags via `classify`, embed via `embed`, and mark
+    enriched:true / enrich_source:desktop-llm. Machine tags are written to the BODY as a single
+    trailing `tags:` line (§3) — the one sanctioned body write; frontmatter `tags:` is then a derived
+    cache recomputed from the whole body (§1.2). Everything ABOVE the trailing line stays byte-exact.
+
+    v2.2 (2026-07-24): category is folder-derived, NOT a frontmatter field.
+    v2.3 machine refile (contract §1.2, s71): when `refile` is given and the classifier's
+    category differs from the note's current folder, the mover stamps frontmatter
+    `modified`/`device` in the SAME atomic enrich write (the stamp is what makes divergent
+    moves decidable), then `refile(note_id, entry, dest_category)` performs the actual move
+    (local os.replace + metadata-only hub re-parent + base_parent record — built by run_once).
+    Refile is best-effort: a move failure never un-enriches the note, and enriched-once means
+    the machine will never move it again (K-1 holds from enrichment onward).
 
     Body is sacred: asserted byte-identical before every write. NEVER touches run_pipeline
     (notes-are-not-captures lock). Fail-soft per note: a classify/write error leaves the note
@@ -1211,37 +1251,78 @@ def enrich_notes(
             continue
         if note.origin != "note" or note.enriched:
             continue
+        # Provenance (ISS-051 §2.1 backfill + §2.2 gate): the desktop authoritative pass runs ONLY on
+        # content it originated. A legacy note with no origin_device is phone-origin iff it carries a
+        # phone authorship marker (phone-heuristic enrichment); otherwise it is a desktop-vault note.
+        effective_origin = note.origin_device or (
+            "phone" if note.enrich_source == "phone-heuristic" else "desktop"
+        )
+        if effective_origin not in ("desktop", "shared"):
+            continue  # never touch a phone-origin note — no tags, no category, no body, nothing
 
+        dest_category = None
         try:
-            if note.body.strip():
-                key_signals, category = classify(note.body)
-                note.tags = normalize_tags(list(note.tags) + list(key_signals), vocab)
-                note.category = category
+            # Body-sacred baseline: the user body is everything ABOVE the machine trailing tags line
+            # (§3). classify sees the user body, never the machine's own prior tags line.
+            user_body = strip_trailing_tags_line(note.body)
+            if user_body.strip():
+                key_signals, classified_category = classify(user_body)
+                # ISS-051 §3: machine enrichment tags live in the BODY, as a single trailing
+                # `tags: #a #b` line (idempotent replace). Frontmatter `tags:` is then a derived cache
+                # (§1.2) recomputed from the whole body — user inline #tags unified with this line.
+                machine_tags = normalize_tags(list(key_signals), vocab)
+                note.body = apply_trailing_tags_line(note.body, machine_tags)
+                note.tags = extract_body_tags(note.body)
                 note.enrich_source = "desktop-llm"
+                # v2.3 machine refile: classifier wins at FIRST enrichment (user-decided s71 —
+                # ANY folder, not scratchpad-only). The mover stamps modified/device HERE so the
+                # stamp rides the same atomic write below; the stamp's content change is also what
+                # propagates the move to peers via ordinary reconcile (a metadata-only Drive
+                # re-parent never bumps headRevisionId).
+                if (refile is not None and classified_category
+                        and classified_category != entry.get("category")):
+                    dest_category = classified_category
+                    note.modified = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    note.device = "desktop"
             # else: empty body → nothing to classify. Fall through to mark enriched WITHOUT an LLM
             # call so this note stops re-hitting Ollama every pass — an empty content block makes
             # llama3.2 synthesize every required schema field from nothing and ramble past
             # request_timeout_s (the recurring "enrich failed … Request timed out" poison note).
-            # enrich_source/category/tags are left as-is (enrich_source has a closed contract enum;
-            # keeping the note's prior value stays truthful — no desktop-LLM pass actually ran).
             # ponytail: if an empty note later gains a body, whatever flips enriched:false on edit
             # re-triggers a real pass; marking it enriched now only skips the pointless empty enrich.
+            # This device authored the enrichment, so stamp/upgrade origin_device (§2.1: the first
+            # device to re-save a `shared` note stamps its own platform; a backfilled desktop note
+            # persists `desktop`).
+            note.origin_device = "desktop"
             note.enriched = True
             new_content = serialize_note(note)
-            # BODY SACRED — refuse to write if the body changed by a single byte.
-            if strip_frontmatter(new_content) != note.body:
-                raise RuntimeError(f"enrich would alter body of {note_id}")
+            # BODY SACRED (amended §3): everything ABOVE the machine trailing tags line is byte-identical.
+            if strip_trailing_tags_line(strip_frontmatter(new_content)) != user_body:
+                raise RuntimeError(f"enrich would alter user body of {note_id}")
             _atomic_write_note(entry["path"], new_content)   # atomic: never a torn note
         except Exception as e:
             print(f"[mobile_sync_agent] enrich failed {note_id}: {e}")
             failed += 1
             continue
 
-        # File is written + enriched. Update the in-memory dict for the same-pass mirror.
+        # File is written + enriched. Update the in-memory dict for the same-pass mirror —
+        # body included: enrichment legitimately appends the trailing tags line, and mirror's
+        # body-sacred upload check compares content against entry["body"], so a stale body
+        # would fail every same-pass upload of a just-enriched note.
         entry["content"] = new_content
+        entry["body"] = strip_frontmatter(new_content)
         entry["hash"] = _sha256(new_content)
-        entry["category"] = note.category
         enriched_count += 1
+
+        # v2.3 machine refile: the enrich write (stamp included) is on disk — now move the note.
+        # Best-effort: a failed move leaves an enriched note in its old folder; enriched-once means
+        # it is never machine-moved again (acceptable — local and hub stay consistent either way).
+        # Runs BEFORE embed so the vector store indexes the note at its final path.
+        if dest_category is not None:
+            try:
+                refile(note_id, entry, dest_category)   # updates entry["path"]/["category"]
+            except Exception as e:
+                print(f"[mobile_sync_agent] refile {note_id} -> {dest_category!r} failed: {e}")
 
         # Embedding is best-effort — a failure here must not un-enrich the note.
         # ponytail: enriched-but-unembedded on embed failure; a re-embed sweep can backfill
@@ -1262,7 +1343,7 @@ def run_once(
     vault_root: Optional[str] = None,
     scratchpad_folder: str = "_scratchpad",
     run_pipeline: Optional[Callable[..., Dict]] = None,
-    enrich_fn: Optional[Callable[[Dict, str], Tuple[int, int]]] = None,
+    enrich_fn: Optional[Callable[..., Tuple[int, int]]] = None,
     reminders_fn: Optional[Callable[[Dict], dict]] = None,
     provisional_fn: Optional[Callable[[str], None]] = None,
     mirror_captures: bool = False,
@@ -1376,8 +1457,13 @@ def run_once(
     reconciled, conflicts, r_failed, state = reconcile_changes(
         filter_ignored_notes(vault_notes, Path(vault_root)), hub_files, state, drive, hub_id
     )
+    # ISS-046: a note sitting in the local `_trash/` must never be re-pulled as a fresh active copy
+    # (peer restore / out-of-order delete after the state row was dropped) — that leaves a duplicate
+    # active+trashed pair. Scan the local `_trash/` ids once and let pull skip them.
+    from delete_detect import local_trashed_ids as _local_trashed_ids
     pulled, p_failed, state = pull_new_hub_notes(
-        vault_notes, hub_files, state, drive, vault_root, scratchpad_folder
+        vault_notes, hub_files, state, drive, vault_root, scratchpad_folder,
+        local_trashed_ids=_local_trashed_ids(vault_path),
     )
 
     ingested = i_failed = 0
@@ -1393,7 +1479,37 @@ def run_once(
     # mutates vault_notes in place. Notes are not captures — this never touches run_pipeline.
     enriched = e_failed = 0
     if enrich_fn is not None:
-        enriched, e_failed = enrich_fn(vault_notes, vault_root)
+        # v2.3 machine refile (contract §1.2): enrich_notes calls this back at a note's FIRST
+        # enrichment when the classifier's folder differs from the current one. The frontmatter
+        # modified/device stamp already rode the enrich write; this closure does the move itself:
+        # local os.replace into vault/<dest>/, metadata-only hub re-parent (never bumps
+        # headRevisionId — the stamp is the propagation vehicle), base_parent record.
+        _refile_folder_cache: Dict[str, str] = {}
+
+        def _refile(note_id: str, entry: Dict, dest_cat: str) -> None:
+            dest_cat = _safe_path_component(dest_cat)   # classifier output is untrusted as a path
+            dest_dir = Path(vault_root) / dest_cat
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            new_path = str(dest_dir / Path(entry["path"]).name)
+            if os.path.abspath(new_path) != os.path.abspath(entry["path"]):
+                if Path(new_path).exists():
+                    # SYNC-06 class: never clobber an unrelated file; leave the note where it is.
+                    raise RuntimeError(f"refile destination exists: {new_path}")
+                os.replace(entry["path"], new_path)
+                entry["path"] = new_path
+            entry["category"] = dest_cat
+            prior = state.get(note_id)
+            if isinstance(prior, dict) and prior.get("drive_file_id"):
+                dest_id = _resolve_dest_folder(drive, hub_id, dest_cat, _refile_folder_cache)
+                _move_file_to_folder(drive, prior["drive_file_id"], dest_id)
+                prior["base_parent"] = dest_cat
+                hf = hub_files.get(note_id)
+                if hf is not None:
+                    hf["category"] = dest_cat   # keep this pass's hub snapshot honest for mirror
+            # else: never synced — mirror_to_hub below creates it directly inside dest_cat
+            # (entry["category"] drives _resolve_dest_folder) and records base_parent itself.
+
+        enriched, e_failed = enrich_fn(vault_notes, vault_root, _refile)
 
     # Reconcile the reminders table from each note's remind_at (files are the source of
     # truth — DB-only, never writes a note .md). Fail-soft: a reminders error must never
@@ -1440,7 +1556,7 @@ def run_once(
     )
 
 
-def _build_enrich_fn(cfg, vault_root: str) -> Callable[[Dict, str], Tuple[int, int]]:
+def _build_enrich_fn(cfg, vault_root: str) -> Callable[..., Tuple[int, int]]:
     """Bind the real LLM classifier + vault vocab + live category enum + vector-store embed
     into an enrich_fn(vault_notes, vault_root) for run_once. Kept thin: all logic is in
     enrich_notes; this only wires the seams (notes-are-not-captures — never run_pipeline)."""
@@ -1462,8 +1578,8 @@ def _build_enrich_fn(cfg, vault_root: str) -> Callable[[Dict, str], Tuple[int, i
     def embed(path: str, content: str):
         index_note(cfg.vault.root, Path(path), content, cfg.ollama.base_url, cfg.vector.embed_model)
 
-    def enrich_fn(vault_notes: Dict, vr: str) -> Tuple[int, int]:
-        return enrich_notes(vault_notes, vr, classify, vocab, embed=embed)
+    def enrich_fn(vault_notes: Dict, vr: str, refile=None) -> Tuple[int, int]:
+        return enrich_notes(vault_notes, vr, classify, vocab, embed=embed, refile=refile)
 
     return enrich_fn
 

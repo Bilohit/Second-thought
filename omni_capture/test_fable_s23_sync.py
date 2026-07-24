@@ -20,7 +20,7 @@ def _mk(body="b", modified="2026-01-01T00:00:00Z", remind=None, tags=None,
         category=None, enriched=False, extra=None, device="d"):
     return Note(id="01A", created="2026-01-01T00:00:00Z", origin="note", title="T",
                 aliases=[], tags=tags or [], remind_at=remind, category=category,
-                enriched=enriched, enrich_source=None, modified=modified,
+                origin_device=None, enriched=enriched, enrich_source=None, modified=modified,
                 device=device, attachments=[], extra=dict(extra or {}), body=body)
 
 
@@ -31,33 +31,35 @@ NOTE_FM = (
 )
 
 
-# ---------- SUSPECTED BUG 1 (K-1 broken end-to-end): category_source parsed from a real
-# note file carries a leading space in Note.extra (" user"), so reconcile's
-# `== "user"` check never fires for phone/standard-written notes. ----------
+# ---------- v2.2 (2026-07-24): category / category_source REMOVED — the folder IS the category
+# (data-model §1.2). Legacy fields parse but are ignored, never merged, and dropped at first save.
+# These two tests replace the old K-1 (user-override) and category_source-serialization cases. ----
 
-def test_k1_user_override_detected_when_parsed_from_note_text():
+def test_legacy_category_source_ignored_and_not_a_merge_input():
+    # a real note file carrying legacy `category:`/`category_source:` reconciles cleanly: category
+    # is no longer a merge winner (folder decides on read) and no conflicted copy is spun.
     base = parse_note(NOTE_FM.format(modified="2026-01-01T00:00:00Z", device="p",
                                      enriched="false", category="Inbox",
                                      source="machine", body="b"))
     local = parse_note(NOTE_FM.format(modified="2026-01-02T00:00:00Z", device="p",
                                       enriched="false", category="Finance",
-                                      source="user", body="b"))     # user re-categorized
+                                      source="user", body="b"))
     remote = parse_note(NOTE_FM.format(modified="2026-01-03T00:00:00Z", device="d",
                                        enriched="true", category="Random",
-                                       source="machine", body="b"))  # desktop LLM
-    merged = reconcile(base, local, remote).merged
-    # K-1: user override beats desktop-llm enriched category
-    assert merged.category == "Finance"
+                                       source="machine", body="b"))
+    result = reconcile(base, local, remote)
+    assert result.conflicted_copy is None            # category divergence never conflicts
+    assert "category_source" not in result.merged.extra  # dropped from the merged note
 
 
-def test_reconcile_serializes_category_source_with_yaml_space():
+def test_reconcile_never_serializes_category_or_category_source():
     base = _mk(extra={"category_source": "machine"})
     local = _mk(category="Finance", extra={"category_source": "user"},
                 modified="2026-01-02T00:00:00Z")
     remote = _mk(category="Random", enriched=True, extra={"category_source": "machine"})
-    merged = reconcile(base, local, remote).merged
-    text = serialize_note(merged)
-    assert "category_source: user\n" in text  # today emits "category_source:user" (invalid YAML)
+    text = serialize_note(reconcile(base, local, remote).merged)
+    assert "category:" not in text            # folder IS the category — never written to disk
+    assert "category_source:" not in text     # dead field, dropped at save
 
 
 # ---------- SUSPECTED BUG 2: reconcile() crashes (ValueError from _instant) when
@@ -245,7 +247,7 @@ def test_pull_and_reconcile_write_hostile_bodies_verbatim(tmp_path, name, body):
     content = "---\nid: 01B\ntitle: T\norigin: note\ncategory: Inbox\n---\n" + body
 
     pulled, failed, _ = pull_new_hub_notes(
-        {}, {"01B": {"id": "F1", "headRevisionId": "r1"}}, {}, None,
+        {}, {"01B": {"id": "F1", "headRevisionId": "r1", "category": "Inbox"}}, {}, None,
         str(tmp_path), "Scratchpad", download=lambda fid: content)
     assert (pulled, failed) == (1, 0), name
     written = list(tmp_path.rglob("01B.md"))
@@ -273,7 +275,7 @@ def test_pull_and_reconcile_write_note_bytes_verbatim(tmp_path):
 
     # pull_new_hub_notes: brand-new hub note written to disk byte-identical.
     pulled, failed, _ = pull_new_hub_notes(
-        {}, {"01B": {"id": "F1", "headRevisionId": "r1"}}, {}, None,
+        {}, {"01B": {"id": "F1", "headRevisionId": "r1", "category": "Inbox"}}, {}, None,
         str(tmp_path), "Scratchpad", download=lambda fid: content)
     assert (pulled, failed) == (1, 0)
     written = list(tmp_path.rglob("01B.md"))

@@ -7,9 +7,11 @@ three inputs (base = last-reconciled revision, local = this device's version, re
 Drive head) and applies the result.
 
 Core invariant: a user's typed BODY is never merged, overwritten, or lost. A body-vs-body
-divergence spins the remote body off as a conflicted copy; everything else (tags, category,
-enrichment, remind_at) merges silently. The common case — body edited on the phone while the
-desktop enriches frontmatter — is conflict-free by construction (disjoint concerns).
+divergence spins the remote body off as a conflicted copy; everything else (tags, enrichment,
+remind_at) merges silently. Category is NO LONGER a merged field (v2.2, 2026-07-24, DESKTOP-FIRST)
+— the parent folder IS the category, re-derived from the write folder on next read (data-model
+§1.2). The common case — body edited on the phone while the desktop enriches frontmatter — is
+conflict-free by construction (disjoint concerns).
 
 Scope: body + frontmatter reconciliation. The delete-vs-edit race (edge-case C5) is the op-queue's
 job (data-model §5), not here.
@@ -32,8 +34,10 @@ class Note:
     aliases: list[str]
     tags: list[str]
     remind_at: Optional[str]
-    # machine-owned (once enriched)
+    # v2.2: folder-derived, NOT serialized (data-model §1.2). Kept on the struct so readers can
+    # stamp it from the parent folder; never a merge input, never written to frontmatter on desktop.
     category: Optional[str]
+    origin_device: Optional[str]  # v2.2 provenance: "phone"|"desktop"|"shared"; None on legacy notes
     enriched: bool
     enrich_source: Optional[str]  # "phone-heuristic" | "desktop-llm" | None
     # informational (never a correctness input)
@@ -140,43 +144,13 @@ def reconcile(
     )
 
     # enrichment frontmatter (machine-owned; merges silently, never a conflicted copy).
-    # Only the desktop LLM pass sets enriched:true, so `enriched` is the authority for category.
+    # v2.2 (2026-07-24, DESKTOP-FIRST): `category` is NO LONGER a merged field — the parent folder
+    # IS the category (data-model §1.2), re-derived from the note's write folder on next read. So
+    # nothing about category is decided here, `category_source` is dropped from the merged `extra`,
+    # and the merged Note's `category` value is irrelevant (never serialized). Only `enriched`/
+    # `enrich_source` still merge: the desktop LLM pass sets enriched:true.
     remote_auth = remote.enriched
     local_auth = local.enriched
-    # K-1: a user re-categorization (either device) beats the machine value and is never reverted.
-    # `category_source` rides in `extra` (unknown-key preservation); absent → "machine" (legacy).
-    # Parsed extras keep the raw text after ":" (leading space included) — strip before comparing.
-    local_cat_user = local.extra.get("category_source", "machine").strip() == "user"
-    remote_cat_user = remote.extra.get("category_source", "machine").strip() == "user"
-    if local_cat_user and not remote_cat_user:
-        category = local.category
-        category_source = "user"
-    elif remote_cat_user and not local_cat_user:
-        category = remote.category
-        category_source = "user"
-    elif local_cat_user and remote_cat_user:
-        # both user-set → newest edit wins (note-level modified, instants); equal instants break on
-        # the lowest device, because "tie → remote" is a role and the peers disagree about the roles.
-        category = local.category if _local_is_newer(local, remote) else remote.category
-        category_source = "user"
-    elif remote_auth and local_auth:
-        # BOTH sides carry a desktop-llm value, so both are equally authoritative and the
-        # desktop-authoritative lock has nothing to protect here — there is no phone heuristic being
-        # overridden. Testing `remote_auth` first made this arm role-dependent, so the peers picked
-        # opposite winners (SYNC-27). Lowest device is the same choice on both sides.
-        category = local.category if local.device < remote.device else remote.category
-        category_source = "machine"
-    elif remote_auth:
-        category = remote.category
-        category_source = "machine"
-    elif local_auth:
-        category = local.category
-        category_source = "machine"
-    else:
-        category = _lww(
-            base.category, local.category, remote.category, local.device, remote.device
-        )
-        category_source = "machine"
     enriched = remote_auth or local_auth
     if enriched:
         enrich_source: Optional[str] = "desktop-llm"
@@ -211,15 +185,20 @@ def reconcile(
         aliases=_lww(base.aliases, local.aliases, remote.aliases, local.device, remote.device),
         tags=_union(local.tags, remote.tags),  # set-union; user-typed tags always survive (C3)
         remind_at=remind_at,
-        category=category,
+        # v2.2: category is folder-derived, never serialized — the merged value is irrelevant.
+        # Carry a live side's value only so the dataclass stays populated.
+        category=local.category if local.category is not None else remote.category,
+        # origin_device is immutable once a real platform is stamped (§2.1); prefer whichever side
+        # carries a value so provenance survives reconcile. Both sides normally agree (same note).
+        origin_device=local.origin_device or remote.origin_device,
         enriched=enriched,
         enrich_source=enrich_source,
         # informational: newest INSTANT wins (a string compare mis-ranks mixed precision — SYNC-15).
         modified=_newest(local.modified, remote.modified),
         device=local.device,  # the reconciling device stamps; informational only
         attachments=_union(local.attachments, remote.attachments),  # additive; never lose one
-        # preserve both (local wins collisions); K-1 category_source follows the category winner
-        extra={**remote.extra, **local.extra, "category_source": category_source},
+        # preserve both (local wins collisions); v2.2 drops the dead `category_source` from disk
+        extra={k: v for k, v in {**remote.extra, **local.extra}.items() if k != "category_source"},
         body=merged_body,
     )
 

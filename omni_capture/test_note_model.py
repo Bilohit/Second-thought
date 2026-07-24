@@ -133,3 +133,60 @@ def test_serialize_reconcile_roundtrip_body_sacred():
     n = parse_note(SAMPLE)
     round_tripped = parse_note(serialize_note(n))
     assert round_tripped.body == n.body
+
+
+# v2.2 / ISS-051 §2.1: origin_device provenance field round-trip (mirrors the phone codec).
+def test_parses_origin_device():
+    n = parse_note("---\nid: x\norigin_device: desktop\n---\nbody\n")
+    assert n.origin_device == "desktop"
+
+
+def test_origin_device_absent_is_none():
+    assert parse_note("---\nid: x\n---\nbody\n").origin_device is None
+
+
+def test_origin_device_invalid_is_none():
+    assert parse_note("---\nid: x\norigin_device: martian\n---\nbody\n").origin_device is None
+
+
+def test_origin_device_serializes_and_round_trips_all_values():
+    for v in ("phone", "desktop", "shared"):
+        n = parse_note("---\nid: x\n---\nbody\n")
+        n.origin_device = v
+        out = serialize_note(n)
+        assert f"origin_device: {v}" in out
+        assert parse_note(out).origin_device == v
+
+
+def test_origin_device_omitted_when_none():
+    n = parse_note("---\nid: x\n---\nbody\n")
+    assert "origin_device:" not in serialize_note(n)
+
+
+def test_origin_device_not_leaked_into_extra():
+    n = parse_note("---\nid: x\norigin_device: phone\n---\nbody\n")
+    assert "origin_device" not in n.extra
+
+
+# v2.2 (2026-07-24, DESKTOP-FIRST): category is folder-derived — never serialized on desktop.
+# Legacy `category:` is still parsed (ignored) but dropped at first save; `category_source` too.
+def test_category_never_serialized_even_when_set():
+    n = parse_note(SAMPLE)          # SAMPLE carries `category: personal`
+    assert n.category == "personal"  # still parsed into the struct (legacy read)
+    out = serialize_note(n)
+    assert "category:" not in out    # ...but never written back to disk
+
+
+def test_category_source_dropped_from_disk_at_first_save():
+    n = parse_note("---\nid: x\ncategory: work\ncategory_source: user\n---\nbody\n")
+    out = serialize_note(n)
+    assert "category:" not in out
+    assert "category_source:" not in out
+    # the round-trip is clean — neither legacy field survives
+    assert "category_source" not in parse_note(out).extra
+
+
+def test_programmatically_set_category_is_not_written():
+    n = parse_note("---\nid: x\n---\nbody\n")
+    n.category = "ideas"             # a reader may stamp the folder name onto the struct
+    assert "category:" not in serialize_note(n)

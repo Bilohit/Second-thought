@@ -559,7 +559,6 @@ def _build_frontmatter(
     Fields
     ------
     created     ISO-8601 timestamp
-    category    folder name
     status      'needs_review' (scratchpad only) | absent otherwise
     note_id     scratchpad review ID (scratchpad only)
     source      source URL (when available)
@@ -577,9 +576,11 @@ def _build_frontmatter(
             tags = normalize_tags(tags, load_vocab(get_db_path(vault_root)))
         except Exception:
             pass  # vocab normalization is best-effort; raw tags are still valid
-    cat = _category_str(output)
 
-    lines = ["---", f"created: {now}", f"category: {cat}"]
+    # v2.2 (2026-07-24, DESKTOP-FIRST): category is NOT written to frontmatter — the folder a
+    # capture is filed into IS its category (data-model §1.2). output.category still selects that
+    # folder (the filing mechanism, upstream of this builder), it is just no longer duplicated here.
+    lines = ["---", f"created: {now}"]
 
     if scratchpad:
         lines.append("status: needs_review")

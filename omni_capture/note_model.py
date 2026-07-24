@@ -18,9 +18,13 @@ import re
 from reconcile import Note
 
 # Canonical known-key serialize order (mirrors note.ts KNOWN_KEY_ORDER).
+# v2.2 (2026-07-24, DESKTOP-FIRST): `category` is NOT serialized — the parent folder IS the
+# category (data-model §1.2). Legacy `category:` is still parsed into note.category (ignored) but
+# dropped at the note's first save; `category_source` (an unknown key riding `extra`) is filtered
+# out on serialize. The phone still emits `category:` during the interim; the desktop ignores it.
 _KNOWN_KEY_ORDER = [
     "id", "title", "origin", "created", "modified", "device", "tags",
-    "category", "aliases", "attachments", "enriched", "enrich_source", "remind_at",
+    "origin_device", "aliases", "attachments", "enriched", "enrich_source", "remind_at",
 ]
 
 _KEY_LINE = re.compile(r"^([A-Za-z0-9_][A-Za-z0-9_-]*):(.*)$")
@@ -116,7 +120,7 @@ def parse_note(raw_file: str) -> Note:
 
     note = Note(
         id="", created="", origin="note", title="", aliases=[], tags=[], remind_at=None,
-        category=None, enriched=False, enrich_source=None, modified="", device="",
+        category=None, origin_device=None, enriched=False, enrich_source=None, modified="", device="",
         attachments=[], extra={}, body=body,
     )
 
@@ -135,6 +139,9 @@ def parse_note(raw_file: str) -> Note:
             note.origin = "capture" if _parse_scalar(raw) == "capture" else "note"
         elif key == "category":
             note.category = _parse_scalar(raw)
+        elif key == "origin_device":
+            v = _parse_scalar(raw)
+            note.origin_device = v if v in ("phone", "desktop", "shared") else None
         elif key == "enriched":
             note.enriched = _parse_scalar(raw) == "true"
         elif key == "enrich_source":
@@ -189,9 +196,9 @@ def serialize_note(note: Note) -> str:
             lines.append(f"device: {_emit_scalar(note.device)}")
         elif key == "tags":
             lines.append(f"tags: {_emit_list(note.tags)}")
-        elif key == "category":
-            if note.category is not None:
-                lines.append(f"category: {_emit_scalar(note.category)}")
+        elif key == "origin_device":
+            if note.origin_device is not None:
+                lines.append(f"origin_device: {note.origin_device}")
         elif key == "aliases":
             lines.append(f"aliases: {_emit_list(note.aliases)}")
         elif key == "attachments":
@@ -206,9 +213,13 @@ def serialize_note(note: Note) -> str:
             if note.remind_at is not None:
                 lines.append(f"remind_at: {_emit_scalar(note.remind_at)}")
     for k, raw in note.extra.items():
+        # v2.2: `category_source` is a dead field (category is folder-derived) — never write it back,
+        # so a legacy note carrying it drops it at first save.
+        if k == "category_source":
+            continue
         # Parsed extras keep the raw text after ":" (leading space included) — emit verbatim for
-        # byte-stable round-trips. A programmatically-set value (e.g. reconcile's category_source)
-        # has no leading whitespace — add the YAML space so the output stays valid YAML.
+        # byte-stable round-trips. A programmatically-set value has no leading whitespace — add the
+        # YAML space so the output stays valid YAML.
         sep = "" if raw == "" or raw[0] in (" ", "\t", "\n") else " "
         lines.append(f"{k}:{sep}{raw}")
     return "---\n" + "\n".join(lines) + "\n---\n" + note.body

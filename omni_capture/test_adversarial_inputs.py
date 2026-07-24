@@ -48,7 +48,7 @@ from reconcile import Note, reconcile
 def _note(**over) -> Note:
     base = dict(
         id="01ABC", created="", origin="note", title="T", aliases=[], tags=[], remind_at=None,
-        category=None, enriched=False, enrich_source=None, modified="", device="",
+        category=None, origin_device=None, enriched=False, enrich_source=None, modified="", device="",
         attachments=[], extra={}, body="body\n",
     )
     base.update(over)
@@ -288,8 +288,11 @@ def test_pull_never_writes_outside_the_vault_root(tmp_path, name, note_id, categ
     (outside / "canary.txt").write_text("untouched", encoding="utf-8")
 
     content = f"---\nid: {note_id}\ntitle: T\norigin: note\ncategory: {category}\n---\nphone body\n"
+    # v2.2: placement derives from the HUB FOLDER name (get_hub_notes carries it), not frontmatter —
+    # so the hostile category is now injected via the hub file's `category`, where the containment
+    # guard applies. (Frontmatter category is inert/ignored — a strict improvement.)
     pulled, failed, state = pull_new_hub_notes(
-        {}, {"HUBKEY": {"id": "F1", "headRevisionId": "r1"}}, {}, None,
+        {}, {"HUBKEY": {"id": "F1", "headRevisionId": "r1", "category": category}}, {}, None,
         str(vault), "Scratchpad", download=lambda fid: content,
     )
 

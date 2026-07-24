@@ -24,6 +24,20 @@ from typing import Optional
 
 _OS = platform.system()   # "Darwin" | "Windows" | "Linux"
 
+# ISS-045: Windows' NOTIFYICONDATAW (which plyer's win10toast/win11toast backend fills in)
+# raises `ValueError: string too long` for any title over 64 chars -- and it does so from a
+# thread plyer spawns internally, AFTER notification.notify() has already returned. That
+# thread's exception happens outside send_notification's try/except (which only guards the
+# synchronous call), so it cannot be caught here -- it prints an unhandled-thread traceback to
+# stderr no matter what we wrap. Truncating before the call is the only way to prevent it.
+_MAX_TITLE_LEN = 64
+
+
+def _truncate_title(title: str) -> str:
+    """Clamp a notification title to what NOTIFYICONDATAW (Windows) accepts. Applied
+    cross-platform for one code path rather than a Windows-only special case."""
+    return title if len(title) <= _MAX_TITLE_LEN else title[:_MAX_TITLE_LEN]
+
 
 # ── Backend implementations ───────────────────────────────────────────────────
 
@@ -84,6 +98,7 @@ def send_notification(
     """
     try:
         full_title = f"{title} — {subtitle}" if subtitle else title
+        full_title = _truncate_title(full_title)
         if _OS == "Darwin":
             _notify_macos(title, message, subtitle)
         elif _OS == "Windows":

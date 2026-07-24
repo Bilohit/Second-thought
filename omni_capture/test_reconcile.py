@@ -5,12 +5,31 @@ from reconcile import Note, reconcile
 def mk(**o) -> Note:
     base = dict(
         id="n1", created="2026-01-01T00:00:00Z", origin="note", title="Note",
-        aliases=[], tags=[], remind_at=None, category=None, enriched=False,
+        aliases=[], tags=[], remind_at=None, category=None, origin_device=None, enriched=False,
         enrich_source=None, modified="2026-01-01T00:00:00Z", device="phone-a1",
         attachments=[], extra={}, body="base body",
     )
     base.update(o)
     return Note(**base)
+
+
+# --- origin_device preservation (v2.2 provenance, immutable once stamped) ---
+def test_reconcile_keeps_origin_device_when_both_agree():
+    r = reconcile(
+        mk(origin_device="phone"),
+        mk(origin_device="phone", body="b1"),
+        mk(origin_device="phone"),
+    )
+    assert r.merged.origin_device == "phone"
+
+
+def test_reconcile_recovers_origin_device_from_the_side_that_has_it():
+    r = reconcile(
+        mk(origin_device=None),
+        mk(origin_device=None, body="b1"),
+        mk(origin_device="desktop"),
+    )
+    assert r.merged.origin_device == "desktop"
 
 
 # --- body reconciliation ---
@@ -63,8 +82,8 @@ def test_c2_phone_body_desktop_enrich_clean_merge():
     assert r.conflicted_copy is None
     assert r.merged.body == "phone edit"
     assert "finance" in r.merged.tags
-    assert r.merged.category == "work"
-    assert r.merged.enriched is True
+    assert r.merged.enriched is True         # enrichment still merges silently
+    assert r.merged.enrich_source == "desktop-llm"
 
 
 def test_c3_tags_union_dropped_tag_survives():
@@ -74,48 +93,32 @@ def test_c3_tags_union_dropped_tag_survives():
     assert reconcile(base, local, remote).merged.tags == ["family", "todo", "urgent"]
 
 
-def test_c4_category_desktop_enriched_wins():
-    base = mk(category=None)
-    local = mk(category="personal", enrich_source="phone-heuristic")
-    remote = mk(category="work", enriched=True, enrich_source="desktop-llm")
+# --- v2.2 (2026-07-24): category is NO LONGER merged (folder IS the category, §1.2) ---
+def test_c4_enrichment_flag_desktop_llm_wins():
+    # what used to be the "category desktop-enriched wins" case: category is gone, but the
+    # enriched/enrich_source flags still merge (desktop-llm beats phone-heuristic).
+    base = mk()
+    local = mk(enrich_source="phone-heuristic")
+    remote = mk(enriched=True, enrich_source="desktop-llm")
     r = reconcile(base, local, remote)
-    assert r.merged.category == "work"
+    assert r.merged.enriched is True
     assert r.merged.enrich_source == "desktop-llm"
 
 
-def test_neither_enriched_category_lww():
-    r = reconcile(mk(category="a"), mk(category="b"), mk(category="a"))
-    assert r.merged.category == "b"
+def test_category_is_not_a_merge_input():
+    # divergent categories no longer produce a decided winner — the folder decides on next read,
+    # so reconcile never raises and never spins a conflict over category.
+    r = reconcile(mk(category="a"), mk(category="b"), mk(category="c"))
+    assert r.conflicted_copy is None          # category divergence is not a body conflict
 
 
-# --- K-1: user category override beats machine, never reverted (mirrors reconcile.test.ts) ---
-def test_k1_user_override_beats_enriched():
-    base = mk(category="work", enriched=True, enrich_source="desktop-llm")
-    local = mk(category="personal", extra={"category_source": "user"})
-    remote = mk(category="work", enriched=True, enrich_source="desktop-llm")
-    r = reconcile(base, local, remote)
-    assert r.merged.category == "personal"
-    assert r.merged.extra["category_source"] == "user"
-
-
-def test_k1_user_override_on_remote_wins():
-    base = mk(category="work")
-    local = mk(category="work", enriched=True, enrich_source="desktop-llm")
-    remote = mk(category="ideas", extra={"category_source": "user"})
-    assert reconcile(base, local, remote).merged.category == "ideas"
-
-
-def test_k1_both_user_newest_modified_wins():
-    local = mk(category="L", modified="2026-07-09T12:00:00Z", extra={"category_source": "user"})
-    remote = mk(category="R", modified="2026-07-09T08:00:00Z", extra={"category_source": "user"})
-    r = reconcile(mk(category="b"), local, remote)
-    assert r.merged.category == "L"
-    assert r.merged.extra["category_source"] == "user"
-
-
-def test_k1_legacy_absent_source_machine_path():
-    r = reconcile(mk(category="a"), mk(category="b"), mk(category="a"))
-    assert r.merged.extra["category_source"] == "machine"
+def test_category_source_dropped_from_merged_extra():
+    # a legacy `category_source` on either side must NOT survive into the merged note.
+    local = mk(extra={"category_source": "user"})
+    remote = mk(extra={"category_source": "machine", "keep_me": " x"})
+    r = reconcile(mk(), local, remote)
+    assert "category_source" not in r.merged.extra
+    assert r.merged.extra["keep_me"] == " x"  # other unknown keys still round-trip
 
 
 # --- title, remind_at, identity ---
