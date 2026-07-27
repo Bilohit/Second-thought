@@ -33,7 +33,16 @@ export function AudioPlayer({ src }: { src: string }) {
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-        onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+        onLoadedMetadata={(e) => {
+          // webm/opus (MediaRecorder output, see recorder.ts) often reports
+          // duration as Infinity until more of the stream has been read --
+          // an unguarded assignment here poisons formatClock() and the
+          // progress bar (duration > 0 comparisons never resolve sanely).
+          // Ignore non-finite readings; a later timeupdate-driven duration
+          // fix-up isn't needed since the fallback clock below covers it.
+          const d = e.currentTarget.duration;
+          if (Number.isFinite(d)) setDuration(d);
+        }}
         onEnded={() => setPlaying(false)}
       />
       <button
@@ -54,7 +63,7 @@ export function AudioPlayer({ src }: { src: string }) {
         ))}
       </div>
       <span className="audio-player__time">
-        {formatClock(currentTime)}/{formatClock(duration)}
+        {formatClock(currentTime)}/{duration > 0 ? formatClock(duration) : "--:--"}
       </span>
     </div>
   );

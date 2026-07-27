@@ -394,11 +394,16 @@ def test_capture_audio_b64_endpoint(vault: Path, tmp_path: Path):
     fake_audio_bytes = b"\x00" * 44
     audio_b64 = base64.b64encode(fake_audio_bytes).decode()
 
+    # Real _enrich_audio always sets source_metadata["audio_path"] (see
+    # enrichment_router.py) in addition to the "audio_staged_path" key server.py
+    # adds afterward -- mirror both so this fake exercises the same
+    # write_to_vault voice branch (keyed on "audio_path") that production
+    # traffic hits.
     fake_enriched = EnrichedPayload(
         raw_input="<audio>",
         input_type="audio",
         enriched_text="Transcribed: hello world from audio.",
-        source_metadata={"whisper_model": "base"},
+        source_metadata={"whisper_model": "base", "audio_path": "<mock-audio-path>"},
     )
     fake_out = _fake_capture_output(filename="audio-b64-note")
 
@@ -417,14 +422,19 @@ def test_capture_audio_b64_endpoint(vault: Path, tmp_path: Path):
 
     assert resp.status_code == 200
     mock_whisper.assert_called_once()
-    # O-9: the temp file is no longer deleted immediately after transcription --
-    # it is staged (source_metadata["audio_staged_path"]) so the note-write step
-    # can copy it into _attachments/<note_id>/. The short-voice generic write
-    # path (this test's below-threshold case) doesn't yet claim it (see O-9
-    # Task 2 scope note), so it is expected to remain on disk as an orphan here,
-    # same failure mode the phone side had pre-feature -- not a regression.
+    # O-9 Task 2 fix: the short-voice generic write path (write_to_vault) now
+    # also claims audio_staged_path -- copies it into _attachments/<note_id>/
+    # and unlinks the temp file, matching create_voice_note's existing
+    # behavior for long recordings. The temp file must NOT survive the request.
     called_path = mock_whisper.call_args[0][0]
-    assert Path(called_path).exists(), "Temp audio file should survive transcription (O-9 staging)"
+    assert not Path(called_path).exists(), (
+        "Temp audio file should be consumed (copied into _attachments/ and "
+        "unlinked) by the short-voice write path, not orphaned"
+    )
+    attachments_dirs = list(vault.glob("**/_attachments/*/voice.*"))
+    assert len(attachments_dirs) == 1, (
+        f"Expected exactly one persisted voice attachment, found {attachments_dirs}"
+    )
 
 
 # ── T8: image_b64 endpoint routes to LLaVA ────────────────────────────────────

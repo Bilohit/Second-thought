@@ -604,6 +604,23 @@ def _sse(event: str, **data) -> str:
 
 # -- Pipeline runner ----------------------------------------------------------
 
+def _sniff_audio_suffix(audio_bytes: bytes) -> str:
+    """
+    The /capture payload carries no mime type alongside audio_b64 (just raw
+    base64 bytes), so the temp file suffix used for Whisper -- and later
+    persisted into _attachments/<note_id>/ -- must be sniffed from magic
+    bytes. GUI voice capture records audio/webm;codecs=opus
+    (gui/src/lib/recorder.ts); .wav is kept as a fallback for any other
+    caller. Unrecognised bytes default to .wav (Whisper's ffmpeg backend
+    sniffs the real container regardless of extension).
+    """
+    if audio_bytes[:4] == b"\x1a\x45\xdf\xa3":
+        return ".webm"
+    if audio_bytes[:4] == b"RIFF":
+        return ".wav"
+    return ".wav"
+
+
 def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
     tag = f"[run:{run_id}] " if run_id else ""
 
@@ -690,7 +707,7 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                 import tempfile, pathlib as _pathlib
                 from enrichment_router import _enrich_audio
                 audio_bytes = base64.b64decode(content)
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+                with tempfile.NamedTemporaryFile(suffix=_sniff_audio_suffix(audio_bytes), delete=False) as tf:
                     tf.write(audio_bytes)
                     tmp_audio_path = tf.name
                 enriched = _enrich_audio(tmp_audio_path)

@@ -1043,3 +1043,16 @@ def test_load_config_preserves_the_sentinel_and_clamps_everything_else(tmp_path)
         )
         got = load_config(cfg_path).sync.interval_minutes
         assert got == expected, f"interval_minutes = {written} parsed to {got}, expected {expected}"
+
+
+def test_sniff_audio_suffix_webm():
+    """GUI recorder.ts records audio/webm;codecs=opus -- magic bytes 1a 45 df a3."""
+    assert server._sniff_audio_suffix(b"\x1a\x45\xdf\xa3\x00\x00rest") == ".webm"
+
+
+def test_sniff_audio_suffix_wav():
+    assert server._sniff_audio_suffix(b"RIFF\x24\x00\x00\x00WAVEfmt ") == ".wav"
+
+
+def test_sniff_audio_suffix_unknown_defaults_to_wav():
+    assert server._sniff_audio_suffix(b"not a real audio header") == ".wav"
