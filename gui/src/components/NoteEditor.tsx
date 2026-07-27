@@ -488,6 +488,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
       attachments.map(async (a) => {
         try {
           const url = await fetchAttachmentBlob(notePath, a.filename);
+          if (cancelled) { URL.revokeObjectURL(url); return null; }
           created.push(url);
           return [a.filename, url] as const;
         } catch {
