@@ -15,6 +15,7 @@ differing bodies were renamed to keep both:
 """
 from __future__ import annotations
 
+import re
 import sys
 import tempfile
 import types
@@ -622,8 +623,14 @@ def test_create_voice_note_copies_staged_audio_into_attachments(tmp_path):
         audio_staged_path=audio_src,
     )
 
-    note_id = note_path.stem
+    note_text = note_path.read_text(encoding="utf-8")
+    m = re.search(r"^id:\s*(\S+)", note_text, re.MULTILINE)
+    assert m, "voice note must have a frontmatter id"
+    note_id = m.group(1)
+
     attached = list((vault_root / "_attachments" / note_id).glob("*.wav"))
     assert len(attached) == 1
+    assert attached[0].name == "voice.wav"
     assert attached[0].read_bytes() == b"fake wav bytes"
+    assert "[attachment: voice.wav]" in note_text
     assert not audio_src.exists()

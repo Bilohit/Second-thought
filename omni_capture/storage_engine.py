@@ -787,21 +787,27 @@ def create_youtube_note(
     return path
 
 
-def _persist_staged_audio(vault_root: Path, note_id: str, audio_staged_path: Optional[Path]) -> None:
+def _attach_staged_audio(vault_root: Path, note_path: Path, audio_staged_path: Optional[Path]) -> None:
     """
-    Claim a Whisper temp-audio file into _attachments/<note_id>/ and unlink the
-    temp file. Shared by both note-write paths that can own a staged voice
-    recording (create_voice_note for long recordings, write_to_vault's voice
-    branch for short ones) -- see O-9 comment in server.py._run_pipeline_blocking
-    for why the temp file must survive until the owning note_id exists.
+    Claim a Whisper temp-audio file as a real vault attachment on *note_path*
+    (which must already have a frontmatter `id`, just written to disk) via
+    note_editor.add_attachment, then unlink the temp file. Shared by both
+    note-write paths that can own a staged voice recording (create_voice_note
+    for long recordings, write_to_vault's voice branch for short ones) -- see
+    O-9 comment in server.py._run_pipeline_blocking for why the temp file
+    must survive until the owning note exists.
     """
     if audio_staged_path is None or not audio_staged_path.exists():
         return
-    from note_editor import attachments_dir
+    from note_editor import add_attachment
 
-    dest_dir = attachments_dir(vault_root, note_id)
-    dest = dest_dir / f"voice{audio_staged_path.suffix}"
-    dest.write_bytes(audio_staged_path.read_bytes())
+    add_attachment(
+        vault_root,
+        str(note_path),
+        f"voice{audio_staged_path.suffix}",
+        audio_staged_path.read_bytes(),
+        expected_mtime=note_path.stat().st_mtime,
+    )
     audio_staged_path.unlink(missing_ok=True)
 
 
@@ -830,8 +836,10 @@ def create_voice_note(
     path = _unique_file_path(base_path)
 
     now = datetime.now().isoformat(timespec="seconds")
+    note_id = uuid.uuid4().hex[:26]
     content = (
         "---\n"
+        f"id: {note_id}\n"
         f"created: {now}\n"
         f"category: {scratchpad_folder}\n"
         "status: summarizing\n"
@@ -847,7 +855,7 @@ def create_voice_note(
     )
     path.write_text(content, encoding="utf-8")
 
-    _persist_staged_audio(vault_root, path.stem, audio_staged_path)
+    _attach_staged_audio(vault_root, path, audio_staged_path)
 
     return path
 
@@ -1041,10 +1049,12 @@ def write_to_vault(
         from datetime import datetime as _dt
         stem = _safe_stem(output.suggested_filename)
         path = vault_root / cat / f"{stem}-{_dt.now():%Y%m%d-%H%M%S-%f}.md"
+        voice_extra_fm = dict(extra_fm or {})
+        voice_extra_fm["id"] = uuid.uuid4().hex[:26]
         _write_new_file(path, output, source_url, body_content=linked_content,
-                        extra_frontmatter=extra_fm, vault_root=vault_root)
+                        extra_frontmatter=voice_extra_fm, vault_root=vault_root)
         _staged = source_metadata.get("audio_staged_path")
-        _persist_staged_audio(vault_root, path.stem, Path(_staged) if _staged else None)
+        _attach_staged_audio(vault_root, path, Path(_staged) if _staged else None)
         print(f"[StorageEngine] created (voice, unique): {path.relative_to(vault_root)}")
         register_in_dedup_index(output.markdown_content, source_url, vault_root, path)
         return path

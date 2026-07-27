@@ -435,6 +435,13 @@ def test_capture_audio_b64_endpoint(vault: Path, tmp_path: Path):
     assert len(attachments_dirs) == 1, (
         f"Expected exactly one persisted voice attachment, found {attachments_dirs}"
     )
+    # The attachment lives under _attachments/<note id>/, and add_attachment
+    # requires the note to carry that id in frontmatter first.
+    note_id = attachments_dirs[0].parent.name
+    notes = list(vault.glob("**/*.md"))
+    matching = [p for p in notes if f"id: {note_id}" in p.read_text(encoding="utf-8")]
+    assert len(matching) == 1, "voice note must carry the frontmatter id its attachment dir is named for"
+    assert "[attachment: voice." in matching[0].read_text(encoding="utf-8")
 
 
 # ── T8: image_b64 endpoint routes to LLaVA ────────────────────────────────────
