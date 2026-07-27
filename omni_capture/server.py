@@ -680,17 +680,21 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
 
         with timer.stage("enrich"):
             if content_type == "audio_b64":
-                # Audio: write temp file, run Whisper, delete temp file.
+                # Audio: write temp file, run Whisper. O-9: the temp file is NO LONGER deleted here --
+                # it must survive until the note that owns it exists (note_id is unknown at this
+                # point), including across the async job hand-off below for long recordings. The
+                # eventual note-write step (create_voice_note / jobs._run_voice_job) copies it into
+                # _attachments/<note_id>/ and unlinks it there. If neither write path claims it (e.g.
+                # an exception before either runs), it is an orphaned OS temp file -- the same failure
+                # mode that existed for the phone's uri before this feature, not a new regression.
                 import tempfile, pathlib as _pathlib
                 from enrichment_router import _enrich_audio
                 audio_bytes = base64.b64decode(content)
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
                     tf.write(audio_bytes)
                     tmp_audio_path = tf.name
-                try:
-                    enriched = _enrich_audio(tmp_audio_path)
-                finally:
-                    _pathlib.Path(tmp_audio_path).unlink(missing_ok=True)
+                enriched = _enrich_audio(tmp_audio_path)
+                enriched.source_metadata["audio_staged_path"] = tmp_audio_path
             else:
                 # text, url, image_b64 -- route_and_enrich handles all three.
                 # image_b64 is dispatched internally to _enrich_image (LLaVA).

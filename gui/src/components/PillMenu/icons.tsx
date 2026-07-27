@@ -99,6 +99,25 @@ export function MicIcon({ size }: { size: number }): JSX.Element {
   );
 }
 
+/** Play triangle — AudioPlayer's play affordance (O-9 voice-attachment player). */
+export function PlayIcon({ size = 16 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polygon points="6 3 21 12 6 21 6 3" />
+    </svg>
+  );
+}
+
+/** Pause bars — AudioPlayer's pause affordance (O-9 voice-attachment player). */
+export function PauseIcon({ size = 16 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="6" y="4" width="4" height="16" rx="1" />
+      <rect x="14" y="4" width="4" height="16" rx="1" />
+    </svg>
+  );
+}
+
 /** Circular "turning arrow" refresh/sync glyph — shared by every vault-index
  *  refresh control (was duplicated inline in LookPanel.tsx). */
 export function RefreshIcon({ size = 16 }: { size?: number }): JSX.Element {
