@@ -25,6 +25,9 @@ import { logger } from "../lib/logger";
 import { diffLines } from "../lib/lineDiff";
 import { BellIcon, ClockIcon } from "./PillMenu/icons";
 import { RADIAL_STAGGER_MS } from "./PillMenu/RadialMenu";
+import { Markdown } from "./Markdown";
+import { TagChip } from "./TagChip";
+import { parseBlocks } from "../lib/markdown";
 
 const TRAVEL = "cubic-bezier(0.22,1,0.36,1)";
 const SETTLE = "cubic-bezier(0.16,1,0.3,1)";
@@ -86,6 +89,22 @@ function IconAttach(props: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
       <path d="M17 7.5l-7.5 7.5a2.5 2.5 0 0 0 3.5 3.5L21 10.5a5 5 0 0 0-7-7L6 11.5a7.5 7.5 0 0 0 10.5 10.5" />
+    </svg>
+  );
+}
+function IconEye(props: { size?: number }) {
+  const size = props.size ?? 15;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" /><circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+function IconPencil(props: { size?: number }) {
+  const size = props.size ?? 15;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
     </svg>
   );
 }
@@ -173,6 +192,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
   const [note, setNote] = useState<NoteContent | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [body, setBody] = useState("");
+  const [mode, setMode] = useState<"view" | "edit">("edit");
   const [baseMtime, setBaseMtime] = useState<number | null>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "conflict" | "error">("idle");
   const [conflictBody, setConflictBody] = useState<string | null>(null);
@@ -234,6 +254,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     setNote(null);
     setLoadError(null);
     setSaveState("idle");
+    setMode("edit");
     setConflictBody(null);
     setPinnedDrawer(null);
     setHoverDrawer(null);
@@ -485,6 +506,8 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notePath, attachmentKey]);
 
+  const blocks = useMemo(() => parseBlocks(body), [body]);
+
   const handleAttachFile = useCallback((file: File | null) => {
     if (!file || !note || baseMtime === null) return;
     setAttachBusy(true);
@@ -604,6 +627,14 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
             />
             <button
               style={iconBtnStyle}
+              onClick={() => setMode((m) => (m === "view" ? "edit" : "view"))}
+              aria-label={mode === "view" ? "Switch to edit" : "Switch to view"}
+              title={mode === "view" ? "Switch to edit" : "Switch to view"}
+            >
+              {mode === "view" ? <IconPencil size={15} /> : <IconEye size={15} />}
+            </button>
+            <button
+              style={iconBtnStyle}
               onClick={() => fileInputRef.current?.click()}
               disabled={attachBusy}
               aria-label="Attach a file"
@@ -662,61 +693,22 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
           <div style={contentStyle}>
             <div style={measureStyle}>
               <h1 style={h1Style}>{note.title}</h1>
-              <textarea
-                ref={textareaRef}
-                style={paperStyle}
-                aria-label="Note body (editable)"
-                spellCheck={false}
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-              />
-
-              {/* F-13: attachment blocks -- image thumbnail / inline audio
-                  player / generic file link, one per `[attachment: ...]`
-                  link found in the body above. Display-only here; authoring
-                  happens via the topbar attach button. */}
-              {attachments.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 20 }}>
-                  {attachments.map((a) => (
-                    <div key={a.filename} style={{ border: "1px solid var(--border)" }}>
-                      <div style={{
-                        display: "flex", alignItems: "center", gap: 6, fontSize: 10,
-                        letterSpacing: "0.08em", color: "var(--text-3)", padding: "6px 10px",
-                        borderBottom: "1px solid var(--border-2)", textTransform: "uppercase",
-                      }}>
-                        {a.kind === "audio" ? "VOICE MEMO" : a.kind === "image" ? "IMAGE" : "FILE"} · {a.filename}
-                      </div>
-                      {a.kind === "image" && attachmentUrls[a.filename] && (
-                        <img
-                          src={attachmentUrls[a.filename]}
-                          alt={a.filename}
-                          style={{ display: "block", width: "100%", maxHeight: 320, objectFit: "contain", background: "var(--surface)" }}
-                        />
-                      )}
-                      {a.kind === "audio" && attachmentUrls[a.filename] && (
-                        // ponytail: native <audio controls> instead of the mock's
-                        // custom waveform scrubber -- zero-dependency playback that
-                        // covers the same job (play/pause/seek/time); revisit with a
-                        // custom waveform only if the native control visibly falls short.
-                        <audio controls style={{ width: "100%", display: "block" }} src={attachmentUrls[a.filename]} />
-                      )}
-                      {a.kind === "file" && attachmentUrls[a.filename] && (
-                        <a
-                          // Same blob URL as the inline cases -- a plain href to
-                          // the route 403s too (the webview navigates without
-                          // the header), so there is no second path here.
-                          href={attachmentUrls[a.filename]}
-                          download={a.filename}
-                          target="_blank"
-                          rel="noreferrer"
-                          style={{ display: "block", padding: "10px 12px", fontSize: 12, color: "var(--text-2)" }}
-                        >
-                          Open {a.filename}
-                        </a>
-                      )}
-                    </div>
-                  ))}
+              {note.tags.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "0 0 16px" }}>
+                  {note.tags.map((t) => <TagChip key={t} label={t} />)}
                 </div>
+              )}
+              {mode === "edit" ? (
+                <textarea
+                  ref={textareaRef}
+                  style={paperStyle}
+                  aria-label="Note body (editable)"
+                  spellCheck={false}
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                />
+              ) : (
+                <Markdown blocks={blocks} attachmentUrls={attachmentUrls} />
               )}
             </div>
 
