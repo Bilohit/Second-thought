@@ -417,9 +417,14 @@ def test_capture_audio_b64_endpoint(vault: Path, tmp_path: Path):
 
     assert resp.status_code == 200
     mock_whisper.assert_called_once()
-    # Confirm temp file was deleted
+    # O-9: the temp file is no longer deleted immediately after transcription --
+    # it is staged (source_metadata["audio_staged_path"]) so the note-write step
+    # can copy it into _attachments/<note_id>/. The short-voice generic write
+    # path (this test's below-threshold case) doesn't yet claim it (see O-9
+    # Task 2 scope note), so it is expected to remain on disk as an orphan here,
+    # same failure mode the phone side had pre-feature -- not a regression.
     called_path = mock_whisper.call_args[0][0]
-    assert not Path(called_path).exists(), "Temp audio file should be deleted after transcription"
+    assert Path(called_path).exists(), "Temp audio file should survive transcription (O-9 staging)"
 
 
 # ── T8: image_b64 endpoint routes to LLaVA ────────────────────────────────────

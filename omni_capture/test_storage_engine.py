@@ -605,3 +605,25 @@ def test_voice_capture_always_new_timestamped_file(tmp_path):
     assert p1 != p2
     assert "first recording" in p1.read_text(encoding="utf-8")
     assert "second recording" in p2.read_text(encoding="utf-8")
+
+
+def test_create_voice_note_copies_staged_audio_into_attachments(tmp_path):
+    from storage_engine import create_voice_note
+
+    vault_root = tmp_path / "vault"
+    vault_root.mkdir()
+    audio_src = tmp_path / "staged.wav"
+    audio_src.write_bytes(b"fake wav bytes")
+
+    note_path = create_voice_note(
+        title=None,
+        transcript_md="hello world",
+        vault_root=vault_root,
+        audio_staged_path=audio_src,
+    )
+
+    note_id = note_path.stem
+    attached = list((vault_root / "_attachments" / note_id).glob("*.wav"))
+    assert len(attached) == 1
+    assert attached[0].read_bytes() == b"fake wav bytes"
+    assert not audio_src.exists()

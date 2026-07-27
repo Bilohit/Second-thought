@@ -792,6 +792,7 @@ def create_voice_note(
     transcript_md: str,
     vault_root: Path,
     scratchpad_folder: str = "_scratchpad",
+    audio_staged_path: Optional[Path] = None,
 ) -> Path:
     """
     Sibling of create_youtube_note for long voice recordings: write the full,
@@ -827,6 +828,16 @@ def create_voice_note(
         f"{transcript_md}\n"
     )
     path.write_text(content, encoding="utf-8")
+
+    if audio_staged_path is not None and audio_staged_path.exists():
+        from note_editor import attachments_dir
+
+        note_id = path.stem
+        dest_dir = attachments_dir(vault_root, note_id)
+        dest = dest_dir / f"voice{audio_staged_path.suffix}"
+        dest.write_bytes(audio_staged_path.read_bytes())
+        audio_staged_path.unlink(missing_ok=True)
+
     return path
 
 

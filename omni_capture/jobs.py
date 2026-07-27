@@ -429,7 +429,14 @@ def _run_voice_job(job_id: str, enriched, cfg) -> None:
         title = None
         segments = [{"text": ln} for ln in full_text.splitlines() if ln.strip()]
 
-        path = create_voice_note(title, full_text, cfg.vault.root, cfg.vault.scratchpad_folder)
+        _staged = enriched.source_metadata.get("audio_staged_path")
+        path = create_voice_note(
+            title,
+            full_text,
+            cfg.vault.root,
+            cfg.vault.scratchpad_folder,
+            audio_staged_path=Path(_staged) if _staged else None,
+        )
         return _TranscriptFetch(
             full_text=full_text,
             segments=segments,

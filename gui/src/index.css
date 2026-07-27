@@ -1524,3 +1524,55 @@ html, body, #root {
 /* Header icon tab strip (formerly CompactShell's `tabs` variant) was
    retired in Task 2.2 (GATE-B=A) — the bar itself is the only target
    switcher now; see CompactShell.tsx's header comment. */
+
+/* ── AudioPlayer (O-9): inline voice-note attachment player ──────────────
+   Matches the phone's waveform AudioAttachment silhouette + play/pause +
+   mm:ss/mm:ss label, using the native <audio> element (Tauri webview). */
+.audio-player {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.audio-player__play {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-1);
+  cursor: pointer;
+  transition: background var(--hover-dur) var(--hover-ease-out), border-color var(--hover-dur) var(--hover-ease-out);
+}
+.audio-player__play:hover {
+  background: var(--hover-bg);
+  border-color: var(--hover-border);
+}
+.audio-player__wave {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  min-width: 0;
+}
+.audio-player__bar {
+  width: 2px;
+  background: var(--text-3);
+}
+.audio-player__bar--played {
+  background: var(--text-1);
+}
+.audio-player__time {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+  .audio-player__play {
+    transition: none;
+  }
+}
