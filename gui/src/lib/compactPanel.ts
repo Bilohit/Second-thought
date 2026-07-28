@@ -19,7 +19,7 @@
  * Pure module: no Tauri imports, no side effects, logical px throughout.
  */
 
-export const PANEL_W = 288; // = CAPSULE_OPEN_W
+export const PANEL_W = 332; // = CAPSULE_OPEN_W (7 ALL_TARGETS × 44 + 24 pad); the compactPanel.test.ts equality lock forces this to track when a target is added/removed
 export const PANEL_H = 320;
 export const PANEL_GAP = 0; // GATE-1 resolved: option A, fused border
 export const PANEL_ANIM_MS = 300;

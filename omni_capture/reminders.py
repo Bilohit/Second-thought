@@ -19,9 +19,10 @@ import sqlite3
 
 _IS_WINDOWS = sys.platform.startswith("win")
 
-# ponytail: /SD format is locale-dependent (dd/mm here); verified on this
-# machine only -- switch to schtasks /XML if another locale breaks it.
-_SCHTASKS_DATE_FMT = "%d/%m/%Y"
+# schtasks /SD accepts YYYY/MM/DD unambiguously regardless of the machine's regional short-date
+# format -- this replaces the earlier %d/%m/%Y, which silently misfired under an MM/DD/YYYY locale
+# (O-7 WS-4 hardening; the prior ponytail ceiling is resolved, not just re-marked).
+_SCHTASKS_DATE_FMT = "%Y/%m/%d"
 
 # SRV-09: characters that let a note title break out of the quoted /TR command line
 # that schtasks re-parses. `"` closes the argument; the rest are cmd metacharacters
@@ -219,12 +220,15 @@ def sync_reminders_from_notes(db_path: Path, notes: list[tuple[str, str]]) -> di
         cur = existing.get(note_path)
         if want:
             label = note.title or Path(note_path).stem
+            # WS-4: prefer exact 'os' (Task Scheduler) delivery for synced reminders -- fires on the
+            # scheduled minute even with the app closed. create_reminder() falls back to 'app'
+            # automatically on non-Windows (its own guard), so this stays cross-platform-safe.
             if cur is None:
-                create_reminder(db_path, note_path=note_path, label=label, fire_at_iso=want)
+                create_reminder(db_path, note_path=note_path, label=label, fire_at_iso=want, delivery="os")
                 created += 1
             elif cur["fire_at"] != want:
                 delete_reminder(db_path, cur["id"])
-                create_reminder(db_path, note_path=note_path, label=label, fire_at_iso=want)
+                create_reminder(db_path, note_path=note_path, label=label, fire_at_iso=want, delivery="os")
                 updated += 1
         elif cur is not None:
             delete_reminder(db_path, cur["id"])

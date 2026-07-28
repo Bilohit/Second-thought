@@ -1672,6 +1672,44 @@ def test_reconcile_pull_records_base_parent():
     assert new_state["n1"]["base_parent"] == "research"
 
 
+def test_reconcile_pull_relocates_local_file_on_incoming_category_move(tmp_path):
+    # A peer (the phone) recategorized a note: the hub head advanced and its PARENT changed
+    # (_scratchpad -> work), but the body is byte-identical. Category is folder-derived, so the
+    # desktop must MOVE its local mirror file into work/ (creating the folder) to consume the move.
+    # Regression: the pull branch wrote the remote bytes back to the OLD folder, leaving the file in
+    # _scratchpad while sync-state recorded base_parent=work — a silent local/sync-state divergence.
+    scratch = tmp_path / "_scratchpad"
+    scratch.mkdir()
+    seed = (
+        "---\nid: n1\ntitle: T\norigin: note\ncreated: 2026-01-01T00:00:00Z\n"
+        "modified: 2026-01-01T00:00:00Z\ndevice: phone\ntags: []\naliases: []\n"
+        "attachments: []\nenriched: true\n---\nUnchanged body"
+    )
+    old_path = scratch / "T.md"
+    old_path.write_text(seed, encoding="utf-8")
+    # Hub head advanced (re-parented to work); body identical, only modified changed on the remote.
+    remote = seed.replace(
+        "modified: 2026-01-01T00:00:00Z", "modified: 2026-01-02T00:00:00Z"
+    )
+    vault_notes = {
+        "n1": {"id": "n1", "path": str(old_path), "content": seed, "body": "Unchanged body",
+               "hash": _sha256(seed), "category": "_scratchpad", "title": "T",
+               "created": "2026-01-01T00:00:00Z"}
+    }
+    hub_files = {"n1": {"id": "F1", "headRevisionId": "rev9", "category": "work"}}
+    state = {"n1": {"drive_file_id": "F1", "base_rev": "rev1", "local_hash": _sha256(seed),
+                    "base_parent": "_scratchpad", "hub_name": "T.md"}}
+    drive = _recon_drive(remote)
+    reconciled, conflicts, failed, new_state = reconcile_changes(
+        vault_notes, hub_files, state, drive, "hub",
+    )
+    assert (reconciled, conflicts, failed) == (1, 0, 0)
+    assert (tmp_path / "work" / "T.md").exists()        # relocated into the new category folder
+    assert not old_path.exists()                        # moved out of _scratchpad
+    assert (tmp_path / "work" / "T.md").read_text(encoding="utf-8") == remote  # remote bytes verbatim
+    assert new_state["n1"]["base_parent"] == "work"
+
+
 def test_pull_new_hub_notes_records_base_parent(tmp_path):
     from mobile_sync_agent import pull_new_hub_notes
     remote = "---\nid: n1\norigin: note\n---\nBody"
@@ -1717,10 +1755,15 @@ def test_run_once_reminders_failsoft(tmp_path, monkeypatch):
     assert len(result) == 7
 
 
-def test_build_reminders_fn_reconciles_db(tmp_path):
+def test_build_reminders_fn_reconciles_db(tmp_path, monkeypatch):
     from mobile_sync_agent import _build_reminders_fn
     from reminders import list_reminders
     from index_writer import get_db_path
+    import reminders as reminders_mod
+
+    # WS-4: synced reminders now request delivery="os", which on Windows would fire a real schtasks
+    # subprocess. Stub it so this reconcile test stays hermetic (it asserts DB reconcile, not delivery).
+    monkeypatch.setattr(reminders_mod, "_create_schtask", lambda *a, **k: None)
 
     _note_file(tmp_path, "n1.md",
                "id: n1\norigin: note\ntitle: Call\nremind_at: 2030-06-01T09:00", "Body.\n")

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseBlocks, parseInline } from "./markdown";
+import { parseBlocks, parseInline, blockKey } from "./markdown";
 
 describe("parseInline", () => {
   it("parses plain text with no markers", () => {
@@ -68,5 +68,26 @@ describe("parseBlocks", () => {
       { kind: "attachment", filename: "photo.png" },
       { kind: "paragraph", spans: [{ kind: "text", value: "after" }] },
     ]);
+  });
+});
+
+describe("blockKey", () => {
+  it("is stable for a block when unrelated blocks are inserted above it", () => {
+    const target = parseBlocks("- [ ] todo")[0];
+    const before = blockKey(target);
+    const shifted = parseBlocks("new paragraph\n\nanother one\n\n- [ ] todo");
+    const after = blockKey(shifted[shifted.length - 1]);
+    expect(after).toBe(before);
+  });
+
+  it("differs across block kinds and content", () => {
+    const [heading, bullet] = parseBlocks("# Title\n- Title");
+    expect(blockKey(heading)).not.toBe(blockKey(bullet));
+  });
+
+  it("is stable for an attachment block regardless of surrounding text", () => {
+    const a = parseBlocks("[attachment: voice.wav]")[0];
+    const b = parseBlocks("intro\n\n[attachment: voice.wav]")[0 + 1];
+    expect(blockKey(a)).toBe(blockKey(b));
   });
 });

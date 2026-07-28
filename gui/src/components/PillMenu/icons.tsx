@@ -8,10 +8,11 @@
  */
 import type { JSX } from "react";
 
-export type MenuTarget = "search" | "vault" | "settings" | "inbox" | "stats" | "hide";
+export type MenuTarget = "search" | "today" | "vault" | "settings" | "inbox" | "stats" | "hide";
 
 export const MENU_LABELS: Record<MenuTarget, string> = {
   search: "Look",
+  today: "Today",
   vault: "Vault",
   settings: "Settings",
   inbox: "Inbox",
@@ -19,7 +20,7 @@ export const MENU_LABELS: Record<MenuTarget, string> = {
   hide: "Hide",
 };
 
-export const NAV_TARGETS: Exclude<MenuTarget, "hide">[] = ["search", "vault", "settings", "inbox", "stats"];
+export const NAV_TARGETS: Exclude<MenuTarget, "hide">[] = ["search", "today", "vault", "settings", "inbox", "stats"];
 export const ALL_TARGETS: MenuTarget[] = [...NAV_TARGETS, "hide"];
 
 export function MenuIcon({ target, size = 16 }: { target: MenuTarget; size?: number }): JSX.Element {
@@ -43,6 +44,14 @@ export function MenuIcon({ target, size = 16 }: { target: MenuTarget; size?: num
         <svg {...common}>
           <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
           <circle cx="12" cy="12" r="3" />
+        </svg>
+      );
+    case "today":
+      // Calendar — the TODAY/agenda view glyph (matches the phone tab's CalendarIcon).
+      return (
+        <svg {...common}>
+          <rect x="3" y="4" width="18" height="18" rx="0" />
+          <path d="M3 10h18M8 2v4M16 2v4" />
         </svg>
       );
     case "vault":

@@ -16,7 +16,7 @@ import { CAPSULE_OPEN_W } from "../components/PillMenu/CapsuleMenu";
 
 describe("constants", () => {
   it("exports the agreed panel constants", () => {
-    expect(PANEL_W).toBe(288);
+    expect(PANEL_W).toBe(332);
     expect(PANEL_H).toBe(320);
     expect(PANEL_GAP).toBe(0);
     expect(PANEL_ANIM_MS).toBe(300);

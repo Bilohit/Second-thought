@@ -1707,6 +1707,40 @@ async def delete_reminder_endpoint(reminder_id: int, _: None = Depends(_require_
     delete_reminder(db, reminder_id)
 
 
+# -- TODAY / agenda view (PARCHMENT-BOOST D-A) ---------------------------------
+
+@app.get("/today")
+async def get_today(day: Optional[str] = None, _: None = Depends(_require_secret)):
+    """Aggregate the desktop TODAY/agenda view for `day` (YYYY-MM-DD, default local today):
+    pending reminders split into overdue/due-today, the scratchpad count, and the day's daily note
+    (S1 title-match). Read-only — never writes a note or reminder (plan §10 task 11)."""
+    from datetime import datetime
+    from config import get_config
+    from index_writer import get_db_path
+    from today_view import build_today
+    cfg = get_config()
+    now = datetime.now()
+    day_iso = day or now.strftime("%Y-%m-%d")
+    return build_today(
+        Path(cfg.vault.root), get_db_path(cfg.vault.root), day_iso, now,
+        scratchpad_folder=cfg.vault.scratchpad_folder,
+    )
+
+
+@app.post("/today/daily-note")
+async def create_today_daily_note(day: Optional[str] = None, _: None = Depends(_require_secret)):
+    """Find-or-create the daily note for `day` (YYYY-MM-DD, default local today) into the vault's
+    `Daily/` folder. The ONLY action by which the desktop originates a note (origin:note,
+    origin_device:desktop). Idempotent + body-sacred: returns the existing note UNTOUCHED if one
+    already matches. An explicit POST — never a side-effect of GET /today. Returns {id,path,title}."""
+    from datetime import datetime
+    from config import get_config
+    from today_view import create_daily_note
+    cfg = get_config()
+    day_iso = day or datetime.now().strftime("%Y-%m-%d")
+    return create_daily_note(Path(cfg.vault.root), day_iso)
+
+
 # -- Full-window note editor (F-7) ---------------------------------------------
 
 @app.get("/note")

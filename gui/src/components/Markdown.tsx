@@ -4,7 +4,7 @@
 // in place (at their line position), replacing NoteEditor's old bottom-collected attachment list.
 import type { CSSProperties } from "react";
 import type { Block, Span } from "../lib/markdown";
-import { kindOf } from "../lib/markdown";
+import { kindOf, blockKey } from "../lib/markdown";
 import { AudioPlayer } from "./AudioPlayer";
 
 function Spans({ spans }: { spans: Span[] }) {
@@ -53,15 +53,26 @@ function AttachmentBlock({ filename, url }: { filename: string; url: string | un
 }
 
 export function Markdown({ blocks, attachmentUrls }: { blocks: Block[]; attachmentUrls: Record<string, string> }) {
+  // blockKey is content-derived (not positional), so inserting/removing a block
+  // elsewhere doesn't reshuffle which component instance a given block keeps.
+  // Duplicate-content blocks hash equal -- disambiguate with an occurrence count.
+  const seen = new Map<string, number>();
+  const keyFor = (b: Block) => {
+    const base = blockKey(b);
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return n === 0 ? base : `${base}:${n}`;
+  };
   return (
     <div style={{ fontSize: 13.5, lineHeight: 1.75, color: "var(--text-1)" }}>
-      {blocks.map((b, i) => {
+      {blocks.map((b) => {
+        const key = keyFor(b);
         if (b.kind === "heading") {
-          return <div key={i} style={{ fontSize: HEADING_SIZE[Math.min(b.level, 3)] ?? 15, fontWeight: 600, margin: "18px 0 8px" }}><Spans spans={b.spans} /></div>;
+          return <div key={key} style={{ fontSize: HEADING_SIZE[Math.min(b.level, 3)] ?? 15, fontWeight: 600, margin: "18px 0 8px" }}><Spans spans={b.spans} /></div>;
         }
         if (b.kind === "check") {
           return (
-            <div key={i} style={{ display: "flex", alignItems: "baseline", gap: 8, margin: "2px 0" }}>
+            <div key={key} style={{ display: "flex", alignItems: "baseline", gap: 8, margin: "2px 0" }}>
               <span style={{ color: b.checked ? "var(--text-2)" : "var(--text-3)" }}>{b.checked ? "[x]" : "[ ]"}</span>
               <span style={{ textDecoration: b.checked ? "line-through" : "none", color: b.checked ? "var(--text-3)" : "var(--text-1)" }}><Spans spans={b.spans} /></span>
             </div>
@@ -69,16 +80,16 @@ export function Markdown({ blocks, attachmentUrls }: { blocks: Block[]; attachme
         }
         if (b.kind === "bullet") {
           return (
-            <div key={i} style={{ display: "flex", gap: 8, margin: "2px 0" }}>
+            <div key={key} style={{ display: "flex", gap: 8, margin: "2px 0" }}>
               <span style={{ color: "var(--text-3)" }}>{"•"}</span>
               <span><Spans spans={b.spans} /></span>
             </div>
           );
         }
         if (b.kind === "attachment") {
-          return <AttachmentBlock key={i} filename={b.filename} url={attachmentUrls[b.filename]} />;
+          return <AttachmentBlock key={key} filename={b.filename} url={attachmentUrls[b.filename]} />;
         }
-        return <p key={i} style={{ margin: "0 0 12px" }}><Spans spans={b.spans} /></p>;
+        return <p key={key} style={{ margin: "0 0 12px" }}><Spans spans={b.spans} /></p>;
       })}
     </div>
   );

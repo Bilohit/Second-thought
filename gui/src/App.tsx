@@ -235,11 +235,11 @@ function getInitialSelectedMonitorId(): string | null {
 
 // ── View ───────────────────────────────────────────────────────────────────
 
-type View = "capture" | "settings" | "vault" | "inbox" | "stats" | "look";
+type View = "capture" | "settings" | "vault" | "inbox" | "stats" | "look" | "today";
 
 // Legacy pill-menu targets → FullWindow rail views (branch C purge).
-const VIEW_TO_RAIL: Record<string, "dashboard" | "look" | "library" | "settings" | "inbox"> = {
-  capture: "dashboard", look: "look", vault: "library", settings: "settings", inbox: "inbox", stats: "library",
+const VIEW_TO_RAIL: Record<string, "dashboard" | "today" | "look" | "library" | "settings" | "inbox"> = {
+  capture: "dashboard", look: "look", vault: "library", settings: "settings", inbox: "inbox", stats: "library", today: "today",
 };
 
 // ── Animated window movement ────────────────────────────────────────────────
@@ -2239,6 +2239,15 @@ export default function App() {
   // Selecting a nav item closes the menu and expands to the full window on
   // that view; "search" routes to the look view instead of a modal.
   const handleMenuSelect = useCallback((target: Exclude<MenuTarget, "hide">) => {
+    // TODAY has no compact panel (desktop D1 = FullWindow only; D2 flyout dropped) — it always
+    // opens the full-window TODAY view, switching out of a compact mode if needed.
+    if (target === "today") {
+      closePillMenu();
+      if (displayMode !== "full") setDisplayMode("full");
+      setExpanded(true);
+      setView("today");
+      return;
+    }
     if (displayMode === "full") {
       closePillMenu();
       setExpanded(true);

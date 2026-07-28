@@ -585,6 +585,48 @@ def _maybe_rename_local(local_path: str, hub_name: Optional[str],
     return new_path
 
 
+def _maybe_refile_local(local_path: str, hub_category: Optional[str], note_id: str) -> str:
+    """Local half of consuming a MOVE: when an incoming hub parent-change (a peer recategorized the
+    note — PKG-CAT-PHONE's phone move op) names a real category folder different from the one the
+    vault file currently sits in, relocate the file into vault/<hub-category>/<name>, creating the
+    category folder if new.
+
+    Category is folder-derived (data-model §1.2), so the local folder MUST track the hub parent or
+    the desktop's derived category silently diverges from sync-state's `base_parent` — the exact
+    file-stays-in-_scratchpad-but-base_parent=work divergence a phone recategorize otherwise left
+    (the reconcile pull/merge paths recorded the new parent but wrote the bytes back to the old
+    folder). Mirrors _maybe_rename_local: atomic os.replace BEFORE any new content is written, so the
+    note is never bodyless mid-move nor duplicated under both folders.
+
+    A FALSY hub_category is a NO-OP (never a move to the scratchpad/root): the phone's recategorize
+    picker filters the scratchpad out, so it can never move a note back to uncategorized — an
+    incoming empty category is 'unchanged/unknown', not an explicit move-to-root. Leaving the file
+    put also keeps the many reconcile unit tests whose minimal hub records omit `category` untouched.
+
+    ponytail: derives the vault root as the file's grandparent (vault/<category>/<name>), the
+    one-level-deep layout read_vault_notes and the pull path both maintain; a genuine vault-root note
+    would resolve wrong, but this sync model never files a note at the root. Returns the (possibly
+    new) path. A path not yet on disk (injected-write_file unit tests, or a not-yet-materialized note)
+    is only RESOLVED — no folder created, no file moved — so the compute stays side-effect-free."""
+    if not hub_category:
+        return local_path  # uncategorized/unknown — never a real phone move (see docstring)
+    p = Path(local_path)
+    if p.parent.name == hub_category:
+        return local_path  # already in the folder the hub names
+    new_path = p.parent.parent / hub_category / p.name
+    if not p.exists():
+        return str(new_path)  # nothing on disk to move (or a fake path) — resolve only, touch nothing
+    if new_path.exists():
+        # SYNC-06 sibling: os.replace silently overwrites — never move onto an existing file (it
+        # would destroy a whole note). Keep the current folder; the next pass retries.
+        print(f"[mobile_sync_agent] refile {note_id} -> {hub_category!r} skipped: destination exists")
+        return local_path
+    new_path.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(local_path, str(new_path))   # atomic within the vault filesystem
+    print(f"[mobile_sync_agent] local refile {note_id}: {p.parent.name!r} -> {hub_category!r}")
+    return str(new_path)
+
+
 def _download_content(drive, file_id: str, expected_md5: Optional[str] = None) -> str:
     """Fetch a hub file's current bytes (Drive `GET ?alt=media`), decoded as UTF-8.
 
@@ -807,7 +849,13 @@ def reconcile_changes(
                 continue
             if not local_changed:
                 # PULL: remote-only change. Verbatim propagation of the other device's edit.
-                write_file(local["path"], remote_text)
+                # A peer's category MOVE arrives here (body identical, only the hub PARENT + modified
+                # changed): relocate the local mirror into the folder the hub now names BEFORE the
+                # write, so the folder-derived category tracks base_parent instead of diverging.
+                pull_path = _maybe_refile_local(
+                    local["path"], hub_file.get("category"), note_id
+                )
+                write_file(pull_path, remote_text)
                 new_state[note_id] = {
                     "drive_file_id": file_id,
                     "base_rev": remote_rev,
@@ -858,6 +906,12 @@ def reconcile_changes(
                 ]).get(note_id, hub_name)
             local_path = _maybe_rename_local(
                 local["path"], hub_name, prior.get("hub_name"), note_id
+            )
+            # A peer's category MOVE that coincides with a local body edit lands in this 3-way path:
+            # relocate the local mirror into the folder the hub now names (base_parent, recorded
+            # below) so the folder-derived category never diverges from it.
+            local_path = _maybe_refile_local(
+                local_path, hub_file.get("category"), note_id
             )
             write_file(local_path, merged_text)
             dest = _resolve_dest_folder(drive, hub_folder_id, local.get("category"), folder_cache)
@@ -1455,7 +1509,7 @@ def run_once(
     # F-5: local-only sync-ignore -- ignored notes never leave this machine
     # in either direction of outbound sync (see sync_ignore.py docstring).
     reconciled, conflicts, r_failed, state = reconcile_changes(
-        filter_ignored_notes(vault_notes, Path(vault_root)), hub_files, state, drive, hub_id
+        filter_ignored_notes(vault_notes, Path(vault_root)), hub_files, state, drive, hub_id,
     )
     # ISS-046: a note sitting in the local `_trash/` must never be re-pulled as a fresh active copy
     # (peer restore / out-of-order delete after the state row was dropped) — that leaves a duplicate

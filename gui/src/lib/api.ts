@@ -720,6 +720,36 @@ export async function deleteReminder(id: number): Promise<void> {
   await assertOk(r, "Failed to delete reminder");
 }
 
+// PARCHMENT-BOOST D-A: the desktop TODAY/agenda view (GET /today). Read-only aggregation —
+// pending reminders split overdue/due-today, scratchpad count, and the day's daily note (S1
+// title-match, or null). Reminder fields mirror the reminders table (label surfaces as `title`).
+export interface TodayReminder { id: number; note_path: string; title: string; fire_at: string; }
+export interface TodayDailyNote { id: string; path: string; title: string; }
+export interface TodayViewData {
+  date: string;
+  overdue: TodayReminder[];
+  due_today: TodayReminder[];
+  scratchpad_count: number;
+  daily_note: TodayDailyNote | null;
+}
+
+export async function getToday(day?: string): Promise<TodayViewData> {
+  const url = day ? `${BASE}/today?day=${encodeURIComponent(day)}` : `${BASE}/today`;
+  const r = await fetch(url, { headers: await authHeaders() });
+  await assertOk(r, "Failed to fetch today");
+  return r.json() as Promise<TodayViewData>;
+}
+
+// Find-or-create the daily note for `day` (default today) into the vault's Daily/ folder. The one
+// desktop-originates-a-note path; idempotent + body-sacred server-side (returns the existing note
+// if one already matches). Returns the note to open.
+export async function createDailyNote(day?: string): Promise<TodayDailyNote> {
+  const url = day ? `${BASE}/today/daily-note?day=${encodeURIComponent(day)}` : `${BASE}/today/daily-note`;
+  const r = await fetch(url, { method: "POST", headers: await authHeaders() });
+  await assertOk(r, "Failed to create daily note");
+  return r.json() as Promise<TodayDailyNote>;
+}
+
 export interface LookSource { n: number; path: string; category: string; filename: string; snippet: string; }
 export type LookTier = "high" | "none" | "talk" | "offline";
 export type LookChatEvent =

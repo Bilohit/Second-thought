@@ -480,8 +480,12 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
   const notePath = note?.path ?? null;
   const attachmentKey = attachments.map((a) => a.filename).join(" ");
   const [attachmentUrls, setAttachmentUrls] = useState<Record<string, string>>({});
+  // View-mode only: in edit mode the raw `[attachment: filename]` line is shown
+  // as plain text in the textarea and no attachment component renders, so
+  // fetching blobs there is pure waste. `mode` is a dependency so switching
+  // modes revokes/re-fetches exactly like the existing cleanup below does.
   useEffect(() => {
-    if (!notePath || attachments.length === 0) { setAttachmentUrls({}); return; }
+    if (mode !== "view" || !notePath || attachments.length === 0) { setAttachmentUrls({}); return; }
     let cancelled = false;
     const created: string[] = [];
     Promise.all(
@@ -505,7 +509,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
       setAttachmentUrls({});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [notePath, attachmentKey]);
+  }, [mode, notePath, attachmentKey]);
 
   const blocks = useMemo(() => parseBlocks(body), [body]);
 
@@ -694,7 +698,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
           <div style={contentStyle}>
             <div style={measureStyle}>
               <h1 style={h1Style}>{note.title}</h1>
-              {note.tags.length > 0 && (
+              {mode === "view" && note.tags.length > 0 && (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "0 0 16px" }}>
                   {note.tags.map((t) => <TagChip key={t} label={t} />)}
                 </div>

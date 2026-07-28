@@ -5,6 +5,7 @@ import LookPanel from "../LookPanel";
 import SettingsPanel from "../SettingsPanel";
 import DashboardView from "./DashboardView";
 import LibraryView from "./LibraryView";
+import TodayView from "./TodayView";
 import { railSliderFromElement } from "../../lib/railSelection";
 import { MenuIcon, DashboardIcon } from "../PillMenu/icons";
 import { syncVaultIndex, getStats, getInbox } from "../../lib/api";
@@ -28,9 +29,9 @@ interface LookChatHook {
   setIgnoreHistory: (enabled: boolean) => void;
 }
 
-type MainView = "dashboard" | "look" | "library";
+type MainView = "dashboard" | "today" | "look" | "library";
 type RailView = MainView | "settings" | "inbox";
-const MAIN_VIEWS: MainView[] = ["dashboard", "look", "library"];
+const MAIN_VIEWS: MainView[] = ["dashboard", "today", "look", "library"];
 // ISS-022: the folder-panel nav label is "Vault" everywhere — was "Library"
 // here vs "Vault" in Capsule/Minimal mode. The container still holds the
 // Vault/Tags/Trash sub-tabs (segmented toggle below); its own "Vault"
@@ -38,6 +39,7 @@ const MAIN_VIEWS: MainView[] = ["dashboard", "look", "library"];
 // under it don't repeat the same word.
 const TITLES: Record<RailView, [string, string]> = {
   dashboard: ["Dashboard", "capture · recent · inbox"],
+  today:     ["Today", "agenda · daily note"],
   look:      ["Look", "search · chat over vault"],
   library:   ["Vault", "folders · category · rhythm"],
   settings:  ["Settings", ""],
@@ -231,7 +233,7 @@ export default function FullWindow(props: FullWindowProps) {
                 aria-label={TITLES[v][0]}
                 aria-pressed={view === v}
               >
-                {v === "dashboard" ? <DashboardIcon size={18} /> : v === "look" ? <MenuIcon target="search" size={18} /> : <MenuIcon target="vault" size={18} />}
+                {v === "dashboard" ? <DashboardIcon size={18} /> : v === "today" ? <MenuIcon target="today" size={18} /> : v === "look" ? <MenuIcon target="search" size={18} /> : <MenuIcon target="vault" size={18} />}
               </button>
             ))}
           </div>
@@ -338,6 +340,11 @@ export default function FullWindow(props: FullWindowProps) {
               onVoiceToggle={props.onVoiceToggle}
               onVoiceCancel={props.onVoiceCancel}
             />
+          </div>
+        )}
+        {view === "today" && (
+          <div key="today" className="fw-view-panel">
+            <TodayView visible onOpenNote={setEditorPath} />
           </div>
         )}
         {view === "look" && (

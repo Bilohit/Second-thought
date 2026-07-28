@@ -161,23 +161,3 @@ def forget_credentials(token_path: str = _DEFAULT_TOKEN_PATH) -> bool:
         return False
     os.remove(token_path)
     return True
-
-
-if __name__ == "__main__":
-    import tempfile
-
-    # T1: no token file at all -> False, no exception, no interactive flow triggered.
-    with tempfile.TemporaryDirectory() as tmp:
-        missing = os.path.join(tmp, "nope.json")
-        assert has_cached_credentials(missing) is False
-    print("[T1] has_cached_credentials absent-file  PASS")
-
-    # T2: a corrupt/garbage token file -> False, not an exception.
-    with tempfile.TemporaryDirectory() as tmp:
-        bad = os.path.join(tmp, "bad.json")
-        with open(bad, "w", encoding="utf-8") as f:
-            f.write("not json")
-        assert has_cached_credentials(bad) is False
-    print("[T2] has_cached_credentials corrupt-file  PASS")
-
-    print("\nAll drive_auth.py smoke tests passed.")

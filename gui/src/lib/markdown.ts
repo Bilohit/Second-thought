@@ -82,5 +82,28 @@ export function parseBlocks(body: string): Block[] {
   return blocks;
 }
 
+// -- stable React keys for rendered blocks ------------------------------------
+// Array index alone breaks when blocks are inserted/removed above an existing
+// block: React then reuses that array slot's component instance for a
+// different block, losing transient state (e.g. a checkbox's in-flight
+// toggle, an attachment mid-fetch). Derive the key from the block's own text
+// instead of its position, so it survives edits made elsewhere in the note.
+function blockText(b: Block): string {
+  if (b.kind === "attachment") return b.filename;
+  return b.spans.map((s) => (s.kind === "wikilink" ? s.target : s.value)).join("");
+}
+
+function hashText(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+// Duplicate-content blocks (e.g. two identical checklist items) hash equal;
+// callers disambiguate with a running occurrence count -- see Markdown.tsx.
+export function blockKey(b: Block): string {
+  return `${b.kind}:${hashText(blockText(b))}`;
+}
+
 // Re-export so Markdown.tsx doesn't need a second import for attachment-kind lookup.
 export { kindOf };

@@ -33,6 +33,7 @@ import {
   focusRing, blurRing,
 } from "./ui/styles";
 import { Tabs } from "./ui/Tabs";
+import { Toggle } from "./ui/Toggle";
 import { SaveIcon } from "./PillMenu/icons";
 import SyncPanel from "./Sync/SyncPanel";
 
@@ -245,10 +246,34 @@ function AnchorGlyph({ anchor, active }: { anchor: PillAnchor; active: boolean }
 function Field({
   label,
   children,
+  inline = false,
 }: {
   label: string;
   children: ReactNode;
+  inline?: boolean;
 }) {
+  if (inline) {
+    // Same row geometry as Sync tab's SettingRow (gap 12, alignItems center,
+    // label in a flex:1 wrapper) — label and control share one baseline.
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <label
+          style={{
+            flex: 1,
+            minWidth: 0,
+            fontSize: 10,
+            fontWeight: 600,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: "var(--text-3)",
+          }}
+        >
+          {label}
+        </label>
+        {children}
+      </div>
+    );
+  }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
       <label
@@ -730,29 +755,12 @@ export default function SettingsPanel({
             )}
 
             {onTogglePillPinned && pillPinned !== undefined && (
-              <Field label="Stay Pinned">
-                <div style={optionRowStyle}>
-                  {([{ v: true, label: "On" }, { v: false, label: "Off" }] as const).map(({ v, label }) => {
-                    const active = pillPinned === v;
-                    return (
-                      <button
-                        key={label}
-                        onClick={() => onTogglePillPinned?.(v)}
-                        className="btn-hover"
-                        style={{
-                          ...BTN_SECONDARY,
-                          flex: 1,
-                          background: active ? "var(--accent)" : (BTN_SECONDARY.background as string),
-                          color: active ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
-                          borderColor: active ? "var(--accent)" : "var(--border)",
-                        }}
-                        aria-pressed={active}
-                      >
-                        {label}
-                      </button>
-                    );
-                  })}
-                </div>
+              <Field label="Stay Pinned" inline>
+                <Toggle
+                  label="Stay Pinned"
+                  checked={pillPinned}
+                  onChange={(v) => onTogglePillPinned?.(v)}
+                />
               </Field>
             )}
 
@@ -824,31 +832,13 @@ export default function SettingsPanel({
             {onTogglePillSnap && pillSnapEnabled !== undefined && (() => {
               const snapApplicable = pillAnchor === "custom";
               return (
-                <Field label="Snap to Edge & Corner">
-                  <div style={{ ...optionRowStyle, opacity: snapApplicable ? 1 : 0.4 }}>
-                    {([{ v: true, label: "On" }, { v: false, label: "Off" }] as const).map(({ v, label }) => {
-                      const active = pillSnapEnabled === v;
-                      return (
-                        <button
-                          key={label}
-                          disabled={!snapApplicable}
-                          onClick={() => snapApplicable && onTogglePillSnap(v)}
-                          className={snapApplicable ? "btn-hover" : undefined}
-                          style={{
-                            ...BTN_SECONDARY,
-                            flex: 1,
-                            background: active ? "var(--accent)" : (BTN_SECONDARY.background as string),
-                            color: active ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
-                            borderColor: active ? "var(--accent)" : "var(--border)",
-                            cursor: snapApplicable ? "pointer" : "not-allowed",
-                          }}
-                          aria-pressed={active}
-                        >
-                          {label}
-                        </button>
-                      );
-                    })}
-                  </div>
+                <Field label="Snap to Edge & Corner" inline>
+                  <Toggle
+                    label="Snap to Edge & Corner"
+                    checked={pillSnapEnabled}
+                    disabled={!snapApplicable}
+                    onChange={(v) => onTogglePillSnap(v)}
+                  />
                 </Field>
               );
             })()}
@@ -948,29 +938,12 @@ export default function SettingsPanel({
             </Field>
 
             {/* Auto-describe new folders */}
-            <Field label="Auto-describe New Folders">
-              <div style={optionRowStyle}>
-                {([{ v: true, label: "On" }, { v: false, label: "Off" }] as const).map(({ v, label }) => {
-                  const active = autoDescribe === v;
-                  return (
-                    <button
-                      key={label}
-                      onClick={() => { setAutoDescribe(v); markDirty(); }}
-                      className="btn-hover"
-                      style={{
-                        ...BTN_SECONDARY,
-                        flex: 1,
-                        background: active ? "var(--accent)" : (BTN_SECONDARY.background as string),
-                        color: active ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
-                        borderColor: active ? "var(--accent)" : "var(--border)",
-                      }}
-                      aria-pressed={active}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
+            <Field label="Auto-describe New Folders" inline>
+              <Toggle
+                label="Auto-describe New Folders"
+                checked={autoDescribe}
+                onChange={(v) => { setAutoDescribe(v); markDirty(); }}
+              />
             </Field>
 
             {/* Reminder delivery */}
@@ -1038,29 +1011,12 @@ export default function SettingsPanel({
             {/* Geometry debug logging — on by default; logs window/monitor/
                 scale geometry to the same log file via geoLog (scope "geo"),
                 for diagnosing pill drag/clamp boundary issues. */}
-            <Field label="Geometry Debug Logging">
-              <div style={optionRowStyle}>
-                {([{ v: true, label: "On" }, { v: false, label: "Off" }] as const).map(({ v, label }) => {
-                  const active = geoDebug === v;
-                  return (
-                    <button
-                      key={label}
-                      onClick={() => { setGeoDebugState(v); setGeoDebugEnabled(v); }}
-                      className="btn-hover"
-                      style={{
-                        ...BTN_SECONDARY,
-                        flex: 1,
-                        background: active ? "var(--accent)" : (BTN_SECONDARY.background as string),
-                        color: active ? "var(--on-accent)" : (BTN_SECONDARY.color as string),
-                        borderColor: active ? "var(--accent)" : "var(--border)",
-                      }}
-                      aria-pressed={active}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
+            <Field label="Geometry Debug Logging" inline>
+              <Toggle
+                label="Geometry Debug Logging"
+                checked={geoDebug}
+                onChange={(v) => { setGeoDebugState(v); setGeoDebugEnabled(v); }}
+              />
             </Field>
 
             {onSelectLookChatPersist && lookChatPersist && (
