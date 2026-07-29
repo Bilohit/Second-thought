@@ -17,7 +17,7 @@ import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
   BTN_GHOST, BTN_SECONDARY, INPUT_STYLE,
 } from "./ui/styles";
-import { RefreshIcon, SendIcon, AlertIcon } from "./PillMenu/icons";
+import { RefreshIcon, SendIcon, AlertIcon, CloseIcon, SearchIcon } from "./PillMenu/icons";
 
 interface LookChatHook {
   messages: ChatMessage[];
@@ -334,10 +334,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
               <RefreshIcon size={13} />
             </button>
             <button className="no-drag icon-close-btn" onClick={onClose} title="Close" aria-label="Close">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="2" y1="2" x2="12" y2="12" />
-                <line x1="12" y1="2" x2="2" y2="12" />
-              </svg>
+              <CloseIcon size={14} />
             </button>
           </div>
         </div>
@@ -388,15 +385,9 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
           <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
             {/* Search input row */}
             <div style={{ display: "flex", alignItems: "center", padding: compact ? "6px 12px" : "12px 14px", gap: 10, borderBottom: "1px solid var(--border)" }}>
-              <svg
-                width="14" height="14" viewBox="0 0 24 24"
-                fill="none" stroke="var(--text-3)" strokeWidth="2"
-                strokeLinecap="round" strokeLinejoin="round"
-                aria-hidden="true" style={{ flexShrink: 0 }}
-              >
-                <circle cx="11" cy="11" r="8" />
-                <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              </svg>
+              <span aria-hidden="true" style={{ display: "flex", flexShrink: 0, color: "var(--text-3)" }}>
+                <SearchIcon size={14} />
+              </span>
               <input
                 ref={searchInputRef}
                 type="text"

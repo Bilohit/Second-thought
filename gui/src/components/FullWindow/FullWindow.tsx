@@ -7,7 +7,7 @@ import DashboardView from "./DashboardView";
 import LibraryView from "./LibraryView";
 import TodayView from "./TodayView";
 import { railSliderFromElement } from "../../lib/railSelection";
-import { MenuIcon, DashboardIcon } from "../PillMenu/icons";
+import { MenuIcon, DashboardIcon, RefreshIcon } from "../PillMenu/icons";
 import { syncVaultIndex, getStats, getInbox } from "../../lib/api";
 import InboxPanel, { type InboxTab } from "../InboxPanel";
 import ErrorBoundary from "../ErrorBoundary";
@@ -279,14 +279,7 @@ export default function FullWindow(props: FullWindowProps) {
                 aria-label="Sync vault index"
                 style={{ opacity: syncing ? 0.5 : 1, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "none", cursor: "pointer", padding: 4, color: "var(--text-2)" }}
               >
-                <svg
-                  width="13" height="13" viewBox="0 0 24 24"
-                  fill="none" stroke="currentColor" strokeWidth="2"
-                  strokeLinecap="round" strokeLinejoin="round"
-                >
-                  <polyline points="23 4 23 10 17 10" />
-                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-                </svg>
+                <RefreshIcon size={13} />
               </button>
               <SegmentedToggle
                 ariaLabel="Look mode"
