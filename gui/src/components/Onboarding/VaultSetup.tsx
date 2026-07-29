@@ -229,7 +229,7 @@ function TitleBar({ step, existingVaultFound }: { step: WizardStep; existingVaul
               {i > 0 && <span style={{ width: 18, height: 1, background: "var(--border)" }} />}
               <span style={{ display: "flex", alignItems: "center", gap: 6, color: active ? "var(--text-1)" : done ? "var(--text-2)" : "var(--text-3)" }}>
                 <span style={{
-                  width: 18, height: 18, borderRadius: "50%",
+                  width: 18, height: 18, borderRadius: 0,
                   border: `1px solid ${active ? "var(--text-1)" : "var(--border)"}`,
                   background: active ? "var(--accent-d)" : "transparent",
                   display: "grid", placeItems: "center", fontSize: 10,
@@ -363,7 +363,7 @@ function FoldersStep({
             >
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <span style={{
-                  width: 18, height: 18, borderRadius: 4, flex: "none",
+                  width: 18, height: 18, borderRadius: 0, flex: "none",
                   border: `1px solid ${isSel ? "var(--text-1)" : "var(--border)"}`,
                   background: isSel ? "var(--text-1)" : "transparent",
                   color: "var(--bg)", display: "grid", placeItems: "center",
@@ -383,7 +383,7 @@ function FoldersStep({
                     style={{
                       width: "100%", resize: "vertical", minHeight: 38, fontFamily: "inherit",
                       fontSize: 12, color: "var(--text-2)", background: "var(--surface)",
-                      border: "1px solid var(--border)", borderRadius: 4, padding: "8px 10px", lineHeight: 1.45,
+                      border: "1px solid var(--border)", borderRadius: 0, padding: "8px 10px", lineHeight: 1.45,
                     }}
                     onFocus={focusRing}
                     onBlur={blurRing}
@@ -454,7 +454,7 @@ function ReadyStep({
 }
 
 const chipStyle: CSSProperties = {
-  fontSize: 11, padding: "3px 8px", border: "1px solid var(--border)", borderRadius: 20, color: "var(--text-1)",
+  fontSize: 11, padding: "3px 8px", border: "1px solid var(--border)", borderRadius: 0, color: "var(--text-1)",
 };
 
 function ReviewRow({ k, v, last }: { k: string; v: ReactNode; last?: boolean }) {
