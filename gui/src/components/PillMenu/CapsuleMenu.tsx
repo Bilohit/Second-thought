@@ -23,6 +23,7 @@ import type { PillCorner } from "../PillOverlay";
 import { ALL_TARGETS, MENU_LABELS, MenuIcon, type MenuTarget } from "./icons";
 import { sliderRect } from "./capsuleSlider";
 import { staggerDelays } from "../../lib/menuTiming";
+import { cyclicIndex } from "../../lib/focusTrap";
 import type { LlmStatus } from "../../lib/api";
 import type { VoicePhase } from "../../hooks/useVoiceRecording";
 import { formatElapsed } from "../../lib/voiceLimits";
@@ -97,6 +98,10 @@ interface Props {
   onContextMenu?: (e: React.MouseEvent) => void;
   onSelect: (target: Exclude<MenuTarget, "hide">) => void;
   onHide: () => void;
+  /** P1-5: the bar's own toggle button, so Escape can restore focus to the
+   *  control that opened the menu instead of leaving it wherever the last
+   *  focused item happened to be. */
+  toggleRef?: React.Ref<HTMLButtonElement>;
   /** Voice recording (A6): while recording and the bar is closed, the
    *  oscilloscope trace replaces the label text; unused otherwise. */
   voicePhase?: VoicePhase;
@@ -106,7 +111,7 @@ interface Props {
   sampleRate?: number;
 }
 
-export default function CapsuleMenu({ open, corner, label, dotColor, isActive, llmStatus, inboxCount, draggable, dragging, onDragPointerDown, nearEdge, exiting = false, shown = true, panelZone, activeTarget = null, onToggle, onContextMenu, onSelect, onHide, voicePhase, voiceElapsedMs, readWaveform, readSpectrum, sampleRate }: Props) {
+export default function CapsuleMenu({ open, corner, label, dotColor, isActive, llmStatus, inboxCount, draggable, dragging, onDragPointerDown, nearEdge, exiting = false, shown = true, panelZone, activeTarget = null, onToggle, onContextMenu, onSelect, onHide, toggleRef, voicePhase, voiceElapsedMs, readWaveform, readSpectrum, sampleRate }: Props) {
   const isRecording = voicePhase === "recording";
   const sliderRef = useRef<HTMLSpanElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -127,6 +132,14 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
   // Closing the menu shrinks every item back to width 0 — drop the slider
   // immediately so it doesn't visibly collapse with them.
   useEffect(() => { if (!open) hideSlider(); }, [open]);
+
+  // P1-5: on open, focus lands on the first item — matching RadialMenu's
+  // equivalent effect so the two menus are keyboard-consistent (d02's P2
+  // finding).
+  useEffect(() => {
+    if (!open) return;
+    itemRefs.current[0]?.focus();
+  }, [open]);
 
   // ISS-028 fallback: `exiting` is driven by App.tsx's close-morph timer, but
   // if a panel-close interrupts that timeline the prop can get stuck true
@@ -185,6 +198,7 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
     >
       {isActive && <span className="capsule-ring" aria-hidden="true" />}
       <button
+        ref={toggleRef}
         type="button"
         className="capsule-toggle no-drag"
         aria-haspopup="menu"
@@ -254,6 +268,13 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
               onMouseEnter={() => showSliderAt(itemRefs.current[i])}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") { e.preventDefault(); activate(); }
+                // P1-5: trap Tab/Shift+Tab inside the open bar instead of
+                // letting it escape to whatever follows in the DOM.
+                else if (e.key === "Tab") {
+                  e.preventDefault();
+                  const next = cyclicIndex(i, itemRefs.current.length, e.shiftKey ? -1 : 1);
+                  if (next !== -1) itemRefs.current[next]?.focus();
+                }
               }}
             >
               <MenuIcon target={id} size={16} />

@@ -716,6 +716,11 @@ export default function App() {
   // Close synchronously arms capsuleExiting before menuOpen flips — the
   // reconcile effect's closingMenu edge runs after paint, one frame too late
   // for justify/margin, which made right-zone exits snap toward center.
+  // P1-5: the pill/capsule-bar's own trigger button — Escape restores focus
+  // here after closing the menu (see the keyboard-shortcuts effect below),
+  // instead of leaving it wherever the last focused menu item happened to be.
+  const pillTriggerRef = useRef<HTMLButtonElement>(null);
+
   const closePillMenu = useCallback(() => {
     if (displayMode === "capsule") setCapsuleExiting(true);
     setMenuOpen(false);
@@ -939,6 +944,10 @@ export default function App() {
         }
         if (menuOpen) {
           closePillMenu();
+          // P1-5: return focus to the control that opened the menu — without
+          // this, closing via Escape leaves focus on the now-unmounted-or-
+          // hidden menu item, which the browser resolves to BODY.
+          pillTriggerRef.current?.focus();
           return;
         }
         if (view === "look")    { setView("capture"); return; }
@@ -2497,6 +2506,7 @@ export default function App() {
         settingsProps={settingsProps}
         onOpenFile={(path) => openFilePath(path).catch(() => {})}
         reminderToast={reminderUndo ? { message: reminderUndo.message, onUndo: undoReminderCreate } : null}
+        pillTriggerRef={pillTriggerRef}
       />
     );
 

@@ -18,6 +18,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { PillCorner } from "../PillOverlay";
 import { unifiedFan, type FanResult } from "../../lib/fanLayout";
 import { rankByY } from "../../lib/menuTiming";
+import { cyclicIndex } from "../../lib/focusTrap";
 import { useRadialTuning } from "../../lib/devTuning";
 import { ALL_TARGETS, MENU_LABELS, MenuIcon, type MenuTarget } from "./icons";
 
@@ -110,17 +111,23 @@ export default function RadialMenu({ open, corner, pillGeometry, fanStyle, inbox
     if (firstId) itemRefs.current[firstId]?.focus();
   }, [open, positions]);
 
-  const focusByOffset = (fromId: MenuTarget, offset: number) => {
+  const focusByOffset = (fromId: MenuTarget, direction: 1 | -1) => {
     const order = positions.map((p) => p.id as MenuTarget);
     const idx = order.indexOf(fromId);
     if (idx === -1) return;
-    const next = order[(idx + offset + order.length) % order.length];
-    itemRefs.current[next]?.focus();
+    const next = cyclicIndex(idx, order.length, direction);
+    if (next === -1) return;
+    itemRefs.current[order[next]]?.focus();
   };
 
+  // P1-5: Tab/Shift+Tab is trapped inside the ring the same way arrow-key nav
+  // already cycles it — reusing focusByOffset's itemRefs-based focus move
+  // rather than inventing a second focus-management path. Without this,
+  // Tab past the last spoke (or Shift+Tab past the first) escapes to BODY.
   const handleKeyDown = (e: React.KeyboardEvent, id: MenuTarget) => {
     if (e.key === "ArrowRight" || e.key === "ArrowDown") { e.preventDefault(); focusByOffset(id, 1); }
     else if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); focusByOffset(id, -1); }
+    else if (e.key === "Tab") { e.preventDefault(); focusByOffset(id, e.shiftKey ? -1 : 1); }
   };
 
   return (

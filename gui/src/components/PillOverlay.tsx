@@ -157,6 +157,10 @@ interface Props {
    *  toast element, since the pill/capsule OS window is sized tightly
    *  around the bar with no spare room for one. */
   reminderToast?: { message: string; onUndo: () => void } | null;
+  /** P1-5: the pill/capsule-bar's own trigger button, so App.tsx's Escape
+   *  handler can restore focus there after closing the menu instead of
+   *  leaving it wherever the last focused menu item happened to be. */
+  pillTriggerRef?: React.Ref<HTMLButtonElement>;
 }
 
 function stepPillLabel(def: CaptureStep): string {
@@ -192,7 +196,7 @@ export default function PillOverlay({
   pillGeometry, fanStyle, voicePhase, voiceElapsedMs, readWaveform, readSpectrum, sampleRate, onVoiceToggle,
   compactPanel, panelReady, panelZone, panelGeom, islandGeom, islandTarget, capsulePanelTarget, onClosePanel, onPanelError,
   lookMode, onSelectLookMode, lookChat, lookChatPersist,
-  settingsProps, onOpenFile, reminderToast,
+  settingsProps, onOpenFile, reminderToast, pillTriggerRef,
 }: Props) {
   const isActive = captureState.phase === "capturing" || captureState.phase === "background";
   const isError  = captureState.phase === "error";
@@ -320,6 +324,7 @@ export default function PillOverlay({
           </div>
         )}
         <button
+          ref={pillTriggerRef}
           type="button"
           className={`${draggable ? "pill-drag-handle" : ""}${dragging ? " pill-grabbed" : ""}${isRecording ? " pill-hover-rise" : ""}`}
           onPointerDown={draggable ? onDragPointerDown : undefined}
@@ -425,6 +430,7 @@ export default function PillOverlay({
       draggable={draggable}
       dragging={dragging}
       onDragPointerDown={onDragPointerDown}
+      toggleRef={pillTriggerRef}
       nearEdge={nearEdge}
       exiting={capsuleExiting}
       shown={capsuleShown}
