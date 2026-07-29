@@ -569,7 +569,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                       {isSearching ? (
                         <span style={{ color: "var(--text-3)", fontSize: 13 }}>Searching vault…</span>
                       ) : isTyping ? (
-                        <span style={{ color: "var(--text-3)", fontSize: 16, letterSpacing: 2 }}>…</span>
+                        <span className="chat-caret" style={{ color: "var(--text-3)", fontSize: 16, letterSpacing: 2 }}>…</span>
                       ) : isUser ? (
                         msg.content
                       ) : isFailed ? (
@@ -646,11 +646,12 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                     {/* Citation source chips — vault answers only */}
                     {!isUser && !isTalk && msg.sources && msg.sources.length > 0 && !isTyping && !isSearching && (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 4, paddingLeft: 2 }}>
-                        {msg.sources.map((src) => (
+                        {msg.sources.map((src, si) => (
                           <button
                             key={src.n}
                             onClick={() => openFilePath(src.path)}
                             title={src.path}
+                            className="chat-source-chip"
                             style={{
                               fontSize: 9,
                               fontWeight: 600,
@@ -662,6 +663,10 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                               padding: "2px 6px",
                               cursor: "pointer",
                               fontFamily: "inherit",
+                              // Wave 6 (O-8c): staggered rise-in once the response is
+                              // done streaming (45ms/row, capped at the shared 8-row
+                              // desktop stagger ceiling — cross-cutting rule §3).
+                              animationDelay: `${Math.min(si, 8) * 45}ms`,
                             }}
                           >
                             [{src.n}] {src.category}/{src.filename}

@@ -19,7 +19,7 @@
  * component's shape (and the menu chips, which inherit it — D2), never any
  * panel/control elsewhere.
  */
-import { useState, type ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import type { CaptureState, CaptureStep } from "../hooks/useCapture";
 import { deriveYoutubeSteps } from "../hooks/useCapture";
 import CapsuleMenu, { CAPSULE_CLOSED_W, CAPSULE_H, CAPSULE_OPEN_W } from "./PillMenu/CapsuleMenu";
@@ -28,7 +28,7 @@ import { MENU_LABELS, type MenuTarget } from "./PillMenu/icons";
 import type { LlmStatus } from "../lib/api";
 import { llmStatusLabel, llmStatusTooltip } from "../lib/llmStatusLabel";
 import type { VoicePhase } from "../hooks/useVoiceRecording";
-import { formatElapsed } from "../lib/voiceLimits";
+import { formatElapsed, MAX_RECORDING_MS } from "../lib/voiceLimits";
 import { MicIcon, RefreshIcon } from "./PillMenu/icons";
 import FluidVisualizer from "./PillMenu/FluidVisualizer";
 import CompactShell from "./CompactPanels/CompactShell";
@@ -310,11 +310,18 @@ export default function PillOverlay({
         {!panelActive && isRecording && (
           <div aria-hidden="true" style={{ position: "absolute", left: -6, top: -6, width: 48, height: 48, zIndex: 20, pointerEvents: "none" }}>
             <FluidVisualizer readWaveform={readWaveform} width={48} height={48} active variant="ring" />
+            {/* Wave 6 (O-8c): elapsed-time conic sweep, layered UNDER the audio-
+                reactive ring above — paint-only (--elapsed-frac is a registered
+                <angle>-adjacent number custom prop, index.css), no layout cost. */}
+            <div
+              className="pill-elapsed-ring"
+              style={{ "--elapsed-frac": Math.min(1, voiceElapsedMs / MAX_RECORDING_MS) } as CSSProperties}
+            />
           </div>
         )}
         <button
           type="button"
-          className={`${draggable ? "pill-drag-handle" : ""}${dragging ? " pill-grabbed" : ""}`}
+          className={`${draggable ? "pill-drag-handle" : ""}${dragging ? " pill-grabbed" : ""}${isRecording ? " pill-hover-rise" : ""}`}
           onPointerDown={draggable ? onDragPointerDown : undefined}
           onClick={(e) => {
             e.stopPropagation();
@@ -356,31 +363,40 @@ export default function PillOverlay({
             animation: isActive ? "pillPulseGlow 1.1s ease-in-out infinite" : "none",
           }}
         >
-          {isRecording ? (
-            <span aria-hidden="true" style={{ display: "flex", color: "var(--text-1)" }}>
-              <MicIcon size={14} />
-            </span>
-          ) : showReminderToast ? (
-            <span aria-hidden="true" style={{ display: "flex", color: "var(--green)" }}>
-              <RefreshIcon size={14} />
-            </span>
-          ) : (
-            <span
-              aria-hidden="true"
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: "50%",
-                background: dotColor,
-                transition: "background 0.2s ease",
-                animation: isIdle && llmStatus === "loading"
-                  ? "llmLoadingPulse 2.4s cubic-bezier(0.45,0,0.55,1) infinite"
-                  : isIdle && llmStatus === "disconnected"
-                  ? "llmWarnFade 2.8s cubic-bezier(0.45,0,0.55,1) infinite"
-                  : "none",
-              }}
-            />
-          )}
+          {/* Wave 6 (O-8c): reminder-undo label/icon swap is keyed-remount
+              crossfaded (reminder-swap, 160ms) instead of an instant snap —
+              recording/idle-dot swaps ride the same wrapper for one path. */}
+          <span
+            key={isRecording ? "recording" : showReminderToast ? "reminder" : "idle"}
+            className="reminder-swap"
+            style={{ display: "flex" }}
+          >
+            {isRecording ? (
+              <span aria-hidden="true" style={{ display: "flex", color: "var(--text-1)" }}>
+                <MicIcon size={14} />
+              </span>
+            ) : showReminderToast ? (
+              <span aria-hidden="true" style={{ display: "flex", color: "var(--green)" }}>
+                <RefreshIcon size={14} />
+              </span>
+            ) : (
+              <span
+                aria-hidden="true"
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  background: dotColor,
+                  transition: "background 0.2s ease",
+                  animation: isIdle && llmStatus === "loading"
+                    ? "llmLoadingPulse 2.4s cubic-bezier(0.45,0,0.55,1) infinite"
+                    : isIdle && llmStatus === "disconnected"
+                    ? "llmWarnFade 2.8s cubic-bezier(0.45,0,0.55,1) infinite"
+                    : "none",
+                }}
+              />
+            )}
+          </span>
         </button>
         {!compactPanel && (
           <RadialMenu

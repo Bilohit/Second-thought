@@ -28,7 +28,9 @@ export default function Toast({ toast, onDismiss }: Props) {
         borderLeft: `3px solid ${TONE_COLOR[toast.tone]}`,
         borderRadius: "var(--radius)",
         boxShadow: "var(--glass-shadow)",
-        animation: "fadeIn 0.22s var(--menu-travel-ease) both",
+        // Wave 6 (O-8c): toast rise, 260ms (locked standard duration) — was a
+        // 220ms fadeIn+3px drift, now the shared toast-rise recipe (index.css).
+        animation: "toastRiseIn 260ms var(--menu-travel-ease) both",
         minWidth: 200,
         maxWidth: 380,
       }}

@@ -516,7 +516,9 @@ export default function SyncDashboard({
                     <span aria-hidden="true" style={{ display: "flex", animation: running ? "spin 900ms linear infinite" : undefined }}>
                       <RefreshIcon size={12} />
                     </span>
-                    {running ? "Running" : "Sync now"}
+                    <span key={running ? "running" : "idle"} className="status-crossfade">
+                      {running ? "Running" : "Sync now"}
+                    </span>
                   </button>
                   <button
                     type="button"
@@ -572,7 +574,9 @@ export default function SyncDashboard({
                   <span aria-hidden="true" style={{ display: "flex", animation: running ? "spin 900ms linear infinite" : undefined }}>
                     <RefreshIcon size={12} />
                   </span>
-                  {running ? "Running" : "Sync now"}
+                  <span key={running ? "running" : "idle"} className="status-crossfade">
+                    {running ? "Running" : "Sync now"}
+                  </span>
                 </button>
                 <button
                   type="button"

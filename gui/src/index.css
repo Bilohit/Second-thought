@@ -690,6 +690,109 @@ html, body, #root {
   min-height: 0;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAVE 6 (O-8c) — animation-pass additions. Same locked vocabulary as above:
+   travel cubic-bezier(0.22,1,0.36,1) / settle cubic-bezier(0.16,1,0.3,1),
+   standard 260ms, micro 160ms, ease-out only. Reduced-motion handled by the
+   blanket 0.01ms override below for everything except the two paint-only
+   loops (pill-elapsed-ring, chat-caret), which get their own explicit freeze.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Minimal-pill elapsed ring — conic sweep driven by recording time.
+   --elapsed-frac is a registered <number> custom prop (written inline per
+   frame from voiceElapsedMs / MAX_RECORDING_MS in PillOverlay.tsx) so the
+   conic-gradient repaints smoothly instead of snapping; no layout cost. */
+@property --elapsed-frac {
+  syntax: '<number>';
+  initial-value: 0;
+  inherits: false;
+}
+.pill-elapsed-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  background: conic-gradient(from -90deg, var(--recording) calc(var(--elapsed-frac) * 360deg), transparent 0deg);
+  transition: --elapsed-frac 160ms linear;
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+}
+
+/* Minimal pill (recording): hover rise, replaces the generic scale-hover for
+   this one state — a 6px lift reads better than a scale on a small round hit
+   target the user is about to click to stop/send. */
+.pill-hover-rise {
+  transition: transform 160ms var(--menu-travel-ease);
+}
+.pill-hover-rise:hover {
+  transform: translateY(-6px);
+}
+
+/* Reminder-undo (and capsule label) state swap — keyed-remount crossfade,
+   160ms, instead of an instant text/icon snap. */
+@keyframes reminderSwapIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.reminder-swap {
+  animation: reminderSwapIn 160ms var(--hover-ease-out) both;
+}
+
+/* Chat streaming caret — replaces the static "…" with a breathing pulse so a
+   stalled stream still reads as "alive". Frozen under reduced-motion below. */
+@keyframes caretPulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.15; }
+}
+.chat-caret {
+  animation: caretPulse 0.9s ease-in-out infinite;
+}
+
+/* Chat source chips — staggered rise-in once the response is done streaming
+   (index inline animation-delay, capped at the shared 8-row stagger ceiling). */
+.chat-source-chip {
+  animation: syncRiseIn 160ms var(--hover-ease-out) both;
+}
+
+/* Library file row — chevron nudge on the row's own hover (.row-hover-flat). */
+.file-row-chevron {
+  color: var(--text-3);
+  transform: translateX(0);
+  transition: transform 150ms var(--hover-ease-out), color 150ms var(--hover-ease-out);
+}
+.row-hover-flat:hover .file-row-chevron {
+  transform: translateX(2px);
+  color: var(--text-2);
+}
+
+/* Sync-now status line ("Sync now" <-> "Running") — 160ms crossfade instead
+   of an instant string swap. */
+@keyframes statusCrossfade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.status-crossfade {
+  animation: statusCrossfade 160ms var(--hover-ease-out) both;
+}
+
+/* Shared toast rise — 260ms (standard duration), replaces the old 220ms
+   fadeIn+3px drift used inconsistently across Toast.tsx/TrashView/NoteEditor. */
+@keyframes toastRiseIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.toast-rise {
+  animation: toastRiseIn 260ms var(--menu-travel-ease) both;
+}
+
+/* Theme switch full-surface crossfade — App.tsx snapshots the outgoing --bg
+   into this overlay, flips the CSS vars underneath, then fades the snapshot
+   out (opacity only, no vars/layout touched by the animation itself). */
+@keyframes themeCrossfadeOut {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
 /* Reduced motion: collapse everything to a plain fade */
 @media (prefers-reduced-motion: reduce) {
   *,

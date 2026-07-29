@@ -125,15 +125,19 @@ export default function TrashView({ visible }: Props) {
       </div>
 
       {toast && (
-        <div style={{
-          position: "absolute", left: "50%", bottom: 18, transform: "translateX(-50%)",
-          background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-1)",
-          fontSize: 12, padding: "8px 14px", display: "flex", alignItems: "center", gap: 8, zIndex: 6,
-        }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2">
-            <path d="M5 12.5l4.5 4.5L19 7" />
-          </svg>
-          {toast}
+        <div style={{ position: "absolute", left: "50%", bottom: 18, transform: "translateX(-50%)", zIndex: 6 }}>
+          <div
+            className="toast-rise"
+            style={{
+              background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-1)",
+              fontSize: 12, padding: "8px 14px", display: "flex", alignItems: "center", gap: 8,
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2">
+              <path d="M5 12.5l4.5 4.5L19 7" />
+            </svg>
+            {toast}
+          </div>
         </div>
       )}
     </div>

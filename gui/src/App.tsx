@@ -410,6 +410,8 @@ export default function App() {
   const [lookMode, setLookMode]           = useState<"search" | "chat">(getInitialLookMode);
   const [lookChatPersist, setLookChatPersist] = useState<LookChatPersist>(getInitialLookChatPersist);
   const [theme, setTheme]                 = useState<Theme>(getInitialTheme);
+  const [themeFlash, setThemeFlash]       = useState<{ bg: string; key: number } | null>(null);
+  const prevThemeRef                      = useRef<Theme | null>(null);
   const [customTheme, setCustomTheme]     = useState<Record<EditableSlot, string>>(getInitialCustomTheme);
   const [inboxCount, setInboxCount]       = useState(0);
   const lookChat = useLookChat();
@@ -670,8 +672,21 @@ export default function App() {
     return clearReminderUndoTimer;
   }, [reminderUndo, clearReminderUndoTimer]);
 
-  // Apply theme on mount and whenever it changes
-  useEffect(() => { applyTheme(theme); }, [theme]);
+  // Apply theme on mount and whenever it changes. A crossfade overlay (Wave 6
+  // O-8c) snapshots the OUTGOING surface color before the CSS vars flip, then
+  // fades that snapshot out over the new (already-applied) theme beneath it —
+  // reads as one continuous 260ms crossfade instead of an instant hard cut.
+  // Skipped on first mount (no page-load choreography).
+  useEffect(() => {
+    if (prevThemeRef.current !== null && prevThemeRef.current !== theme) {
+      const outgoingBg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+      applyTheme(theme);
+      if (outgoingBg) setThemeFlash({ bg: outgoingBg, key: Date.now() });
+    } else {
+      applyTheme(theme);
+    }
+    prevThemeRef.current = theme;
+  }, [theme]);
   useEffect(() => { try { localStorage.setItem(LOOK_MODE_KEY, lookMode); } catch { /* ignore */ } }, [lookMode]);
   useEffect(() => { try { localStorage.setItem(LOOK_CHAT_PERSIST_KEY, lookChatPersist); } catch { /* ignore */ } }, [lookChatPersist]);
 
@@ -2575,6 +2590,18 @@ export default function App() {
           position: "relative",
         }}
       >
+        {themeFlash && (
+          <div
+            key={themeFlash.key}
+            aria-hidden="true"
+            onAnimationEnd={() => setThemeFlash(null)}
+            style={{
+              position: "absolute", inset: 0, zIndex: 9999, pointerEvents: "none",
+              background: themeFlash.bg,
+              animation: "themeCrossfadeOut 260ms var(--menu-travel-ease) forwards",
+            }}
+          />
+        )}
         <div
           style={{
             position: "relative",

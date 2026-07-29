@@ -128,30 +128,36 @@ export default function VaultSetup({ pillCorner, onComplete }: Props) {
         <TitleBar step={step} existingVaultFound={existingVaultFound} />
 
         <div className="fw-chrome" data-corner={pillCorner} style={{ padding: 32, overflow: "auto", flex: 1 }}>
-          {step === "location" && (
-            <LocationStep
-              vaultRoot={vaultRoot}
-              onChangeRoot={setVaultRoot}
-              onBrowse={handleBrowse}
-              checking={checking}
-              checkResult={checkResult}
-            />
-          )}
-          {step === "folders" && (
-            <FoldersStep
-              selected={selected}
-              onToggle={(name) => setSelected((s) => toggleFolderSelection(s, name))}
-              onClearAll={() => setSelected([])}
-              descriptions={descriptions}
-              onEditDescription={(name, value) => setDescriptions((d) => ({ ...d, [name]: value }))}
-            />
-          )}
-          {step === "ready" && (
-            <ReadyStep vaultRoot={vaultRoot} selected={selected} existingVaultFound={existingVaultFound} checkResult={checkResult} />
-          )}
-          {error && (
-            <div style={{ marginTop: 16, fontSize: 12, color: "var(--red)" }}>{error}</div>
-          )}
+          {/* Wave 6 (O-8c): keyed-remount step swap (fw-view-panel/fwViewIn,
+              240ms settle) — was an instant conditional-render swap. No
+              auto-advancing choreography is added; this only animates the
+              user-driven Back/Continue transition. */}
+          <div key={step} className="fw-view-panel">
+            {step === "location" && (
+              <LocationStep
+                vaultRoot={vaultRoot}
+                onChangeRoot={setVaultRoot}
+                onBrowse={handleBrowse}
+                checking={checking}
+                checkResult={checkResult}
+              />
+            )}
+            {step === "folders" && (
+              <FoldersStep
+                selected={selected}
+                onToggle={(name) => setSelected((s) => toggleFolderSelection(s, name))}
+                onClearAll={() => setSelected([])}
+                descriptions={descriptions}
+                onEditDescription={(name, value) => setDescriptions((d) => ({ ...d, [name]: value }))}
+              />
+            )}
+            {step === "ready" && (
+              <ReadyStep vaultRoot={vaultRoot} selected={selected} existingVaultFound={existingVaultFound} checkResult={checkResult} />
+            )}
+            {error && (
+              <div style={{ marginTop: 16, fontSize: 12, color: "var(--red)" }}>{error}</div>
+            )}
+          </div>
         </div>
 
         <div style={{
@@ -227,6 +233,7 @@ function TitleBar({ step, existingVaultFound }: { step: WizardStep; existingVaul
                   border: `1px solid ${active ? "var(--text-1)" : "var(--border)"}`,
                   background: active ? "var(--accent-d)" : "transparent",
                   display: "grid", placeItems: "center", fontSize: 10,
+                  transition: "background 160ms var(--hover-ease-out), border-color 160ms var(--hover-ease-out)",
                 }}>
                   {done ? <CheckIcon size={10} /> : i + 1}
                 </span>

@@ -219,6 +219,9 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
   const [conflict, setConflict] = useState<NoteConflict | null>(null);
   const [conflictOpen, setConflictOpen] = useState(false);
   const [conflictBusy, setConflictBusy] = useState(false);
+  // Wave 6 (O-8c): resolution collapses the overlay (panel-collapse, DUR/SETTLE)
+  // instead of an instant unmount, then a toast confirms the outcome.
+  const [conflictClosing, setConflictClosing] = useState(false);
 
   // -- F-13 (desktop half): attachments --
   const [attachBusy, setAttachBusy] = useState(false);
@@ -453,10 +456,19 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     // edited on disk since, rather than clobbering that edit.
     resolveNoteConflict(note.path, conflict.conflict_path, action, conflict.local_mtime)
       .then(() => {
-        setConflictBusy(false);
-        setConflictOpen(false);
-        setConflict(null);
-        if (action === "theirs") reloadFromDisk();
+        // Collapse the overlay (DUR/SETTLE, matches its own entry curve) before
+        // unmounting, then confirm via the shared toast — an instant unmount
+        // read as a hard cut with nothing to say resolution succeeded.
+        setConflictClosing(true);
+        setTimeout(() => {
+          setConflictBusy(false);
+          setConflictOpen(false);
+          setConflictClosing(false);
+          setConflict(null);
+          if (action === "theirs") reloadFromDisk();
+        }, DUR);
+        setHistoryToast("Conflict resolved");
+        setTimeout(() => setHistoryToast(null), 2400);
       })
       .catch((err) => {
         setConflictBusy(false);
@@ -800,10 +812,13 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
             ><IconExternal /></button>
           </nav>
 
-          {/* Drawers */}
+          {/* Drawers — Wave 6 (O-8c): each target's content is keyed-remount
+              swapped via the shared fw-view-panel/fwViewIn recipe (240ms) so
+              switching meta/conn/history/remind reads as a content swap-in,
+              not an instant snap (the outer width morph already ships). */}
           <div style={drawerStyle}>
             {drawerOpen && activeDrawer === "meta" && (
-              <div style={drawerInnerStyle}>
+              <div key="meta" className="fw-view-panel" style={drawerInnerStyle}>
                 <div style={drawerHeadStyle}>METADATA</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "8px 14px", fontSize: 11.5, color: "var(--text-3)" }}>
                   <span>category: <b style={{ color: "var(--text-2)" }}>{note.category}</b></span>
@@ -822,25 +837,29 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
               </div>
             )}
             {drawerOpen && activeDrawer === "conn" && (
-              <ConnectionsDrawer body={body} mentions={mentions} onJump={scrollToLine} />
+              <div key="conn" className="fw-view-panel" style={{ width: "100%", height: "100%" }}>
+                <ConnectionsDrawer body={body} mentions={mentions} onJump={scrollToLine} />
+              </div>
             )}
             {drawerOpen && activeDrawer === "history" && (
-              <HistoryDrawer
-                status={historyStatus}
-                revisions={historyRevisions}
-                expanded={historyExpanded}
-                previews={historyPreviews}
-                confirming={historyConfirming}
-                restoring={historyRestoring}
-                onToggle={toggleRevision}
-                onAskRestore={setHistoryConfirming}
-                onCancelRestore={() => setHistoryConfirming(null)}
-                onConfirmRestore={confirmRestore}
-                onRetry={() => { setHistoryStatus(null); loadHistory(); }}
-              />
+              <div key="history" className="fw-view-panel" style={{ width: "100%", height: "100%" }}>
+                <HistoryDrawer
+                  status={historyStatus}
+                  revisions={historyRevisions}
+                  expanded={historyExpanded}
+                  previews={historyPreviews}
+                  confirming={historyConfirming}
+                  restoring={historyRestoring}
+                  onToggle={toggleRevision}
+                  onAskRestore={setHistoryConfirming}
+                  onCancelRestore={() => setHistoryConfirming(null)}
+                  onConfirmRestore={confirmRestore}
+                  onRetry={() => { setHistoryStatus(null); loadHistory(); }}
+                />
+              </div>
             )}
             {drawerOpen && activeDrawer === "remind" && (
-              <div style={drawerInnerStyle}>
+              <div key="remind" className="fw-view-panel" style={drawerInnerStyle}>
                 <div style={drawerHeadStyle}>REMIND ME</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "10px 14px" }}>
                   <label style={{ fontSize: 10.5, color: "var(--text-3)" }} htmlFor="ne-remind-when">When</label>
@@ -879,18 +898,20 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
         <ConflictResolverOverlay
           conflict={conflict}
           busy={conflictBusy}
+          closing={conflictClosing}
           onResolve={resolveConflict}
           onClose={() => setConflictOpen(false)}
         />
       )}
 
       {historyToast && (
-        <div style={{
-          position: "absolute", left: "50%", bottom: 18, transform: "translateX(-50%)",
-          background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-1)",
-          fontSize: 12, padding: "8px 14px", display: "flex", alignItems: "center", gap: 8, zIndex: 30,
-        }}>
-          <IconCheck size={13} /> {historyToast}
+        <div style={{ position: "absolute", left: "50%", bottom: 18, transform: "translateX(-50%)", zIndex: 30 }}>
+          <div className="toast-rise" style={{
+            background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-1)",
+            fontSize: 12, padding: "8px 14px", display: "flex", alignItems: "center", gap: 8,
+          }}>
+            <IconCheck size={13} /> {historyToast}
+          </div>
         </div>
       )}
     </div>
@@ -973,43 +994,50 @@ function HistoryDrawer({
                 ? <span style={{ fontSize: 9.5, color: "var(--green)", letterSpacing: "0.06em" }}>CURRENT</span>
                 : <IconChevron open={open} />}
             </button>
-            {open && !rev.current && (
-              <div style={{ padding: "0 14px 12px" }}>
-                <div style={{
-                  background: "var(--glass-bg)", border: "1px solid var(--glass-border)",
-                  fontSize: 11, lineHeight: 1.6, color: "var(--text-2)", padding: 8,
-                  maxHeight: 128, overflowY: "auto", whiteSpace: "pre-wrap", marginBottom: 8,
-                }}>
-                  {preview === undefined ? "…" : (preview || "(empty)")}
-                </div>
-                {confirming !== rev.id ? (
-                  <button
-                    style={{ font: "inherit", fontSize: 10.5, color: "var(--text-1)", background: "var(--surface-2)", border: "1px solid var(--border)", padding: "4px 10px", cursor: "pointer" }}
-                    disabled={preview === undefined}
-                    onClick={() => onAskRestore(rev.id)}
-                  >
-                    Restore this version
-                  </button>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6, border: "1px solid var(--yellow)", padding: 8, fontSize: 10.5, color: "var(--text-2)" }}>
-                    <span>Restores body onto current frontmatter — becomes a normal edit that syncs.</span>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button
-                        style={{ font: "inherit", fontSize: 10.5, color: "var(--on-accent)", background: "var(--accent)", border: "none", padding: "4px 10px", cursor: "pointer" }}
-                        disabled={restoring}
-                        onClick={() => onConfirmRestore(rev)}
-                      >
-                        {restoring ? "RESTORING…" : "CONFIRM"}
-                      </button>
-                      <button
-                        style={{ font: "inherit", fontSize: 10.5, color: "var(--text-2)", background: "none", border: "1px solid var(--border)", padding: "4px 10px", cursor: "pointer" }}
-                        onClick={onCancelRestore}
-                      >
-                        CANCEL
-                      </button>
-                    </div>
+            {/* Wave 6 (O-8c): row expand rides the same 0fr->1fr disclosure
+                idiom as Settings Diagnostics/Sync (index.css .sync-disclose),
+                260ms travel — was a plain conditional mount/unmount. */}
+            {!rev.current && (
+              <div className="sync-disclose" data-open={open}>
+                <div style={{ padding: "0 14px 12px" }}>
+                  <div style={{
+                    background: "var(--glass-bg)", border: "1px solid var(--glass-border)",
+                    fontSize: 11, lineHeight: 1.6, color: "var(--text-2)", padding: 8,
+                    maxHeight: 128, overflowY: "auto", whiteSpace: "pre-wrap", marginBottom: 8,
+                  }}>
+                    {preview === undefined ? (
+                      <span aria-hidden="true" style={{ display: "block", width: "70%", height: 11, background: "var(--surface-2)", animation: "pulse 1.2s ease-in-out infinite" }} />
+                    ) : (preview || "(empty)")}
                   </div>
-                )}
+                  {confirming !== rev.id ? (
+                    <button
+                      style={{ font: "inherit", fontSize: 10.5, color: "var(--text-1)", background: "var(--surface-2)", border: "1px solid var(--border)", padding: "4px 10px", cursor: "pointer" }}
+                      disabled={preview === undefined}
+                      onClick={() => onAskRestore(rev.id)}
+                    >
+                      Restore this version
+                    </button>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, border: "1px solid var(--yellow)", padding: 8, fontSize: 10.5, color: "var(--text-2)" }}>
+                      <span>Restores body onto current frontmatter — becomes a normal edit that syncs.</span>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button
+                          style={{ font: "inherit", fontSize: 10.5, color: "var(--on-accent)", background: "var(--accent)", border: "none", padding: "4px 10px", cursor: "pointer" }}
+                          disabled={restoring}
+                          onClick={() => onConfirmRestore(rev)}
+                        >
+                          {restoring ? "RESTORING…" : "CONFIRM"}
+                        </button>
+                        <button
+                          style={{ font: "inherit", fontSize: 10.5, color: "var(--text-2)", background: "none", border: "1px solid var(--border)", padding: "4px 10px", cursor: "pointer" }}
+                          onClick={onCancelRestore}
+                        >
+                          CANCEL
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -1024,10 +1052,11 @@ function HistoryDrawer({
 // green=local/yours, red=remote/theirs, three explicit actions (keep-both is
 // the safe default — it destroys nothing).
 function ConflictResolverOverlay({
-  conflict, busy, onResolve, onClose,
+  conflict, busy, closing, onResolve, onClose,
 }: {
   conflict: NoteConflict;
   busy: boolean;
+  closing?: boolean;
   onResolve: (action: ConflictResolveAction) => void;
   onClose: () => void;
 }) {
@@ -1056,7 +1085,17 @@ function ConflictResolverOverlay({
   });
 
   return (
-    <div style={{ position: "absolute", inset: 0, zIndex: 25, background: "var(--bg)", display: "flex", flexDirection: "column" }} role="dialog" aria-label="Resolve conflict">
+    <div
+      className={closing ? undefined : "fw-view-panel"}
+      style={{
+        position: "absolute", inset: 0, zIndex: 25, background: "var(--bg)", display: "flex", flexDirection: "column",
+        opacity: closing ? 0 : 1,
+        transform: closing ? "scale(0.98)" : "scale(1)",
+        transition: closing ? `opacity ${DUR}ms ${SETTLE}, transform ${DUR}ms ${SETTLE}` : undefined,
+      }}
+      role="dialog"
+      aria-label="Resolve conflict"
+    >
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 14px", height: 46, borderBottom: "1px solid var(--border-2)", flex: "none" }}>
         <button style={{ width: 28, height: 28, display: "inline-flex", alignItems: "center", justifyContent: "center", background: "none", border: "1px solid var(--border)", color: "var(--text-2)", cursor: "pointer" }} onClick={onClose} aria-label="Back" title="Back">
           <IconBack />

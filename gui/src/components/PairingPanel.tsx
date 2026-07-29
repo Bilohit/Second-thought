@@ -270,8 +270,28 @@ export default function PairingPanel({
               >
                 <img
                   src={qr} alt="Pairing QR code" width={qrSize} height={qrSize}
-                  style={{ animation: "fadeIn 240ms var(--hover-ease-out) both" }}
+                  style={{
+                    animation: "fadeIn 240ms var(--hover-ease-out) both",
+                    filter: restartHint ? "blur(6px)" : "blur(0px)",
+                    transition: "filter 260ms var(--menu-travel-ease)",
+                  }}
                 />
+                {/* Wave 6 (O-8c): stale-after-rotate overlay — the on-screen QR still
+                    encodes the OLD secret until restart, so once rotateSecret() lands
+                    (restartHint) the image itself blurs and this notice fades in on top. */}
+                {restartHint && (
+                  <div
+                    aria-hidden="true"
+                    style={{
+                      position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                      background: "color-mix(in srgb, var(--bg) 55%, transparent)",
+                      animation: "fadeIn 260ms var(--menu-travel-ease) both",
+                      fontSize: 10, color: "var(--text-2)", textAlign: "center", padding: 8,
+                    }}
+                  >
+                    Stale — restart to apply new secret
+                  </div>
+                )}
                 {/* Reseal loading bar — flush at the tile's bottom edge; drains over the window. */}
                 <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 3, background: "var(--accent-d)" }}>
                   <div

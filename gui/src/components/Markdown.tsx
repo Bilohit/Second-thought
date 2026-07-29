@@ -85,8 +85,8 @@ export function Markdown({ blocks, attachmentUrls }: { blocks: Block[]; attachme
         if (b.kind === "check") {
           return (
             <div key={key} style={{ display: "flex", alignItems: "baseline", gap: 8, margin: "2px 0" }}>
-              <span style={{ color: b.checked ? "var(--text-2)" : "var(--text-3)" }}>{b.checked ? "[x]" : "[ ]"}</span>
-              <span style={{ textDecoration: b.checked ? "line-through" : "none", color: b.checked ? "var(--text-3)" : "var(--text-1)" }}><Spans spans={b.spans} /></span>
+              <span style={{ color: b.checked ? "var(--text-2)" : "var(--text-3)", transition: "color 160ms var(--hover-ease-out)" }}>{b.checked ? "[x]" : "[ ]"}</span>
+              <span style={{ textDecoration: b.checked ? "line-through" : "none", color: b.checked ? "var(--text-3)" : "var(--text-1)", transition: "color 160ms var(--hover-ease-out)" }}><Spans spans={b.spans} /></span>
             </div>
           );
         }

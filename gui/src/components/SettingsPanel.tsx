@@ -22,7 +22,7 @@ import { isGeoDebugEnabled, setGeoDebugEnabled } from "../lib/geoLog";
 import { THEMES, THEME_LABELS, type Theme, type LookChatPersist } from "../App";
 import type { EditableSlot } from "../lib/themeCode";
 import ThemeCustomEditor from "./ThemeCustomEditor";
-import { PlusIcon } from "./PillMenu/icons";
+import { PlusIcon, ChevronRightIcon } from "./PillMenu/icons";
 import type { PillMode, PillCorner } from "../lib/pillTypes";
 import type { PillAnchor } from "../lib/pillAnchor";
 import { ANCHOR_LABELS, ANCHOR_ORDER } from "../lib/pillAnchor";
@@ -400,6 +400,10 @@ export default function SettingsPanel({
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   const [logLevel, setLogLevelState] = useState<LogLevel>(logger.getLevel());
   const [geoDebug, setGeoDebugState] = useState<boolean>(isGeoDebugEnabled());
+  // Wave 6 (O-8c): Diagnostics group (Log Level/Crash Log/Geometry Debug) is
+  // collapsed by default behind a single disclosure — reuses the .sync-disclose
+  // grid-rows 0fr->1fr idiom (index.css) rather than a second implementation.
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState<boolean>(false);
   const [confidence, setConfidence] = useState(0.6);
   const [scrutiny, setScrutiny] = useState<"relaxed" | "balanced" | "strict">("balanced");
   const [autoDescribe, setAutoDescribe] = useState(false);
@@ -978,46 +982,90 @@ export default function SettingsPanel({
               </div>
             </Field>
 
-            {/* Log level — runtime toggle, no rebuild required */}
-            <Field label="Log Level">
-              <select
-                value={LogLevel[logLevel]}
-                onChange={(e) => {
-                  const next = LogLevel[e.target.value as keyof typeof LogLevel] as LogLevel;
-                  setLogLevelState(next);
-                  void setLogLevel(next);
-                }}
-                style={{ ...INPUT_STYLE, cursor: "pointer" }}
-              >
-                {(["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "OFF"] as const).map((name) => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </select>
-            </Field>
-
-            {/* Crash log export — reveals the rotating diagnostics log in the OS file manager so it
-                can be attached to a bug report. Capture + rotation already ship via logger.ts. */}
-            <Field label="Crash Log">
+            {/* Diagnostics — Log Level/Crash Log/Geometry Debug grouped behind one
+                disclosure header (Wave 6 O-8c). Header hover uses the shared
+                btn-hover recipe; the chevron rotates on the settle curve and the
+                body opens via .sync-disclose (grid-rows 0fr->1fr, 260ms travel). */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
               <button
-                onClick={() => { void revealLogFile(); }}
+                type="button"
+                onClick={() => setDiagnosticsOpen((v) => !v)}
                 className="btn-hover"
-                style={{ ...BTN_SECONDARY, width: "100%" }}
-                aria-label="Reveal the diagnostics log file in the file manager"
+                aria-expanded={diagnosticsOpen}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                  background: "none",
+                  border: "none",
+                  padding: "4px 0",
+                  cursor: "pointer",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: "var(--text-3)",
+                  font: "inherit",
+                }}
               >
-                Reveal log file
+                Diagnostics
+                <span
+                  aria-hidden="true"
+                  style={{
+                    display: "inline-flex",
+                    transition: "transform 260ms var(--menu-travel-ease)",
+                    transform: diagnosticsOpen ? "rotate(90deg)" : "rotate(0deg)",
+                  }}
+                >
+                  <ChevronRightIcon size={10} />
+                </span>
               </button>
-            </Field>
+              <div className="sync-disclose" data-open={diagnosticsOpen}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 14, minHeight: 0 }}>
+                  {/* Log level — runtime toggle, no rebuild required */}
+                  <Field label="Log Level">
+                    <select
+                      value={LogLevel[logLevel]}
+                      onChange={(e) => {
+                        const next = LogLevel[e.target.value as keyof typeof LogLevel] as LogLevel;
+                        setLogLevelState(next);
+                        void setLogLevel(next);
+                      }}
+                      style={{ ...INPUT_STYLE, cursor: "pointer" }}
+                    >
+                      {(["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "OFF"] as const).map((name) => (
+                        <option key={name} value={name}>{name}</option>
+                      ))}
+                    </select>
+                  </Field>
 
-            {/* Geometry debug logging — on by default; logs window/monitor/
-                scale geometry to the same log file via geoLog (scope "geo"),
-                for diagnosing pill drag/clamp boundary issues. */}
-            <Field label="Geometry Debug Logging" inline>
-              <Toggle
-                label="Geometry Debug Logging"
-                checked={geoDebug}
-                onChange={(v) => { setGeoDebugState(v); setGeoDebugEnabled(v); }}
-              />
-            </Field>
+                  {/* Crash log export — reveals the rotating diagnostics log in the OS file manager so it
+                      can be attached to a bug report. Capture + rotation already ship via logger.ts. */}
+                  <Field label="Crash Log">
+                    <button
+                      onClick={() => { void revealLogFile(); }}
+                      className="btn-hover"
+                      style={{ ...BTN_SECONDARY, width: "100%" }}
+                      aria-label="Reveal the diagnostics log file in the file manager"
+                    >
+                      Reveal log file
+                    </button>
+                  </Field>
+
+                  {/* Geometry debug logging — on by default; logs window/monitor/
+                      scale geometry to the same log file via geoLog (scope "geo"),
+                      for diagnosing pill drag/clamp boundary issues. */}
+                  <Field label="Geometry Debug Logging" inline>
+                    <Toggle
+                      label="Geometry Debug Logging"
+                      checked={geoDebug}
+                      onChange={(v) => { setGeoDebugState(v); setGeoDebugEnabled(v); }}
+                    />
+                  </Field>
+                </div>
+              </div>
+            </div>
 
             {onSelectLookChatPersist && lookChatPersist && (
               <Field label="Look chat history">

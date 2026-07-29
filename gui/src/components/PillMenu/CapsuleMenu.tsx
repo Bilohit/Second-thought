@@ -212,7 +212,10 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
             <span className="capsule-voice-timer">{formatElapsed(voiceElapsedMs ?? 0)}</span>
           </span>
         ) : (
-          <span className="capsule-label">{label}</span>
+          // Wave 6 (O-8c): keyed-remount crossfade on label text change (reminder-
+          // undo <-> normal status <-> capture-step labels), 160ms, instead of an
+          // instant text snap.
+          <span key={label} className="capsule-label reminder-swap">{label}</span>
         )}
       </button>
       <span ref={sliderRef} className="capsule-slider" aria-hidden="true" />
