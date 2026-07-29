@@ -632,5 +632,7 @@ def test_create_voice_note_copies_staged_audio_into_attachments(tmp_path):
     assert len(attached) == 1
     assert attached[0].name == "voice.wav"
     assert attached[0].read_bytes() == b"fake wav bytes"
-    assert "[attachment: voice.wav]" in note_text
+    # v2.2 inline ref (PKG-ATTACH s98) -- the legacy `[attachment: voice.wav]` line is read
+    # forever but never written again.
+    assert f"![voice memo](../_attachments/{note_id}/voice.wav)" in note_text
     assert not audio_src.exists()

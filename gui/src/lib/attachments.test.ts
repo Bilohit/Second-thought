@@ -30,4 +30,36 @@ describe("parseAttachments", () => {
   it("no links -> empty", () => {
     expect(parseAttachments("just prose, nothing here")).toEqual([]);
   });
+
+  it("extracts an inline-ref link", () => {
+    const body = "Some prose.\n\n![voice memo](../_attachments/note-1/memo.m4a)\n";
+    expect(parseAttachments(body)).toEqual([
+      { filename: "memo.m4a", kind: "audio", alt: "voice memo" },
+    ]);
+  });
+
+  it("extracts both forms in one body, in order", () => {
+    const body = "[attachment: a.jpg]\ntext\n![photo](../_attachments/note-1/b.png)\n";
+    expect(parseAttachments(body)).toEqual([
+      { filename: "a.jpg", kind: "image" },
+      { filename: "b.png", kind: "image", alt: "photo" },
+    ]);
+  });
+
+  it("dedupes by filename across forms", () => {
+    const body = "[attachment: a.jpg] and also ![photo](../_attachments/note-1/a.jpg)";
+    expect(parseAttachments(body)).toEqual([{ filename: "a.jpg", kind: "image" }]);
+  });
+
+  it("handles a filename with a space", () => {
+    const body = "![scan](../_attachments/note-1/my file.pdf)";
+    expect(parseAttachments(body)).toEqual([
+      { filename: "my file.pdf", kind: "file", alt: "scan" },
+    ]);
+  });
+
+  it("a ref pointing outside _attachments/ is not an attachment", () => {
+    const body = "![elsewhere](../other/place.png)";
+    expect(parseAttachments(body)).toEqual([]);
+  });
 });

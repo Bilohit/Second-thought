@@ -1,8 +1,10 @@
 // Minimal Markdown block+inline parser for the desktop note viewer's view mode. Pure + tested so
 // the React <Markdown> component stays a thin mapper over these blocks. Ported from the phone
-// app's src/lib/markdown.ts (same Block/Span shape, same subset) — this repo stays on the legacy
-// `[attachment: filename]` line format (attachments.ts), NOT the phone's newer inline-ref
-// (`![alt](...)`) support, since desktop hasn't migrated to that scheme yet (PKG-ATTACH, deferred).
+// app's src/lib/markdown.ts (same Block/Span shape, same subset). Recognizes BOTH the legacy
+// `[attachment: filename]` whole line AND the phone's inline-ref whole line
+// `![alt](../_attachments/<note-id>/<filename>)` — no migration, legacy stays supported forever
+// (workspace CLAUDE.md cross-peer parity rule); an inline ref that is not alone on its own line
+// stays ordinary markdown text, same as any other image reference.
 //
 // ponytail: subset renderer — headings, checklists, bullets, paragraphs, attachment lines; inline
 // [[wikilink]] + **bold**. No italic/links/code/tables/nesting. Extend only if a real note needs it.
@@ -19,7 +21,7 @@ export type Block =
   | { kind: "check"; checked: boolean; spans: Span[] }
   | { kind: "bullet"; spans: Span[] }
   | { kind: "paragraph"; spans: Span[] }
-  | { kind: "attachment"; filename: string };
+  | { kind: "attachment"; filename: string; alt?: string };
 
 const WIKILINK = /\[\[([^\]]+)\]\]/;
 const BOLD = /\*\*([^*]+)\*\*/;
@@ -27,6 +29,10 @@ const HEADING_LINE = /^(#{1,6})\s+(.*)$/;
 const CHECK_LINE = /^[-*]\s+\[([ xX])\]\s+(.*)$/;
 const BULLET_LINE = /^[-*]\s+(.*)$/;
 const ATTACHMENT_WHOLE_LINE = /^\[attachment:\s*([^\]]+?)\s*\]$/;
+// The phone's inline-ref form (attachments.ts's INLINE_ATTACHMENT_REF_RE), anchored to a whole
+// line — same path shape restriction (`../_attachments/<id>/`) so an ordinary image reference
+// elsewhere is never mistaken for an attachment.
+const INLINE_ATTACHMENT_WHOLE_LINE = /^!\[([^\]]*)\]\(\.\.\/_attachments\/[^/)]+\/([^/)]+)\)$/;
 
 export function parseInline(text: string): Span[] {
   const spans: Span[] = [];
@@ -76,6 +82,15 @@ export function parseBlocks(body: string): Block[] {
     if (bullet) { flush(); blocks.push({ kind: "bullet", spans: parseInline(bullet[1]) }); continue; }
     const attachment = t.match(ATTACHMENT_WHOLE_LINE);
     if (attachment) { flush(); blocks.push({ kind: "attachment", filename: attachment[1].trim() }); continue; }
+    const inlineAttachment = t.match(INLINE_ATTACHMENT_WHOLE_LINE);
+    if (inlineAttachment) {
+      flush();
+      const alt = inlineAttachment[1].trim();
+      const block: Block = { kind: "attachment", filename: inlineAttachment[2].trim() };
+      if (alt) block.alt = alt;
+      blocks.push(block);
+      continue;
+    }
     para.push(t);
   }
   flush();

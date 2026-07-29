@@ -26,7 +26,7 @@ from googleapiclient.http import MediaInMemoryUpload
 
 from frontmatter import add_fields, read_all_fields, strip_frontmatter
 from note_model import parse_note, serialize_note
-from body_tags import extract_body_tags
+from body_tags import extract_body_tags, derive_body_attachments
 from machine_tags import apply_trailing_tags_line, strip_trailing_tags_line
 from reconcile import reconcile
 from sync_ignore import filter_ignored_notes
@@ -42,7 +42,8 @@ from models import EnrichedPayload
 
 HUB_FOLDER_NAME = "SecondThoughtVault"
 _FOLDER_MIME = "application/vnd.google-apps.folder"
-_RESERVED_FOLDERS = {"_trash", "_mobile_inbox", "_attachments", "_templates", ".sync"}
+_ATTACHMENTS_FOLDER = "_attachments"   # vault/mirror/hub sibling of the notes tree (contract §2)
+_RESERVED_FOLDERS = {"_trash", "_mobile_inbox", _ATTACHMENTS_FOLDER, "_templates", ".sync"}
 
 # Stand-in body for "the common ancestor is UNKNOWN" (see reconcile_changes' adopt path).
 # reconcile() derives body_changed_local/body_changed_remote by comparing against base.body, so a
@@ -378,6 +379,81 @@ def upload_sync_file(drive, hub_folder_id: str, filename: str, content: str,
 def _download_bytes(drive, file_id: str) -> bytes:
     """Fetch a hub file's current bytes UNDECODED (for binary captures)."""
     return drive.files().get_media(fileId=file_id).execute()
+
+
+def _sync_note_attachments(drive, hub_id: str, note_id: str, body: str, vault_root: str,
+                           attach_root_cache: Dict[str, str]) -> Tuple[int, int, int]:
+    """PKG-ATTACH legs 3+4 (spec §4.3): carry ONE note's attachment bytes both ways between
+    `<vault>/_attachments/<note-id>/` and the hub's `_attachments/<note-id>/`. Returns
+    (uploaded, downloaded, failed).
+
+    An attachment is NOT a note op: no base_rev, no reconcile entry, no sync_state row, no
+    conflict class. Identity is (note_id, filename) and PRESENCE IS THE ENTIRE STATE MODEL —
+    if the file is on both sides there is nothing to do, and a failure needs no retry record
+    because the next pass simply sees it missing again.
+
+    The BODY is the driver, not the `attachments:` frontmatter cache (§4.2) — correct for a
+    legacy note that has never been re-saved, and impossible to poison with a stale field.
+    Upload is gated on refs (an orphan is never pushed); download is NOT (the peer's bytes come
+    down even if our copy of the body is momentarily behind that pass's `attach` op).
+
+    Never overwrites existing bytes on either side, never deletes.
+    # ponytail: no orphan GC (a ref dropped from a body leaves the file behind — contract §1.2
+    # defers the sweep); no `.transcript.txt` sidecar sync (nothing produces them yet, and the
+    # sweep is body-ref-driven); same name + different bytes on the two sides keeps BOTH,
+    # untouched — prefer the older createdTime only if that collision ever actually occurs.
+    """
+    refs = set(derive_body_attachments(body))
+    local_dir = Path(vault_root) / _ATTACHMENTS_FOLDER / note_id
+    try:
+        local = {p.name for p in local_dir.iterdir() if p.is_file()}
+    except OSError:
+        local = set()   # no dir (the overwhelmingly common case) — nothing local
+    if not refs and not local:
+        return (0, 0, 0)   # ZERO Drive calls: the steady state must not cost a round trip
+
+    root_id = attach_root_cache.get(_ATTACHMENTS_FOLDER)
+    if root_id is None:
+        root_id = _find_or_create_subfolder(drive, hub_id, _ATTACHMENTS_FOLDER)
+        attach_root_cache[_ATTACHMENTS_FOLDER] = root_id
+    sub_id = _find_or_create_subfolder(drive, root_id, note_id)
+    remote = {f["name"]: f["id"]
+              for f in _list_children(drive, sub_id, mime_is_folder=False)}   # ONE listing
+
+    uploaded = downloaded = failed = 0
+
+    for name in sorted((refs & local) - set(remote)):
+        try:
+            media = MediaInMemoryUpload((local_dir / name).read_bytes(),
+                                        mimetype="application/octet-stream")
+            drive.files().create(
+                body={"name": name, "parents": [sub_id]}, media_body=media, fields="id"
+            ).execute()
+            uploaded += 1
+        except Exception as exc:  # noqa: BLE001 - fail-soft: one file never fails the note
+            print(f"[mobile_sync_agent] attachment upload failed {note_id}/{name}: {exc}")
+            failed += 1
+
+    for name in sorted(set(remote) - local):
+        dest = local_dir / name
+        tmp = Path(str(dest) + ".tmp")   # sibling: os.replace is only atomic within a filesystem
+        try:
+            local_dir.mkdir(parents=True, exist_ok=True)
+            # Atomic, per _atomic_write_note's discipline (spec §5, non-negotiable): a truncated
+            # file that "exists" would be indistinguishable from a complete one and NEVER retried,
+            # because presence is the state. Write the temp, then rename.
+            tmp.write_bytes(_download_bytes(drive, remote[name]))
+            os.replace(tmp, dest)
+            downloaded += 1
+        except Exception as exc:  # noqa: BLE001 - fail-soft; next pass retries (presence is state)
+            print(f"[mobile_sync_agent] attachment download failed {note_id}/{name}: {exc}")
+            failed += 1
+            try:
+                tmp.unlink()
+            except OSError:
+                pass   # never left at the FINAL path, so a stray temp is cosmetic at worst
+
+    return (uploaded, downloaded, failed)
 
 
 def _delete_file(drive, file_id: str) -> None:
@@ -1327,6 +1403,10 @@ def enrich_notes(
                 machine_tags = normalize_tags(list(key_signals), vocab)
                 note.body = apply_trailing_tags_line(note.body, machine_tags)
                 note.tags = extract_body_tags(note.body)
+                # v2.2 (§4.2): `attachments:` is a DERIVED cache recomputed from the body on save,
+                # exactly like `tags:` above — never authored independently. Frontmatter-only; the
+                # body-sacred assertion below covers this write too.
+                note.attachments = derive_body_attachments(note.body)
                 note.enrich_source = "desktop-llm"
                 # v2.3 machine refile: classifier wins at FIRST enrichment (user-decided s71 —
                 # ANY folder, not scratchpad-only). The mover stamps modified/device HERE so the
@@ -1580,6 +1660,36 @@ def run_once(
         filter_ignored_notes(vault_notes, Path(vault_root)), hub_files, state, drive, hub_id
     )
     save_state(state_path, new_state)
+
+    # 6. Attachment bytes, both directions (PKG-ATTACH §4.3 legs 3+4). Runs AFTER mirror so it
+    # sees this pass's merged/pulled bodies. Not a note op — no state row, no return-tuple entry
+    # (the tuple is 7-wide and pinned by tests); fail-soft and logged, the same posture as
+    # reminders_fn above. F-5: filtered exactly like mirror_to_hub, so a sync-ignored note never
+    # ships its bytes either.
+    try:
+        attach_root_cache: Dict[str, str] = {}
+        a_up = a_down = a_failed = 0
+        for _nid, _entry in filter_ignored_notes(vault_notes, Path(vault_root)).items():
+            try:
+                u, d, f = _sync_note_attachments(
+                    drive, hub_id, _nid, _entry.get("body", ""), vault_root, attach_root_cache
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Per-NOTE containment: a Drive-level failure (folder create, children list) on one
+                # note must not cost every note after it in this pass. The phase guard below still
+                # catches anything outside the loop. Presence is the state, so a skipped note simply
+                # retries next pass with no bookkeeping.
+                print(f"[mobile_sync_agent] attachment sync failed for {_nid}: {exc}")
+                a_failed += 1
+                continue
+            a_up += u
+            a_down += d
+            a_failed += f
+        if a_up or a_down or a_failed:
+            print(f"[mobile_sync_agent] attachments: {a_up} uploaded, {a_down} downloaded, "
+                  f"{a_failed} failed")
+    except Exception as exc:  # noqa: BLE001 - an attachment failure must never abort a pass
+        print(f"[mobile_sync_agent] attachment sync failed: {exc}")
 
     # A note reached canonical this pass iff its Drive base_rev advanced (pull/reconcile/mirror
     # all bump base_rev when they write the canonical mirror). Drop its LAN provisional overlay —

@@ -1783,10 +1783,10 @@ async def put_note(body: NoteBodyUpdate, _: None = Depends(_require_secret)):
 
 @app.post("/note/attachment")
 async def add_note_attachment(body: NoteAttachmentCreate, _: None = Depends(_require_secret)):
-    """Write an uploaded file into `_attachments/<note-id>/`, record it in
-    the note's `attachments` frontmatter, and append a `[attachment: ...]`
-    link line to the body -- a normal user file-write through note_editor.py
-    (body-sacred, same mtime guard as PUT /note)."""
+    """Write an uploaded file into `_attachments/<note-id>/`, append the v2.2 inline ref
+    `![alt](../_attachments/<note-id>/<file>)` to the body, and recompute the note's
+    `attachments` frontmatter as a derived readout of that body -- a normal user file-write
+    through note_editor.py (body-sacred, same mtime guard as PUT /note)."""
     from note_editor import add_attachment, NoteConflictError
     root = _get_vault_root()
     try:
@@ -1808,12 +1808,29 @@ async def add_note_attachment(body: NoteAttachmentCreate, _: None = Depends(_req
     return result
 
 
+def _is_safe_path_component(name: str) -> bool:
+    """True when *name* is usable VERBATIM as one path component.
+
+    Mirrors the phone's `mirror.ts:isSafeAttachmentName`: refuse a separator, a
+    `..`/`.` segment, or a control char -- never rewrite. Sanitizing on a READ
+    path is the bug this replaces: the phone's attachment writer permits spaces
+    (its tests pin `beach day.jpg`), so `re.sub(r"[^\\w.\\-]", "_", ...)` turned
+    every hub-synced name with a space into a permanent 404. The WRITE side
+    (note_editor.add_attachment) keeps its sanitize on purpose -- that is the
+    name actually stored on disk, so writer and disk stay self-consistent.
+    """
+    if not name or name in (".", ".."):
+        return False
+    if "/" in name or "\\" in name:
+        return False
+    return all(ord(ch) > 0x1f for ch in name)
+
+
 @app.get("/note/attachment")
 async def get_note_attachment(path: str, filename: str, _: None = Depends(_require_secret)):
     """Serve one attachment's raw bytes (image thumbnail / audio playback in
     the NoteEditor viewer). Resolves via the same note-id folder convention
     add_attachment writes into."""
-    import re as _re
     from fastapi.responses import FileResponse
     from frontmatter import read_all_fields as _read_fields
     from note_editor import resolve_note_path
@@ -1828,8 +1845,17 @@ async def get_note_attachment(path: str, filename: str, _: None = Depends(_requi
     note_id = fields.get("id")
     if not note_id:
         raise HTTPException(status_code=404, detail="Note has no id")
-    safe_name = _re.sub(r"[^\w.\-]", "_", filename) or "attachment"
-    file_path = root.resolve() / "_attachments" / note_id / safe_name
+    # Both components are untrusted: `filename` is a client query param and
+    # `note_id` arrives in note frontmatter over the Drive hub (phone-authored).
+    # Validate, then resolve verbatim, then re-assert containment -- the last
+    # check catches anything platform-specific the component test cannot name
+    # (Windows drive-relative `C:x`, reserved device names, a symlinked dir).
+    if not _is_safe_path_component(note_id) or not _is_safe_path_component(filename):
+        raise HTTPException(status_code=400, detail="Invalid attachment name.")
+    base = (root.resolve() / "_attachments" / note_id).resolve()
+    file_path = (base / filename).resolve()
+    if file_path.parent != base or base.parent != root.resolve() / "_attachments":
+        raise HTTPException(status_code=400, detail="Invalid attachment name.")
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Attachment not found")
     return FileResponse(str(file_path))

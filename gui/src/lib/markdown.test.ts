@@ -69,6 +69,36 @@ describe("parseBlocks", () => {
       { kind: "paragraph", spans: [{ kind: "text", value: "after" }] },
     ]);
   });
+
+  it("parses an inline-ref attachment whole line", () => {
+    expect(parseBlocks("![voice memo](../_attachments/note-1/memo.m4a)")).toEqual([
+      { kind: "attachment", filename: "memo.m4a", alt: "voice memo" },
+    ]);
+  });
+
+  it("parses both attachment forms in one body", () => {
+    expect(
+      parseBlocks("before\n[attachment: a.jpg]\nmiddle\n![photo](../_attachments/note-1/b.png)\nafter")
+    ).toEqual([
+      { kind: "paragraph", spans: [{ kind: "text", value: "before" }] },
+      { kind: "attachment", filename: "a.jpg" },
+      { kind: "paragraph", spans: [{ kind: "text", value: "middle" }] },
+      { kind: "attachment", filename: "b.png", alt: "photo" },
+      { kind: "paragraph", spans: [{ kind: "text", value: "after" }] },
+    ]);
+  });
+
+  it("an inline ref that is not alone on its line stays ordinary markdown", () => {
+    expect(parseBlocks("see ![photo](../_attachments/note-1/b.png) here")).toEqual([
+      { kind: "paragraph", spans: [{ kind: "text", value: "see ![photo](../_attachments/note-1/b.png) here" }] },
+    ]);
+  });
+
+  it("a ref pointing outside _attachments/ is not an attachment block", () => {
+    expect(parseBlocks("![elsewhere](../other/place.png)")).toEqual([
+      { kind: "paragraph", spans: [{ kind: "text", value: "![elsewhere](../other/place.png)" }] },
+    ]);
+  });
 });
 
 describe("blockKey", () => {

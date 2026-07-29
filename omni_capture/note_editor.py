@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Optional
 
 from atomic_io import atomic_write_verbatim
+from body_tags import attachment_ref_text, derive_body_attachments
 from frontmatter import _FM_RE, read_all_fields
 
 
@@ -203,14 +204,33 @@ def write_note_body(vault_root: Path, path_str: str, new_body: str, expected_mti
 
 
 # -- F-13 (desktop half): attachments -----------------------------------------
-# Link syntax `[attachment: <filename>]` and frontmatter key `attachments`
-# MATCH the phone half exactly (workspace CLAUDE.md cross-peer parity rule).
+# v2.2 (data-model §1.2): inline Markdown ref (`body_tags.attachment_ref_text`) is the sacred-body
+# fact; frontmatter key `attachments` is a derived readout (`body_tags.derive_body_attachments`),
+# never an independent fact. MATCHES the phone half exactly (workspace CLAUDE.md cross-peer parity).
 
 _ATTACHMENTS_FIELD_RE = re.compile(r"^attachments:.*$", re.MULTILINE)
 
 
+def _is_safe_path_component(name: str) -> bool:
+    """A single path segment safe to interpolate: no separators, no `.`/`..`, no control chars.
+    Mirrors `server._is_safe_path_component` and the phone's `mirror.isSafeAttachmentName`."""
+    if not name or name in (".", ".."):
+        return False
+    if "/" in name or "\\" in name:
+        return False
+    return all(ord(ch) > 0x1f for ch in name)
+
+
 def attachments_dir(vault_root: Path, note_id: str) -> Path:
-    d = vault_root.resolve() / "_attachments" / note_id
+    # `note_id` comes from note frontmatter, which arrives over the Drive hub from the peer --
+    # untrusted as a path. Unguarded, an `id: ../..` would mkdir+write OUTSIDE the vault (the
+    # write-side twin of the read-side hole fixed in `server.get_note_attachment`).
+    if not _is_safe_path_component(note_id):
+        raise ValueError(f"unsafe note id for attachment path: {note_id!r}")
+    base = (vault_root.resolve() / "_attachments").resolve()
+    d = (base / note_id).resolve()
+    if d.parent != base:
+        raise ValueError(f"unsafe note id for attachment path: {note_id!r}")
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -232,12 +252,14 @@ def _upsert_attachments_field(fm_block: str, filenames: list[str]) -> str:
 
 def add_attachment(vault_root: Path, path_str: str, filename: str, data: bytes,
                    expected_mtime: float, expected_hash: Optional[str] = None) -> dict:
-    """Write *data* into `_attachments/<note-id>/<filename>`, record it in the
-    note's `attachments` frontmatter list, and append a `[attachment:
-    <filename>]` link line to the body. A single normal user file-write
-    through this module (attach affordance), mtime-guarded exactly like
-    `write_note_body` -- refuses (NoteConflictError) if the file moved on
-    disk since the editor last read it.
+    """Write *data* into `_attachments/<note-id>/<filename>`, append a v2.2
+    inline Markdown ref (`attachment_ref_text`) to the body, and recompute the
+    `attachments` frontmatter list as a derived readout of that body
+    (`derive_body_attachments`) -- never an independent fact (data-model
+    §1.2). A single normal user file-write through this module (attach
+    affordance), mtime-guarded exactly like `write_note_body` -- refuses
+    (NoteConflictError) if the file moved on disk since the editor last read
+    it.
     """
     path = resolve_note_path(vault_root, path_str)
     if not path.is_file():
@@ -260,14 +282,10 @@ def add_attachment(vault_root: Path, path_str: str, filename: str, data: bytes,
         dest = dest_dir / f"{dest.stem}.{int(time.time())}{dest.suffix}"
     dest.write_bytes(data)
 
-    existing_raw = fields.get("attachments", "")
-    existing = [t.strip() for t in existing_raw.strip("[]").split(",") if t.strip()] if existing_raw else []
-    existing.append(dest.name)
-
     fm_block, body = _split(text)
-    new_fm = _upsert_attachments_field(fm_block, existing)
-    link_line = f"[attachment: {dest.name}]"
-    new_body = (body.rstrip("\n") + f"\n\n{link_line}\n") if body.strip() else f"{link_line}\n"
+    ref_line = attachment_ref_text(note_id, dest.name)
+    new_body = (body.rstrip("\n") + f"\n\n{ref_line}\n") if body.strip() else f"{ref_line}\n"
+    new_fm = _upsert_attachments_field(fm_block, derive_body_attachments(new_body))
     # SRV-20: the attachment bytes are already on disk at this point, and the note
     # rewrite is what makes them reachable. If the rewrite fails (permissions, disk
     # full, the note vanishing between the guard and here) the blob would linger in
@@ -337,8 +355,8 @@ if __name__ == "__main__":
             pass
         print("[T4] resolve_note_path traversal guard  PASS")
 
-        # T5: add_attachment writes the file, records `attachments`
-        # frontmatter, and appends a `[attachment: ...]` link line.
+        # T5: add_attachment writes the file, appends the v2.2 inline ref, and records
+        # `attachments` frontmatter as a derived readout of that body.
         note2 = cat / "with_id.md"
         note2.write_text(
             "---\nid: n1\ntitle: Has id\ncategory: Tech_Notes\n---\n# Has id\n\nBody text.\n",
@@ -350,7 +368,7 @@ if __name__ == "__main__":
         assert (vault / "_attachments" / "n1" / "memo.m4a").read_bytes() == b"fakeaudio"
         after = note2.read_text(encoding="utf-8")
         assert "attachments: [memo.m4a]" in after
-        assert "[attachment: memo.m4a]" in after
+        assert "![voice memo](../_attachments/n1/memo.m4a)" in after
         assert "Body text." in after  # original body preserved
         print("[T5] add_attachment  PASS")
 
@@ -359,7 +377,8 @@ if __name__ == "__main__":
         r2 = add_attachment(vault, str(note2), "photo.jpg", b"fakejpeg", d3["mtime"])
         after2 = note2.read_text(encoding="utf-8")
         assert "attachments: [memo.m4a, photo.jpg]" in after2
-        assert "[attachment: memo.m4a]" in after2 and "[attachment: photo.jpg]" in after2
+        assert ("![voice memo](../_attachments/n1/memo.m4a)" in after2
+                and "![photo](../_attachments/n1/photo.jpg)" in after2)
         print("[T6] add_attachment second file  PASS")
 
     print("\nAll note_editor.py smoke tests passed.")

@@ -1,6 +1,11 @@
 """ISS-004 / ISS-051 (§1.1): body-#tag extractor. Ports every vector from the phone's
 bodyTags.test.ts (same inputs -> same outputs) so the two parsers never drift."""
-from body_tags import extract_body_tags, parse_body_attachment_refs
+from body_tags import (
+    attachment_ref_text,
+    derive_body_attachments,
+    extract_body_tags,
+    parse_body_attachment_refs,
+)
 
 
 def test_single_tag_at_start():
@@ -127,3 +132,59 @@ def test_attachment_ref_filename_with_spaces():
 
 def test_attachment_ref_none_returns_empty():
     assert parse_body_attachment_refs("just prose with a #tag") == []
+
+
+# derive_body_attachments: union of inline refs + legacy `[attachment: file]` lines, first-seen
+# order, deduped. Mirrors the phone's deriveBodyAttachments vectors (attachments.ts:68).
+def test_derive_inline_only():
+    body = "before\n![a memo](../_attachments/n/memo.m4a)\nafter"
+    assert derive_body_attachments(body) == ["memo.m4a"]
+
+
+def test_derive_legacy_only():
+    body = "before\n[attachment: memo.m4a]\nafter"
+    assert derive_body_attachments(body) == ["memo.m4a"]
+
+
+def test_derive_both_inline_first_then_legacy():
+    body = (
+        "![a](../_attachments/n/a.png)\n"
+        "[attachment: b.jpg]\n"
+        "![c](../_attachments/n/c.png)\n"
+        "[attachment: d.m4a]"
+    )
+    assert derive_body_attachments(body) == ["a.png", "c.png", "b.jpg", "d.m4a"]
+
+
+def test_derive_dedupes_across_both_forms():
+    body = "![x](../_attachments/n/shared.png)\n[attachment: shared.png]"
+    assert derive_body_attachments(body) == ["shared.png"]
+
+
+def test_derive_ignores_external_and_other_dir_images():
+    body = "![x](https://example.com/y.png)\n![z](images/z.png)\n![w](../other/w.png)"
+    assert derive_body_attachments(body) == []
+
+
+def test_derive_legacy_filename_with_space_survives():
+    body = "[attachment: beach day.jpg]"
+    assert derive_body_attachments(body) == ["beach day.jpg"]
+
+
+# attachment_ref_text: inverse of derive_body_attachments; round-trip must recover the filename.
+def test_attachment_ref_text_default_alt_audio():
+    assert attachment_ref_text("note1", "memo.m4a") == "![voice memo](../_attachments/note1/memo.m4a)"
+
+
+def test_attachment_ref_text_default_alt_non_audio():
+    assert attachment_ref_text("note1", "pic.png") == "![photo](../_attachments/note1/pic.png)"
+
+
+def test_attachment_ref_text_explicit_alt():
+    assert attachment_ref_text("note1", "pic.png", "beach") == "![beach](../_attachments/note1/pic.png)"
+
+
+def test_attachment_ref_text_round_trips_through_derive():
+    text = attachment_ref_text("note1", "beach day.jpg", "beach")
+    assert derive_body_attachments(text) == ["beach day.jpg"]
+    assert parse_body_attachment_refs(text) == ["beach day.jpg"]

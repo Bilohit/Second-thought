@@ -109,16 +109,122 @@ def test_read_note_body_is_lf_normalized_for_clients(original, newline):
     ids=["lf", "crlf"],
 )
 def test_add_attachment_appends_in_the_files_newline_convention(fm, newline):
-    """add_attachment appends a link line + an `attachments:` frontmatter key --
-    both must use the file's convention, never mix the two."""
+    """add_attachment appends an inline Markdown ref + a derived `attachments:`
+    frontmatter key -- both must use the file's convention, never mix the two."""
     vault, note = _vault_with(fm, name="with_id.md")
     data = read_note(vault, str(note))
     add_attachment(vault, str(note), "memo.m4a", b"fakeaudio", data["mtime"])
 
     after = note.read_bytes()
-    assert b"[attachment: memo.m4a]" in after
+    assert b"![voice memo](../_attachments/n1/memo.m4a)" in after
     assert b"attachments: [memo.m4a]" in after
     assert b"Body." in after                      # original body preserved
     assert after.count(newline) == after.count(b"\n")
     if newline == b"\n":
         assert b"\r" not in after
+
+
+def test_add_attachment_appends_v2_2_ref_shape():
+    """Exact ref shape data-model §1.2 specifies: `![photo](../_attachments/<id>/<file>)`,
+    with the audio kind defaulting to a `voice memo` alt instead of `photo`."""
+    vault, note = _vault_with(
+        b"---\nid: n1\ntitle: T\ncategory: Tech_Notes\n---\n# T\n\nBody.\n", name="with_id.md"
+    )
+    data = read_note(vault, str(note))
+    result = add_attachment(vault, str(note), "photo.png", b"fakeimg", data["mtime"])
+    after = note.read_text(encoding="utf-8")
+    assert f"![photo](../_attachments/n1/{result['filename']})" in after
+
+    data2 = read_note(vault, str(note))
+    result2 = add_attachment(vault, str(note), "memo.m4a", b"fakeaudio", data2["mtime"])
+    after2 = note.read_text(encoding="utf-8")
+    assert f"![voice memo](../_attachments/n1/{result2['filename']})" in after2
+
+
+@pytest.mark.parametrize(
+    "hostile_id",
+    ["../..", "..", ".", "a/b", "a\\b", "../outside", "n1\x00", ""],
+    ids=["dotdot-pair", "dotdot", "dot", "fwd-sep", "back-sep", "traversal", "nul", "empty"],
+)
+def test_add_attachment_refuses_a_hostile_note_id(hostile_id):
+    """`id:` arrives over the Drive hub from the peer, so it is untrusted as a path. An
+    unguarded id would mkdir + write OUTSIDE the vault -- the write-side twin of the
+    read-side hole in `GET /note/attachment`. Nothing may be created above _attachments/."""
+    fm = f"---\nid: {hostile_id}\ntitle: T\ncategory: Tech_Notes\n---\n# T\n\nBody.\n"
+    vault, note = _vault_with(fm.encode("utf-8"), name="hostile.md")
+    before = note.read_bytes()
+    data = read_note(vault, str(note))
+    with pytest.raises(ValueError):
+        add_attachment(vault, str(note), "memo.m4a", b"fakeaudio", data["mtime"])
+    assert note.read_bytes() == before                      # body untouched
+    assert not list(vault.parent.glob("*.m4a"))              # nothing written above the vault
+    assert not list(vault.glob("**/memo.m4a"))               # and nothing inside it either
+
+
+def _attachments_field(note: Path) -> list[str]:
+    from frontmatter import read_all_fields
+    raw = read_all_fields(note.read_text(encoding="utf-8")).get("attachments", "")
+    return [t.strip() for t in raw.strip("[]").split(",") if t.strip()] if raw else []
+
+
+def test_add_attachment_frontmatter_is_derived_from_body():
+    """The `attachments:` field is not an independent fact -- it must exactly equal
+    `derive_body_attachments` of the body the function just produced."""
+    from body_tags import derive_body_attachments
+
+    vault, note = _vault_with(
+        b"---\nid: n1\ntitle: T\ncategory: Tech_Notes\n---\n# T\n\nBody.\n", name="with_id.md"
+    )
+    data = read_note(vault, str(note))
+    add_attachment(vault, str(note), "photo.png", b"fakeimg", data["mtime"])
+
+    after_body = read_note(vault, str(note))["body"]
+    assert _attachments_field(note) == derive_body_attachments(after_body)
+    assert _attachments_field(note) == ["photo.png"]
+
+
+def test_add_attachment_preserves_a_pre_existing_legacy_attachment_line():
+    """A body already carrying a legacy `[attachment: ...]` line must keep that
+    attachment in the derived field alongside the newly-appended v2.2 ref --
+    no migration/rewrite of the existing body."""
+    vault, note = _vault_with(
+        b"---\nid: n1\ntitle: T\ncategory: Tech_Notes\n---\n"
+        b"# T\n\nBody.\n\n[attachment: old.jpg]\n",
+        name="with_id.md",
+    )
+    data = read_note(vault, str(note))
+    add_attachment(vault, str(note), "new.png", b"fakeimg", data["mtime"])
+
+    fields = _attachments_field(note)
+    assert "old.jpg" in fields
+    assert "new.png" in fields
+    body = read_note(vault, str(note))["body"]
+    assert "[attachment: old.jpg]" in body   # legacy line untouched, not rewritten
+
+
+def test_add_attachment_body_bytes_above_the_ref_are_byte_identical():
+    """Mandatory assertion: appending an attachment must not touch a single byte
+    of the body that existed above the appended ref line."""
+    original_body = "# T\n\nExisting paragraph.\nSecond line.\n"
+    vault, note = _vault_with(
+        ("---\nid: n1\ntitle: T\ncategory: Tech_Notes\n---\n" + original_body).encode(),
+        name="with_id.md",
+    )
+    data = read_note(vault, str(note))
+    add_attachment(vault, str(note), "photo.png", b"fakeimg", data["mtime"])
+
+    after_body = read_note(vault, str(note))["body"]
+    assert after_body.startswith(original_body.rstrip("\n"))
+
+
+def test_add_attachment_still_raises_on_stale_mtime():
+    """The mtime conflict guard (SYNC-25) is unchanged by this refactor."""
+    from note_editor import NoteConflictError
+
+    vault, note = _vault_with(
+        b"---\nid: n1\ntitle: T\ncategory: Tech_Notes\n---\n# T\n\nBody.\n", name="with_id.md"
+    )
+    data = read_note(vault, str(note))
+    stale_mtime = data["mtime"] - 1.0
+    with pytest.raises(NoteConflictError):
+        add_attachment(vault, str(note), "photo.png", b"fakeimg", stale_mtime)

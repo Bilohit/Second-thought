@@ -120,19 +120,21 @@ function InboxRow({
         display: "flex",
         flexDirection: "column",
         gap: 8,
-        maxHeight: leaving ? 0 : 260,
-        overflow: "hidden",
         // The leaving slide-out owns `transform`/`transition` inline (and
         // therefore wins over the hover class's CSS) only while it's
         // actually playing — at rest those properties are left to
         // .row-hover-lift so the bold hover lift isn't shadowed by an
         // always-on inline transform.
+        // No height/margin animation — matches TrashView.tsx's row exit (transform+opacity only,
+        // the layout-property animation rule in the phase-6 animation pass §5 rule 5); the row
+        // keeps its space until removeItem's setTimeout unmounts it, then surrounding rows reflow
+        // instantly rather than via an animated collapse.
         ...(leaving
           ? {
               opacity: 0,
               transform: "translateX(12px)",
-              marginBottom: 0,
-              transition: "opacity 0.18s ease, transform 0.18s ease, max-height 0.22s ease, margin-bottom 0.22s ease",
+              pointerEvents: "none",
+              transition: "opacity 0.26s cubic-bezier(0.22,1,0.36,1), transform 0.26s cubic-bezier(0.22,1,0.36,1)",
             }
           : {}),
       }}
@@ -312,7 +314,7 @@ export default function InboxPanel({
         return next;
       });
       setLeavingIds((s) => { const n = new Set(s); n.delete(noteId); return n; });
-    }, 230);
+    }, 260);
   };
 
   const handleApprove = async (noteId: string, target?: string) => {

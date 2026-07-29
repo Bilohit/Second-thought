@@ -73,6 +73,10 @@ export default function FluidVisualizer({ readWaveform, readSpectrum, sampleRate
     const layerLevels = [0, 0, 0];
     let raf = 0;
     const t0 = performance.now();
+    // index.css's global reduced-motion rule collapses CSS transitions, but this loop drives the
+    // canvas via requestAnimationFrame — no CSS can stop it. Read once per mount (matches the dpr
+    // read above); reduced motion means one static frame at the current level, never a loop.
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     const draw = () => {
       const t = (performance.now() - t0) / 1000;
@@ -154,7 +158,7 @@ export default function FluidVisualizer({ readWaveform, readSpectrum, sampleRate
         }
       }
       ctx.globalAlpha = 1;
-      if (active) raf = requestAnimationFrame(draw);
+      if (active && !reducedMotion) raf = requestAnimationFrame(draw);
     };
     draw();
     return () => {

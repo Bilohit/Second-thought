@@ -2296,3 +2296,353 @@ def test_run_once_migration_renames_hub_and_local_file_for_a_tracked_note(tmp_pa
     drive._updates.clear()
     run_once(str(vault), state_path, drive, vault_root=str(vault), scratchpad_folder="_scratchpad")
     assert drive._updates == []
+
+
+# ---------------------------------------------------------------------------
+# PKG-ATTACH legs 3+4 (spec §4.3): desktop <-> hub attachment bytes.
+# An attachment is NOT a note op — no base_rev, no reconcile entry, no sync_state row.
+# Identity is (note_id, filename); PRESENCE IS THE ENTIRE STATE MODEL.
+# ---------------------------------------------------------------------------
+
+from mobile_sync_agent import _sync_note_attachments, _ATTACHMENTS_FOLDER
+
+
+class _AttachExec:
+    def __init__(self, value):
+        self._value = value
+
+    def execute(self):
+        if isinstance(self._value, Exception):
+            raise self._value
+        return self._value
+
+
+class _AttachFiles:
+    def __init__(self, drive):
+        self.d = drive
+
+    def list(self, q=None, fields=None, pageToken=None):
+        self.d.calls.append(("list", q))
+        return _AttachExec(self.d._do_list(q))
+
+    def create(self, body=None, media_body=None, fields=None):
+        self.d.calls.append(("create", (body or {}).get("name")))
+        return _AttachExec(self.d._do_create(body or {}, media_body))
+
+    def get_media(self, fileId=None):
+        self.d.calls.append(("get_media", fileId))
+        if fileId in self.d.fail_download_for:
+            return _AttachExec(RuntimeError(f"network died on {fileId}"))
+        return _AttachExec(self.d.blobs[fileId]["data"])
+
+
+class _AttachDrive:
+    """Fake Drive covering exactly the primitives the attachment path uses: find-or-create
+    subfolder, list children, binary create, get_media. `calls` records EVERY Drive call so
+    the zero-call guarantee is assertable."""
+
+    def __init__(self):
+        self.folders = {}        # (parent_id, name) -> folder_id
+        self.blobs = {}          # file_id -> {"name", "parent", "data"}
+        self.calls = []
+        self.fail_download_for = set()
+        self._seq = 0
+
+    def files(self):
+        return _AttachFiles(self)
+
+    def add_folder(self, parent_id, name):
+        self._seq += 1
+        fid = f"folder{self._seq}"
+        self.folders[(parent_id, name)] = fid
+        return fid
+
+    def add_blob(self, parent_id, name, data):
+        self._seq += 1
+        fid = f"blob{self._seq}"
+        self.blobs[fid] = {"name": name, "parent": parent_id, "data": data}
+        return fid
+
+    def _do_list(self, q):
+        import re as _re
+        parent = _re.search(r"'([^']+)' in parents", q).group(1)
+        name_m = _re.search(r"name='([^']*)'", q)
+        if name_m:                       # _find_or_create_subfolder probe
+            fid = self.folders.get((parent, name_m.group(1)))
+            return {"files": ([{"id": fid}] if fid else []), "nextPageToken": None}
+        files = [
+            {"id": fid, "name": b["name"], "mimeType": "application/octet-stream"}
+            for fid, b in self.blobs.items() if b["parent"] == parent
+        ]
+        return {"files": files, "nextPageToken": None}
+
+    def _do_create(self, body, media_body):
+        if body.get("mimeType") == _FOLDER_MIME:
+            return {"id": self.add_folder(body["parents"][0], body["name"])}
+        data = media_body.getbytes(0, media_body.size())
+        return {"id": self.add_blob(body["parents"][0], body["name"], data)}
+
+
+def _ref(note_id, filename, alt="photo"):
+    return f"![{alt}](../_attachments/{note_id}/{filename})"
+
+
+def _attach_local(vault_root: Path, note_id: str, name: str, data: bytes) -> Path:
+    d = vault_root / _ATTACHMENTS_FOLDER / note_id
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_bytes(data)
+    return p
+
+
+def test_attach_no_refs_and_no_local_dir_makes_zero_drive_calls(tmp_path):
+    drive = _AttachDrive()
+    result = _sync_note_attachments(drive, "HUB", "n1", "just a plain body\n", str(tmp_path), {})
+    assert result == (0, 0, 0)
+    assert drive.calls == []            # the common case costs NOTHING on the wire
+
+
+def test_attach_uploads_referenced_local_file(tmp_path):
+    drive = _AttachDrive()
+    _attach_local(tmp_path, "n1", "photo-1.jpg", b"JPEGBYTES")
+    body = f"see {_ref('n1', 'photo-1.jpg')}\n"
+
+    assert _sync_note_attachments(drive, "HUB", "n1", body, str(tmp_path), {}) == (1, 0, 0)
+
+    stored = [b for b in drive.blobs.values() if b["name"] == "photo-1.jpg"]
+    assert len(stored) == 1 and stored[0]["data"] == b"JPEGBYTES"
+
+
+def test_attach_downloads_remote_missing_locally(tmp_path):
+    drive = _AttachDrive()
+    root = drive.add_folder("HUB", _ATTACHMENTS_FOLDER)
+    sub = drive.add_folder(root, "n1")
+    drive.add_blob(sub, "memo.m4a", b"AUDIO")
+
+    assert _sync_note_attachments(
+        drive, "HUB", "n1", _ref("n1", "memo.m4a", "voice memo"), str(tmp_path), {}) == (0, 1, 0)
+    landed = tmp_path / _ATTACHMENTS_FOLDER / "n1" / "memo.m4a"
+    assert landed.read_bytes() == b"AUDIO"
+    assert list((tmp_path / _ATTACHMENTS_FOLDER / "n1").glob("*.tmp")) == []
+
+
+def test_attach_both_directions_in_one_call(tmp_path):
+    drive = _AttachDrive()
+    root = drive.add_folder("HUB", _ATTACHMENTS_FOLDER)
+    sub = drive.add_folder(root, "n1")
+    drive.add_blob(sub, "theirs.png", b"THEIRS")
+    _attach_local(tmp_path, "n1", "mine.png", b"MINE")
+
+    assert _sync_note_attachments(
+        drive, "HUB", "n1", _ref("n1", "mine.png"), str(tmp_path), {}) == (1, 1, 0)
+    assert (tmp_path / _ATTACHMENTS_FOLDER / "n1" / "theirs.png").read_bytes() == b"THEIRS"
+    assert any(b["name"] == "mine.png" for b in drive.blobs.values())
+
+
+def test_attach_already_in_sync_transfers_nothing(tmp_path):
+    drive = _AttachDrive()
+    root = drive.add_folder("HUB", _ATTACHMENTS_FOLDER)
+    sub = drive.add_folder(root, "n1")
+    drive.add_blob(sub, "photo.jpg", b"REMOTE")
+    _attach_local(tmp_path, "n1", "photo.jpg", b"LOCAL")
+
+    assert _sync_note_attachments(
+        drive, "HUB", "n1", _ref("n1", "photo.jpg"), str(tmp_path), {}) == (0, 0, 0)
+    assert [c for c in drive.calls if c[0] == "get_media"] == []
+    assert len(drive.blobs) == 1                                  # nothing re-uploaded
+    assert (tmp_path / _ATTACHMENTS_FOLDER / "n1" / "photo.jpg").read_bytes() == b"LOCAL"
+
+
+def test_attach_unreferenced_local_file_is_never_uploaded(tmp_path):
+    # An orphan (a ref the user deleted from the body) stays local. Never pushed, never deleted.
+    drive = _AttachDrive()
+    _attach_local(tmp_path, "n1", "orphan.jpg", b"ORPHAN")
+
+    assert _sync_note_attachments(
+        drive, "HUB", "n1", "no refs here\n", str(tmp_path), {}) == (0, 0, 0)
+    assert drive.blobs == {}
+    assert (tmp_path / _ATTACHMENTS_FOLDER / "n1" / "orphan.jpg").exists()   # never deleted
+
+
+def test_attach_failed_download_leaves_no_file_and_no_tmp(tmp_path):
+    # Presence IS the state model, so a truncated file that "exists" would never be retried.
+    drive = _AttachDrive()
+    root = drive.add_folder("HUB", _ATTACHMENTS_FOLDER)
+    sub = drive.add_folder(root, "n1")
+    bad = drive.add_blob(sub, "big.m4a", b"PARTIAL")
+    drive.add_blob(sub, "good.jpg", b"OK")
+    drive.fail_download_for.add(bad)
+    body = _ref("n1", "big.m4a", "voice memo") + "\n" + _ref("n1", "good.jpg")
+
+    up, down, failed = _sync_note_attachments(drive, "HUB", "n1", body, str(tmp_path), {})
+
+    assert (up, down, failed) == (0, 1, 1)          # fail-soft: the sibling still landed
+    d = tmp_path / _ATTACHMENTS_FOLDER / "n1"
+    assert not (d / "big.m4a").exists()             # no truncated file at the final path
+    assert list(d.glob("*.tmp")) == []              # and no stray temp sibling
+    assert (d / "good.jpg").read_bytes() == b"OK"
+
+
+def test_attach_never_overwrites_existing_local_bytes(tmp_path):
+    drive = _AttachDrive()
+    root = drive.add_folder("HUB", _ATTACHMENTS_FOLDER)
+    sub = drive.add_folder(root, "n1")
+    drive.add_blob(sub, "same.jpg", b"REMOTE-DIFFERENT-BYTES")
+    _attach_local(tmp_path, "n1", "same.jpg", b"LOCAL")
+
+    assert _sync_note_attachments(drive, "HUB", "n1", "", str(tmp_path), {}) == (0, 0, 0)
+    assert (tmp_path / _ATTACHMENTS_FOLDER / "n1" / "same.jpg").read_bytes() == b"LOCAL"
+
+
+def test_attach_filename_with_space_round_trips(tmp_path):
+    # The phone permits spaces (mirror.ts isSafeAttachmentName); both legs must carry them.
+    drive = _AttachDrive()
+    _attach_local(tmp_path, "n1", "beach day.jpg", b"SAND")
+    body = _ref("n1", "beach day.jpg")
+    assert _sync_note_attachments(drive, "HUB", "n1", body, str(tmp_path), {}) == (1, 0, 0)
+
+    other = tmp_path / "peer"           # …and back down into a fresh vault
+    other.mkdir()
+    assert _sync_note_attachments(drive, "HUB", "n1", body, str(other), {}) == (0, 1, 0)
+    assert (other / _ATTACHMENTS_FOLDER / "n1" / "beach day.jpg").read_bytes() == b"SAND"
+
+
+def test_attach_root_folder_is_cached_across_notes(tmp_path):
+    drive = _AttachDrive()
+    cache = {}
+    _attach_local(tmp_path, "n1", "a.jpg", b"A")
+    _attach_local(tmp_path, "n2", "b.jpg", b"B")
+    _sync_note_attachments(drive, "HUB", "n1", _ref("n1", "a.jpg"), str(tmp_path), cache)
+    _sync_note_attachments(drive, "HUB", "n2", _ref("n2", "b.jpg"), str(tmp_path), cache)
+
+    root_probes = [c for c in drive.calls
+                   if c[0] == "list" and f"name='{_ATTACHMENTS_FOLDER}'" in c[1]]
+    assert len(root_probes) == 1        # root find-or-created once per pass, then cached
+
+
+# --- T7: wired as run_once phase 6 -----------------------------------------
+
+def test_run_once_attachment_phase_runs_after_mirror(tmp_path, monkeypatch):
+    _note_file(tmp_path, "n1.md", "id: n1\norigin: note", "Body.\n")
+    drive = _mock_empty_drive()
+    monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
+
+    order = []
+    real_mirror = mirror_to_hub
+
+    def spy_mirror(*a, **k):
+        order.append("mirror")
+        return real_mirror(*a, **k)
+
+    monkeypatch.setattr("mobile_sync_agent.mirror_to_hub", spy_mirror)
+    monkeypatch.setattr(
+        "mobile_sync_agent._sync_note_attachments",
+        lambda d, h, nid, b, vr, c: order.append(f"attach:{nid}") or (0, 0, 0),
+    )
+
+    run_once(str(tmp_path), str(tmp_path / "s.json"), drive, vault_root=str(tmp_path))
+
+    assert order == ["mirror", "attach:n1"]
+
+
+def test_run_once_attachment_failure_does_not_abort_pass(tmp_path, monkeypatch):
+    _note_file(tmp_path, "n1.md", "id: n1\norigin: note", "Body.\n")
+    drive = _mock_empty_drive()
+    monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
+
+    def boom(*a, **k):
+        raise RuntimeError("drive on fire")
+
+    monkeypatch.setattr("mobile_sync_agent._sync_note_attachments", boom)
+
+    result = run_once(str(tmp_path), str(tmp_path / "s.json"), drive, vault_root=str(tmp_path))
+
+    assert len(result) == 7                    # tuple contract intact
+    assert result[0] == 1                      # the note's own sync still succeeded
+    assert result[1] == 0                      # …and an attachment failure is NOT a note failure
+
+
+def test_run_once_attachment_failure_on_one_note_still_syncs_the_others(tmp_path, monkeypatch):
+    """Per-NOTE containment: a Drive-level failure on one note must not cost every note after
+    it in the same pass. Presence is the state, so the failed one just retries next pass."""
+    for nid in ("n1", "n2", "n3"):
+        _note_file(tmp_path, f"{nid}.md", f"id: {nid}\norigin: note", "Body.\n")
+    drive = _mock_empty_drive()
+    monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
+
+    seen = []
+
+    def flaky(d, h, nid, b, vr, c):
+        seen.append(nid)
+        if nid == "n2":
+            raise RuntimeError("drive on fire")
+        return (1, 0, 0)
+
+    monkeypatch.setattr("mobile_sync_agent._sync_note_attachments", flaky)
+
+    result = run_once(str(tmp_path), str(tmp_path / "s.json"), drive, vault_root=str(tmp_path))
+
+    assert sorted(seen) == ["n1", "n2", "n3"]   # every note was attempted, none skipped
+    assert len(result) == 7 and result[1] == 0  # tuple intact, not counted as a note failure
+
+
+def test_run_once_attachment_phase_skips_sync_ignored_note(tmp_path, monkeypatch):
+    # F-5: an ignored note never leaves this machine — nor do its bytes.
+    from sync_ignore import set_ignored
+    p1 = _note_file(tmp_path, "n1.md", "id: n1\norigin: note", "Body.\n")
+    _note_file(tmp_path, "n2.md", "id: n2\norigin: note", "Body.\n")
+    set_ignored(tmp_path, str(p1), True)
+
+    drive = _mock_empty_drive()
+    monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
+    seen = []
+    monkeypatch.setattr("mobile_sync_agent._sync_note_attachments",
+                        lambda d, h, nid, b, vr, c: seen.append(nid) or (0, 0, 0))
+
+    run_once(str(tmp_path), str(tmp_path / "s.json"), drive, vault_root=str(tmp_path))
+
+    assert seen == ["n2"]
+
+
+# --- T8: `attachments:` derived from the body on the sync-agent save path ---
+
+def test_enrich_derives_attachments_from_body(tmp_path):
+    body = f"Hi {_ref('n1', 'beach day.jpg')}\n\n[attachment: legacy.m4a]\n"
+    _note_file(tmp_path, "n1.md",
+               "id: n1\norigin: note\norigin_device: desktop\nenriched: false", body)
+    vault_notes = _vault_notes_from(tmp_path)
+
+    enriched, failed = enrich_notes(vault_notes, str(tmp_path), lambda t: ([], None), vocab={})
+
+    assert (enriched, failed) == (1, 0)
+    from note_model import parse_note
+    written = (tmp_path / "n1.md").read_text(encoding="utf-8")
+    assert parse_note(written).attachments == ["beach day.jpg", "legacy.m4a"]
+
+
+def test_enrich_attachments_recompute_keeps_body_byte_identical(tmp_path):
+    body = f"Trip notes.\n\n{_ref('n1', 'photo.jpg')}\n"
+    _note_file(tmp_path, "n1.md",
+               "id: n1\norigin: note\norigin_device: desktop\nenriched: false", body)
+    vault_notes = _vault_notes_from(tmp_path)
+    before = (tmp_path / "n1.md").read_text(encoding="utf-8")
+
+    enrich_notes(vault_notes, str(tmp_path), lambda t: ([], None), vocab={})
+
+    written = (tmp_path / "n1.md").read_text(encoding="utf-8")
+    from machine_tags import strip_trailing_tags_line
+    # BODY SACRED: the user body is byte-identical; only frontmatter moved.
+    assert strip_trailing_tags_line(strip_frontmatter(written)) == body
+    assert written != before                  # sanity: the pass really did rewrite the note
+
+
+def test_enrich_no_refs_serializes_empty_attachments_list(tmp_path):
+    _note_file(tmp_path, "n1.md",
+               "id: n1\norigin: note\norigin_device: desktop\nenriched: false",
+               "Nothing attached.\n")
+    vault_notes = _vault_notes_from(tmp_path)
+
+    enrich_notes(vault_notes, str(tmp_path), lambda t: ([], None), vocab={})
+
+    written = (tmp_path / "n1.md").read_text(encoding="utf-8")
+    assert "attachments: []" in written        # empty list, not a dropped key

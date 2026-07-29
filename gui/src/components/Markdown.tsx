@@ -21,7 +21,7 @@ function Spans({ spans }: { spans: Span[] }) {
 
 const HEADING_SIZE: Record<number, number> = { 1: 20, 2: 17, 3: 15 };
 
-function AttachmentBlock({ filename, url }: { filename: string; url: string | undefined }) {
+function AttachmentBlock({ filename, alt, url }: { filename: string; alt: string | undefined; url: string | undefined }) {
   const kind = kindOf(filename);
   const frameStyle: CSSProperties = { border: "1px solid var(--border)", margin: "10px 0" };
   const labelStyle: CSSProperties = {
@@ -29,10 +29,14 @@ function AttachmentBlock({ filename, url }: { filename: string; url: string | un
     color: "var(--text-3)", padding: "6px 10px", borderBottom: "1px solid var(--border-2)",
     textTransform: "uppercase",
   };
+  // Bytes absent locally (not yet synced down, or a hand-typed ref) -- url is undefined because
+  // attachmentUrls has no entry for this filename. Contract §1.2 / parity with the phone's
+  // MissingAttachment: a bordered (dashed) placeholder naming the file, never a broken <img> and
+  // never an <AudioPlayer> stuck at 0:00.
   if (!url) {
     return (
       <div style={{ ...frameStyle, borderStyle: "dashed" }}>
-        <div style={labelStyle}>NOT SYNCED · {filename}</div>
+        <div style={labelStyle}>NOT SYNCED · {alt ?? filename}</div>
       </div>
     );
   }
@@ -40,9 +44,17 @@ function AttachmentBlock({ filename, url }: { filename: string; url: string | un
     <div style={frameStyle}>
       <div style={labelStyle}>{kind === "audio" ? "VOICE MEMO" : kind === "image" ? "IMAGE" : "FILE"} · {filename}</div>
       {kind === "image" && (
-        <img src={url} alt={filename} style={{ display: "block", width: "100%", maxHeight: 320, objectFit: "contain", background: "var(--surface)" }} />
+        <>
+          <img src={url} alt={alt ?? filename} style={{ display: "block", width: "100%", maxHeight: 320, objectFit: "contain", background: "var(--surface)" }} />
+          {alt && <div style={{ padding: "6px 10px", fontSize: 11, color: "var(--text-3)", borderTop: "1px solid var(--border-2)" }}>{alt}</div>}
+        </>
       )}
-      {kind === "audio" && <div style={{ padding: 10 }}><AudioPlayer src={url} /></div>}
+      {kind === "audio" && (
+        <div style={{ padding: 10 }}>
+          <AudioPlayer src={url} />
+          {alt && <div style={{ paddingTop: 6, fontSize: 11, color: "var(--text-3)" }}>{alt}</div>}
+        </div>
+      )}
       {kind === "file" && (
         <a href={url} download={filename} target="_blank" rel="noreferrer" style={{ display: "block", padding: "10px 12px", fontSize: 12, color: "var(--text-2)" }}>
           Open {filename}
@@ -87,7 +99,7 @@ export function Markdown({ blocks, attachmentUrls }: { blocks: Block[]; attachme
           );
         }
         if (b.kind === "attachment") {
-          return <AttachmentBlock key={key} filename={b.filename} url={attachmentUrls[b.filename]} />;
+          return <AttachmentBlock key={key} filename={b.filename} alt={b.alt} url={attachmentUrls[b.filename]} />;
         }
         return <p key={key} style={{ margin: "0 0 12px" }}><Spans spans={b.spans} /></p>;
       })}

@@ -646,6 +646,146 @@ def test_cors_preflight_succeeds_for_every_route_method(gui):
 
 
 # ============================================================================
+# 7. GET /note/attachment -- path traversal (T4)
+#
+# The read path resolves `<vault>/_attachments/<note-id>/<filename>` from two
+# UNTRUSTED components: `filename` is a client query param, and `note_id` is read
+# out of note frontmatter (hub-synced, i.e. phone-authored). Both are now
+# VALIDATED and used verbatim -- the old `re.sub(r"[^\w.\-]", "_", ...)` sanitize
+# mangled every phone-authored name containing a space (mirror.ts's writer
+# permits them, its tests pin `beach day.jpg`) into a permanent 404.
+#
+# Oracle: nothing outside the note's OWN `_attachments/<note-id>/` directory may
+# ever be served. Asserted on the RESOLVED path handed to FileResponse, not on
+# the status code -- a 404 for the wrong reason would pass a status-only check.
+# ============================================================================
+
+_TRAVERSAL_NAMES = [
+    "../../etc/passwd",
+    "..\\..\\windows\\system.ini",
+    "sub/../../outside.txt",
+    "..",
+    ".",
+    "/etc/passwd",
+    "C:\\Windows\\win.ini",
+    "x\x00.jpg",
+    "bell\x07.jpg",
+]
+
+_NOTE_ID = "20260101-aaaa"
+_GOOD_NAME = "beach day.jpg"
+
+
+def _attachment_fixture(vault: Path, note_id: str = _NOTE_ID) -> Path:
+    """One note with an id, one real attachment whose name contains a SPACE, and
+    canary files planted at every level the traversal vectors aim at."""
+    note = vault / "Notes" / "a.md"
+    note.write_text(f"---\nid: {note_id}\norigin: note\n---\n\nbody\n", encoding="utf-8")
+    (vault / "_attachments").mkdir(parents=True, exist_ok=True)
+    d = vault / "_attachments" / note_id
+    try:                                  # a hostile id may not be a creatable dir
+        d.mkdir(parents=True, exist_ok=True)
+        (d / _GOOD_NAME).write_bytes(b"INSIDE-THE-ATTACHMENT-DIR")
+    except (OSError, ValueError):
+        pass
+    (vault / "_attachments" / "outside.txt").write_bytes(b"CANARY-SIBLING")
+    (vault / "outside.txt").write_bytes(b"CANARY-VAULT-ROOT")
+    (vault.parent / "outside.txt").write_bytes(b"CANARY-ABOVE-VAULT")
+    return d
+
+
+@pytest.fixture
+def served(monkeypatch):
+    """Records the resolved path every FileResponse is constructed with.
+
+    `get_note_attachment` imports FileResponse from fastapi.responses at CALL
+    time, so patching the module attribute is enough -- no reload, and the real
+    response object is still returned so the route behaves normally.
+    """
+    import fastapi.responses as _fr
+    real = _fr.FileResponse
+    seen: list[Path] = []
+
+    def _spy(path, *a, **kw):
+        seen.append(Path(str(path)).resolve())
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(_fr, "FileResponse", _spy)
+    return seen
+
+
+@pytest.mark.parametrize("filename", _TRAVERSAL_NAMES, ids=repr)
+def test_attachment_filename_traversal_is_refused(gui, served, filename):
+    """Every separator / `..` / absolute / control-char form is a clean 400, and
+    NOTHING is served -- not a byte, not even a stat of a file outside the dir."""
+    client, vault = gui
+    _attachment_fixture(vault)
+    resp = client.get("/note/attachment",
+                      params={"path": "Notes/a.md", "filename": filename},
+                      headers=GOOD_HEADERS)
+    assert resp.status_code == 400, (
+        f"traversal name {filename!r} was not refused: {resp.status_code} {resp.text[:200]!r}"
+    )
+    _assert_clean_4xx(resp, vault)
+    assert served == [], f"a file was served for traversal name {filename!r}: {served}"
+    for canary in (b"CANARY-SIBLING", b"CANARY-VAULT-ROOT", b"CANARY-ABOVE-VAULT", b"root:"):
+        assert canary not in resp.content
+
+
+@pytest.mark.parametrize("filename", _TRAVERSAL_NAMES, ids=repr)
+def test_attachment_never_resolves_outside_its_own_dir(gui, served, filename):
+    """Containment oracle, independent of status: whatever path the handler ends
+    up resolving must live under `<vault>/_attachments/<note-id>/`."""
+    client, vault = gui
+    own_dir = _attachment_fixture(vault).resolve()
+    client.get("/note/attachment",
+               params={"path": "Notes/a.md", "filename": filename},
+               headers=GOOD_HEADERS)
+    for p in served:
+        assert p.parent == own_dir, f"{filename!r} resolved to {p}, outside {own_dir}"
+
+
+def test_attachment_name_with_a_space_resolves_verbatim(gui, served):
+    """The regression this fix exists for: the phone's writer permits spaces, so
+    a hub-synced `beach day.jpg` must be served as-is, not sanitized into a 404."""
+    client, vault = gui
+    own_dir = _attachment_fixture(vault).resolve()
+    resp = client.get("/note/attachment",
+                      params={"path": "Notes/a.md", "filename": _GOOD_NAME},
+                      headers=GOOD_HEADERS)
+    assert resp.status_code == 200, f"{resp.status_code}: {resp.text[:200]!r}"
+    assert resp.content == b"INSIDE-THE-ATTACHMENT-DIR"
+    assert served == [own_dir / _GOOD_NAME]
+
+
+def test_attachment_missing_file_is_still_404(gui, served):
+    """A valid-but-absent name keeps the pre-existing 404 -- the validator must
+    not turn a plain miss into a 400."""
+    client, vault = gui
+    _attachment_fixture(vault)
+    resp = client.get("/note/attachment",
+                      params={"path": "Notes/a.md", "filename": "no such file.png"},
+                      headers=GOOD_HEADERS)
+    assert resp.status_code == 404, f"{resp.status_code}: {resp.text[:200]!r}"
+    assert served == []
+
+
+@pytest.mark.parametrize("note_id", ["../..", "../../..", "..\\..", "a/../..", "\x00"], ids=repr)
+def test_attachment_note_id_traversal_is_refused(gui, served, note_id):
+    """`note_id` comes from the note's frontmatter, which arrives over the hub
+    from the phone -- it is untrusted too, and was interpolated into the path
+    unguarded. A hostile id must not redirect the read out of _attachments/."""
+    client, vault = gui
+    _attachment_fixture(vault, note_id=note_id)
+    resp = client.get("/note/attachment",
+                      params={"path": "Notes/a.md", "filename": "outside.txt"},
+                      headers=GOOD_HEADERS)
+    _assert_clean_4xx(resp, vault)
+    assert served == [], f"hostile note id {note_id!r} served {served}"
+    assert b"CANARY" not in resp.content
+
+
+# ============================================================================
 # 8. LAN listener (B-11) -- lan_sync.py
 #
 # s23 already verified nonce replay/expiry/cap/403 + B-12 traversal; the tests

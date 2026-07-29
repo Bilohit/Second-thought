@@ -441,7 +441,8 @@ def test_capture_audio_b64_endpoint(vault: Path, tmp_path: Path):
     notes = list(vault.glob("**/*.md"))
     matching = [p for p in notes if f"id: {note_id}" in p.read_text(encoding="utf-8")]
     assert len(matching) == 1, "voice note must carry the frontmatter id its attachment dir is named for"
-    assert "[attachment: voice." in matching[0].read_text(encoding="utf-8")
+    # v2.2 inline ref (PKG-ATTACH s98); the legacy `[attachment: …]` line is still read, never written.
+    assert f"](../_attachments/{note_id}/voice." in matching[0].read_text(encoding="utf-8")
 
 
 # ── T8: image_b64 endpoint routes to LLaVA ────────────────────────────────────
