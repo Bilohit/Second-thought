@@ -115,6 +115,79 @@ def test_text_input_writes_vault_file(vault: Path):
 # ── T2: URL input (mocked web fetch) ─────────────────────────────────────────
 
 
+def test_text_input_empty_llm_body_preserves_raw_text(vault: Path):
+    """P0-1 regression: an empty markdown_content from the LLM must not lose
+    the user's original captured text. main.py must append it as a fallback,
+    the same way audio appends '## Transcript' and large-text appends
+    '## Full Original Text'."""
+    from main import run_pipeline
+
+    fake_out = _fake_capture_output()
+    fake_out.markdown_content = ""  # the exact failure mode: LLM returns an empty body
+
+    raw_text = "Python asyncio is awesome for concurrent I/O."
+    with _mock_llm(fake_out):
+        result = run_pipeline(
+            text=raw_text,
+            vault_root=str(vault),
+            dry_run=False,
+            notify=False,
+        )
+
+    assert result["_written_to"] is not None
+    written = Path(result["_written_to"])
+    assert written.exists()
+    body = written.read_text()
+    assert body.strip() != "", "body must not be byte-empty (P0-1)"
+    assert raw_text in body, "raw captured text must be preserved as a fallback"
+
+
+def test_server_run_pipeline_blocking_empty_llm_body_preserves_raw_text(vault: Path):
+    """Same P0-1 regression, exercised through server.py's hand-duplicated
+    pipeline (_run_pipeline_blocking), not just main.py's."""
+    import asyncio
+    import os
+
+    import config as cfg_mod
+    cfg_mod._cfg = None
+    os.environ["OMNI_VAULT_ROOT"] = str(vault)
+
+    import server as srv_mod
+
+    fake_out = _fake_capture_output()
+    fake_out.markdown_content = ""
+    raw_text = "hello from server pipeline, preserve me"
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    q: asyncio.Queue = asyncio.Queue()
+
+    with _mock_llm(fake_out), \
+         mock.patch("vector_store.retrieve_related", return_value=[]), \
+         mock.patch("vector_store.index_note"):
+        srv_mod._run_pipeline_blocking("text", raw_text, q, loop)
+
+    # _run_pipeline_blocking only *schedules* its q.put_nowait calls via
+    # loop.call_soon_threadsafe -- they don't actually run until the loop gets
+    # a turn. Give it one before draining.
+    loop.run_until_complete(asyncio.sleep(0))
+
+    # drain the SSE queue for the "done" event to find the written path.
+    # emit() puts {"event": event, **kwargs} dicts on the queue (see
+    # server.py's _run_pipeline_blocking.emit), not tuples.
+    written_path = None
+    while not q.empty():
+        item = q.get_nowait()
+        if item is not None and item.get("event") == "done":
+            written_path = item.get("path")
+    loop.close()
+
+    assert written_path is not None
+    body = Path(written_path).read_text()
+    assert body.strip() != "", "body must not be byte-empty (P0-1, server path)"
+    assert raw_text in body
+
+
 def test_url_input_enriches_and_writes(vault: Path):
     """A URL is enriched (web extract mocked) then written to the vault."""
     from main import run_pipeline

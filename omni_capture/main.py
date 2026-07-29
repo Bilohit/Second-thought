@@ -447,6 +447,18 @@ def run_pipeline(
 
     output.markdown_content = _append_transcript(output.markdown_content, enriched)
 
+    # mirrored from server.py by design (main.py cannot import server.py --
+    # see CLAUDE.md's hand-duplication rule for main.py/server.py).
+    def _append_original_text(markdown: str, enriched) -> str:
+        """Plain-text captures keep the raw input below the LLM summary --
+        the ONE input type that previously had no raw-text fallback, unlike
+        audio's '## Transcript' and large-text's '## Full Original Text'."""
+        if enriched.input_type != "text":
+            return markdown
+        return f"{markdown}\n\n## Original Text\n\n{enriched.enriched_text}"
+
+    output.markdown_content = _append_original_text(output.markdown_content, enriched)
+
     result = output.model_dump()
 
     # -- Stage 4: Storage ------------------------------------------------------

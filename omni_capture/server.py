@@ -930,6 +930,7 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
         emit("step", step="decide", status="done")
 
         output.markdown_content = _append_transcript(output.markdown_content, enriched)
+        output.markdown_content = _append_original_text(output.markdown_content, enriched)
 
         emit("step", step="write", status="active")
         with timer.stage("write"):
@@ -1009,6 +1010,15 @@ def _append_transcript(markdown: str, enriched) -> str:
     if enriched.input_type != "audio":
         return markdown
     return f"{markdown}\n\n## Transcript\n\n{enriched.enriched_text}"
+
+
+def _append_original_text(markdown: str, enriched) -> str:
+    """Plain-text captures keep the raw input below the LLM summary -- the ONE
+    input type that previously had no raw-text fallback, unlike audio's
+    '## Transcript' and large-text's '## Full Original Text'."""
+    if enriched.input_type != "text":
+        return markdown
+    return f"{markdown}\n\n## Original Text\n\n{enriched.enriched_text}"
 
 
 def _voice_needs_summarize_job(*, token_count: int, threshold: int) -> bool:
