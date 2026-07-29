@@ -44,6 +44,12 @@ const DEFAULTS: SyncSettings = {
 };
 
 const POLL_MS = 4000;
+// P1-6 (option C): the waiting-for-consent screen's one real ceiling — no
+// timeout constant already existed for this (checked lib/syncSetup.ts), so
+// this is a fresh number, chosen generous enough that a normal Google
+// sign-in never trips it, but finite so an abandoned browser tab doesn't
+// strand the wizard on "waiting for consent" forever.
+const CONSENT_TIMEOUT_MS = 60_000;
 
 export default function SyncPanel({ compact }: { compact: boolean }) {
   // Pre-fetch fallback matches config.py's SyncConfig.enabled default (true, ISS-003) so
@@ -156,7 +162,8 @@ export default function SyncPanel({ compact }: { compact: boolean }) {
     setConnecting(true);
     try {
       // Resolves only when the user finishes or abandons the real browser consent
-      // window, which is why the pending state has its own way out (onStopWaiting).
+      // window, which is why the pending state has its own way out (onSkipDrive,
+      // reachable via Cancel or the CONSENT_TIMEOUT_MS auto-timeout above).
       const r = await connectDrive();
       if (r.outcome === "failed") setDriveError(r.error);
       else if (r.outcome === "no_client_secret") setDriveError("Google credentials file not found.");
@@ -223,6 +230,21 @@ export default function SyncPanel({ compact }: { compact: boolean }) {
     setWizardActive(false);
     setSetupDismissed(true);
   };
+
+  // P1-6 (option C): the waiting-for-consent screen's only escape used to be a
+  // "Stop waiting" button that just flipped local `connecting` false — the
+  // next status poll (up to POLL_MS later) read `drive.connecting` still true
+  // from the server (which really was still waiting on the browser tab) and
+  // silently put the screen right back. Replaced by a single Cancel wired to
+  // onSkipDrive (the one escape that actually works), plus this real wait
+  // ceiling: once waiting-for-consent has been showing for CONSENT_TIMEOUT_MS
+  // with zero clicks, it fires the same onSkipDrive path automatically.
+  const waitingForConsent = connecting || (drive?.connecting ?? false);
+  useEffect(() => {
+    if (!waitingForConsent) return;
+    const t = setTimeout(() => onSkipDrive(), CONSENT_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [waitingForConsent]);
 
   const finishWizard = () => {
     setLanStepDone(true);
@@ -292,7 +314,6 @@ export default function SyncPanel({ compact }: { compact: boolean }) {
           connecting={connecting}
           driveError={driveError}
           onConnectDrive={() => void onConnectDrive()}
-          onStopWaiting={() => setConnecting(false)}
           onSkipDrive={onSkipDrive}
           lanSection={lanSection}
           onLanDone={finishWizard}

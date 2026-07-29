@@ -31,8 +31,6 @@ interface Props {
   connecting: boolean;
   driveError: string | null;
   onConnectDrive: () => void;
-  /** Stop waiting on the consent window. Cannot close the browser tab — see the copy. */
-  onStopWaiting: () => void;
   onSkipDrive: () => void;
   /** Step 2 body — the absorbed PairingPanel, rendered by the parent. */
   lanSection: ReactNode;
@@ -161,8 +159,8 @@ function Rung({
 // The Connect action itself lives in the wizard's footer with the other step
 // actions, so this body only ever explains — it never carries a second Connect button.
 function DriveStep({
-  drive, connecting, driveError, onStopWaiting, compact,
-}: Pick<Props, "drive" | "connecting" | "driveError" | "onStopWaiting" | "compact">) {
+  drive, connecting, driveError, onSkipDrive, compact,
+}: Pick<Props, "drive" | "connecting" | "driveError" | "onSkipDrive" | "compact">) {
   // The one state the Connect button cannot fix — say so instead of offering it.
   if (drive && !drive.client_secret_present) {
     return (
@@ -185,12 +183,14 @@ function DriveStep({
         <Note style={{ marginBottom: 12 }}>
           Finish signing in on the browser tab. Nothing saves until you do.
         </Note>
-        <button type="button" className="btn-hover" style={BTN_SECONDARY} onClick={onStopWaiting}>
-          Stop waiting
+        {/* P1-6 (option C): the only escape from this state is the same "skip
+            and leave setup" path the footer's Skip button already uses —
+            "Stop waiting" used to leave a local flag that the next status
+            poll silently overwrote, since the server itself was still
+            waiting on the real browser tab. One real button, one real exit. */}
+        <button type="button" className="btn-hover" style={BTN_SECONDARY} onClick={onSkipDrive}>
+          Cancel
         </button>
-        <Note style={{ marginTop: 8 }}>
-          Only stops the panel waiting — it can't close the browser tab.
-        </Note>
       </div>
     );
   }
@@ -227,7 +227,7 @@ function LanStep({ lanSection, compact }: { lanSection: ReactNode; compact: bool
 
 export default function SyncWizard({
   compact, step, drive, driveTone, connecting, driveError,
-  onConnectDrive, onStopWaiting, onSkipDrive,
+  onConnectDrive, onSkipDrive,
   lanSection, onLanDone, onSkipLan, onCancel,
 }: Props) {
   const onDrive = step === "drive";
@@ -270,7 +270,7 @@ export default function SyncWizard({
             drive={drive}
             connecting={connecting}
             driveError={driveError}
-            onStopWaiting={onStopWaiting}
+            onSkipDrive={onSkipDrive}
             compact={compact}
           />
         </Rung>
