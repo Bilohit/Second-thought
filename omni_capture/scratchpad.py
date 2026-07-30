@@ -158,6 +158,42 @@ def route_failed_llm(
     return path
 
 
+_IMAGE_EMBED_RE = re.compile(r"!\[\[[^\]]+\.(?:png|jpe?g|webp|gif)\]\]", re.IGNORECASE)
+_AUDIO_MARK_RE = re.compile(r"^##\s+Transcript\s*$|!\[\[[^\]]+\.(?:m4a|mp3|wav|webm|ogg)\]\]",
+                            re.IGNORECASE | re.MULTILINE)
+
+
+def describe_capture(text: str) -> dict:
+    """What KIND of capture this scratchpad item is, and whether it failed.
+
+    Pure over the note's raw text. The Inbox row leads with this instead of the
+    generated filename (s114/d07): a filename is machine-made and says nothing,
+    while "link · en.wikipedia.org" or "image · vision model unavailable" tells
+    the user what they are filing before they read a word.
+
+    Everything here is read off frontmatter/body that ALREADY exists -- no new
+    field is written at capture time, so no call site changes.
+    ponytail: a plain text capture reports "text", not "clipboard" -- the writer
+    never records which of clipboard/--text/extension produced it. Record an
+    explicit `capture_kind:` at route time if that distinction ever matters.
+    """
+    source = _extract_frontmatter_field(text, "source")
+    body = strip_frontmatter(text)
+
+    if _extract_frontmatter_field(text, "needs_vision_retry") == "true":
+        return {"kind": "image", "source": None, "failure": "vision model unavailable"}
+    if _extract_frontmatter_field(text, "needs_llm_retry") == "true":
+        return {"kind": "text", "source": None, "failure": "enrichment unavailable"}
+    if source:
+        host = source.split("//", 1)[-1].split("/", 1)[0].removeprefix("www.") or None
+        return {"kind": "link", "source": host, "failure": None}
+    if _IMAGE_EMBED_RE.search(body):
+        return {"kind": "image", "source": None, "failure": None}
+    if _AUDIO_MARK_RE.search(body):
+        return {"kind": "voice", "source": None, "failure": None}
+    return {"kind": "text", "source": None, "failure": None}
+
+
 def list_scratchpad(vault_root: Path, scratchpad_folder: str = "_scratchpad") -> list:
     """Return metadata for all notes in the scratchpad folder."""
     sp = _scratchpad_path(vault_root, scratchpad_folder)
@@ -178,6 +214,7 @@ def list_scratchpad(vault_root: Path, scratchpad_folder: str = "_scratchpad") ->
                 "category": category,
                 "size":     f.stat().st_size,
                 "modified": f.stat().st_mtime,
+                **describe_capture(text),
             })
     return items
 
@@ -211,6 +248,19 @@ def approve_scratchpad_item(
     except ValueError:
         dest_dir = safe_subdir(vault_root, "Uncategorised")
     category = dest_dir.name
+
+    # s114/d07 (P0): approving INTO the scratchpad is a dead loop, not a no-op. The old code
+    # happily "moved" the file into the folder it already sat in: it stripped status:needs_review
+    # and note_id, renamed the file, and left it in the scratchpad -- so list_scratchpad (which
+    # lists the folder, not the status) surfaced it again on every refresh, forever, while the GUI
+    # showed a success transition. Reachable because list_scratchpad reports every item's category
+    # as its PARENT FOLDER and /vault/categories deliberately includes the scratchpad, so the GUI's
+    # dropdown defaulted here. The guard belongs at this join, not at the HTTP route: every caller
+    # (server, CLI, tests, any future one) converges on this function.
+    if dest_dir.resolve() == _scratchpad_path(vault_root, scratchpad_folder).resolve():
+        raise ValueError(
+            f"{category!r} is the review folder -- approving needs a real destination category."
+        )
 
     init_vault(vault_root, scratchpad_folder)
     dest_dir.mkdir(parents=True, exist_ok=True)

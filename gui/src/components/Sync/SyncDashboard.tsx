@@ -64,6 +64,24 @@ export function summarizeLastPass(row: SyncPassRow | null): string | null {
   return parts.join(" · ");
 }
 
+/** s114/D11 — what the gauge reads when there is no countdown to show.
+ *
+ * The council flagged that the same operation reports itself two unrelated ways across the peers:
+ * the phone's hero ring shows a bold percentage, the desktop's rendered a bare em-dash — including
+ * immediately after a successful pass, which reads as "nothing happened" rather than "nothing left
+ * to do". The desktop instrument is a countdown to the NEXT pass, so it legitimately has no number
+ * at rest; the fix is to say the state in words instead of printing a placeholder.
+ *
+ * `—` survives for the one case it was always right for: no pass has ever run, so there is
+ * genuinely nothing to report. Pure, so the sibling test can cover it without mounting React.
+ */
+export function gaugeIdleReadout(lastPass: SyncPassRow | null): { value: string; unit: string } {
+  if (!lastPass) return { value: "—", unit: "NO PASS YET" };
+  return lastPass.ok
+    ? { value: "OK", unit: "UP TO DATE" }
+    : { value: "!", unit: "LAST PASS FAILED" };
+}
+
 export interface SyncSettings {
   intervalMinutes: number;
   syncOnLaunch: boolean;
@@ -369,16 +387,18 @@ export default function SyncDashboard({
   // The gauge is Drive's instrument: it reads the sync tone, and goes blank the
   // moment there is nothing real to count.
   const gaugeTone: StatusTone = masterOff || !connected ? "none" : syncTone;
+  // s114/D11: at rest with no countdown, say the state rather than print a placeholder.
+  const idleReadout = gaugeIdleReadout(status?.last_pass ?? null);
   const gaugeValue =
     running ? "···"
-    : gauge.minutesRemaining === null ? "—"
+    : gauge.minutesRemaining === null ? idleReadout.value
     : `${gauge.minutesRemaining}m`;
   const gaugeUnit =
     running ? "RUNNING"
     : masterOff ? "SYNCING OFF"
     : !connected ? "NOT CONNECTED"
     : intervalIsNever(settings.intervalMinutes) ? "NO AUTOMATIC PASSES"
-    : gauge.minutesRemaining === null ? "NO PASS YET"
+    : gauge.minutesRemaining === null ? idleReadout.unit
     : compact ? "TO NEXT" : "TO NEXT PASS";
 
   // ISS-013: the tab showed connection state but never "when" / "how much" — the

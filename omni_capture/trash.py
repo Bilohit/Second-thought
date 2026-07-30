@@ -21,6 +21,7 @@ authority, note-features §6 "purge runs only on the online device"). The
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import time
@@ -35,6 +36,47 @@ _PURGE_AFTER_SECONDS = 30 * 24 * 3600
 
 def _trash_dir(vault_root: Path) -> Path:
     return vault_root.resolve() / "_trash"
+
+
+# -- s114/d18: where a trashed note came from --------------------------------
+# restore_from_trash read the original folder out of the note's `category`
+# frontmatter -- but v2.2 (2026-07-24) REMOVED that field: the parent folder IS
+# the category now (data-model §1.2). So the lookup silently missed on every
+# note and every restore landed in Uncategorized, honestly labelled and
+# therefore never reported as a bug, just quietly wrong.
+#
+# The folder is recorded at trash time instead. A sidecar, not a frontmatter
+# write, because move_to_trash is deliberately a pure filesystem move: the
+# body and frontmatter stay byte-identical through a delete/restore round trip,
+# which its sibling test asserts.
+#
+# ponytail: derived cache, exactly like every other index here -- if it is lost
+# or was never written (a note trashed before this shipped, or by the phone),
+# restore falls back to the frontmatter read and then to Uncategorized, i.e.
+# the old behaviour. Nothing depends on it existing.
+_ORIGINS_FILE = ".origins.json"
+
+
+def _origins_path(vault_root: Path) -> Path:
+    return _trash_dir(vault_root) / _ORIGINS_FILE
+
+
+def _load_origins(vault_root: Path) -> dict:
+    try:
+        data = json.loads(_origins_path(vault_root).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_origins(vault_root: Path, origins: dict) -> None:
+    try:
+        _trash_dir(vault_root).mkdir(exist_ok=True)
+        _origins_path(vault_root).write_text(
+            json.dumps(origins, indent=0), encoding="utf-8"
+        )
+    except Exception:
+        pass  # best-effort: a failed sidecar write must never fail the delete itself
 
 
 def move_to_trash(vault_root: Path, path: Path) -> dict:
@@ -64,11 +106,17 @@ def move_to_trash(vault_root: Path, path: Path) -> dict:
         # SYNC-17 idiom: second-granular int(time) can collide within one second, and a uuid4
         # suffix cannot — never overwrite an existing trashed note.
         dest = trash_dir / f"{path.stem}.{int(time.time())}.{uuid.uuid4().hex[:8]}{path.suffix}"
+    origin = path.parent.name if path.parent.resolve() != vault_root.resolve() else ""
     shutil.move(str(path), str(dest))
     # Bump mtime to the trash time (shutil.move preserves the original otherwise) so list_trash's
     # "deleted N days ago" + purge countdown is accurate — same as conflict_resolver._trash_file.
     now = time.time()
     os.utime(dest, (now, now))
+    # s114/d18: remember the folder so restore puts it back where it was, not in Uncategorized.
+    if origin:
+        origins = _load_origins(vault_root)
+        origins[dest.name] = origin
+        _save_origins(vault_root, origins)
     return {"ok": True, "filename": dest.name, "trashed_path": str(dest)}
 
 
@@ -114,6 +162,14 @@ def purge_expired(vault_root: Path, now: float | None = None) -> list[str]:
                 purged.append(f.name)
         except OSError:
             continue
+    if purged:
+        # s114/d18: drop the origin sidecar rows for files that no longer exist, so the ledger
+        # tracks the folder rather than growing forever.
+        origins = _load_origins(vault_root)
+        if any(name in origins for name in purged):
+            for name in purged:
+                origins.pop(name, None)
+            _save_origins(vault_root, origins)
     return purged
 
 
@@ -128,14 +184,19 @@ def restore_from_trash(vault_root: Path, filename: str) -> dict:
         raise FileNotFoundError(str(src))
 
     fields = read_all_fields(src.read_text(encoding="utf-8", errors="ignore"))
+    # s114/d18: the folder recorded at trash time wins. The frontmatter `category` read below is
+    # the fallback for anything trashed before the sidecar existed -- v2.2 stopped writing that
+    # field, so on a current vault it always misses and every restore landed in Uncategorized.
+    origins = _load_origins(vault_root)
+    wanted = origins.get(filename) or fields.get("category") or "Uncategorized"
     # SRV-04: `category` is raw frontmatter text, and frontmatter arrives from the
     # Drive hub / phone sync -- it is untrusted. Joining it directly let a restore
     # write outside the vault. Fall back to Uncategorized rather than raising: one
     # hostile note must not make the restore surface unusable.
     # (The FILENAME half of this path is already guarded by the caller -- do not
-    # add a second check for it here.)
+    # add a second check for it here.) The sidecar value is guarded by the same join.
     try:
-        dest_dir = safe_subdir(vault_root, fields.get("category") or "Uncategorized")
+        dest_dir = safe_subdir(vault_root, wanted)
     except ValueError:
         dest_dir = safe_subdir(vault_root, "Uncategorized")
     category = dest_dir.name
@@ -144,4 +205,7 @@ def restore_from_trash(vault_root: Path, filename: str) -> dict:
     if dest.exists():
         dest = dest_dir / f"{src.stem}.{int(time.time())}{src.suffix}"
     shutil.move(str(src), str(dest))
+    if filename in origins:
+        origins.pop(filename, None)
+        _save_origins(vault_root, origins)
     return {"ok": True, "category": category, "path": str(dest)}

@@ -69,7 +69,7 @@ Security
              an unauthenticated localhost API.
 """
 from __future__ import annotations
-import asyncio, base64, hashlib, hmac, json, os, sys, threading, time, uuid
+import asyncio, base64, hashlib, hmac, json, os, shutil, sys, threading, time, uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import AsyncIterator, List, Optional
@@ -933,6 +933,10 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
         output.markdown_content = _append_original_text(output.markdown_content, enriched)
 
         emit("step", step="write", status="active")
+        # s114/d05: `merge_info` comes back populated only when the capture was folded into a
+        # DIFFERENT existing note by the smart-merge heuristic. Carried into the `done` event so
+        # the toast can say "Merged into X" -- the merge used to be completely silent.
+        merge_info: dict = {}
         with timer.stage("write"):
             written_path = write_to_vault(
                 output, source_url=enriched.source_url,
@@ -942,6 +946,7 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                 embed_base_url=cfg.ollama.base_url,
                 embed_model=cfg.vector.embed_model,
                 source_metadata=enriched.source_metadata,
+                merge_info=merge_info,
             )
         if cfg.vector.enabled:
             # Derived-index write is FAIL-SOFT: the vault .md is already written
@@ -968,7 +973,8 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                  events=[{"when_iso": e.when_iso, "label": e.label} for e in future],
                  note_path=str(written_path))
 
-        emit("done", path=str(written_path), category=output.category)
+        emit("done", path=str(written_path), category=output.category,
+             merged_into=merge_info.get("merged_into"))
 
         with timer.stage("notify"):
             try:
@@ -1138,10 +1144,17 @@ async def health():
     # index_health: last captures.db/vectors.db write outcome per index --
     # purely observational, never authoritative (see CLAUDE.md "Files are
     # the source of truth" hard rule).
+    # s114/d06: `ffmpeg` closes the ponytail: note in DashboardView.tsx ("revisit if a health
+    # endpoint ever exposes ffmpeg availability"). Whisper shells out to ffmpeg to decode
+    # non-WAV audio, so without it voice capture records fine and then fails at transcription --
+    # AFTER the user has spoken. The GUI gates its Rec button on this instead of showing every
+    # user, installed or not, a permanent "needs ffmpeg" tooltip. Probed per request (a `which`
+    # is microseconds) so installing ffmpeg takes effect without restarting the server.
     return {
         "ok": True,
         "ready": _MODEL_READY,
         "model_ok": _MODEL_OK,
+        "ffmpeg": shutil.which("ffmpeg") is not None,
         "index_health": index_health.snapshot(),
     }
 
@@ -1612,6 +1625,10 @@ async def approve_inbox(
         dest = approve_scratchpad_item(note_id, root, cfg.vault.scratchpad_folder, target_category=target_category)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        # s114/d07: the scratchpad itself as a destination (the dead-loop guard in
+        # approve_scratchpad_item). A bad destination is the caller's input, not a server fault.
+        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         from index_writer import upsert_capture_from_file

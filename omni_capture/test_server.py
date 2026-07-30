@@ -62,7 +62,11 @@ def test_health_shape_before_and_after_ready():
         # the rest of the payload by exact equality as before.
         assert "index_health" in body
         assert set(body["index_health"].keys()) >= {"captures", "vectors"}
-        return {k: v for k, v in body.items() if k != "index_health"}
+        # s114/d06: `ffmpeg` is an environment probe (shutil.which), so like index_health its
+        # VALUE depends on the machine -- assert its presence and type, exclude it from the
+        # exact-equality comparison below. Its behaviour is pinned in test_api_surface.py.
+        assert isinstance(body["ffmpeg"], bool)
+        return {k: v for k, v in body.items() if k not in ("index_health", "ffmpeg")}
 
     server._MODEL_READY = False
     server._MODEL_OK = None

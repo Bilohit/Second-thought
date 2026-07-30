@@ -77,6 +77,10 @@ interface Props {
   nearEdge: "left" | "right" | "center";
   onToggleMenu: () => void;
   inboxCount: number;
+  /** s114/d07: the capsule badge only ever refreshed on mount and on capture-done, so it
+   *  kept counting items the user had already approved or discarded. InboxPanel has always
+   *  emitted the live count; nobody was listening. */
+  onInboxCountChange?: (count: number) => void;
   onSelect: (target: Exclude<MenuTarget, "hide">) => void;
   onHide: () => void;
   /** Minimal mode only: the radial fan's screen-space geometry (App.tsx
@@ -192,7 +196,7 @@ export const PILL_DIMS: Record<PillMode, { w: number; h: number }> = {
 };
 
 export default function PillOverlay({
-  mode, corner, captureState, stepDefs, llmStatus, menuOpen, capsuleMorphOpen, capsuleExiting, capsuleShown, fanOpen, draggable, dragging, onDragPointerDown, nearEdge, onToggleMenu, inboxCount, onSelect, onHide,
+  mode, corner, captureState, stepDefs, llmStatus, menuOpen, capsuleMorphOpen, capsuleExiting, capsuleShown, fanOpen, draggable, dragging, onDragPointerDown, nearEdge, onToggleMenu, inboxCount, onInboxCountChange, onSelect, onHide,
   pillGeometry, fanStyle, voicePhase, voiceElapsedMs, readWaveform, readSpectrum, sampleRate, onVoiceToggle,
   compactPanel, panelReady, panelZone, panelGeom, islandGeom, islandTarget, capsulePanelTarget, onClosePanel, onPanelError,
   lookMode, onSelectLookMode, lookChat, lookChatPersist,
@@ -248,7 +252,7 @@ export default function PillOverlay({
           onHeaderActionsChange={setPanelHeaderActions}
         />
       ) : target === "inbox" ? (
-        <CompactInbox onHeaderActionsChange={setPanelHeaderActions} />
+        <CompactInbox onHeaderActionsChange={setPanelHeaderActions} onCountChange={onInboxCountChange} />
       ) : target === "settings" && settingsProps ? (
         <CompactSettings onClose={() => onClosePanel?.()} {...settingsProps} />
       ) : target === "vault" ? (

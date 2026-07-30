@@ -113,6 +113,28 @@ def _hub_filename(title: str, created_at: str) -> str:
     return base + ".md"
 
 
+def _conflicted_copy_name(cc, folder: Path) -> str:
+    """Filename for a body-vs-body conflicted copy, in the folder it lands in.
+
+    s114/x04: this used to be `<random-id>.md`. Both bodies survived a real conflict exactly as the
+    lock promises -- but an operator auditing the vault saw an unreadable hex blob beside the note
+    and concluded the peer's edit had been destroyed. A conflicted copy nobody can recognise on
+    disk is a data-loss report waiting to happen.
+
+    `cc.title` already carries the whole "(conflicted copy <device> <modified>)" suffix that
+    reconcile.py built, so the name can never collide with the note it diverged from, and
+    `_hub_filename` is the same sanitizer every other note goes through (it maps the timestamp's
+    colons to `-`). The phone already names its own conflicted copies from the title, so this also
+    makes the two peers agree. Local name and hub name are one string -- see SYNC-21 at the call site.
+    """
+    name = _hub_filename(getattr(cc, "title", "") or "", getattr(cc, "created", "") or "")
+    if (folder / name).exists():
+        # Two conflicted copies of one note in the same folder: same idiom _resolve_hub_names uses
+        # for a title clash -- append the short id rather than silently overwrite a body.
+        name = f"{name[:-3]} ({cc.id[-6:]}).md"
+    return name
+
+
 def _resolve_hub_names(notes: list) -> dict:
     """Pure: assign each note its hub/local filename, resolving same-folder clashes. The later-created
     note (tie -> larger id) is suffixed with its `created` date+time ` (YYYY-MM-DD HHMM)`; the winner
@@ -1012,17 +1034,15 @@ def reconcile_changes(
             if merged_result.conflicted_copy is not None:
                 cc = merged_result.conflicted_copy
                 cc_text = serialize_note(cc)
-                cc_path = str(Path(local_path).with_name(f"{cc.id}.md"))
+                cc_name = _conflicted_copy_name(cc, Path(local_path).parent)
+                cc_path = str(Path(local_path).with_name(cc_name))
                 write_file(cc_path, cc_text)
                 up_cc = _upload_note(
                     drive,
                     {"id": cc.id, "content": cc_text, "body": cc.body},
                     dest,
                     None,
-                    # ponytail: conflicted copies keep the old <id>.md naming (out of Task 2.4 scope —
-                    # title-based names risk colliding with the note they diverged from; the id
-                    # suffix is what makes a conflicted copy recognizable as one).
-                    hub_name=f"{cc.id}.md",
+                    hub_name=cc_name,
                 )
                 new_state[cc.id] = {
                     "drive_file_id": up_cc["id"],
@@ -1032,7 +1052,7 @@ def reconcile_changes(
                     # above). Without it the next pass sees prev_hub_name=None, so
                     # _maybe_rename_local returns early and _upload_note never renames — the
                     # conflicted copy's local and hub names diverge permanently.
-                    "hub_name": f"{cc.id}.md",
+                    "hub_name": cc_name,
                     # v2.3: the conflicted copy was just CREATED under `dest` = the local folder.
                     "base_parent": local.get("category"),
                 }

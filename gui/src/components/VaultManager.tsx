@@ -50,7 +50,10 @@ import { MenuIcon } from "./PillMenu/icons";
 // underlying identity used for every API call (drill-in, delete, etc.)
 // stays `cat.name` ("_scratchpad"); only the rendered text changes.
 function categoryDisplayName(name: string): string {
-  return name === "_scratchpad" ? "Needs review" : name;
+  // s114/D10: one name for the review queue across both shells. This surface said "Needs review",
+  // the desktop panel said "Inbox", and the phone said "Needs review" — three surfaces, two words
+  // for one concept (council/copy). "Inbox" is now the single term everywhere.
+  return name === "_scratchpad" ? "Inbox" : name;
 }
 
 // ISS-026: budget the vault-path header to a single legible line at

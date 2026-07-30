@@ -230,6 +230,54 @@ export function CheckIcon({ size = 14 }: { size?: number }): JSX.Element {
   );
 }
 
+/* s114/d07 — capture-kind glyphs for the Inbox review row. The row leads with WHAT a capture is
+ * ("clipboard", "link · en.wikipedia.org", "voice · 0:38") instead of a generated filename that
+ * tells the user nothing. Exported here, never inlined at the call site, per the repo's icon rule.
+ * Voice reuses MicIcon and image reuses ImageIcon below; only these two are new. */
+
+/** Clipboard glyph — a plain text capture (the desktop's default capture route). */
+export function ClipboardIcon({ size = 14 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="8" y="3" width="8" height="4" />
+      <path d="M16 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2" />
+    </svg>
+  );
+}
+
+/** Link glyph — a URL capture. */
+export function LinkIcon({ size = 14 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" />
+      <path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" />
+    </svg>
+  );
+}
+
+/** Image glyph — a photo/screenshot capture. */
+export function ImageIcon({ size = 14 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" />
+      <circle cx="9" cy="10" r="2" />
+      <path d="M21 16l-5-5-6 6" />
+    </svg>
+  );
+}
+
+/** Trash glyph — the Inbox row's Discard action (icon-only square button). */
+export function TrashIcon({ size = 14 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14H6L5 6" />
+      <path d="M10 11v6M14 11v6" />
+      <path d="M9 6V4h6v2" />
+    </svg>
+  );
+}
+
 /** Alert glyph — a failed pass, a missing client_secret.json, a stopped scheduler. */
 export function AlertIcon({ size = 14 }: { size?: number }): JSX.Element {
   return (

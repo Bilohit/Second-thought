@@ -23,12 +23,46 @@ import { formatWhen } from "../lib/reminderFormat";
 import SegmentedToggle from "./ui/SegmentedToggle";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
-  BTN_GHOST, BTN_PRIMARY, ROW_CARD, INPUT_STYLE,
+  BTN_GHOST, ROW_CARD, INPUT_STYLE,
   focusRing, blurRing,
 } from "./ui/styles";
-import { MenuIcon, RefreshIcon, BellIcon, CloseIcon } from "./PillMenu/icons";
+import {
+  MenuIcon, RefreshIcon, BellIcon, CloseIcon,
+  ClipboardIcon, LinkIcon, ImageIcon, MicIcon, CheckIcon, TrashIcon,
+} from "./PillMenu/icons";
 
 const NEW_FOLDER_SENTINEL = "__new_folder__";
+/** s114/d07 — no pre-selected destination. The dropdown opened on `_scratchpad`
+ *  (the only value `item.category` can ever hold, since list_scratchpad reports
+ *  the parent folder) and Approve then "filed" the note into the folder it was
+ *  already in: status stripped, file renamed, item back in the list forever. */
+const PICK_SENTINEL = "__pick__";
+
+/** Folders a scratchpad item can be approved INTO. `_`-prefixed folders are the
+ *  vault's machine territory (`_scratchpad`, `_trash`, `_attachments`,
+ *  `_mobile_inbox`, `_templates`) — `/vault/categories` returns them because the
+ *  Library legitimately lists them, but none is a filing destination. The server
+ *  rejects the scratchpad itself too (approve_scratchpad_item); this keeps it
+ *  off the menu so the rejection is never reachable by an ordinary click. */
+export function filingCategories(names: string[]): string[] {
+  return names.filter((n) => !n.startsWith("_") && !n.startsWith("."));
+}
+
+/** The row's lead line: what this capture is, and where it came from. */
+function kindLabel(item: InboxItem): string {
+  const base = item.kind === "link" ? (item.source ? `link · ${item.source}` : "link")
+    : item.kind === "voice" ? "voice"
+    : item.kind === "image" ? "image"
+    : "text";
+  return item.failure ? `${base} · ${item.failure}` : base;
+}
+
+function KindIcon({ kind }: { kind: InboxItem["kind"] }): JSX.Element {
+  if (kind === "link") return <LinkIcon size={12} />;
+  if (kind === "image") return <ImageIcon size={12} />;
+  if (kind === "voice") return <MicIcon size={12} />;
+  return <ClipboardIcon size={12} />;
+}
 
 export type InboxTab = "inbox" | "reminders";
 
@@ -77,21 +111,20 @@ function InboxRow({
    *  of leaving the row inert-looking for the ~1s round trip. */
   pending: boolean;
 }) {
-  const fallbackTarget = categories.includes(item.category) ? item.category : (categories[0] ?? "");
-  const [target, setTarget] = useState(fallbackTarget);
+  // s114/d07: starts UNSET, always. There is no correct default here — the only
+  // value the server can report for `item.category` is the scratchpad folder
+  // itself, and approving into that was the dead loop this row is fixing.
+  const [target, setTarget] = useState("");
   const [creatingNew, setCreatingNew] = useState(false);
   const [newName, setNewName] = useState("");
   const [suggestions, setSuggestions] = useState<string[] | null>(null);
   const [suggestLoading, setSuggestLoading] = useState(false);
 
-  // Re-clamp if the category list arrives/changes after this row's initial
-  // render (the seeded item.category may be "unknown" or otherwise absent
-  // from the real category list).
+  // Drop a selection that disappeared from the vault (folder renamed/deleted
+  // while the panel was open) back to unset, rather than filing somewhere else.
   useEffect(() => {
-    if (target && !categories.includes(target)) {
-      setTarget(fallbackTarget);
-    }
-  }, [categories, target, fallbackTarget]);
+    if (target && !categories.includes(target)) setTarget("");
+  }, [categories, target]);
 
   const date = new Date(item.modified * 1000).toLocaleDateString(undefined, {
     month: "short", day: "numeric",
@@ -115,8 +148,11 @@ function InboxRow({
     <div
       className="row-hover-lift"
       style={{
-        ...ROW_CARD,
-        padding: "10px 12px",
+        // s114/d07: a hairline-separated row, not a bordered card. These sit INSIDE the Inbox
+        // capsule's own bordered surface, so the old ROW_CARD made every item a card-in-a-card
+        // (council/hierarchy). Border + fill dropped; the divider does the separating.
+        borderBottom: "1px solid var(--border-2)",
+        padding: "11px 2px",
         display: "flex",
         flexDirection: "column",
         gap: 8,
@@ -139,9 +175,22 @@ function InboxRow({
           : {}),
       }}
     >
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
-        <span style={{ fontSize: 12, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
-          {item.filename}
+      {/* s114/d07: kind + source leads, not the generated filename. The filename stays reachable
+          as the row's title/aria text — it identifies the file, it just never explained it. */}
+      <div
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
+        title={item.filename}
+      >
+        <span
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0,
+            fontSize: 10, letterSpacing: "0.03em", whiteSpace: "nowrap",
+            // Only a FAILED capture is colour-coded; an ordinary one is quiet.
+            color: item.failure ? "var(--yellow)" : "var(--text-3)",
+          }}
+        >
+          <KindIcon kind={item.kind} />
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{kindLabel(item)}</span>
         </span>
         <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap" }}>{date}</span>
       </div>
@@ -161,44 +210,62 @@ function InboxRow({
           />
         ) : (
           <select
-            value={target}
+            value={target || PICK_SENTINEL}
             onChange={(e) => {
               if (e.target.value === NEW_FOLDER_SENTINEL) enterNewFolderMode();
+              else if (e.target.value === PICK_SENTINEL) setTarget("");
               else setTarget(e.target.value);
             }}
             aria-label={`Target category for ${item.filename}`}
             style={{
               flex: 1,
               minWidth: 0,
+              height: 28,
               background: "var(--surface-2)",
               border: "1px solid var(--border)",
               borderRadius: "var(--radius-sm)",
-              padding: "5px 8px",
+              padding: "0 8px",
               fontSize: 11,
-              color: "var(--text-2)",
+              color: target ? "var(--text-2)" : "var(--text-3)",
               outline: "none",
               fontFamily: "inherit",
             }}
           >
+            <option value={PICK_SENTINEL}>Choose a folder…</option>
             {categories.map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
             <option value={NEW_FOLDER_SENTINEL}>+ New folder…</option>
           </select>
         )}
+        {/* s114/d07: Approve is the suggested action — filled, semibold, check icon leading — and
+            it is DISABLED until a real destination is picked. The council's hierarchy lens found
+            the dropdown carried the least visual weight in this row while Approve carried the
+            most, which is exactly how an unset destination went unnoticed. Discard stays live
+            throughout: junk is still one click away without choosing where to file it first. */}
         <button
           onClick={() => effectiveTarget && onApprove(item.note_id, effectiveTarget)}
           disabled={!effectiveTarget || pending}
+          title={effectiveTarget ? undefined : "Pick a folder first"}
           style={{
-            ...BTN_PRIMARY,
-            padding: "5px 12px",
+            height: 28,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "0 11px",
             fontSize: 11,
+            fontWeight: effectiveTarget ? 600 : 400,
+            fontFamily: "inherit",
             whiteSpace: "nowrap",
-            opacity: pending ? 0.5 : effectiveTarget ? 1 : 0.5,
-            cursor: pending ? "default" : effectiveTarget ? "pointer" : "not-allowed",
+            borderRadius: "var(--radius-sm)",
+            border: "1px solid " + (effectiveTarget && !pending ? "var(--text-1)" : "var(--border)"),
+            background: effectiveTarget && !pending ? "var(--text-1)" : "var(--surface)",
+            color: effectiveTarget && !pending ? "var(--bg)" : "var(--text-3)",
+            cursor: !effectiveTarget || pending ? "not-allowed" : "pointer",
+            transition: "background 0.18s, color 0.18s, border-color 0.18s",
           }}
         >
-          {pending ? "Filing…" : "Approve"}
+          {pending ? "Filing…" : <><CheckIcon size={12} />Approve</>}
         </button>
         <button
           onClick={() => onDiscard(item.note_id)}
@@ -206,14 +273,19 @@ function InboxRow({
           title="Discard"
           aria-label="Discard"
           className="btn-hover hover-danger"
-          style={{ ...BTN_GHOST, opacity: pending ? 0.5 : 1, cursor: pending ? "default" : "pointer" }}
+          style={{
+            ...BTN_GHOST,
+            width: 28,
+            height: 28,
+            flex: "none",
+            padding: 0,
+            justifyContent: "center",
+            border: "1px solid var(--border)",
+            opacity: pending ? 0.5 : 1,
+            cursor: pending ? "default" : "pointer",
+          }}
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="3 6 5 6 21 6" />
-            <path d="M19 6l-1 14H6L5 6" />
-            <path d="M10 11v6M14 11v6" />
-            <path d="M9 6V4h6v2" />
-          </svg>
+          <TrashIcon size={13} />
         </button>
       </div>
 
@@ -289,7 +361,9 @@ export default function InboxPanel({
       const [inboxRes, catRes] = await Promise.all([getInbox(), getVaultCategories()]);
       setItems(inboxRes.inbox);
       onCountChange?.(inboxRes.count);
-      setCategories(catRes.categories.map((c) => c.name));
+      // s114/d07: machine folders (`_scratchpad`, `_trash`, `_attachments`, …) come back from
+      // /vault/categories because the Library lists them; none is a filing destination.
+      setCategories(filingCategories(catRes.categories.map((c) => c.name)));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load inbox");
     } finally {
@@ -327,7 +401,7 @@ export default function InboxPanel({
       // on approve) -- refresh the category list so it shows up elsewhere.
       if (target && !categories.includes(target)) {
         getVaultCategories()
-          .then((res) => setCategories(res.categories.map((c) => c.name)))
+          .then((res) => setCategories(filingCategories(res.categories.map((c) => c.name))))
           .catch(() => {});
       }
     } catch (e) {

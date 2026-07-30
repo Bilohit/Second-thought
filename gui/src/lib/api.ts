@@ -96,6 +96,11 @@ export interface DoneEvent {
   kind: "done";
   path: string;
   category: string;
+  /** s114/d05 — set ONLY when the pipeline folded this capture into a different
+   *  existing note (storage_engine's smart merge). A merge used to be completely
+   *  silent: a clipboard image was absorbed into an unrelated text capture and
+   *  the toast said "Saved" like any other capture. */
+  merged_into?: string | null;
 }
 
 export interface ErrorEvent {
@@ -200,6 +205,15 @@ export interface InboxItem {
   category: string;
   size: number;
   modified: number;
+  /** s114/d07 — what the review row leads with, derived server-side by
+   *  `scratchpad.describe_capture` from frontmatter/body that already exists.
+   *  Optional so an older server (or a fixture) still renders. */
+  kind?: "text" | "link" | "image" | "voice";
+  /** Host only, links only: "en.wikipedia.org". */
+  source?: string | null;
+  /** Set when the pipeline FAILED rather than merely being unsure —
+   *  "vision model unavailable" / "enrichment unavailable". */
+  failure?: string | null;
 }
 
 export interface Stats {
@@ -230,25 +244,31 @@ export interface SearchResult {
 
 export type LlmStatus = "loading" | "ready" | "disconnected";
 
-export async function checkHealth(): Promise<{ serverOk: boolean; llmStatus: LlmStatus }> {
+export async function checkHealth(): Promise<{ serverOk: boolean; llmStatus: LlmStatus; ffmpeg: boolean }> {
   const stop = logger.time("api", "GET /health");
   try {
     const r = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(2000) });
     stop({ status: r.status });
     if (!r.ok) {
       logger.warn("api", "health check returned non-OK", { status: r.status });
-      return { serverOk: false, llmStatus: "disconnected" };
+      return { serverOk: false, llmStatus: "disconnected", ffmpeg: true };
     }
-    const body = await r.json() as { ok: boolean; ready: boolean; model_ok: boolean | null };
+    const body = await r.json() as {
+      ok: boolean; ready: boolean; model_ok: boolean | null; ffmpeg?: boolean;
+    };
     let llmStatus: LlmStatus;
     if (!body.ready || body.model_ok === null) llmStatus = "loading";
     else if (body.model_ok === false) llmStatus = "disconnected";
     else llmStatus = "ready";
-    return { serverOk: true, llmStatus };
+    // s114/d06: whisper shells out to ffmpeg to decode non-WAV audio, so without it voice capture
+    // records fine and fails at transcription -- AFTER the user has spoken. Defaults to TRUE when
+    // the field is absent (older server) or the probe failed: never block recording on a signal
+    // we could not read, only on one that came back explicitly false.
+    return { serverOk: true, llmStatus, ffmpeg: body.ffmpeg !== false };
   } catch (err) {
     stop({ failed: true });
     logger.error("api", "health check failed — server unreachable at " + BASE, err);
-    return { serverOk: false, llmStatus: "disconnected" };
+    return { serverOk: false, llmStatus: "disconnected", ffmpeg: true };
   }
 }
 
@@ -329,7 +349,10 @@ export async function* streamCapture(
             category: parsed.category ?? "",
           } as ThinkingEvent;
         } else if (eventType === "done") {
-          yield { kind: "done", path: parsed.path, category: parsed.category } as DoneEvent;
+          yield {
+            kind: "done", path: parsed.path, category: parsed.category,
+            merged_into: parsed.merged_into ?? null,
+          } as DoneEvent;
         } else if (eventType === "error") {
           yield { kind: "error", message: parsed.message } as ErrorEvent;
         } else if (eventType === "duplicate") {

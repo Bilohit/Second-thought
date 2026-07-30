@@ -72,6 +72,9 @@ export interface SettingsForward {
 }
 
 interface FullWindowProps {
+  /** s114/d07: the capsule's Inbox badge went stale after an approve/discard because nothing
+   *  consumed InboxPanel's existing count callback. Both hosts forward it to App now. */
+  onInboxCountChange?: (count: number) => void;
   captureState: CaptureState;
   stepDefs: CaptureStep[];
   llmStatus: LlmStatus;
@@ -363,7 +366,7 @@ export default function FullWindow(props: FullWindowProps) {
         )}
         {view === "inbox" && (
           <div key={`inbox-${inboxTab}`} className="fw-view-panel">
-            <InboxPanel visible embedded initialTab={inboxTab} onClose={() => setView("dashboard")} />
+            <InboxPanel visible embedded initialTab={inboxTab} onClose={() => setView("dashboard")} onCountChange={props.onInboxCountChange} />
           </div>
         )}
         {view === "settings" && (

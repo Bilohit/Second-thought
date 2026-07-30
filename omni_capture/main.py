@@ -467,6 +467,10 @@ def run_pipeline(
         print(json.dumps(result, indent=2))
         result["_written_to"] = None
     else:
+        # s114/d05: mirrors server.py's `merge_info` (the two pipelines are hand-duplicated by
+        # design -- CLAUDE.md hard rule -- so this stays in lockstep even though the CLI reports it
+        # as a printed line rather than an SSE field).
+        merge_info: dict = {}
         with timer.stage("write"):
             written_path = write_to_vault(
                 output,
@@ -477,9 +481,14 @@ def run_pipeline(
                 embed_base_url=cfg.ollama.base_url,
                 embed_model=cfg.vector.embed_model,
                 source_metadata=enriched.source_metadata,
+                merge_info=merge_info,
             )
         result["_written_to"] = str(written_path)
-        print(f"\nCaptured -> {written_path}")
+        result["_merged_into"] = merge_info.get("merged_into")
+        if merge_info.get("merged_into"):
+            print(f"\nMerged into -> {written_path} (same topic as an existing capture)")
+        else:
+            print(f"\nCaptured -> {written_path}")
 
         from datetime import datetime
         from models import filter_future_events

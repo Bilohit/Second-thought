@@ -945,3 +945,25 @@ def test_lan_nonce_response_leaks_nothing_in_the_clear(tmp_path, monkeypatch):
     assert "S3CRET" not in resp.text
     assert str(tmp_path) not in resp.text
     assert str(tmp_path).replace("\\", "/") not in resp.text
+
+
+# ============================================================================
+# s114 / flow-review d06 — /health reports ffmpeg so the GUI can gate the mic
+# ============================================================================
+
+def test_health_reports_ffmpeg_presence(gui, monkeypatch):
+    """Voice capture records fine without ffmpeg and then fails at transcription,
+    AFTER the user has spoken -- Whisper shells out to ffmpeg to decode non-WAV
+    audio. DashboardView.tsx carried a `ponytail:` note naming exactly this fix
+    ("revisit if a health endpoint ever exposes ffmpeg availability"); the GUI
+    now gates its Rec button on this flag instead of showing every user, ffmpeg
+    installed or not, a permanent warning tooltip."""
+    import server as _server
+
+    client, _ = gui
+
+    monkeypatch.setattr(_server.shutil, "which", lambda name: None)
+    assert client.get("/health").json()["ffmpeg"] is False
+
+    monkeypatch.setattr(_server.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    assert client.get("/health").json()["ffmpeg"] is True

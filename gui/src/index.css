@@ -1086,8 +1086,13 @@ html, body, #root {
   font-size: 9px;
   line-height: 1;
   font-weight: 600;
-  color: #fff;
-  background: var(--red);
+  /* s114/D3 (council/identity): a pending-review COUNT is not an error. This was --red, the
+     conflict/error tier, so a queue of three captures shouted the same colour a genuine
+     data conflict does — and left red meaning nothing in particular. Yellow is the tier the
+     rest of the system already uses for queued/in-progress. Ink is --bg, not #fff: yellow
+     needs a dark foreground to clear the contrast floor. */
+  color: var(--bg);
+  background: var(--yellow);
   border-radius: 7px;
 }
 

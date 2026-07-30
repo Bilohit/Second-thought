@@ -199,8 +199,32 @@ def write_note_body(vault_root: Path, path_str: str, new_body: str, expected_mti
     fm_block, _old_body = _split(_to_lf(raw))
     body = _to_lf(new_body)
     body = body if body.endswith("\n") else body + "\n"
+    fm_block = _bump_modified(fm_block)
     _write_verbatim(path, _apply_newlines(fm_block + body, newline))
     return {"mtime": path.stat().st_mtime}
+
+
+_MODIFIED_LINE_RE = re.compile(r'^modified:[ \t]*.*$', re.MULTILINE)
+
+
+def _bump_modified(fm_block: str) -> str:
+    """Stamp `modified` on a body edit (s114/d08).
+
+    Editing a note in the desktop editor left `modified` at whatever the last
+    SYNC pass wrote, so the vault's own record of "when did I last touch this"
+    was wrong on every hand-edited note, and any consumer ordering by it ranked
+    a note the user just rewrote as untouched.
+
+    Frontmatter is machine-owned, so this is not a body-sacred concern -- the
+    body region is spliced back byte-for-byte by the caller either way. Only an
+    EXISTING `modified:` line is rewritten: captures legitimately have no such
+    field (it is a note-contract field, data-model §1) and must not grow one
+    here. Same wire format the sync agent stamps (mobile_sync_agent.py:1444).
+    """
+    if not _MODIFIED_LINE_RE.search(fm_block):
+        return fm_block
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return _MODIFIED_LINE_RE.sub(f'modified: "{stamp}"', fm_block, count=1)
 
 
 # -- F-13 (desktop half): attachments -----------------------------------------

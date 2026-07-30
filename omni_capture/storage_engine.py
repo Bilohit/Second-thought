@@ -537,11 +537,20 @@ def _unique_file_path(base_path: Path) -> Path:
 def _signals_to_tags(key_signals: List[str]) -> List[str]:
     tags: List[str] = []
     for signal in key_signals:
-        tag = signal.strip().lower()
-        tag = re.sub(r"[^\w\s/\-]", "", tag)
+        raw = signal.strip().lower()
+        tag = re.sub(r"[^\w\s/\-]", "", raw)
         tag = re.sub(r"\s+", "-", tag).strip("-/")
-        if tag:
-            tags.append(tag)
+        if not tag:
+            continue
+        # 2026-07-30 grouping split, s114: `project/` and `@`-action tags are user-assigned ONLY --
+        # no enrichment path may auto-attach them (DECISIONS §5, same-day amendment). s113 enforced
+        # that at both NOTE roots (heuristicEnrich.ts, mobile_sync_agent.enrich_notes) but not here,
+        # the CAPTURE root -- and this is the one fed by an LLM whose output nobody constrains.
+        # The `@` test is on the RAW signal because the sanitizer above already strips "@".
+        # Namespaced MACHINE tags (`sys/vision-failed`, route_failed_*) deliberately still pass.
+        if tag.startswith("project/") or raw.startswith("@"):
+            continue
+        tags.append(tag)
     return tags
 
 
@@ -957,6 +966,7 @@ def write_to_vault(
     embed_base_url: Optional[str] = None,
     embed_model: str = "nomic-embed-text",
     source_metadata: Optional[dict] = None,
+    merge_info: Optional[dict] = None,
 ) -> Path:
     """
     Write/append a CaptureOutput to the vault.
@@ -1075,6 +1085,14 @@ def write_to_vault(
             path = merge_target
             _append_general(path, linked_content, vault_root)
             action = "appended (smart-merge)"
+            # s114/d05: a smart merge folds this capture into a DIFFERENT note than the one its own
+            # filename would have produced -- the user asked for a capture and got an edit to
+            # something else. That happened silently, and a clipboard image ended up inside an
+            # unrelated text capture with no signal anywhere. Report it so the caller's toast can
+            # say "Merged into X" instead of the usual "Saved". Only this branch is surprising:
+            # "appended (general)" below is the same note the filename already named.
+            if merge_info is not None:
+                merge_info["merged_into"] = path.name
         else:
             _write_new_file(path, output, source_url, body_content=linked_content,
                             extra_frontmatter=extra_fm, vault_root=vault_root)

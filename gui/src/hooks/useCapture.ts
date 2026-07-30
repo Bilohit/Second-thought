@@ -59,7 +59,7 @@ export interface CaptureState {
   phase: "idle" | "capturing" | "background" | "done" | "error";
   steps: Record<StepName, StepState>;
   preview: ContentPreview | null;
-  result: { path: string | null; category: string | null } | null;
+  result: { path: string | null; category: string | null; mergedInto?: string | null } | null;
   errorMsg: string | null;
   thinking: ThinkingState | null;
   backgroundJob: BackgroundJobState | null;
@@ -470,7 +470,7 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
               setState((prev) => ({
                 ...prev,
                 phase: "done",
-                result: { path: event.path, category: event.category },
+                result: { path: event.path, category: event.category, mergedInto: event.merged_into ?? null },
               }));
               scheduleDismiss(AUTO_DISMISS_DONE_MS);
               return;

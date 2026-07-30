@@ -579,8 +579,11 @@ def test_truncated_download_cannot_destroy_a_locally_edited_body():
     assert (reconciled, conflicts, failed) == (1, 1, 0)
     # the local body is still there, byte-for-byte — the truncation did not eat it
     assert parse_note(writes["/vault/01A.md"]).body == "the full local body\n"
-    # ...and the truncated remote was kept, not silently dropped
-    assert "CC1" in "".join(writes)
+    # ...and the truncated remote was kept, not silently dropped.
+    # s114/x04: conflicted copies are named from their title now, so the fresh id lives in the
+    # copy's frontmatter rather than in its filename -- assert on what was written, not the path.
+    copy_text = next(c for p, c in writes.items() if p != "/vault/01A.md")
+    assert "id: CC1" in copy_text
 
 
 def test_truncated_download_on_an_unedited_note_is_rejected_by_md5_guard():

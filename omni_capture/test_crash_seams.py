@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pytest
 
-from frontmatter import strip_frontmatter
+from frontmatter import read_all_fields, strip_frontmatter
 from mobile_sync_agent import (
     get_hub_notes,
     load_state,
@@ -418,9 +418,12 @@ def test_s5_crash_between_conflicted_copy_write_and_its_upload_self_heals(tmp_pa
     copy_path = copies[0]
     copy_body = strip_frontmatter(copy_path.read_text(encoding="utf-8", newline=""))
     assert copy_body == "remote body — typed on the phone\n"
-    assert copy_path.stem not in load_state(state_path)          # the copy has no ledger row
-    assert copy_path.stem not in {(r.get("appProperties") or {}).get("noteId")
-                                  for r in hub.all_note_recs()}  # ...and no hub file
+    # s114/x04: a conflicted copy is named from its TITLE now, so the filename stem is no longer
+    # its id -- read the id off the copy's own frontmatter instead of inferring it from the name.
+    copy_id = read_all_fields(copy_path.read_text(encoding="utf-8", newline=""))["id"]
+    assert copy_id not in load_state(state_path)                 # the copy has no ledger row
+    assert copy_id not in {(r.get("appProperties") or {}).get("noteId")
+                           for r in hub.all_note_recs()}         # ...and no hub file
 
     _recover(vault, state_path, hub)
 
@@ -432,7 +435,7 @@ def test_s5_crash_between_conflicted_copy_write_and_its_upload_self_heals(tmp_pa
     ids = [(r.get("appProperties") or {}).get("noteId") or Path(r["name"]).stem
            for r in hub.all_note_recs()]
     assert len(ids) == len(set(ids)), f"recovery duplicated a hub file: {ids}"
-    assert copy_path.stem in ids, "the orphaned conflicted copy never reached the hub"
+    assert copy_id in ids, "the orphaned conflicted copy never reached the hub"
     assert strip_frontmatter(
         copy_path.read_text(encoding="utf-8", newline="")) == copy_body   # body-sacred, untouched
 

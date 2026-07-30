@@ -468,11 +468,17 @@ def test_reconcile_body_conflict_writes_conflicted_copy():
     )
     assert (reconciled, conflicts, failed) == (1, 1, 0)
     assert "local body" in written["/vault/x.md"]                     # local kept in place
-    cc = written[next(k for k in written if "CONFLICT1" in k)]        # copy beside it, fresh id
+    # s114/x04: the copy is named from its TITLE, not `<id>.md` -- a hex-blob filename beside the
+    # note is what made a correct keep-both look like data loss to someone reading the vault.
+    cc_path = next(k for k in written if k != "/vault/x.md")
+    assert "conflicted copy desktop" in cc_path                       # recognisable on disk
+    assert "CONFLICT1" not in cc_path                                 # the id is not the filename
+    cc = written[cc_path]
     assert "remote body" in cc                                        # remote body preserved
-    assert "id: CONFLICT1" in cc
+    assert "id: CONFLICT1" in cc                                      # fresh id still minted
     assert "conflicted copy desktop" in cc
     assert "CONFLICT1" in new_state                                   # copy tracked in state
+    assert new_state["CONFLICT1"]["hub_name"] == Path(cc_path).name   # SYNC-21: names agree
 
 
 def test_reconcile_adopts_hub_file_when_state_empty_and_bytes_match():
@@ -510,7 +516,8 @@ def test_reconcile_adopt_with_no_base_keeps_both_bodies():
     )
     assert (reconciled, conflicts, failed) == (1, 1, 0)
     assert "local body" in written["/vault/x.md"]                  # local kept in place
-    cc = written[next(k for k in written if "CONFLICT1" in k)]
+    # s114/x04: title-derived filename, not `<id>.md` -- see the body-conflict test above.
+    cc = written[next(k for k in written if k != "/vault/x.md")]
     assert "remote body" in cc                                     # the head's body survives
     drive.revisions().get_media().execute.assert_not_called()      # no base rev exists to fetch
     assert new_state["01ABC"]["drive_file_id"] == "HUBF1"           # updated in place, no orphan
@@ -2667,3 +2674,58 @@ def test_enrich_no_refs_serializes_empty_attachments_list(tmp_path):
 
     written = (tmp_path / "n1.md").read_text(encoding="utf-8")
     assert "attachments: []" in written        # empty list, not a dropped key
+
+
+# ---------------------------------------------------------------------------
+# s114 / flow-review x04 — a conflicted copy has to be recognisable on disk
+# ---------------------------------------------------------------------------
+
+def test_conflicted_copy_is_named_from_its_title(tmp_path):
+    """The lock ("body-vs-body -> conflicted copy, both intact") held in the
+    field: both bodies survived. But the copy was written as `<random-id>.md`,
+    so an operator auditing the vault saw an unreadable hex blob beside the note
+    and filed a P0 data-loss report against behaviour that was correct. The name
+    is now derived from the title reconcile.py already built."""
+    from mobile_sync_agent import _conflicted_copy_name
+
+    class _CC:
+        id = "3887fbfb641b4ce786855cffb6"
+        title = "CrossDeviceTest x01 (conflicted copy phone-gkkn48 2026-07-30T12:08:23.596Z)"
+        created = "2026-07-30T11:53:22.746Z"
+
+    name = _conflicted_copy_name(_CC(), tmp_path)
+    assert name.startswith("CrossDeviceTest x01 (conflicted copy phone-gkkn48")
+    assert name.endswith(".md")
+    assert ":" not in name, "must survive the Windows illegal-character sanitizer"
+    assert _CC.id not in name
+
+
+def test_conflicted_copy_never_collides_with_an_existing_file(tmp_path):
+    """Two conflicted copies of one note in one folder: fall back to the short
+    id rather than overwrite a body -- the same idiom _resolve_hub_names uses."""
+    from mobile_sync_agent import _conflicted_copy_name
+
+    class _CC:
+        id = "3887fbfb641b4ce786855cffb6"
+        title = "Note (conflicted copy phone-a 2026-07-30T12:08:23.596Z)"
+        created = "2026-07-30T11:53:22.746Z"
+
+    first = _conflicted_copy_name(_CC(), tmp_path)
+    (tmp_path / first).write_text("already here", encoding="utf-8")
+    second = _conflicted_copy_name(_CC(), tmp_path)
+    assert second != first
+    assert _CC.id[-6:] in second
+
+
+def test_conflicted_copy_name_falls_back_when_the_title_is_empty(tmp_path):
+    """A title-less copy must still get a usable filename, never ".md"."""
+    from mobile_sync_agent import _conflicted_copy_name
+
+    class _CC:
+        id = "abc123def456"
+        title = ""
+        created = "2026-07-30T11:53:22.746Z"
+
+    name = _conflicted_copy_name(_CC(), tmp_path)
+    assert name.endswith(".md")
+    assert len(name) > 3

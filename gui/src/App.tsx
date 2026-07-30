@@ -853,7 +853,15 @@ export default function App() {
       const short = captureState.result?.path
         ? captureState.result.path.split(/[\\/]/).slice(-2).join("/")
         : null;
-      pushToast({ tone: "success", message: short ? `Saved to ${short}` : "Saved" });
+      // s114/d05: the pipeline can fold a capture into a DIFFERENT existing note (smart merge).
+      // That is a real feature, but it happened silently — the user asked for a capture and got
+      // an edit to something else, reported with the same word as an ordinary save. Naming the
+      // target is the whole fix; the merge heuristic itself is deliberately untouched.
+      const mergedInto = captureState.result?.mergedInto;
+      pushToast({
+        tone: "success",
+        message: mergedInto ? `Merged into ${mergedInto}` : short ? `Saved to ${short}` : "Saved",
+      });
     }
     if (prev !== "error" && curr === "error") {
       const msg = (captureState.errorMsg ?? "Capture failed").split("\n")[0];
@@ -940,6 +948,12 @@ export default function App() {
         }
         if (compactPanel !== null) {
           closeCompactPanel();
+          // s114/d02: P1-5 gave the menu branch below a focus return, but this branch — the one
+          // that actually runs when a compact panel is open, since it is checked first — closed
+          // the panel AND the bar (closeCompactPanel clears menuOpen too) while leaving focus on
+          // a control that no longer exists, which the browser resolves to BODY. Same one-line
+          // remedy, same ref. Deferred a frame: the focused element is still mounted in this tick.
+          requestAnimationFrame(() => pillTriggerRef.current?.focus());
           return;
         }
         if (menuOpen) {
@@ -2477,6 +2491,7 @@ export default function App() {
           setMenuOpen(true);
         }}
         inboxCount={inboxCount}
+        onInboxCountChange={setInboxCount}
         onSelect={handleMenuSelect}
         onHide={handleMenuHide}
         pillGeometry={radialPillGeometry}
@@ -2646,6 +2661,7 @@ export default function App() {
             onVoiceToggle={voice.toggle}
             onVoiceCancel={voice.cancel}
             settingsProps={settingsProps}
+            onInboxCountChange={setInboxCount}
           />
         </div>
 

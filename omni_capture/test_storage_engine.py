@@ -636,3 +636,78 @@ def test_create_voice_note_copies_staged_audio_into_attachments(tmp_path):
     # forever but never written again.
     assert f"![voice memo](../_attachments/{note_id}/voice.wav)" in note_text
     assert not audio_src.exists()
+
+
+# ---------------------------------------------------------------------------
+# s114 — grouping-split enforcement at the CAPTURE root, and merge visibility
+# ---------------------------------------------------------------------------
+
+def test_signals_never_auto_attach_a_project_tag():
+    """2026-07-30 grouping split (DECISIONS §5 amendment): `project/` and
+    `@`-action tags are user-assigned ONLY. s113 enforced that at both NOTE
+    roots (heuristicEnrich.ts, mobile_sync_agent.enrich_notes) and missed this
+    one -- the capture root, which is the one fed by unconstrained LLM output."""
+    from storage_engine import _signals_to_tags
+
+    tags = _signals_to_tags(["project/atlas", "@waiting", "ollama", "Rust Notes"])
+    assert "project/atlas" not in tags
+    assert "waiting" not in tags          # "@waiting" is dropped whole, not de-@-ed
+    assert tags == ["ollama", "rust-notes"]
+
+
+def test_machine_namespaced_tags_still_pass():
+    """The filter must not catch `sys/`: route_failed_vision/route_failed_llm
+    depend on their namespaced marker surviving (ISS-019)."""
+    from storage_engine import _signals_to_tags
+
+    assert _signals_to_tags(["sys/vision-failed"]) == ["sys/vision-failed"]
+
+
+def test_smart_merge_reports_the_note_it_merged_into(tmp_path):
+    """s114/d05: a capture folded into a DIFFERENT existing note used to be
+    completely silent -- a clipboard image landed inside an unrelated text
+    capture with no signal on any surface. write_to_vault now reports it so the
+    caller's toast can say "Merged into X"."""
+    from storage_engine import write_to_vault
+
+    vault = tmp_path / "vault"
+    (vault / "Tech_Notes").mkdir(parents=True)
+    existing = vault / "Tech_Notes" / "ollama-setup.md"
+    existing.write_text(
+        "---\ncreated: 2026-07-30T10:00:00\ntags:\n  - ollama\n  - llm\n---\nfirst capture\n",
+        encoding="utf-8",
+    )
+
+    out = CaptureOutput(
+        category="Tech_Notes",
+        suggested_filename="a-different-name",
+        markdown_content="second capture about the same thing",
+        key_signals=["ollama", "llm"],
+        confidence=0.9,
+        requires_new_category=False,
+    )
+    merge_info: dict = {}
+    path = write_to_vault(out, vault_root=vault, merge_info=merge_info)
+
+    assert path == existing, "expected the smart merge to pick the tag-matched note"
+    assert merge_info["merged_into"] == "ollama-setup.md"
+
+
+def test_a_plain_new_capture_reports_no_merge(tmp_path):
+    """The negative half: an ordinary capture must leave merge_info empty, or
+    every toast would claim a merge."""
+    from storage_engine import write_to_vault
+
+    vault = tmp_path / "vault"
+    (vault / "Tech_Notes").mkdir(parents=True)
+    out = CaptureOutput(
+        category="Tech_Notes",
+        suggested_filename="brand-new-thing",
+        markdown_content="nothing like anything else here",
+        key_signals=["kayaking"],
+        confidence=0.9,
+        requires_new_category=False,
+    )
+    merge_info: dict = {}
+    write_to_vault(out, vault_root=vault, merge_info=merge_info)
+    assert merge_info == {}

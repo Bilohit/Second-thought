@@ -5,9 +5,10 @@ import FluidVisualizer from "../PillMenu/FluidVisualizer";
 import { MicIcon, CloseIcon, ChevronRightIcon } from "../PillMenu/icons";
 import { formatElapsed } from "../../lib/voiceLimits";
 import {
-  getStats, getInbox, approveInboxItem, discardInboxItem,
+  getStats, getInbox, discardInboxItem,
   listReminders, deleteReminder, getConfig,
-  type Stats, type InboxItem, type Reminder,
+  getVaultConflicts, checkHealth,
+  type Stats, type InboxItem, type Reminder, type VaultConflictEntry,
 } from "../../lib/api";
 import { fileKind } from "../../lib/fileIngest";
 import { logger } from "../../lib/logger";
@@ -45,6 +46,9 @@ export default function DashboardView({
   const [stats, setStats] = useState<Stats | null>(null);
   const [inbox, setInbox] = useState<InboxItem[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [conflicts, setConflicts] = useState<VaultConflictEntry[]>([]);
+  /** Optimistic true: never block recording on a probe we could not read. */
+  const [ffmpegOk, setFfmpegOk] = useState(true);
   const [dragOver, setDragOver] = useState(false);
   const [rejected, setRejected] = useState(false);
   const [hotkey, setHotkey] = useState(DEFAULT_HOTKEY);
@@ -66,6 +70,12 @@ export default function DashboardView({
     getStats().then(setStats).catch((err) => logger.warn("dashboard", "stats fetch failed", err));
     getInbox().then((r) => setInbox(r.inbox)).catch((err) => logger.warn("dashboard", "inbox fetch failed", err));
     listReminders().then(setReminders).catch((err) => logger.warn("dashboard", "reminders fetch failed", err));
+    // s114/x04: /vault/conflicts has existed since F-1 and nothing above the Library consumed it,
+    // so the Dashboard printed "1 conflict" in the sync summary and "No items need review"
+    // directly beneath it. A conflicted copy was only discoverable by opening that one note.
+    getVaultConflicts().then(setConflicts).catch((err) => logger.warn("dashboard", "conflicts fetch failed", err));
+    // s114/d06: gate the Rec button on a real probe instead of warning every user forever.
+    checkHealth().then((h) => setFfmpegOk(h.ffmpeg)).catch(() => setFfmpegOk(true));
   }, [visible, captureState.phase, llmStatus]);
 
   useEffect(() => {
@@ -102,14 +112,6 @@ export default function DashboardView({
   // the buttons disable immediately; only actually drop the row once the
   // server confirms (or un-mark it on failure so the user can retry).
   const [filingIds, setFilingIds] = useState<Set<string>>(new Set());
-  const handleApprove = (noteId: string) => {
-    setFilingIds((s) => new Set(s).add(noteId));
-    approveInboxItem(noteId).then(() => setInbox((rows) => rows.filter((r) => r.note_id !== noteId)))
-      .catch((err) => {
-        logger.warn("dashboard", "inbox approve failed", { noteId, err });
-        setFilingIds((s) => { const n = new Set(s); n.delete(noteId); return n; });
-      });
-  };
   const handleDiscard = (noteId: string) => {
     setFilingIds((s) => new Set(s).add(noteId));
     discardInboxItem(noteId).then(() => setInbox((rows) => rows.filter((r) => r.note_id !== noteId)))
@@ -125,12 +127,12 @@ export default function DashboardView({
   return (
     <div style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "1fr 280px", gap: 14, padding: 14, overflow: "hidden" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 14, minHeight: 0, overflow: "hidden" }}>
-        {renderCaptureCard(captureState, stepDefs, dragOver, rejected, voicePhase, voiceElapsedMs, readWaveform, readSpectrum, sampleRate, onVoiceToggle, onVoiceCancel, onCaptureNow, hotkey)}
+        {renderCaptureCard(captureState, stepDefs, dragOver, rejected, voicePhase, voiceElapsedMs, readWaveform, readSpectrum, sampleRate, onVoiceToggle, onVoiceCancel, onCaptureNow, hotkey, ffmpegOk)}
         {renderRecentCard(stats, onOpenFile, () => onNavigate("library"))}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 14, minHeight: 0, overflow: "hidden" }}>
         {renderRemindersCard(reminders, handleDeleteReminder, () => onNavigate("reminders"))}
-        {renderInboxCard(inbox, filingIds, handleApprove, handleDiscard, () => onNavigate("inbox"))}
+        {renderInboxCard(inbox, conflicts, filingIds, handleDiscard, () => onNavigate("inbox"), onOpenFile)}
       </div>
     </div>
   );
@@ -162,6 +164,7 @@ function renderCaptureCard(
   onVoiceCancel: () => void,
   onCaptureNow: () => void,
   hotkey: string,
+  ffmpegOk: boolean,
 ) {
   const last = captureState.result;
   const isIdle = captureState.phase === "idle";
@@ -183,15 +186,18 @@ function renderCaptureCard(
             type="button"
             className="btn-hover"
             onClick={onVoiceToggle}
-            disabled={!isIdle}
-            // ISS-008: static hint, surfaced right where REC is pressed —
-            // no backend probe exists for ffmpeg presence outside --self-check,
-            // so this is a deliberate always-shown reminder rather than a
-            // dynamic check. ponytail: revisit if a health endpoint ever
-            // exposes ffmpeg availability; wire a real conditional then.
-            title={isIdle ? "Record voice note (needs ffmpeg on PATH — winget install Gyan.FFmpeg)" : "Finish current capture first"}
+            disabled={!isIdle || !ffmpegOk}
+            // s114/d06: this closes ISS-008's ponytail note ("revisit if a health endpoint ever
+            // exposes ffmpeg availability; wire a real conditional then") — /health now reports it.
+            // The old title was shown to EVERY user forever, installed or not, and the actual
+            // failure still arrived after they had already spoken: the recording succeeded and
+            // transcription died, delivering a vault note whose entire content was a shell command.
+            // Now the button is simply off when the decoder is missing, with the reason beneath it.
+            title={!ffmpegOk
+              ? "Voice capture needs ffmpeg on PATH"
+              : isIdle ? "Record voice note" : "Finish current capture first"}
             aria-label="Record voice note"
-            style={micButtonStyle(!isIdle)}
+            style={micButtonStyle(!isIdle || !ffmpegOk)}
           >
             <MicIcon size={12} />
             Rec
@@ -251,6 +257,15 @@ function renderCaptureCard(
               or press {formatHotkey(hotkey)} anywhere
             </span>
           )}
+        </div>
+      )}
+      {/* s114/d06: the reason sits under the control it disables, before the user records —
+          not in a vault note delivered after they have already spoken. Semantic yellow: this is
+          a degraded capability, not an error. */}
+      {voiceIdle && isIdle && !ffmpegOk && (
+        <div style={{ marginTop: 8, fontSize: 10, color: "var(--yellow)" }}>
+          Voice capture needs ffmpeg — install it, then reopen this window.
+          <span style={{ color: "var(--text-3)" }}> {"winget install Gyan.FFmpeg"}</span>
         </div>
       )}
       {voiceIdle && !isIdle && <StepIndicator steps={captureState.steps} stepDefs={stepDefs} />}
@@ -365,25 +380,54 @@ function renderRemindersCard(reminders: Reminder[], onDelete: (id: number) => vo
   );
 }
 
-function renderInboxCard(inbox: InboxItem[], filingIds: Set<string>, onApprove: (id: string) => void, onDiscard: (id: string) => void, onHeader: () => void) {
+function renderInboxCard(
+  inbox: InboxItem[],
+  conflicts: VaultConflictEntry[],
+  filingIds: Set<string>,
+  onDiscard: (id: string) => void,
+  onHeader: () => void,
+  onOpenConflict: (path: string) => void,
+) {
+  const pending = inbox.length + conflicts.length;
   return (
     <div style={cardStyle(true)}>
-      <div style={CLABEL}>{headerLink("Review", onHeader)}<span style={{ flex: 1 }} />{inbox.length > 0 && <span style={chipStyle(false)}>{inbox.length} need review</span>}</div>
+      <div style={CLABEL}>{headerLink("Review", onHeader)}<span style={{ flex: 1 }} />{pending > 0 && <span style={chipStyle(false)}>{pending} need{pending === 1 ? "s" : ""} review</span>}</div>
       <div style={{ overflowY: "auto", overflowX: "hidden", flex: 1, minWidth: 0 }}>
+        {/* s114/x04: conflicts first — they are the only thing here with a data consequence, and
+            they were previously invisible outside the note itself. The sync summary above this
+            card counted them all along, which is how it managed to say "1 conflict" and
+            "No items need review" at the same time. */}
+        {conflicts.map((c) => (
+          <div key={c.conflict_path} style={{ border: "1px solid var(--red)", borderRadius: "var(--radius-sm)", background: "var(--glass-bg)", padding: "8px 10px", marginBottom: 8 }}>
+            <div style={{ fontSize: 11, color: "var(--red)" }}>Edited on both devices</div>
+            <div style={{ fontSize: 12, color: "var(--text-1)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.title}</div>
+            <div style={{ fontSize: 10, color: "var(--text-3)", marginTop: 2 }}>Both versions kept</div>
+            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+              <button onClick={() => onOpenConflict(c.path)} style={{ ...miniBtnStyle(true), cursor: "pointer" }}>Resolve</button>
+            </div>
+          </div>
+        ))}
         {inbox.map((item) => {
           const filing = filingIds.has(item.note_id);
           return (
             <div key={item.note_id} style={{ border: "1px solid var(--border-2)", borderRadius: "var(--radius-sm)", background: "var(--glass-bg)", padding: "8px 10px", marginBottom: 8, opacity: filing ? 0.5 : 1, transition: "opacity 0.15s ease" }}>
               <div style={{ fontSize: 12, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.filename}</div>
-              <div style={{ fontSize: 10, color: "var(--text-3)", marginTop: 2 }}>{item.category}</div>
+              <div style={{ fontSize: 10, color: "var(--text-3)", marginTop: 2 }}>{item.kind === "link" && item.source ? `link · ${item.source}` : item.kind ?? "text"}{item.failure ? ` · ${item.failure}` : ""}</div>
               <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                <button onClick={() => onApprove(item.note_id)} disabled={filing} style={{ ...miniBtnStyle(true), cursor: filing ? "default" : "pointer" }}>{filing ? "Filing…" : "File"}</button>
-                <button onClick={() => onDiscard(item.note_id)} disabled={filing} style={{ ...miniBtnStyle(false), cursor: filing ? "default" : "pointer" }}>Dismiss</button>
+                {/* s114/d07: this button used to be "File", calling approveInboxItem with NO
+                    target category. The server then fell back to the note's frontmatter
+                    `category` — a field v2.2 removed — so every Dashboard file landed in
+                    Uncategorised. Same root cause as the Inbox dead loop, different symptom.
+                    Filing needs a destination, and this 280px card has no room to pick one, so
+                    it hands off to the Inbox instead of guessing. Dismiss needs no destination
+                    and stays. */}
+                <button onClick={onHeader} disabled={filing} style={{ ...miniBtnStyle(true), cursor: filing ? "default" : "pointer" }}>Review</button>
+                <button onClick={() => onDiscard(item.note_id)} disabled={filing} style={{ ...miniBtnStyle(false), cursor: filing ? "default" : "pointer" }}>{filing ? "…" : "Dismiss"}</button>
               </div>
             </div>
           );
         })}
-        {inbox.length === 0 && <div style={{ fontSize: 11, color: "var(--text-3)", padding: "12px 0", textAlign: "center" }}>No items need review</div>}
+        {pending === 0 && <div style={{ fontSize: 11, color: "var(--text-3)", padding: "12px 0", textAlign: "center" }}>No items need review</div>}
       </div>
     </div>
   );

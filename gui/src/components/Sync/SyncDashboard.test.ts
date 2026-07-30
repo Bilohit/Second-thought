@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { summarizeLastPass } from "./SyncDashboard";
+import { gaugeIdleReadout, summarizeLastPass } from "./SyncDashboard";
 import type { SyncPassRow } from "../../lib/api";
 
 // ISS-013: the Sync tab never rendered "last synced at" / item counts even though
@@ -51,5 +51,22 @@ describe("summarizeLastPass", () => {
   it("falls back to a label without a clock reading when `finished` does not parse", () => {
     const line = summarizeLastPass(row({ finished: "not-a-date" }));
     expect(line).toMatch(/^Last sync ·/);
+  });
+});
+
+describe("gaugeIdleReadout (s114/D11)", () => {
+  it("says nothing has run yet only when nothing has run yet", () => {
+    expect(gaugeIdleReadout(null)).toEqual({ value: "—", unit: "NO PASS YET" });
+  });
+
+  it("reads as up to date after a successful pass, not as an em-dash", () => {
+    // The reported symptom: a bare "—" immediately after a pass that worked, which reads as
+    // "nothing happened" rather than "nothing left to do".
+    expect(gaugeIdleReadout(row({ ok: true }))).toEqual({ value: "OK", unit: "UP TO DATE" });
+  });
+
+  it("does not claim up to date after a failed pass", () => {
+    expect(gaugeIdleReadout(row({ ok: false, error: "quota exceeded" })))
+      .toEqual({ value: "!", unit: "LAST PASS FAILED" });
   });
 });

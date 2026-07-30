@@ -16,6 +16,7 @@ These tests encode the two workspace locks this code sits directly on top of:
     destroy a file it collides with by name.
 """
 import os
+import re
 import time
 from pathlib import Path
 
@@ -436,3 +437,123 @@ def test_list_trash_is_newest_deleted_first(tmp_path):
 
     assert [i["filename"] for i in items] == ["new.md", "mid.md", "old.md"]
     assert all(i["purge_at"] == i["deleted_at"] + 30 * 24 * 3600 for i in items)
+
+
+# ---------------------------------------------------------------------------
+# s114 / flow-review d18 — restore puts a note back where it came from
+# ---------------------------------------------------------------------------
+
+def test_restore_returns_a_note_to_its_original_folder(tmp_path):
+    """v2.2 removed `category:` from frontmatter (the parent folder IS the
+    category), so restore_from_trash's frontmatter lookup missed on every note
+    and every restore landed in Uncategorized -- labelled honestly in the UI,
+    and therefore quietly wrong rather than reported."""
+    from trash import move_to_trash, restore_from_trash
+
+    vault = tmp_path
+    (vault / "Personal").mkdir()
+    note = vault / "Personal" / "grocery run.md"
+    note.write_text("---\nid: n1\norigin: note\n---\nmilk\n", encoding="utf-8")
+
+    trashed = move_to_trash(vault, note)
+    assert not note.exists()
+
+    out = restore_from_trash(vault, trashed["filename"])
+    assert out["category"] == "Personal"
+    assert (vault / "Personal" / "grocery run.md").exists()
+    assert not (vault / "Uncategorized").exists()
+
+
+def test_restore_round_trip_leaves_the_file_byte_identical(tmp_path):
+    """The origin is recorded in a sidecar precisely so the delete stays a pure
+    filesystem move -- body AND frontmatter unchanged through the round trip."""
+    from trash import move_to_trash, restore_from_trash
+
+    vault = tmp_path
+    (vault / "Work").mkdir()
+    note = vault / "Work" / "spec.md"
+    original = "---\nid: n2\norigin: note\nmodified: \"2026-07-01T00:00:00Z\"\n---\nbody\ttext\n\n"
+    note.write_text(original, encoding="utf-8", newline="")
+
+    trashed = move_to_trash(vault, note)
+    restore_from_trash(vault, trashed["filename"])
+
+    assert (vault / "Work" / "spec.md").read_text(encoding="utf-8", newline="") == original
+
+
+def test_restore_without_a_recorded_origin_still_falls_back(tmp_path):
+    """A note trashed before the sidecar existed (or by the other peer) must
+    still restore, not raise -- Uncategorized remains the floor."""
+    from trash import restore_from_trash
+
+    vault = tmp_path
+    trash_dir = vault / "_trash"
+    trash_dir.mkdir()
+    (trash_dir / "orphan.md").write_text("---\nid: n3\n---\nbody\n", encoding="utf-8")
+
+    out = restore_from_trash(vault, "orphan.md")
+    assert out["category"] == "Uncategorized"
+    assert (vault / "Uncategorized" / "orphan.md").exists()
+
+
+def test_purge_prunes_the_origin_sidecar(tmp_path):
+    """The ledger tracks the folder rather than growing forever."""
+    import json
+    from trash import move_to_trash, purge_expired
+
+    vault = tmp_path
+    (vault / "Personal").mkdir()
+    note = vault / "Personal" / "old.md"
+    note.write_text("---\nid: n4\n---\nbody\n", encoding="utf-8")
+    trashed = move_to_trash(vault, note)
+
+    origins_path = vault / "_trash" / ".origins.json"
+    assert json.loads(origins_path.read_text(encoding="utf-8"))[trashed["filename"]] == "Personal"
+
+    purged = purge_expired(vault, now=time.time() + 31 * 24 * 3600)
+    assert purged == [trashed["filename"]]
+    assert json.loads(origins_path.read_text(encoding="utf-8")) == {}
+
+
+# ---------------------------------------------------------------------------
+# s114 / flow-review d08 — a body edit stamps `modified`
+# ---------------------------------------------------------------------------
+
+def test_body_edit_bumps_modified(tmp_path):
+    """Editing in the desktop editor left `modified` at whatever the last SYNC
+    pass wrote, so the vault's own record of "when did I last touch this" was
+    wrong on every hand-edited note."""
+    from note_editor import write_note_body
+
+    vault = tmp_path
+    (vault / "Personal").mkdir()
+    note = vault / "Personal" / "n.md"
+    note.write_text(
+        '---\nid: n1\norigin: note\nmodified: "2026-01-01T00:00:00Z"\n---\nold body\n',
+        encoding="utf-8", newline="",
+    )
+    write_note_body(vault, str(note), "new body\n", expected_mtime=note.stat().st_mtime)
+
+    text = note.read_text(encoding="utf-8")
+    assert 'modified: "2026-01-01T00:00:00Z"' not in text
+    assert re.search(r'^modified: "\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"$', text, re.MULTILINE)
+    assert "new body\n" in text
+
+
+def test_body_edit_does_not_add_modified_to_a_capture(tmp_path):
+    """`modified` is a note-contract field (data-model §1). A capture has none
+    and must not grow one just because it was edited."""
+    from note_editor import write_note_body
+
+    vault = tmp_path
+    (vault / "Personal").mkdir()
+    note = vault / "Personal" / "c.md"
+    note.write_text(
+        "---\ncreated: 2026-01-01T00:00:00\nconfidence: 0.9\ntags: []\n---\nold body\n",
+        encoding="utf-8", newline="",
+    )
+    write_note_body(vault, str(note), "new body\n", expected_mtime=note.stat().st_mtime)
+
+    text = note.read_text(encoding="utf-8")
+    assert "modified:" not in text
+    assert "new body\n" in text
