@@ -537,6 +537,60 @@ def test_healthy_captures_db_survives_the_boot_path(vault: Path):
     assert _index_state(vault)["count"] == n_before, "boot discarded an intact captures.db"
 
 
+def _startup_vector_backfill(vault: Path) -> None:
+    """The new boot path under test: server._startup_vector_backfill, run synchronously
+    (same inline-submit trick as _startup() above) with the real embed call faked out."""
+    import server
+
+    _restart(vault)
+    with mock.patch.object(server, "_get_vault_root", lambda: vault), \
+         mock.patch.object(server.jobs._bg_executor, "submit", lambda fn: fn()), \
+         mock.patch.object(vector_store, "_embed", side_effect=_fake_embed):
+        server._startup_vector_backfill()
+
+
+def test_startup_backfills_pre_existing_notes_never_indexed(vault: Path):
+    """FIXED: notes that exist on disk but were never embedded (e.g. written outside the
+    capture pipeline, or predating vectors.db) used to stay permanently unindexed — the only
+    caller of the diff-sync's embedding pass was the manual POST /vault/sync-index endpoint,
+    never anything on the boot path. The `vault` fixture already runs a full _rebuild(), so
+    vectors.db is deleted here to reproduce the never-embedded scenario (notes on disk,
+    nothing in the vector store) before asserting the boot path backfills every one."""
+    vectors_db = _store_paths(vault)["vectors.db"]
+    if vectors_db.exists():
+        vectors_db.unlink()
+    _drop_sqlite_sidecars(vectors_db)
+    assert vector_store.embedded_parents(vault) == set(), \
+        "fixture precondition: nothing embedded yet"
+
+    _startup_vector_backfill(vault)
+
+    embedded = vector_store.embedded_parents(vault)
+    expected = set(_oracle(vault)["notes"].keys())
+    assert embedded == expected, "boot path did not embed every pre-existing note"
+
+
+def test_startup_vector_backfill_is_idempotent(vault: Path):
+    """A second boot must not re-embed notes whose captures.hash is unchanged (OF-1's
+    embedded_parents check), matching sync_vault_indexes' own idempotence guarantee."""
+    _startup_vector_backfill(vault)
+    first = vector_store.embedded_parents(vault)
+
+    _startup_vector_backfill(vault)
+    second = vector_store.embedded_parents(vault)
+
+    assert first == second == set(_oracle(vault)["notes"].keys())
+
+
+def test_startup_vector_backfill_never_touches_vault_bytes(vault: Path):
+    """BODY-SACRED: embedding is a derived-cache write, not a vault write."""
+    before = _snapshot_vault(vault)
+
+    _startup_vector_backfill(vault)
+
+    _assert_bodies_sacred(before, vault, "startup vector backfill")
+
+
 def test_corrupt_captures_db_is_rebuilt_by_the_diff_sync(vault: Path):
     """FIXED: sync_vault_indexes now calls index_writer.heal_corrupt_db first, so an
     unreadable captures.db is discarded and re-created from the vault files. It used
