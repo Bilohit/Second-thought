@@ -1400,7 +1400,12 @@ def enrich_notes(
                 # ISS-051 §3: machine enrichment tags live in the BODY, as a single trailing
                 # `tags: #a #b` line (idempotent replace). Frontmatter `tags:` is then a derived cache
                 # (§1.2) recomputed from the whole body — user inline #tags unified with this line.
-                machine_tags = normalize_tags(list(key_signals), vocab)
+                # 2026-07-30 grouping split: project/ and @-action tags are user-assigned only —
+                # the machine never auto-attaches them (spec 2026-07-30-grouping-split-design.md).
+                machine_tags = [
+                    t for t in normalize_tags(list(key_signals), vocab)
+                    if not (t.startswith("project/") or t.startswith("@"))
+                ]
                 note.body = apply_trailing_tags_line(note.body, machine_tags)
                 note.tags = extract_body_tags(note.body)
                 # v2.2 (§4.2): `attachments:` is a DERIVED cache recomputed from the body on save,

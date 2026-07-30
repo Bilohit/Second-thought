@@ -1257,6 +1257,27 @@ def test_enrich_writes_machine_tags_to_trailing_body_line(tmp_path):
     assert seen["text"] == body  # classify saw the user body
 
 
+def test_enrich_never_auto_attaches_project_or_action_tags(tmp_path):
+    # 2026-07-30 grouping split: project/ and @-action tags are user-assigned only — the LLM
+    # classifier may never attach them, whether invented or reused from the vocab.
+    body = "# My note\n\nSome body text.\n"
+    _note_file(tmp_path, "n1.md",
+               "id: n1\norigin: note\norigin_device: desktop\nenriched: false", body)
+    vault_notes = _vault_notes_from(tmp_path)
+
+    def classify(text):
+        return (["project/website", "@errands", "ml"], "papers")
+
+    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify,
+                                    vocab={"project/website": "project/website"})
+    assert (enriched, failed) == (1, 0)
+    from frontmatter import strip_frontmatter
+    written = (tmp_path / "n1.md").read_text(encoding="utf-8")
+    assert "\ntags: #ml\n" in strip_frontmatter(written)
+    assert "project/" not in strip_frontmatter(written)
+    assert "@errands" not in written
+
+
 def test_enrich_skips_phone_origin_note(tmp_path):
     # Provenance gate (§2.2): the desktop never enriches phone-origin content.
     body = "phone note body\n"

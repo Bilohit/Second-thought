@@ -48,6 +48,25 @@ export function filterMachineTags(tags: TagNode[]): TagNode[] {
     .map((node) => ({ ...node, children: node.children.filter((c) => !isMachineTag(c.tag)) }));
 }
 
+/**
+ * 2026-07-30 grouping split: `project/` tags are the app's one grouping
+ * feature (folders keep the auto-categorize job only, see
+ * docs/superpowers/specs/2026-07-30-grouping-split-design.md). Pulls the
+ * `project/` namespace node's leaf children out as a pinned list -- full
+ * "project/<leaf>" tag values kept intact (the /search hand-off needs the
+ * whole value; only the render layer strips the prefix) -- and returns the
+ * remaining tree with that namespace node removed so it isn't duplicated
+ * under "ALL TAGS". A bare "project" node with no children (nothing tagged
+ * yet) is an ordinary user tag, not a namespace -- it stays in `rest`.
+ */
+export function splitProjects(tags: TagNode[]): { projects: TagNode[]; rest: TagNode[] } {
+  const isProjectNamespace = (tag: string) => tag.replace(/\/$/, "") === "project";
+  const namespaceNode = tags.find((node) => isProjectNamespace(node.tag) && node.children?.length);
+  const projects = namespaceNode?.children ?? [];
+  const rest = tags.filter((node) => node !== namespaceNode);
+  return { projects, rest };
+}
+
 export default function TagsView({ visible, onOpenNote }: Props) {
   const [tags, setTags] = useState<TagNode[] | null>(null);
   const [activeTag, setActiveTag] = useState<string | null>(null);
@@ -108,24 +127,49 @@ export default function TagsView({ visible, onOpenNote }: Props) {
     );
   }
 
+  const sectionLabelStyle = { fontSize: 12, letterSpacing: "0.04em", color: "var(--text-1)", fontWeight: 600, padding: "10px 14px 6px" };
+  const { projects, rest } = tags ? splitProjects(tags) : { projects: [], rest: [] };
+
   return (
     <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+      <style>{`
+        .tags-row { transition: background-color 150ms ease; }
+        .tags-row:hover { background: var(--surface-2); }
+        .tags-row:focus-visible { outline: 1px solid var(--border); outline-offset: -1px; }
+      `}</style>
       {tags === null && <div style={{ padding: 14, fontSize: 12, color: "var(--text-3)" }}>Loading…</div>}
       {tags !== null && tags.length === 0 && <div style={{ padding: 14, fontSize: 12, color: "var(--text-3)" }}>No tags yet.</div>}
-      {tags?.map((node) => (
-        <div key={node.tag}>
-          <button style={rowStyle} onClick={() => setActiveTag(node.tag.replace(/\/$/, ""))}>
-            <span style={{ color: "var(--text-3)" }}>#</span>{node.tag}
-            <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}>{node.count}</span>
-          </button>
-          {node.children.map((child) => (
-            <button key={child.tag} style={{ ...rowStyle, paddingLeft: 34 }} onClick={() => setActiveTag(child.tag)}>
-              <span style={{ color: "var(--text-3)" }}>#</span>{child.tag}
+      {tags !== null && tags.length > 0 && (
+        <>
+          <div style={sectionLabelStyle}>PROJECTS</div>
+          {projects.length === 0 && (
+            <div style={{ padding: "0 14px 10px", fontSize: 12, color: "var(--text-3)" }}>
+              no projects yet — add #project/name in any note
+            </div>
+          )}
+          {projects.map((child) => (
+            <button key={child.tag} className="tags-row" style={rowStyle} onClick={() => setActiveTag(child.tag)}>
+              <span style={{ color: "var(--text-3)" }}>#</span>{child.tag.replace(/^project\//, "")}
               <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}>{child.count}</span>
             </button>
           ))}
-        </div>
-      ))}
+          <div style={sectionLabelStyle}>ALL TAGS</div>
+          {rest.map((node) => (
+            <div key={node.tag}>
+              <button className="tags-row" style={rowStyle} onClick={() => setActiveTag(node.tag.replace(/\/$/, ""))}>
+                <span style={{ color: "var(--text-3)" }}>#</span>{node.tag}
+                <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}>{node.count}</span>
+              </button>
+              {node.children.map((child) => (
+                <button key={child.tag} className="tags-row" style={{ ...rowStyle, paddingLeft: 34 }} onClick={() => setActiveTag(child.tag)}>
+                  <span style={{ color: "var(--text-3)" }}>#</span>{child.tag}
+                  <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}>{child.count}</span>
+                </button>
+              ))}
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }

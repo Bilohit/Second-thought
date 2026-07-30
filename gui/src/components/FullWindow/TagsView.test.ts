@@ -3,7 +3,7 @@
 // appear in the Tags browser's tree, whether namespaced (fresh vaults) or
 // bare (existing vaults that already have unnamespaced notes on disk).
 import { describe, expect, it } from "vitest";
-import { filterMachineTags, isMachineTag } from "./TagsView";
+import { filterMachineTags, isMachineTag, splitProjects } from "./TagsView";
 import type { TagNode } from "../../lib/api";
 
 describe("isMachineTag", () => {
@@ -61,5 +61,99 @@ describe("filterMachineTags", () => {
     const result = filterMachineTags(tags);
 
     expect(result.map((n) => n.tag)).toEqual(["reading"]);
+  });
+});
+
+describe("splitProjects", () => {
+  it("extracts project/ leaf children with full tag values and counts", () => {
+    const tags: TagNode[] = [
+      {
+        tag: "project/", count: 3, recent: [],
+        children: [
+          { tag: "project/alpha", count: 2, recent: [], children: [] },
+          { tag: "project/beta", count: 1, recent: [], children: [] },
+        ],
+      },
+      { tag: "reading", count: 3, recent: [], children: [] },
+    ];
+
+    const { projects } = splitProjects(tags);
+
+    expect(projects).toEqual([
+      { tag: "project/alpha", count: 2, recent: [], children: [] },
+      { tag: "project/beta", count: 1, recent: [], children: [] },
+    ]);
+  });
+
+  it("removes the project/ node from rest without touching sibling tags", () => {
+    const tags: TagNode[] = [
+      {
+        tag: "project/", count: 3, recent: [],
+        children: [{ tag: "project/alpha", count: 2, recent: [], children: [] }],
+      },
+      { tag: "reading", count: 3, recent: [], children: [] },
+    ];
+
+    const { rest } = splitProjects(tags);
+
+    expect(rest.map((n) => n.tag)).toEqual(["reading"]);
+  });
+
+  it("handles a bare 'project' namespace node (trailing slash optional)", () => {
+    const tags: TagNode[] = [
+      {
+        tag: "project", count: 1, recent: [],
+        children: [{ tag: "project/alpha", count: 1, recent: [], children: [] }],
+      },
+      { tag: "reading", count: 3, recent: [], children: [] },
+    ];
+
+    const { projects, rest } = splitProjects(tags);
+
+    expect(projects).toEqual([{ tag: "project/alpha", count: 1, recent: [], children: [] }]);
+    expect(rest.map((n) => n.tag)).toEqual(["reading"]);
+  });
+
+  it("returns no projects when there's no project/ namespace node", () => {
+    const tags: TagNode[] = [
+      { tag: "reading", count: 3, recent: [], children: [] },
+      { tag: "systems-design", count: 1, recent: [], children: [] },
+    ];
+
+    const { projects, rest } = splitProjects(tags);
+
+    expect(projects).toEqual([]);
+    expect(rest).toEqual(tags);
+  });
+
+  it("keeps a bare top-level 'project' node with no children in rest (ordinary user tag)", () => {
+    const tags: TagNode[] = [
+      { tag: "project", count: 0, recent: [], children: [] },
+      { tag: "reading", count: 3, recent: [], children: [] },
+    ];
+
+    const { projects, rest } = splitProjects(tags);
+
+    expect(projects).toEqual([]);
+    expect(rest.map((n) => n.tag)).toEqual(["project", "reading"]);
+  });
+
+  it("composes with filterMachineTags: sys/ still dropped, project/ leaves preserved", () => {
+    const tags: TagNode[] = [
+      {
+        tag: "sys/", count: 2, recent: [],
+        children: [{ tag: "sys/llm-failed", count: 1, recent: [], children: [] }],
+      },
+      {
+        tag: "project/", count: 1, recent: [],
+        children: [{ tag: "project/alpha", count: 1, recent: [], children: [] }],
+      },
+      { tag: "reading", count: 3, recent: [], children: [] },
+    ];
+
+    const { projects, rest } = splitProjects(filterMachineTags(tags));
+
+    expect(projects).toEqual([{ tag: "project/alpha", count: 1, recent: [], children: [] }]);
+    expect(rest.map((n) => n.tag)).toEqual(["reading"]);
   });
 });
