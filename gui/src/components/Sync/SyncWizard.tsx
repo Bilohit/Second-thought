@@ -315,10 +315,14 @@ export default function SyncWizard({
         {onDrive ? (
           <>
             {/* At step 1 the global escape IS the skip: there is nothing after Drive to
-                advance to, so a separate Cancel would be the same button twice. */}
-            <button type="button" className="btn-hover" style={BTN_SECONDARY} onClick={onSkipDrive}>
-              Skip for now
-            </button>
+                advance to, so a separate Cancel would be the same button twice.
+                P1-6: while connecting, DriveStep's own body already renders the one
+                Cancel button for this state — this footer copy must not double it. */}
+            {!connecting && !drive?.connecting && (
+              <button type="button" className="btn-hover" style={BTN_SECONDARY} onClick={onSkipDrive}>
+                Skip for now
+              </button>
+            )}
             {!secretMissing && !connecting && !drive?.connecting && (
               <button
                 type="button"
