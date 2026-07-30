@@ -185,11 +185,45 @@ def _warm_model() -> None:
     jobs._bg_executor.submit(_warm)
 
 
+def _backfill_vector_index(root: Path) -> None:
+    """Best-effort vault-wide embedding backfill. index_note() only ever runs on write-time
+    capture paths (main.py, this file's capture/add-to-vault routes, jobs.py's YouTube job,
+    mobile_sync_agent's phone intake) -- nothing walks the vault to embed notes that were
+    already there (hand-written outside the pipeline, or predating vector_store.py). This
+    reuses vault_sync.sync_vault_indexes, the same diff-sync POST /vault/sync-index already
+    calls, so a note is embedded exactly once it's ever on disk without the user needing to
+    trigger a manual sync-index.
+
+    Called at the TAIL of _startup_db_tasks's own sequential task (not its own separate
+    @app.on_event hook) for the same reason that function's other steps run in one task:
+    it shares the same derived stores (captures.db, vectors.db, the dedup ledger) as the
+    heal/purge/reindex/dedup-rebuild steps above it, and running it as a second task on the
+    2-worker jobs._bg_executor let it interleave with them -- e.g. one task unlinking a
+    corrupt db while the other mid-writes to it. Sequencing it after those steps also means
+    it walks a healed, purged captures.db rather than racing the heal."""
+    try:
+        from config import get_config
+        from vault_sync import sync_vault_indexes
+        cfg = get_config()
+        result = sync_vault_indexes(root, cfg.ollama.base_url, cfg.vector.embed_model)
+        if result["error"]:
+            print(f"[VaultSync] startup vector backfill aborted: {result['error']}", flush=True)
+        elif result["added"] or result["reembedded"] or result["embed_failed"]:
+            print(
+                f"[VaultSync] startup vector backfill: {result['added']} added, "
+                f"{result['reembedded']} reembedded, {result['embed_failed']} embed_failed",
+                flush=True,
+            )
+    except Exception as exc:
+        print(f"[VaultSync] startup vector backfill skipped: {exc}", flush=True)
+
+
 @app.on_event("startup")
 def _startup_db_tasks() -> None:
     """Best-effort startup DB maintenance: corruption heal, then orphan purge, then
-    body-excerpt backfill. Run sequentially in one task so they share one DB open and
-    don't race."""
+    body-excerpt backfill, then vector-index backfill. Run sequentially in one task so they
+    share one DB open and don't race (this used to be split across two tasks on the shared
+    2-worker jobs._bg_executor -- see _backfill_vector_index's docstring for why that raced)."""
     def _run():
         root = _get_vault_root()
         try:
@@ -230,35 +264,8 @@ def _startup_db_tasks() -> None:
                       "recovered from the vault files", flush=True)
         except Exception as exc:
             print(f"[Dedup] startup ledger rebuild skipped: {exc}", flush=True)
-    jobs._bg_executor.submit(_run)
-
-
-@app.on_event("startup")
-def _startup_vector_backfill() -> None:
-    """Best-effort startup embedding backfill. index_note() only ever runs on write-time
-    capture paths (main.py, this file's capture/add-to-vault routes, jobs.py's YouTube job,
-    mobile_sync_agent's phone intake) -- nothing walks the vault to embed notes that were
-    already there (hand-written outside the pipeline, or predating vector_store.py). This
-    reuses vault_sync.sync_vault_indexes, the same diff-sync POST /vault/sync-index already
-    calls, so a note is embedded exactly once it's ever on disk without the user needing to
-    trigger a manual sync-index. A SEPARATE hook from _startup_db_tasks (not folded in): that
-    function has its own narrower contract, asserted in test_store_rebuild.py, of healing +
-    purging + backfilling captures.db without ever re-embedding."""
-    def _run():
-        root = _get_vault_root()
         try:
-            from config import get_config
-            from vault_sync import sync_vault_indexes
-            cfg = get_config()
-            result = sync_vault_indexes(root, cfg.ollama.base_url, cfg.vector.embed_model)
-            if result["error"]:
-                print(f"[VaultSync] startup vector backfill aborted: {result['error']}", flush=True)
-            elif result["added"] or result["reembedded"] or result["embed_failed"]:
-                print(
-                    f"[VaultSync] startup vector backfill: {result['added']} added, "
-                    f"{result['reembedded']} reembedded, {result['embed_failed']} embed_failed",
-                    flush=True,
-                )
+            _backfill_vector_index(root)
         except Exception as exc:
             print(f"[VaultSync] startup vector backfill skipped: {exc}", flush=True)
     jobs._bg_executor.submit(_run)

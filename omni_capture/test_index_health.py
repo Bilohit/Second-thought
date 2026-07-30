@@ -72,11 +72,18 @@ def test_failing_index_write_records_failure_but_does_not_raise(monkeypatch):
     assert index_health.snapshot()["captures"]["ok"] is False
 
 
-def test_health_endpoint_surfaces_snapshot():
+def test_health_endpoint_surfaces_snapshot(monkeypatch):
     from fastapi.testclient import TestClient
     import server
 
     _reset()
+    # The context-manager form of TestClient fires every @app.on_event("startup") hook
+    # (unlike the bare TestClient(server.app) form used elsewhere in this repo) -- and this
+    # test doesn't patch config/vault-root/Ollama, so unmocked it would trigger a real
+    # background vault walk + real Ollama embedding calls via _startup_db_tasks's vector
+    # backfill tail (see server.py). This test only asserts /health's JSON shape, so stub
+    # the shared background executor to a no-op instead of letting startup work run for real.
+    monkeypatch.setattr(server.jobs._bg_executor, "submit", lambda fn: None)
     with TestClient(server.app) as client:
         r = client.get("/health")
         assert r.status_code == 200
