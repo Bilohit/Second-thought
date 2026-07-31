@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { flushSync } from "react-dom";
 import {
   getNoteContent,
   saveNoteContent,
@@ -262,7 +263,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
   const [attachBusy, setAttachBusy] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const attachFilter = useRef<string>("*/*");
+  const [attachFilter, setAttachFilter] = useState<string>("*/*");
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastSavedBodyRef = useRef("");
@@ -676,6 +677,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     alignItems: "stretch", gap: 5,
     transform: toolbarOut ? "translate(0px, -50%)" : "translate(46px, -50%)",
     transition: `transform ${reducedMotion ? 1 : 260}ms ${SETTLE}`,
+    pointerEvents: toolbarOut ? "auto" : "none",
   };
   const fmtStripStyle: CSSProperties = {
     display: "flex", flexDirection: "column", background: "var(--glass-bg)",
@@ -707,7 +709,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
             <input
               ref={fileInputRef}
               type="file"
-              accept={attachFilter.current}
+              accept={attachFilter}
               style={{ display: "none" }}
               onChange={(e) => { handleAttachFile(e.target.files?.[0] ?? null); e.target.value = ""; }}
             />
@@ -812,14 +814,14 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
                     <button
                       className="ne-toolbar-btn" style={fmtRowStyle("tag" as FormatKind)}
                       aria-label="Attach voice memo" title="Attach voice memo" disabled={attachBusy}
-                      onClick={() => { attachFilter.current = "audio/*"; fileInputRef.current?.click(); }}
+                      onClick={() => { flushSync(() => setAttachFilter("audio/*")); fileInputRef.current?.click(); }}
                     >
                       <MicIcon size={13} />
                     </button>
                     <button
                       className="ne-toolbar-btn" style={{ ...fmtRowStyle("tag" as FormatKind), borderBottom: "none" }}
                       aria-label="Attach photo" title="Attach photo" disabled={attachBusy}
-                      onClick={() => { attachFilter.current = "image/*"; fileInputRef.current?.click(); }}
+                      onClick={() => { flushSync(() => setAttachFilter("image/*")); fileInputRef.current?.click(); }}
                     >
                       <CameraIcon size={13} />
                     </button>
