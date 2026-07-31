@@ -136,6 +136,26 @@ describe("computeApplyBranch", () => {
     expect(branch({ pillAnchor: "custom", closingPanel: true })).toBe("closing-panel");
   });
 
+  it("takes the opening-panel branch for a fixed anchor too (panel edges beat the anchored guard)", () => {
+    expect(branch({ pillAnchor: "tr", openingPanel: true })).toBe("opening-panel");
+    expect(branch({ pillAnchor: "bl", openingPanel: true })).toBe("opening-panel");
+  });
+
+  it("takes the opening-panel branch for a fixed-anchor panelModeSwitch too", () => {
+    expect(branch({ pillAnchor: "tr", panelModeSwitch: true })).toBe("opening-panel");
+    expect(branch({ pillAnchor: "bl", panelModeSwitch: true })).toBe("opening-panel");
+  });
+
+  it("takes the closing-panel branch for a fixed anchor too", () => {
+    expect(branch({ pillAnchor: "tr", closingPanel: true })).toBe("closing-panel");
+    expect(branch({ pillAnchor: "bl", closingPanel: true })).toBe("closing-panel");
+  });
+
+  it("still anchors a fixed-anchor pill when no menu or panel edge is in flight", () => {
+    expect(branch({ pillAnchor: "tr" })).toBe("anchored");
+    expect(branch({ pillAnchor: "bl" })).toBe("anchored");
+  });
+
   it("resizes a custom-anchor pill in place when only its size changed", () => {
     expect(branch({ pillAnchor: "custom", targetWinW: 200, prevW: 100 })).toBe("plain-pill-resize");
   });

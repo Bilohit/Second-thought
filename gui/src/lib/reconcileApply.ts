@@ -74,7 +74,8 @@ export function computeMoveTiming(i: MoveTimingInputs): MoveTiming {
  */
 export type ApplyBranch =
   | "skip-full"             // full mode, already initialized, not (re-)entering — apply() no-ops
-  | "anchored"               // fixed anchor, no menu edge in flight — snap to anchorPosition
+  | "anchored"               // fixed anchor, no menu OR panel edge in flight — snap to anchorPosition
+                              // (panel edges own their own branch below even for a fixed anchor)
   | "restore-enter-pill"     // full -> pill with a saved pre-panel position to restore
   | "leaving-pill-center"    // pill -> full — center in the work area
   | "opening-menu-minimal"   // radial fan growing out of a minimal pill
@@ -109,7 +110,11 @@ export interface ApplyBranchInputs {
 export function computeApplyBranch(i: ApplyBranchInputs): ApplyBranch {
   if (i.displayMode === "full" && !i.shouldInitFullSize) return "skip-full";
 
-  if (i.pillAnchor !== "custom" && !i.openingMenu && !i.closingMenu) return "anchored";
+  if (
+    i.pillAnchor !== "custom" &&
+    !i.openingMenu && !i.closingMenu &&
+    !i.openingPanel && !i.closingPanel && !i.panelModeSwitch
+  ) return "anchored";
   if (i.enteringPill && i.hasPrePanelPos) return "restore-enter-pill";
   if (i.leavingPill) return "leaving-pill-center";
   if (i.openingMenu && i.displayMode === "minimal") return "opening-menu-minimal";
