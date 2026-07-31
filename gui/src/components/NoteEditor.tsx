@@ -24,7 +24,6 @@ import { isSaveRetry, saveRetryDelayMs } from "../lib/saveRetry";
 import { logger } from "../lib/logger";
 import { diffLines } from "../lib/lineDiff";
 import { BellIcon, ClockIcon } from "./PillMenu/icons";
-import { RADIAL_STAGGER_MS } from "./PillMenu/RadialMenu";
 import { Markdown } from "./Markdown";
 import { TagChip } from "./TagChip";
 import { parseBlocks } from "../lib/markdown";
@@ -51,14 +50,6 @@ function IconBack(props: { size?: number }) {
     </svg>
   );
 }
-function IconPlus(props: { size?: number }) {
-  const size = props.size ?? 19;
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  );
-}
 function IconMeta(props: { size?: number }) {
   const size = props.size ?? 17;
   return (
@@ -81,14 +72,6 @@ function IconExternal(props: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
       <path d="M7 17L17 7M9 7h8v8" /><path d="M6 4H4v16h16v-2" />
-    </svg>
-  );
-}
-function IconAttach(props: { size?: number }) {
-  const size = props.size ?? 17;
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
-      <path d="M17 7.5l-7.5 7.5a2.5 2.5 0 0 0 3.5 3.5L21 10.5a5 5 0 0 0-7-7L6 11.5a7.5 7.5 0 0 0 10.5 10.5" />
     </svg>
   );
 }
@@ -248,8 +231,10 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
   const [conflictBody, setConflictBody] = useState<string | null>(null);
   const [pinnedDrawer, setPinnedDrawer] = useState<DrawerKey | null>(null);
   const [hoverDrawer, setHoverDrawer] = useState<DrawerKey | null>(null);
-  const [radialOpen, setRadialOpen] = useState(false);
-  const [firedSpoke, setFiredSpoke] = useState<FormatKind | null>(null);
+  const [toolbarPeeking, setToolbarPeeking] = useState(false);
+  const [toolbarLocked, setToolbarLocked] = useState(false);
+  const [firedFmt, setFiredFmt] = useState<FormatKind | null>(null);
+  const toolbarOut = toolbarPeeking || toolbarLocked;
   const [mentions, setMentions] = useState<SearchResult[] | null>(null);
   const [reminderWhen, setReminderWhen] = useState("");
   const [reminderLabel, setReminderLabel] = useState("");
@@ -277,6 +262,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
   const [attachBusy, setAttachBusy] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const attachFilter = useRef<string>("*/*");
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastSavedBodyRef = useRef("");
@@ -311,7 +297,8 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     setConflictBody(null);
     setPinnedDrawer(null);
     setHoverDrawer(null);
-    setRadialOpen(false);
+    setToolbarPeeking(false);
+    setToolbarLocked(false);
     setMentions(null);
     setReminderDone(false);
     setHistoryStatus(null);
@@ -404,26 +391,34 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (radialOpen) { setRadialOpen(false); return; }
+      if (toolbarLocked) { setToolbarLocked(false); return; }
       if (pinnedDrawer) { setPinnedDrawer(null); return; }
       onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, radialOpen, pinnedDrawer, onClose]);
+  }, [open, toolbarLocked, pinnedDrawer, onClose]);
 
   const applyFmt = useCallback((kind: FormatKind) => {
     const ta = textareaRef.current;
     if (!ta) return;
     const r = applyMarkdownFormat(body, ta.selectionStart, ta.selectionEnd, kind);
     setBody(r.value);
-    setFiredSpoke(kind);
+    setFiredFmt(kind);
     requestAnimationFrame(() => {
       ta.focus();
       ta.setSelectionRange(r.selStart, r.selEnd);
     });
-    setTimeout(() => { setFiredSpoke(null); setRadialOpen(false); }, reducedMotion ? 0 : 420);
+    setTimeout(() => setFiredFmt(null), reducedMotion ? 0 : 260);
   }, [body, reducedMotion]);
+
+  const toggleToolbarLock = useCallback(() => {
+    setToolbarLocked((locked) => {
+      const next = !locked;
+      if (next && mode === "view") setMode("edit");
+      return next;
+    });
+  }, [mode]);
 
   const scrollToLine = useCallback((line: number) => {
     const ta = textareaRef.current;
@@ -667,14 +662,37 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     padding: "12px 14px 8px", borderBottom: "1px solid var(--border-2)", marginBottom: 4,
   };
 
-  const fmtZoneStyle: CSSProperties = { position: "absolute", bottom: 16, right: 16, zIndex: 12, width: 44, height: 44 };
-  const fmtDialStyle: CSSProperties = {
-    position: "absolute", bottom: 0, right: 0, width: 44, height: 44, borderRadius: "50%",
-    background: "var(--surface)", border: `1px solid ${radialOpen ? "var(--accent)" : "var(--border)"}`,
-    color: "var(--text-1)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
-    boxShadow: radialOpen ? "0 0 0 5px var(--accent-glow)" : "none",
-    transition: `border-color ${DUR}ms ${SETTLE}, box-shadow ${DUR}ms ${SETTLE}`,
-    zIndex: 2,
+  const fmtEdgeStyle: CSSProperties = { position: "absolute", top: 0, right: 0, bottom: 0, width: 46 };
+  const peekArrowStyle: CSSProperties = {
+    position: "absolute", top: "50%", right: 6, transform: "translateY(-50%)",
+    width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center",
+    color: "var(--text-3)", opacity: toolbarLocked ? 0 : 0.4, cursor: "pointer",
+    background: "none", border: "none", padding: 0,
+    transition: `opacity ${reducedMotion ? 1 : 200}ms ${SETTLE}, color ${reducedMotion ? 1 : 200}ms ${SETTLE}`,
+    pointerEvents: toolbarLocked ? "none" : "auto",
+  };
+  const toolbarColStyle: CSSProperties = {
+    position: "absolute", top: "50%", right: 8, display: "flex", flexDirection: "column",
+    alignItems: "stretch", gap: 5,
+    transform: toolbarOut ? "translate(0px, -50%)" : "translate(46px, -50%)",
+    transition: `transform ${reducedMotion ? 1 : 260}ms ${SETTLE}`,
+  };
+  const fmtStripStyle: CSSProperties = {
+    display: "flex", flexDirection: "column", background: "var(--glass-bg)",
+    border: "1px solid var(--border)", boxShadow: "-8px 0 18px rgba(0,0,0,0.3)",
+  };
+  const fmtRowStyle = (kind: FormatKind): CSSProperties => ({
+    width: 28, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
+    color: firedFmt === kind ? "var(--green)" : "var(--text-2)",
+    borderBottom: "1px solid var(--border-2)", position: "relative", cursor: "pointer",
+    transition: `background ${reducedMotion ? 1 : 140}ms ${SETTLE}, color ${reducedMotion ? 1 : 140}ms ${SETTLE}`,
+  });
+  const lockBtnStyle: CSSProperties = {
+    width: 30, height: 18, display: "flex", alignItems: "center", justifyContent: "center",
+    color: toolbarLocked ? "var(--accent)" : "var(--text-3)",
+    background: toolbarLocked ? "var(--accent-d)" : "var(--surface)",
+    border: `1px solid ${toolbarLocked ? "var(--accent)" : "var(--border)"}`,
+    cursor: "pointer", alignSelf: "center",
   };
 
   return (
@@ -689,6 +707,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
             <input
               ref={fileInputRef}
               type="file"
+              accept={attachFilter.current}
               style={{ display: "none" }}
               onChange={(e) => { handleAttachFile(e.target.files?.[0] ?? null); e.target.value = ""; }}
             />
@@ -699,15 +718,6 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
               title={mode === "view" ? "Switch to edit" : "Switch to view"}
             >
               {mode === "view" ? <IconPencil size={15} /> : <IconEye size={15} />}
-            </button>
-            <button
-              style={iconBtnStyle}
-              onClick={() => fileInputRef.current?.click()}
-              disabled={attachBusy}
-              aria-label="Attach a file"
-              title="Attach a file"
-            >
-              <IconAttach size={15} />
             </button>
           </>
         )}
@@ -779,52 +789,56 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
               )}
             </div>
 
-            {/* Radial formatting instrument — reuses Minimal capture-radial mechanics:
-                plus->X toggle, RADIAL_STAGGER_MS fan-out, reduced-motion static column. */}
-            <div style={fmtZoneStyle}>
-              {radialOpen && (
-                <span style={{
-                  position: "absolute", bottom: 52, right: 52, fontSize: 10.5, color: "var(--text-3)",
-                  background: "var(--glass-bg)", border: "1px solid var(--border-2)", padding: "3px 8px",
-                  whiteSpace: "nowrap", zIndex: 11,
-                }}>
-                  Select text, then pick an action
-                </span>
-              )}
-              {FMT_ORDER.map((f, i) => {
-                const [ox, oy] = (reducedMotion ? FAN_OFFSETS_REDUCED : FAN_OFFSETS)[i];
-                const fired = firedSpoke === f.kind;
-                const spokeStyle: CSSProperties = {
-                  position: "absolute", bottom: 4, right: 4, width: 36, height: 36, borderRadius: "50%",
-                  background: "var(--glass-bg)", border: `1px solid ${fired ? "var(--green)" : "var(--border)"}`,
-                  color: fired ? "var(--green)" : "var(--text-3)",
-                  display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
-                  opacity: radialOpen ? 1 : 0,
-                  pointerEvents: radialOpen ? "auto" : "none",
-                  transform: radialOpen ? `translate(${ox}px, ${oy}px) scale(1)` : "translate(0,0) scale(0.5)",
-                  transitionProperty: "transform, opacity, color, border-color",
-                  transitionDuration: `${reducedMotion ? 1 : 260}ms, ${reducedMotion ? 1 : 160}ms, 160ms, 160ms`,
-                  transitionTimingFunction: `${TRAVEL}, ${SETTLE}, ${SETTLE}, ${SETTLE}`,
-                  transitionDelay: radialOpen ? `${i * RADIAL_STAGGER_MS}ms` : "0ms",
-                };
-                return (
-                  <button key={f.kind} style={spokeStyle} aria-label={f.label} title={f.label} onClick={() => applyFmt(f.kind)}>
-                    <FmtIcon kind={f.kind} />
+            {mode === "edit" && (
+              <div style={fmtEdgeStyle} onMouseEnter={() => setToolbarPeeking(true)} onMouseLeave={() => setToolbarPeeking(false)}>
+                <button
+                  className="ne-toolbar-btn"
+                  style={peekArrowStyle}
+                  aria-label="Show formatting toolbar"
+                  onFocus={() => setToolbarPeeking(true)}
+                  onBlur={() => setToolbarPeeking(false)}
+                >
+                  <svg width="9" height="13" viewBox="0 0 9 13" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
+                    <path d="M7 1.5L2 6.5l5 5" />
+                  </svg>
+                </button>
+                <div style={toolbarColStyle}>
+                  <div style={fmtStripStyle}>
+                    {FMT_ORDER.map(({ kind, label, Icon }) => (
+                      <button key={kind} className="ne-toolbar-btn" style={fmtRowStyle(kind)} aria-label={label} title={label} onClick={() => applyFmt(kind)}>
+                        <Icon size={13} />
+                      </button>
+                    ))}
+                    <button
+                      className="ne-toolbar-btn" style={fmtRowStyle("tag" as FormatKind)}
+                      aria-label="Attach voice memo" title="Attach voice memo" disabled={attachBusy}
+                      onClick={() => { attachFilter.current = "audio/*"; fileInputRef.current?.click(); }}
+                    >
+                      <MicIcon size={13} />
+                    </button>
+                    <button
+                      className="ne-toolbar-btn" style={{ ...fmtRowStyle("tag" as FormatKind), borderBottom: "none" }}
+                      aria-label="Attach photo" title="Attach photo" disabled={attachBusy}
+                      onClick={() => { attachFilter.current = "image/*"; fileInputRef.current?.click(); }}
+                    >
+                      <CameraIcon size={13} />
+                    </button>
+                  </div>
+                  <button
+                    className="ne-toolbar-btn"
+                    style={lockBtnStyle}
+                    aria-pressed={toolbarLocked}
+                    title={toolbarLocked ? "Unlock toolbar" : "Lock toolbar open"}
+                    onClick={toggleToolbarLock}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="5" y="10.5" width="14" height="9" rx="0.5" />
+                      <path d={toolbarLocked ? "M8 10.5V7a4 4 0 0 1 8 0v3.5" : "M8 10.5V7a4 4 0 0 1 8 0"} />
+                    </svg>
                   </button>
-                );
-              })}
-              <button
-                style={fmtDialStyle}
-                aria-label="Formatting actions"
-                aria-expanded={radialOpen}
-                title="Formatting (radial)"
-                onClick={() => setRadialOpen((v) => !v)}
-              >
-                <span style={{ display: "flex", transform: radialOpen ? "rotate(45deg)" : "none", transition: `transform ${reducedMotion ? 1 : DUR}ms ${TRAVEL}` }}>
-                  <IconPlus />
-                </span>
-              </button>
-            </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Instrument rail (right edge) — hover previews, click pins */}

@@ -1057,6 +1057,10 @@ html, body, #root {
   height: var(--spoke-icon-size, 16px);
 }
 
+/* Note editor toolbar/menu — :active press feedback (inline style objects can't express :active) */
+.ne-toolbar-btn:active { transform: scale(0.88); }
+.ne-menu-row:active { transform: scale(0.97); background: var(--accent-glow); }
+
 .spoke-hide {
   opacity: 0;
   color: var(--text-3);
