@@ -241,6 +241,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
   const [reminderLabel, setReminderLabel] = useState("");
   const [reminderBusy, setReminderBusy] = useState(false);
   const [reminderDone, setReminderDone] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   // -- F-3: version history --
   const [historyStatus, setHistoryStatus] = useState<NoteHistoryStatus | null>(null);
@@ -286,6 +287,13 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     setVisible(false);
     return undefined;
   }, [open, path]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDocClick = () => setMenuOpen(false);
+    document.addEventListener("click", onDocClick);
+    return () => document.removeEventListener("click", onDocClick);
+  }, [menuOpen]);
 
   // -- load note on open --
   useEffect(() => {
@@ -485,8 +493,6 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
       });
   }, [note, baseMtime, historyPreviews]);
 
-  const showDrawer = useCallback((key: DrawerKey) => { if (!pinnedDrawer) setHoverDrawer(key); }, [pinnedDrawer]);
-  const clearHoverDrawer = useCallback(() => { if (!pinnedDrawer) setHoverDrawer(null); }, [pinnedDrawer]);
   const togglePin = useCallback((key: DrawerKey) => {
     setPinnedDrawer((cur) => (cur === key ? null : key));
     setHoverDrawer(null);
@@ -637,20 +643,25 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     font: "inherit", fontSize: 13.5, lineHeight: 1.75, resize: "none", padding: 0, outline: "none",
   };
 
-  const railStyle: CSSProperties = {
-    width: 48, flex: "0 0 48px", borderLeft: "1px solid var(--border-2)",
-    display: "flex", flexDirection: "column", alignItems: "center", padding: "12px 0", gap: 8,
+  const menuBtnStyle = (active: boolean): CSSProperties => ({
+    width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
+    color: active ? "var(--text-1)" : "var(--text-2)",
+    background: active ? "var(--surface)" : "transparent",
+    border: `1px solid ${active ? "var(--accent)" : "transparent"}`, cursor: "pointer",
+    transition: `background 160ms ${SETTLE}, border-color 160ms ${SETTLE}, color 160ms ${SETTLE}`,
+  });
+  const menuDropStyle = (open: boolean): CSSProperties => ({
+    position: "absolute", top: 34, right: 0, width: 138, background: "var(--surface)",
+    border: "1px solid var(--border)", zIndex: 20, boxShadow: "0 8px 20px rgba(0,0,0,0.35)",
+    opacity: open ? 1 : 0, transform: open ? "translateY(0) scale(1)" : "translateY(-6px) scale(0.98)",
+    pointerEvents: open ? "auto" : "none",
+    transition: `opacity ${reducedMotion ? 1 : 190}ms ${SETTLE}, transform ${reducedMotion ? 1 : 190}ms ${SETTLE}`,
+  });
+  const menuRowStyle: CSSProperties = {
+    display: "flex", alignItems: "center", gap: 9, padding: "7px 11px", fontSize: 11.5,
+    color: "var(--text-2)", cursor: "pointer",
+    transition: `background 140ms ${SETTLE}, color 140ms ${SETTLE}`,
   };
-  function instBtnStyle(pinned: boolean, disabled?: boolean): CSSProperties {
-    return {
-      width: 34, height: 34, display: "flex", alignItems: "center", justifyContent: "center",
-      background: pinned ? "var(--accent-d)" : "none",
-      border: pinned ? "1px solid var(--border)" : "1px solid transparent",
-      color: disabled ? "var(--border)" : pinned ? "var(--text-1)" : "var(--text-3)",
-      cursor: disabled ? "default" : "pointer",
-      transition: `color ${DUR}ms ${SETTLE}, border-color ${DUR}ms ${SETTLE}, background ${DUR}ms ${SETTLE}`,
-    };
-  }
   const drawerStyle: CSSProperties = {
     position: "absolute", top: 0, right: 48, bottom: 0,
     width: drawerOpen ? 236 : 0, overflow: "hidden",
@@ -843,40 +854,43 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
             )}
           </div>
 
-          {/* Instrument rail (right edge) — hover previews, click pins */}
-          <nav style={railStyle} aria-label="Instrument dock">
-            <button
-              style={instBtnStyle(pinnedDrawer === "meta")}
-              aria-label="Metadata" title="Metadata"
-              onMouseEnter={() => showDrawer("meta")} onMouseLeave={clearHoverDrawer}
-              onClick={() => togglePin("meta")}
-            ><IconMeta /></button>
-            <button
-              style={instBtnStyle(pinnedDrawer === "conn")}
-              aria-label="Connections and outline" title="Connections & outline"
-              onMouseEnter={() => showDrawer("conn")} onMouseLeave={clearHoverDrawer}
-              onClick={() => togglePin("conn")}
-            ><IconConnections /></button>
-            <button
-              style={instBtnStyle(pinnedDrawer === "remind")}
-              aria-label="Remind me" title="Remind me"
-              onMouseEnter={() => showDrawer("remind")} onMouseLeave={clearHoverDrawer}
-              onClick={() => togglePin("remind")}
-            ><BellIcon size={16} /></button>
-            {historyStatus !== "offline" && (
-              <button
-                style={instBtnStyle(pinnedDrawer === "history")}
-                aria-label="Version history" title="Version history"
-                onMouseEnter={() => showDrawer("history")} onMouseLeave={clearHoverDrawer}
-                onClick={() => togglePin("history")}
-              ><ClockIcon size={16} /></button>
-            )}
-            <button
-              style={instBtnStyle(false)}
-              aria-label="Open in external editor" title="Open in your set markdown editor"
+          {/* Corner overflow menu (replaces the old always-visible Instrument rail) */}
+          <div style={{ position: "relative" }}>
+            <button className="ne-toolbar-btn" style={menuBtnStyle(menuOpen)} aria-label="More" aria-haspopup="true" aria-expanded={menuOpen}
+              onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
+            >
+              <MoreIcon size={16} />
+            </button>
+            <button className="ne-toolbar-btn" style={menuBtnStyle(false)} aria-label="Open in external editor" title="Open in your set markdown editor"
               onClick={() => onOpenExternal(note.path)}
-            ><IconExternal /></button>
-          </nav>
+            >
+              <IconExternal />
+            </button>
+            {/* ponytail: Connections and Outline both open the existing combined "conn" drawer
+                rather than splitting ConnectionsDrawer's content into two components. Two menu
+                entries satisfy the phone-parity ask without a drawer-content refactor; split the
+                drawer for real if Outline needs its own scroll position or the combined view gets
+                too busy. */}
+            <div style={menuDropStyle(menuOpen)} role="menu">
+              <div className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("remind"); }}>
+                <BellIcon size={13} />Reminder
+              </div>
+              <div className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("conn"); }}>
+                <IconConnections size={13} />Connections
+              </div>
+              <div className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("conn"); }}>
+                <OutlineIcon size={13} />Outline
+              </div>
+              {historyStatus !== "offline" && (
+                <div className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("history"); }}>
+                  <ClockIcon size={13} />History
+                </div>
+              )}
+              <div className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("meta"); }}>
+                <IconMeta size={13} />Metadata
+              </div>
+            </div>
+          </div>
 
           {/* Drawers — Wave 6 (O-8c): each target's content is keyed-remount
               swapped via the shared fw-view-panel/fwViewIn recipe (240ms) so
