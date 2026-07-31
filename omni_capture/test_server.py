@@ -1060,3 +1060,59 @@ def test_sniff_audio_suffix_wav():
 
 def test_sniff_audio_suffix_unknown_defaults_to_wav():
     assert server._sniff_audio_suffix(b"not a real audio header") == ".wav"
+
+
+# ============================================================================
+# P2a-8: wire retry_pending into startup / post-capture / manual route
+# ============================================================================
+def test_retry_inbox_route_runs_a_bounded_pass(tmp_path: Path):
+    cfg = Config()
+    cfg.vault.root = tmp_path
+    cfg.vault.scratchpad_folder = "_scratchpad"
+
+    with mock.patch("server._get_vault_root", return_value=tmp_path), \
+         mock.patch("retry_engine.retry_pending", return_value={"attempted": 0, "recovered": 0, "skipped": 0, "failed": 0}) as m:
+        client = TestClient(server.app, headers=_AUTH)
+        resp = client.post("/inbox/retry")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"attempted": 0, "recovered": 0, "skipped": 0, "failed": 0}
+    m.assert_called_once()
+
+
+def test_successful_capture_triggers_a_retry_pass():
+    """After ANY successful capture, server.py must run a bounded retry pass over
+    needs_llm_retry placeholders -- one of P2a's three triggers."""
+    cfg = Config()
+    cfg.vault.root = Path(tempfile.mkdtemp())
+    cfg.vault.scratchpad_folder = "_scratchpad"
+    cfg.vector.enabled = False
+    cfg.notifications.enabled = False
+
+    good_output = CaptureOutput(
+        category="Notes", suggested_filename="ok", markdown_content="body",
+        rationale="ok", key_signals=[], confidence=0.9, requires_new_category=False,
+    )
+
+    class _FakeQueue:
+        def put_nowait(self, item): pass
+
+    class _FakeLoop:
+        def call_soon_threadsafe(self, fn, *args): fn(*args)
+
+    import config as config_module
+    import storage_engine as storage_engine_module
+
+    def _fake_write(output, **kwargs):
+        note_path = Path(cfg.vault.root, "Notes", "ok.md")
+        note_path.parent.mkdir(parents=True, exist_ok=True)
+        note_path.write_text("body", encoding="utf-8")
+        return note_path
+
+    with mock.patch.object(config_module, "reload_config", lambda *a, **k: cfg), \
+         mock.patch.object(llm_engine, "run_llm_engine", return_value=good_output), \
+         mock.patch.object(storage_engine_module, "write_to_vault", side_effect=_fake_write), \
+         mock.patch("retry_engine.retry_pending") as m:
+        server._run_pipeline_blocking("text", "some capture text", _FakeQueue(), _FakeLoop(), run_id="rp1")
+
+    m.assert_called_once()

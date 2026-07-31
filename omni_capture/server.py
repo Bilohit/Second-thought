@@ -25,6 +25,7 @@ Endpoints
   GET  /inbox
   POST /inbox/{note_id}/approve
   DELETE /inbox/{note_id}
+  POST /inbox/retry                         bounded retry pass over needs_llm_retry placeholders
   GET  /reminders
   POST /reminders
   DELETE /reminders/{reminder_id}
@@ -380,6 +381,30 @@ def _startup_lan_listener() -> None:
                 print(f"[LAN] mDNS advertise startup skipped: {exc}", flush=True)
     except Exception as exc:
         print(f"[LAN] listener startup skipped: {exc}", flush=True)
+
+
+@app.on_event("startup")
+def _startup_retry_pending() -> None:
+    """Recover any needs_llm_retry scratchpad placeholders left over from a previous
+    run (e.g. Ollama was down). Bounded + per-item fail-soft -- see retry_engine.py.
+
+    On a background thread, never inline: a startup pass costs an Ollama probe plus
+    up to max_items full enrichments, and Starlette runs sync startup handlers
+    directly on the boot path -- inline, that delay is the Tauri shell waiting on a
+    server that has not started serving yet. Same reasoning as the LAN listener above.
+    """
+    def _pass() -> None:
+        try:
+            from retry_engine import retry_pending
+            from config import get_config
+            summary = retry_pending(get_config().vault.root)
+            if summary["attempted"]:
+                print(f"[RetryEngine] startup pass: {summary}", flush=True)
+        except Exception as exc:
+            print(f"[RetryEngine] startup pass failed: {exc}", flush=True)
+
+    threading.Thread(target=_pass, name="retry-startup", daemon=True).start()
+
 
 # ---------------------------------------------------------------------------
 # Request-level dedup gate
@@ -916,6 +941,7 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
             # every other enrichment path (see CLAUDE.md): route the raw captured
             # text to the scratchpad flagged for retry instead of losing it.
             from storage_engine import route_failed_llm
+            from capture_log import log_capture_failure
             print(f"[server] {tag}LLM enrichment failed: {llm_exc}", flush=True)
             # Prefer the ORIGINAL full text for large-text captures -- enriched_text
             # was overwritten above with chunk[0]+section summaries.
@@ -930,6 +956,7 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                     scratchpad_folder=cfg.vault.scratchpad_folder,
                     source_url=enriched.source_url,
                 )
+            log_capture_failure(str(llm_exc), enriched, str(written_path), cfg.ollama.model, "Unprocessed_Captures")
             emit("step", step="write", status="done")
             emit("done", path=str(written_path), category="Unprocessed_Captures")
             try:
@@ -1025,6 +1052,12 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                 log_capture(output, enriched, str(written_path), cfg.ollama.model)
             except Exception:
                 pass
+
+        try:
+            from retry_engine import retry_pending
+            retry_pending(cfg.vault.root)
+        except Exception as retry_exc:
+            print(f"[server] {tag}post-capture retry pass failed: {retry_exc}", flush=True)
 
     except Exception as exc:
         # Genuine failure OUTSIDE the fail-soft LLM stage (intercept/enrich, or a
@@ -1196,6 +1229,18 @@ async def health():
         "index_health": index_health.snapshot(),
     }
 
+
+def _ollama_reachable(base_url: str, timeout: float = 1.5) -> bool:
+    """Fast Ollama /api/tags ping. Module-level so retry_engine.retry_pending()'s
+    precondition check reuses this EXACT probe instead of a second, possibly-
+    inconsistent health check."""
+    try:
+        with urlopen(f"{base_url}/api/tags", timeout=timeout) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
 @app.get("/ollama/reachable")
 async def ollama_reachable(_: None = Depends(_require_secret)):
     """Fast, LIVE Ollama reachability probe for the pre-capture stall guard (ISS-018).
@@ -1208,14 +1253,7 @@ async def ollama_reachable(_: None = Depends(_require_secret)):
     from llm_engine import _ollama_setting
     base_url = _ollama_setting("OLLAMA_BASE_URL", "base_url", "http://localhost:11434").rstrip("/")
 
-    def _ping() -> bool:
-        try:
-            with urlopen(f"{base_url}/api/tags", timeout=1.5) as resp:
-                return resp.status == 200
-        except Exception:
-            return False
-
-    reachable = await asyncio.to_thread(_ping)
+    reachable = await asyncio.to_thread(_ollama_reachable, base_url)
     return {"reachable": reachable}
 
 
@@ -1721,6 +1759,15 @@ async def discard_inbox(note_id: str, _: None = Depends(_require_secret)):
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"ok": True, "discarded": note_id}
+
+
+@app.post("/inbox/retry")
+async def retry_inbox(_: None = Depends(_require_secret)):
+    """Manually trigger a bounded retry pass over needs_llm_retry scratchpad
+    placeholders -- the GUI's Retry action."""
+    from retry_engine import retry_pending
+    root = _get_vault_root()
+    return await anyio.to_thread.run_sync(retry_pending, root)
 
 
 @app.get("/reminders")

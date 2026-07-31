@@ -59,6 +59,35 @@ def log_capture(
     _log_or_warn("SQLite write", log_capture_db, entry, cfg.vault.root)
 
 
+def log_capture_failure(
+    reason: str,
+    enriched: EnrichedPayload,
+    filepath: str,
+    model: str,
+    category: str,
+) -> None:
+    """Upsert a FAILED capture into captures.db, mirroring log_capture()'s success
+    path. Only successes were logged before, so `--log`/`--stats` showed a clean
+    history while captures silently degraded to the scratchpad. Fails silently,
+    same as log_capture."""
+    cfg = get_config()
+
+    entry = {
+        "timestamp":      datetime.now().isoformat(timespec="seconds"),
+        "category":       category,
+        "filename":       None,
+        "filepath":       filepath,
+        "input_type":     enriched.input_type,
+        "source_url":     enriched.source_url,
+        "model":          model,
+        "confidence":     0.0,
+        "tags":           [],
+        "new_category":   None,
+    }
+
+    _log_or_warn("SQLite write (failure)", log_capture_db, entry, cfg.vault.root)
+
+
 # ── Read / stats ──────────────────────────────────────────────────────────────
 
 def read_log(n: int = 20) -> list[dict]:

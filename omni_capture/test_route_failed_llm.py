@@ -22,6 +22,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import capture_log
 import config
 import llm_engine
 import main
@@ -67,6 +68,7 @@ def _make_cfg(vault_root: Path) -> Config:
 def test_run_pipeline_saves_capture_when_llm_fails(tmp_path: Path):
     cfg = _make_cfg(tmp_path)
     with mock.patch.object(config, "reload_config", lambda *a, **k: cfg), \
+         mock.patch.object(capture_log, "get_config", lambda: cfg), \
          mock.patch.object(llm_engine, "run_llm_engine", side_effect=RuntimeError("model unavailable")):
         result = main.run_pipeline(text="hello from main.py llm-failure test", notify=False)
 
@@ -80,6 +82,11 @@ def test_run_pipeline_saves_capture_when_llm_fails(tmp_path: Path):
     assert 'needs_llm_retry: "true"' in text or "needs_llm_retry: true" in text
     assert "hello from main.py llm-failure test" in text
     assert "model unavailable" in text
+
+    from index_writer import search
+    logged = search("", tmp_path, limit=10)
+    assert any(row["path"] == written for row in logged), \
+        "an LLM failure must still upsert an audit-log row, not leave --log silent"
 
 
 # ── server.py: _run_pipeline_blocking() ────────────────────────────────────────
@@ -107,6 +114,7 @@ def test_server_pipeline_saves_capture_when_llm_fails(tmp_path: Path):
     loop = _FakeLoop()
 
     with mock.patch.object(config, "reload_config", lambda *a, **k: cfg), \
+         mock.patch.object(capture_log, "get_config", lambda: cfg), \
          mock.patch.object(llm_engine, "run_llm_engine", side_effect=RuntimeError("model unavailable")):
         server._run_pipeline_blocking("text", "hello from server.py llm-failure test", q, loop, run_id="t1")
 
@@ -123,6 +131,10 @@ def test_server_pipeline_saves_capture_when_llm_fails(tmp_path: Path):
     assert 'needs_llm_retry: "true"' in text or "needs_llm_retry: true" in text
     assert "hello from server.py llm-failure test" in text
     assert "model unavailable" in text
+
+    from index_writer import search
+    logged = search("", tmp_path, limit=10)
+    assert any(row["path"] == str(written_path) for row in logged)
 
 
 # ── server.py: index-write failure must NOT double-write (review #1) ────────────

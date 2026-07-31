@@ -192,6 +192,7 @@ GUI_ROUTES: list[tuple[str, str, dict]] = [
     ("POST",   "/inbox/n1/approve",               {"json": {"target_category": "Notes"}}),
     ("GET",    "/inbox/n1/suggest-categories",    {}),
     ("DELETE", "/inbox/n1",                       {}),
+    ("POST",   "/inbox/retry",                     {}),
     ("GET",    "/reminders",                      {}),
     ("POST",   "/reminders",                      {"json": {"note_path": "Notes/a.md", "label": "l",
                                                             "when_iso": "2030-01-01T00:00:00"}}),

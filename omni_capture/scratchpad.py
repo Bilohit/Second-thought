@@ -129,6 +129,9 @@ def route_failed_llm(
     text must not be lost.
     """
     from storage_engine import init_vault, _safe_stem, _write_new_file
+    # Function-level: retry_engine imports THIS module, so a module-level import
+    # would be circular.
+    from retry_engine import body_signature
 
     init_vault(vault_root, scratchpad_folder)
 
@@ -151,7 +154,9 @@ def route_failed_llm(
     _write_new_file(
         path, placeholder, source_url=source_url, body_content=body,
         scratchpad=True, note_id=note_id,
-        extra_frontmatter={"needs_llm_retry": "true"},
+        # retry_sig is the retry engine's tamper evidence: it repairs a placeholder
+        # only while the body still hashes to what was written here. See retry_engine.
+        extra_frontmatter={"needs_llm_retry": "true", "retry_sig": body_signature(body)},
         vault_root=vault_root,
     )
     print(f"[StorageEngine] WARN LLM enrichment failed (note_id={note_id}): {reason} -> {path}", flush=True)

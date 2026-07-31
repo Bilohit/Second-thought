@@ -181,7 +181,7 @@ def run_pipeline(
     from llm_engine        import run_llm_engine
     from storage_engine    import write_to_vault, read_existing_context, build_category_descriptions
     from notifier          import notify_capture_success, notify_capture_error
-    from capture_log       import log_capture
+    from capture_log       import log_capture, log_capture_failure
     from pre_resolver      import pre_resolve
     from vector_store      import retrieve_related, index_note
     from timing            import StageTimer
@@ -400,6 +400,7 @@ def run_pipeline(
                     source_url=enriched.source_url,
                 )
             result["_written_to"] = str(written_path)
+            log_capture_failure(str(exc), enriched, str(written_path), cfg.ollama.model, "Unprocessed_Captures")
             print(f"LLM enrichment failed -- saved for retry -> {written_path}")
             if notify and cfg.notifications.enabled:
                 notify_capture_error(
