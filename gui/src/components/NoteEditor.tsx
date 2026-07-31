@@ -873,21 +873,21 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
                 drawer for real if Outline needs its own scroll position or the combined view gets
                 too busy. */}
             <div style={menuDropStyle(menuOpen)} role="menu" aria-hidden={!menuOpen}>
-              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("remind"); }}>
+              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("remind"); }}>
                 <BellIcon size={13} />Reminder
               </button>
-              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("conn"); }}>
+              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("conn"); }}>
                 <IconConnections size={13} />Connections
               </button>
-              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("conn"); }}>
+              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("conn"); }}>
                 <OutlineIcon size={13} />Outline
               </button>
               {historyStatus !== "offline" && (
-                <button className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("history"); }}>
+                <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("history"); }}>
                   <ClockIcon size={13} />History
                 </button>
               )}
-              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("meta"); }}>
+              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("meta"); }}>
                 <IconMeta size={13} />Metadata
               </button>
             </div>
