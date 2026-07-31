@@ -659,7 +659,8 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
   });
   const menuRowStyle: CSSProperties = {
     display: "flex", alignItems: "center", gap: 9, padding: "7px 11px", fontSize: 11.5,
-    color: "var(--text-2)", cursor: "pointer",
+    color: "var(--text-2)", cursor: "pointer", width: "100%", textAlign: "left",
+    background: "none", border: "none", font: "inherit",
     transition: `background 140ms ${SETTLE}, color 140ms ${SETTLE}`,
   };
   const drawerStyle: CSSProperties = {
@@ -871,24 +872,24 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
                 entries satisfy the phone-parity ask without a drawer-content refactor; split the
                 drawer for real if Outline needs its own scroll position or the combined view gets
                 too busy. */}
-            <div style={menuDropStyle(menuOpen)} role="menu">
-              <div className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("remind"); }}>
+            <div style={menuDropStyle(menuOpen)} role="menu" aria-hidden={!menuOpen}>
+              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("remind"); }}>
                 <BellIcon size={13} />Reminder
-              </div>
-              <div className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("conn"); }}>
+              </button>
+              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("conn"); }}>
                 <IconConnections size={13} />Connections
-              </div>
-              <div className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("conn"); }}>
+              </button>
+              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("conn"); }}>
                 <OutlineIcon size={13} />Outline
-              </div>
+              </button>
               {historyStatus !== "offline" && (
-                <div className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("history"); }}>
+                <button className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("history"); }}>
                   <ClockIcon size={13} />History
-                </div>
+                </button>
               )}
-              <div className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("meta"); }}>
+              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" onClick={() => { setMenuOpen(false); togglePin("meta"); }}>
                 <IconMeta size={13} />Metadata
-              </div>
+              </button>
             </div>
           </div>
 
