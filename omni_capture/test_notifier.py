@@ -28,7 +28,7 @@ def test_send_notification_does_not_raise_on_long_title(monkeypatch):
 
     # Force the Windows backend regardless of the host OS running the test.
     monkeypatch.setattr(notifier, "_OS", "Windows")
-    monkeypatch.setattr(notifier, "_notify_windows", fake_plyer_notify)
+    monkeypatch.setattr(notifier, "_plyer_notify", fake_plyer_notify)
 
     long_title = "A" * 200
     notifier.send_notification(title=long_title, message="body", subtitle="")
@@ -40,7 +40,7 @@ def test_send_notification_truncates_title_plus_subtitle(monkeypatch):
     calls = []
 
     monkeypatch.setattr(notifier, "_OS", "Windows")
-    monkeypatch.setattr(notifier, "_notify_windows", lambda ft, m: calls.append(ft))
+    monkeypatch.setattr(notifier, "_plyer_notify", lambda ft, m: calls.append(ft))
 
     notifier.send_notification(title="T" * 60, message="body", subtitle="S" * 60)
 

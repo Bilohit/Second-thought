@@ -66,10 +66,6 @@ def _plyer_notify(full_title: str, message: str) -> None:
         pass
 
 
-def _notify_windows(full_title: str, message: str) -> None:
-    _plyer_notify(full_title, message)
-
-
 def _notify_linux(full_title: str, message: str) -> None:
     result = subprocess.run(
         ["notify-send", full_title, message],
@@ -102,7 +98,7 @@ def send_notification(
         if _OS == "Darwin":
             _notify_macos(title, message, subtitle)
         elif _OS == "Windows":
-            _notify_windows(full_title, message)
+            _plyer_notify(full_title, message)
         else:
             _notify_linux(full_title, message)
     except Exception as exc:
