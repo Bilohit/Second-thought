@@ -234,6 +234,30 @@ def test_semantic_confirmation_can_merge_on_a_single_shared_tag(tmp_path, monkey
     assert target == cap
 
 
+def test_image_min_shared_tags_blocks_semantic_confirmation_on_one_tag(tmp_path, monkeypatch):
+    """d05: an image capture must not merge on the same single-shared-tag +
+    high-similarity combination the previous test proves a text capture CAN
+    merge on. min_shared_tags=2 (what storage_engine.py now passes for image
+    captures) raises the semantic-confirmation floor to match the bar
+    _is_same_topic already enforces for the existing-file append path."""
+    import vector_store
+
+    cat = tmp_path / "Tech_Notes"
+    cat.mkdir()
+    cap = cat / "docker-capture.md"
+    cap.write_text(_CAPTURE_TAGS, encoding="utf-8")
+
+    monkeypatch.setattr(
+        vector_store, "best_match", lambda *a, **kw: ("Tech_Notes/docker-capture.md", 0.92)
+    )
+    target = find_merge_target(
+        _out(["docker", "kubernetes"]), tmp_path,
+        enable_semantic_merge=True, embed_base_url="http://localhost:11434",
+        min_shared_tags=2,
+    )
+    assert target is None, "image capture merged on one shared tag (d05 regression)"
+
+
 def test_semantic_confirmation_never_overrides_the_body_sacred_guard(tmp_path, monkeypatch):
     """B-1 outranks semantic evidence: a synced note is excluded from the
     candidate list before scoring, so even a perfect embedding match must not

@@ -136,11 +136,17 @@ def find_merge_target(
     enable_semantic_merge: bool = False,
     embed_base_url: Optional[str] = None,
     embed_model: str = "nomic-embed-text",
+    min_shared_tags: int = 1,
 ) -> Optional[Path]:
     """
     Locate an existing note in the capture's category that this content
     should be merged into, even when the LLM proposes a different filename.
     Returns None to create a new file.
+
+    min_shared_tags raises the bar on the semantic-match branch (see below) —
+    used for image captures, same as _is_same_topic's own param: a vision
+    description sharing exactly one incidental tag with an unrelated note is
+    too weak a signal to silently merge a photo into it (d05).
     """
     from storage_engine import _category_str, _signals_to_tags
 
@@ -193,7 +199,7 @@ def find_merge_target(
             len(shared) >= MERGE_MIN_SHARED_TAGS and jaccard >= MERGE_MIN_TAG_JACCARD
         )
         semantic_confirmed = (
-            len(shared) >= 1 and sim >= MERGE_SEMANTIC_THRESHOLD
+            len(shared) >= min_shared_tags and sim >= MERGE_SEMANTIC_THRESHOLD
         )
         if not (strong_tag_match or semantic_confirmed):
             continue

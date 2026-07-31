@@ -451,6 +451,30 @@ class TestSmartMerge:
         p2 = write_to_vault(b, vault_root=vault)
         assert p1 != p2, "One shared tag should not trigger a merge"
 
+    def test_image_capture_does_not_merge_on_one_shared_tag_plus_semantics(self, vault, monkeypatch):
+        """d05: storage_engine's new-file write path must thread the image
+        min_shared_tags=2 guard into find_merge_target, matching the guard the
+        existing-file append path already had. Without it, a vision capture
+        sharing one incidental tag with an unrelated note, plus a high
+        semantic score, silently merged into that note."""
+        existing = _make_routing(filename="docker-capture", content="docker networking notes",
+                                  signals=["docker", "networking"])
+        p_existing = write_to_vault(existing, vault_root=vault)
+
+        monkeypatch.setattr(
+            vector_store, "best_match",
+            lambda *a, **kw: (str(p_existing.relative_to(vault)), 0.92),
+        )
+
+        image_capture = _make_routing(filename="photo-of-a-router", content="a photo",
+                                       signals=["docker", "kubernetes"])
+        p_image = write_to_vault(
+            image_capture, vault_root=vault,
+            enable_semantic_merge=True, embed_base_url="http://localhost:11434",
+            source_metadata={"vision_model": "llava"},
+        )
+        assert p_image != p_existing, "image capture merged into an unrelated note on one shared tag (d05)"
+
     def test_no_tags_never_merges(self, vault):
         a = _make_routing(filename="note-a", content="alpha", signals=[])
         b = _make_routing(filename="note-b", content="beta", signals=[])

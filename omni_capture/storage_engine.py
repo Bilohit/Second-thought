@@ -1074,12 +1074,16 @@ def write_to_vault(
     if not path.exists():
         # Smart merge: look for a different existing note in the same category
         # that is confidently about the same topic. Ledger categories skip this
-        # — there's only ever one file, created below.
+        # — there's only ever one file, created below. Image captures require
+        # 2+ shared tags on the semantic-match branch too (d05) — matches the
+        # existing-file path's own guard below.
+        is_image = bool(source_metadata and (source_metadata.get("image_embed") or source_metadata.get("vision_model")))
         merge_target = None if is_ledger else find_merge_target(
             output, vault_root,
             enable_semantic_merge=enable_semantic_merge,
             embed_base_url=embed_base_url,
             embed_model=embed_model,
+            min_shared_tags=2 if is_image else 1,
         )
         if merge_target is not None:
             path = merge_target
