@@ -92,6 +92,81 @@ function IconAttach(props: { size?: number }) {
     </svg>
   );
 }
+function BoldIcon(props: { size?: number }) {
+  const size = props.size ?? 13;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 5v14M8 5h3a3 3 0 010 6H8M8 12h4a3.5 3.5 0 010 7H8" />
+    </svg>
+  );
+}
+function ChecklistIcon(props: { size?: number }) {
+  const size = props.size ?? 13;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
+      <rect x="3" y="9" width="6" height="6" rx="1" />
+      <path d="M4.5 12l1.3 1.3L8 10.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12 10.5h9M12 14.5h9" strokeLinecap="round" />
+    </svg>
+  );
+}
+function LinkFmtIcon(props: { size?: number }) {
+  const size = props.size ?? 13;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
+      <rect x="4" y="7" width="10" height="5" rx="2.5" transform="rotate(45 9 9.5)" />
+      <rect x="10" y="13" width="10" height="5" rx="2.5" transform="rotate(45 15 15.5)" />
+    </svg>
+  );
+}
+function TagIcon(props: { size?: number }) {
+  const size = props.size ?? 13;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
+      <path d="M11 3H4a1 1 0 00-1 1v7a1 1 0 00.29.71l9 9a1 1 0 001.42 0l7-7a1 1 0 000-1.42l-9-9A1 1 0 0011 3z" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="7.5" cy="7.5" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+function MicIcon(props: { size?: number }) {
+  const size = props.size ?? 13;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
+      <rect x="9" y="2" width="6" height="12" rx="3" />
+      <path d="M5 10v2a7 7 0 0 0 14 0v-2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12 19v3M8 22h8" strokeLinecap="round" />
+    </svg>
+  );
+}
+function CameraIcon(props: { size?: number }) {
+  const size = props.size ?? 13;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinejoin="round">
+      <path d="M4 7h3l1.5-2h7L17 7h3v12H4V7z" />
+      <circle cx="12" cy="13" r="3.3" />
+    </svg>
+  );
+}
+function MoreIcon(props: { size?: number }) {
+  const size = props.size ?? 16;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
+      <circle cx="12" cy="5.5" r="1.3" fill="currentColor" />
+      <circle cx="12" cy="12" r="1.3" fill="currentColor" />
+      <circle cx="12" cy="18.5" r="1.3" fill="currentColor" />
+    </svg>
+  );
+}
+function OutlineIcon(props: { size?: number }) {
+  const size = props.size ?? 14;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 6h16M8 12h12M8 18h12" />
+      <circle cx="4" cy="12" r="1" fill="currentColor" stroke="none" />
+      <circle cx="4" cy="18" r="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
 function IconEye(props: { size?: number }) {
   const size = props.size ?? 15;
   return (
@@ -152,36 +227,11 @@ function IconNotSynced(props: { size?: number }) {
     </svg>
   );
 }
-const FMT_ICON_PATHS: Record<FormatKind, JSX.Element> = {
-  bold: <path d="M7 4.5h6a3.5 3.5 0 0 1 0 7H7zM7 11.5h7a3.5 3.5 0 0 1 0 8H7z" />,
-  italic: <path d="M14 4h-4M14 4l-4 16M10 20H6" />,
-  heading: <path d="M6 5v14M18 5v14M6 12h12" />,
-  list: <><path d="M9 6.5h11M9 12h11M9 17.5h11" /><circle cx="4.5" cy="6.5" r="1.1" /><circle cx="4.5" cy="12" r="1.1" /><circle cx="4.5" cy="17.5" r="1.1" /></>,
-  link: <><path d="M10.5 13.5a4 4 0 0 0 5.7 0l2.3-2.3a4 4 0 0 0-5.7-5.7l-1.3 1.3" /><path d="M13.5 10.5a4 4 0 0 0-5.7 0l-2.3 2.3a4 4 0 0 0 5.7 5.7l1.3-1.3" /></>,
-  code: <path d="M9 8l-4 4 4 4M15 8l4 4-4 4" />,
-};
-function FmtIcon({ kind, size = 16 }: { kind: FormatKind; size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
-      {FMT_ICON_PATHS[kind]}
-    </svg>
-  );
-}
-
-const FMT_ORDER: { kind: FormatKind; label: string }[] = [
-  { kind: "bold", label: "Bold" },
-  { kind: "italic", label: "Italic" },
-  { kind: "heading", label: "Heading" },
-  { kind: "list", label: "List" },
-  { kind: "link", label: "Link" },
-  { kind: "code", label: "Code block" },
-];
-// quarter-arc fan up-and-left, matching the approved mock (05-desktop-viewer-refined-v2.html)
-const FAN_OFFSETS: [number, number][] = [
-  [0, -96], [-30, -91], [-56, -78], [-78, -56], [-91, -30], [-96, 0],
-];
-const FAN_OFFSETS_REDUCED: [number, number][] = [
-  [0, -48], [0, -92], [0, -136], [0, -180], [0, -224], [0, -268],
+const FMT_ORDER: { kind: FormatKind; label: string; Icon: (p: { size?: number }) => JSX.Element }[] = [
+  { kind: "bold", label: "Bold", Icon: BoldIcon },
+  { kind: "checklist", label: "Checklist", Icon: ChecklistIcon },
+  { kind: "link", label: "Link", Icon: LinkFmtIcon },
+  { kind: "tag", label: "Tag", Icon: TagIcon },
 ];
 
 type DrawerKey = "meta" | "conn" | "remind" | "history";
