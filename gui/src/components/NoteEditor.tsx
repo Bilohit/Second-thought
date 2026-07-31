@@ -636,7 +636,10 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
 
   const bodyRowStyle: CSSProperties = { flex: 1, minHeight: 0, display: "flex", position: "relative" };
   const contentStyle: CSSProperties = { flex: 1, minWidth: 0, overflowY: "auto", position: "relative" };
-  const measureStyle: CSSProperties = { maxWidth: "62ch", margin: "0 auto", width: "100%", padding: "24px 24px 96px" };
+  const measureStyle: CSSProperties = {
+    maxWidth: "62ch", margin: "0 auto", width: "100%",
+    padding: mode === "edit" ? "24px 70px 96px 24px" : "24px 24px 96px",
+  };
   const h1Style: CSSProperties = { fontSize: 21, fontWeight: 600, letterSpacing: "-0.02em", margin: "0 0 16px", color: "var(--text-1)" };
   const paperStyle: CSSProperties = {
     width: "100%", minHeight: 380, background: "transparent", border: "none", color: "var(--text-1)",
