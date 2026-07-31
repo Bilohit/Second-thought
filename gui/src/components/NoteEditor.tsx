@@ -32,12 +32,13 @@ import { parseBlocks } from "../lib/markdown";
 const TRAVEL = "cubic-bezier(0.22,1,0.36,1)";
 const SETTLE = "cubic-bezier(0.16,1,0.3,1)";
 const DUR = 260;
-// Corner overflow-menu column width: two 26px icon buttons (More + external
-// editor) side by side, no gap. Shared by drawerStyle so the drawer's right
-// edge always tracks the menu column instead of drifting from a stale
-// hardcoded value (Finding 7 -- the old value, 48, was sized for the deleted
+// Corner overflow-menu column width: the More/external-editor buttons stack
+// vertically (menuBtnStyle's column), so the column is one 26px button wide,
+// not two side by side. Shared by drawerStyle so the drawer's right edge
+// always tracks the menu column instead of drifting from a stale hardcoded
+// value (Finding 7 -- the old value, 48, was sized for the deleted
 // Instrument rail).
-const CORNER_MENU_WIDTH = 52;
+const CORNER_MENU_WIDTH = 26;
 // Autosave debounce + failure backoff live in lib/saveRetry.ts (GUI-18).
 
 interface NoteEditorProps {
@@ -662,7 +663,10 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
   const menuBtnStyle = (active: boolean): CSSProperties => ({
     width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
     color: active ? "var(--text-1)" : "var(--text-2)",
-    background: active ? "var(--surface)" : "transparent",
+    // Finding 4 (re-review): only set an inline background for the active
+    // state, which should dominate over hover -- leaving it unset otherwise
+    // lets .ne-toolbar-btn:hover apply (an inline style always beats a class rule).
+    background: active ? "var(--surface)" : undefined,
     border: `1px solid ${active ? "var(--accent)" : "transparent"}`, cursor: "pointer",
     transition: `background 160ms ${SETTLE}, border-color 160ms ${SETTLE}, color 160ms ${SETTLE}`,
   });
@@ -676,7 +680,10 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
   const menuRowStyle: CSSProperties = {
     display: "flex", alignItems: "center", gap: 9, padding: "7px 11px", fontSize: 11.5,
     color: "var(--text-2)", cursor: "pointer", width: "100%", textAlign: "left",
-    background: "none", border: "none", font: "inherit",
+    // Finding 4 (re-review): background reset moved to the .ne-menu-row base
+    // rule in index.css -- an inline "none" here would beat :hover the same
+    // way it beat :active before.
+    border: "none", font: "inherit",
     transition: `background 140ms ${SETTLE}, color 140ms ${SETTLE}`,
   };
   const drawerStyle: CSSProperties = {

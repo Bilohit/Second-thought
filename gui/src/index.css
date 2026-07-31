@@ -1058,6 +1058,7 @@ html, body, #root {
 }
 
 /* Note editor toolbar/menu — hover tint + :active press feedback (inline style objects can't express these) */
+.ne-menu-row { background: none; }
 .ne-toolbar-btn:hover { background: var(--surface-2, var(--surface)); }
 .ne-menu-row:hover { background: var(--accent-glow); }
 .ne-toolbar-btn:active { transform: scale(0.88); }
