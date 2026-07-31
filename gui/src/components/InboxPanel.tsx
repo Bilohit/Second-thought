@@ -12,6 +12,7 @@ import {
   getInbox,
   approveInboxItem,
   discardInboxItem,
+  retryInbox,
   getVaultCategories,
   suggestCategories,
   listReminders,
@@ -98,18 +99,24 @@ function InboxRow({
   categories,
   onApprove,
   onDiscard,
+  onRetry,
   leaving,
   pending,
+  retrying,
 }: {
   item: InboxItem;
   categories: string[];
   onApprove: (noteId: string, target?: string) => void;
   onDiscard: (noteId: string) => void;
+  onRetry: () => void;
   leaving: boolean;
   /** ISS-035: true from the click that started Approve/Discard until the
    *  server confirms (or fails) — disables both buttons immediately instead
    *  of leaving the row inert-looking for the ~1s round trip. */
   pending: boolean;
+  /** True while a retry pass (POST /inbox/retry) is in flight — vault-wide,
+   *  so every failed row's Retry button disables together. */
+  retrying: boolean;
 }) {
   // s114/d07: starts UNSET, always. There is no correct default here — the only
   // value the server can report for `item.category` is the scratchpad folder
@@ -267,6 +274,28 @@ function InboxRow({
         >
           {pending ? "Filing…" : <><CheckIcon size={12} />Approve</>}
         </button>
+        {item.failure && (
+          <button
+            onClick={onRetry}
+            disabled={pending || retrying}
+            title="Retry enrichment (all failed captures)"
+            aria-label="Retry enrichment for every failed capture"
+            className="btn-hover"
+            style={{
+              ...BTN_GHOST,
+              width: 28,
+              height: 28,
+              flex: "none",
+              padding: 0,
+              justifyContent: "center",
+              border: "1px solid var(--border)",
+              opacity: pending || retrying ? 0.5 : 1,
+              cursor: pending || retrying ? "default" : "pointer",
+            }}
+          >
+            <RefreshIcon size={13} />
+          </button>
+        )}
         <button
           onClick={() => onDiscard(item.note_id)}
           disabled={pending}
@@ -336,6 +365,9 @@ export default function InboxPanel({
   // the ~1s round trip. Cleared on error so a failed row is retryable;
   // success clears it implicitly via removeItem dropping the item entirely.
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
+  // Vault-wide, unlike pendingIds — POST /inbox/retry re-runs enrichment for
+  // every failed scratchpad item in one pass, not one note at a time.
+  const [retrying, setRetrying] = useState(false);
   const [internalTab, setInternalTab] = useState<InboxTab>(initialTab);
   const tab = tabProp ?? internalTab;
   const setTab = onTabChange ?? setInternalTab;
@@ -407,6 +439,19 @@ export default function InboxPanel({
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to approve item");
       setPendingIds((s) => { const n = new Set(s); n.delete(noteId); return n; });
+    }
+  };
+
+  const handleRetry = async () => {
+    setError(null);
+    setRetrying(true);
+    try {
+      await retryInbox();
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to retry inbox");
+    } finally {
+      setRetrying(false);
     }
   };
 
@@ -535,8 +580,10 @@ export default function InboxPanel({
               categories={categories}
               onApprove={handleApprove}
               onDiscard={handleDiscard}
+              onRetry={handleRetry}
               leaving={leavingIds.has(item.note_id)}
               pending={pendingIds.has(item.note_id)}
+              retrying={retrying}
             />
           ))}
         </div>

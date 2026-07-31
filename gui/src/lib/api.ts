@@ -718,6 +718,24 @@ export async function discardInboxItem(noteId: string): Promise<void> {
   await assertOk(r, "Failed to discard item");
 }
 
+export interface InboxRetryResult {
+  attempted: number;
+  recovered: number;
+  skipped: number;
+  failed: number;
+}
+
+/** Re-runs enrichment for every scratchpad item that previously failed
+ *  (`InboxItem.failure` set) — a vault-wide retry, not per-note. */
+export async function retryInbox(): Promise<InboxRetryResult> {
+  const r = await fetch(`${BASE}/inbox/retry`, {
+    method: "POST",
+    headers: await authHeaders(),
+  });
+  await assertOk(r, "Failed to retry inbox");
+  return r.json();
+}
+
 export async function listReminders(): Promise<Reminder[]> {
   const r = await fetch(`${BASE}/reminders`, { headers: await authHeaders() });
   await assertOk(r, "Failed to fetch reminders");
