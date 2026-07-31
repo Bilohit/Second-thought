@@ -4,7 +4,7 @@
  * caret range to the live <textarea> selection.
  */
 
-export type FormatKind = "bold" | "italic" | "heading" | "list" | "link" | "code";
+export type FormatKind = "bold" | "checklist" | "link" | "tag";
 
 interface Wrap {
   pre: string;
@@ -15,11 +15,9 @@ interface Wrap {
 
 const WRAPS: Record<FormatKind, Wrap> = {
   bold: { pre: "**", post: "**" },
-  italic: { pre: "_", post: "_" },
+  checklist: { pre: "- [ ] ", post: "", line: true },
   link: { pre: "[", post: "](url)" },
-  heading: { pre: "## ", post: "", line: true },
-  list: { pre: "- ", post: "", line: true },
-  code: { pre: "```\n", post: "\n```" },
+  tag: { pre: "#", post: "" },
 };
 
 export interface FormatResult {
@@ -29,8 +27,8 @@ export interface FormatResult {
 }
 
 /** Apply a formatting action to `value` given the current selection
- *  [selStart, selEnd). Mirrors the mock's `applyFmt` exactly (05-desktop-
- *  viewer-refined-v2.html) so the radial spokes match the approved mock. */
+ *  [selStart, selEnd). Action set matches the phone app's contextual toolbar
+ *  (bold/checklist/link/tag) — see docs/superpowers/specs/2026-07-31-note-editor-toolbar-rework-design.md. */
 export function applyMarkdownFormat(value: string, selStart: number, selEnd: number, kind: FormatKind): FormatResult {
   const w = WRAPS[kind];
   if (w.line) {
