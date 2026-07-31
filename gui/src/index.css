@@ -1057,7 +1057,9 @@ html, body, #root {
   height: var(--spoke-icon-size, 16px);
 }
 
-/* Note editor toolbar/menu — :active press feedback (inline style objects can't express :active) */
+/* Note editor toolbar/menu — hover tint + :active press feedback (inline style objects can't express these) */
+.ne-toolbar-btn:hover { background: var(--surface-2, var(--surface)); }
+.ne-menu-row:hover { background: var(--accent-glow); }
 .ne-toolbar-btn:active { transform: scale(0.88); }
 .ne-menu-row:active { transform: scale(0.97); background: var(--accent-glow); }
 

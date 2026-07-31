@@ -32,6 +32,12 @@ import { parseBlocks } from "../lib/markdown";
 const TRAVEL = "cubic-bezier(0.22,1,0.36,1)";
 const SETTLE = "cubic-bezier(0.16,1,0.3,1)";
 const DUR = 260;
+// Corner overflow-menu column width: two 26px icon buttons (More + external
+// editor) side by side, no gap. Shared by drawerStyle so the drawer's right
+// edge always tracks the menu column instead of drifting from a stale
+// hardcoded value (Finding 7 -- the old value, 48, was sized for the deleted
+// Instrument rail).
+const CORNER_MENU_WIDTH = 52;
 // Autosave debounce + failure backoff live in lib/saveRetry.ts (GUI-18).
 
 interface NoteEditorProps {
@@ -308,6 +314,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     setHoverDrawer(null);
     setToolbarPeeking(false);
     setToolbarLocked(false);
+    lockPriorModeRef.current = null;
     setMentions(null);
     setReminderDone(false);
     setHistoryStatus(null);
@@ -426,7 +433,10 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     setToolbarLocked((locked) => {
       const next = !locked;
       if (next) {
-        if (mode === "view") { lockPriorModeRef.current = "view"; setMode("edit"); }
+        // Always set (not just on the "view" branch) so a lock-from-edit-mode
+        // clears any stale prior value instead of inheriting it.
+        lockPriorModeRef.current = mode === "view" ? "view" : null;
+        if (mode === "view") setMode("edit");
       } else if (lockPriorModeRef.current === "view") {
         setMode("view");
         lockPriorModeRef.current = null;
@@ -670,7 +680,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     transition: `background 140ms ${SETTLE}, color 140ms ${SETTLE}`,
   };
   const drawerStyle: CSSProperties = {
-    position: "absolute", top: 0, right: 48, bottom: 0,
+    position: "absolute", top: 0, right: CORNER_MENU_WIDTH, bottom: 0,
     width: drawerOpen ? 236 : 0, overflow: "hidden",
     background: "var(--surface)", borderLeft: drawerOpen ? "1px solid var(--border)" : "1px solid transparent",
     transition: `width ${DUR}ms ${TRAVEL}`, zIndex: 6,
@@ -681,7 +691,9 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     padding: "12px 14px 8px", borderBottom: "1px solid var(--border-2)", marginBottom: 4,
   };
 
-  const fmtEdgeStyle: CSSProperties = { position: "absolute", top: 0, right: 0, bottom: 0, width: 46 };
+  // Finding 1: anchored against bodyRowStyle (non-scrolling), offset from the
+  // right by the corner-menu column's width so the two zones never overlap.
+  const fmtEdgeStyle: CSSProperties = { position: "absolute", top: 0, right: CORNER_MENU_WIDTH, bottom: 0, width: 46 };
   const peekArrowStyle: CSSProperties = {
     position: "absolute", top: "50%", right: 6, transform: "translateY(-50%)",
     width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center",
@@ -707,6 +719,15 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     borderBottom: "1px solid var(--border-2)", position: "relative", cursor: "pointer",
     transition: `background ${reducedMotion ? 1 : 140}ms ${SETTLE}, color ${reducedMotion ? 1 : 140}ms ${SETTLE}`,
   });
+  // Finding 5: Mic/Camera attach rows share fmtRowStyle's geometry but must not
+  // react to firedFmt -- fmtRowStyle("tag") made them flash green whenever the
+  // real Tag format button fired. Plain color, no firedFmt dependency.
+  const attachRowStyle: CSSProperties = {
+    width: 28, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
+    color: "var(--text-2)",
+    borderBottom: "1px solid var(--border-2)", position: "relative", cursor: "pointer",
+    transition: `background ${reducedMotion ? 1 : 140}ms ${SETTLE}, color ${reducedMotion ? 1 : 140}ms ${SETTLE}`,
+  };
   const lockBtnStyle: CSSProperties = {
     width: 30, height: 18, display: "flex", alignItems: "center", justifyContent: "center",
     color: toolbarLocked ? "var(--accent)" : "var(--text-3)",
@@ -808,56 +829,64 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
                 <Markdown blocks={blocks} attachmentUrls={attachmentUrls} />
               )}
             </div>
+          </div>
 
-            <div style={fmtEdgeStyle} onMouseEnter={() => setToolbarPeeking(true)} onMouseLeave={() => setToolbarPeeking(false)}>
+          {/* Finding 1: hangs off bodyRowStyle (non-scrolling) instead of contentStyle
+              (which scrolls with note content) so the peek chevron/strip/lock stay
+              reachable on notes long enough to scroll. Offset from the right by
+              CORNER_MENU_WIDTH so it doesn't collide with the corner-menu column. */}
+          <div
+            style={fmtEdgeStyle}
+            onMouseEnter={() => setToolbarPeeking(true)}
+            onMouseLeave={() => setToolbarPeeking(false)}
+            onFocus={() => setToolbarPeeking(true)}
+            onBlur={() => setToolbarPeeking(false)}
+          >
+            <button
+              className="ne-toolbar-btn"
+              style={peekArrowStyle}
+              aria-label="Show formatting toolbar"
+            >
+              <svg width="9" height="13" viewBox="0 0 9 13" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
+                <path d="M7 1.5L2 6.5l5 5" />
+              </svg>
+            </button>
+            <div style={toolbarColStyle}>
+              {mode === "edit" && (
+                <div style={fmtStripStyle}>
+                  {FMT_ORDER.map(({ kind, label, Icon }) => (
+                    <button key={kind} className="ne-toolbar-btn" style={fmtRowStyle(kind)} aria-label={label} title={label} onClick={() => applyFmt(kind)}>
+                      <Icon size={13} />
+                    </button>
+                  ))}
+                  <button
+                    className="ne-toolbar-btn" style={attachRowStyle}
+                    aria-label="Attach voice memo" title="Attach voice memo" disabled={attachBusy}
+                    onClick={() => { flushSync(() => setAttachFilter("audio/*")); fileInputRef.current?.click(); }}
+                  >
+                    <MicIcon size={13} />
+                  </button>
+                  <button
+                    className="ne-toolbar-btn" style={{ ...attachRowStyle, borderBottom: "none" }}
+                    aria-label="Attach photo" title="Attach photo" disabled={attachBusy}
+                    onClick={() => { flushSync(() => setAttachFilter("image/*")); fileInputRef.current?.click(); }}
+                  >
+                    <CameraIcon size={13} />
+                  </button>
+                </div>
+              )}
               <button
                 className="ne-toolbar-btn"
-                style={peekArrowStyle}
-                aria-label="Show formatting toolbar"
-                onFocus={() => setToolbarPeeking(true)}
-                onBlur={() => setToolbarPeeking(false)}
+                style={lockBtnStyle}
+                aria-pressed={toolbarLocked}
+                title={toolbarLocked ? "Unlock toolbar" : "Lock toolbar open"}
+                onClick={toggleToolbarLock}
               >
-                <svg width="9" height="13" viewBox="0 0 9 13" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
-                  <path d="M7 1.5L2 6.5l5 5" />
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="5" y="10.5" width="14" height="9" rx="0.5" />
+                  <path d={toolbarLocked ? "M8 10.5V7a4 4 0 0 1 8 0v3.5" : "M8 10.5V7a4 4 0 0 1 8 0"} />
                 </svg>
               </button>
-              <div style={toolbarColStyle}>
-                {mode === "edit" && (
-                  <div style={fmtStripStyle}>
-                    {FMT_ORDER.map(({ kind, label, Icon }) => (
-                      <button key={kind} className="ne-toolbar-btn" style={fmtRowStyle(kind)} aria-label={label} title={label} onClick={() => applyFmt(kind)}>
-                        <Icon size={13} />
-                      </button>
-                    ))}
-                    <button
-                      className="ne-toolbar-btn" style={fmtRowStyle("tag" as FormatKind)}
-                      aria-label="Attach voice memo" title="Attach voice memo" disabled={attachBusy}
-                      onClick={() => { flushSync(() => setAttachFilter("audio/*")); fileInputRef.current?.click(); }}
-                    >
-                      <MicIcon size={13} />
-                    </button>
-                    <button
-                      className="ne-toolbar-btn" style={{ ...fmtRowStyle("tag" as FormatKind), borderBottom: "none" }}
-                      aria-label="Attach photo" title="Attach photo" disabled={attachBusy}
-                      onClick={() => { flushSync(() => setAttachFilter("image/*")); fileInputRef.current?.click(); }}
-                    >
-                      <CameraIcon size={13} />
-                    </button>
-                  </div>
-                )}
-                <button
-                  className="ne-toolbar-btn"
-                  style={lockBtnStyle}
-                  aria-pressed={toolbarLocked}
-                  title={toolbarLocked ? "Unlock toolbar" : "Lock toolbar open"}
-                  onClick={toggleToolbarLock}
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="5" y="10.5" width="14" height="9" rx="0.5" />
-                    <path d={toolbarLocked ? "M8 10.5V7a4 4 0 0 1 8 0v3.5" : "M8 10.5V7a4 4 0 0 1 8 0"} />
-                  </svg>
-                </button>
-              </div>
             </div>
           </div>
 
