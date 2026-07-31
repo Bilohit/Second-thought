@@ -1,0 +1,239 @@
+// @vitest-environment happy-dom
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import NoteEditor from "./NoteEditor";
+import * as api from "../lib/api";
+import type { NoteContent } from "../lib/api";
+import { SAVE_BASE_DELAY_MS } from "../lib/saveRetry";
+
+// ponytail: happy-dom ships no layout engine (getBoundingClientRect/offsetWidth
+// all read 0 here) -- these tests assert DOM structure, ARIA attributes, and
+// mock call sequencing ONLY. Every real pixel/geometry assertion (dropdown
+// top:56 non-overlap, 640px no-overlap, hit-testability) stays CDP-only. Do
+// not "upgrade" a geometry check into this file: it will silently pass against
+// all-zero rects and prove nothing.
+vi.mock("../lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/api")>();
+  return {
+    ...actual,
+    getNoteContent: vi.fn(),
+    saveNoteContent: vi.fn(),
+    getNoteConflict: vi.fn(),
+    getNoteHistory: vi.fn(),
+    getNoteHistoryRevision: vi.fn(),
+    resolveNoteConflict: vi.fn(),
+    searchCaptures: vi.fn(),
+    createReminder: vi.fn(),
+    addNoteAttachment: vi.fn(),
+    fetchAttachmentBlob: vi.fn(),
+  };
+});
+
+const noteFixture: NoteContent = {
+  path: "Test/note.md",
+  title: "Test Note",
+  category: "Test",
+  status: null,
+  tags: [],
+  body: "hello world",
+  mtime: 1000,
+  has_frontmatter: true,
+};
+
+function renderEditor(path = "Test/note.md") {
+  const onClose = vi.fn();
+  const onOpenExternal = vi.fn();
+  const utils = render(
+    <NoteEditor open path={path} onClose={onClose} onOpenExternal={onOpenExternal} />,
+  );
+  return { ...utils, onClose, onOpenExternal };
+}
+
+beforeEach(() => {
+  vi.mocked(api.getNoteContent).mockResolvedValue(noteFixture);
+  vi.mocked(api.getNoteConflict).mockResolvedValue(null);
+  vi.mocked(api.getNoteHistory).mockResolvedValue({ status: "ok", revisions: [] });
+  vi.mocked(api.saveNoteContent).mockResolvedValue({ mtime: 2000 });
+});
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+  vi.useRealTimers();
+});
+
+describe("NoteEditor — mount", () => {
+  it("mounts without throwing and renders the dialog with the loaded note", async () => {
+    renderEditor();
+    expect(await screen.findByRole("heading", { name: "Test Note" })).toBeTruthy();
+    const dialog = screen.getByRole("dialog", { name: "Note editor" });
+    expect(dialog).toBeTruthy();
+  });
+});
+
+describe("NoteEditor — Escape precedence", () => {
+  it("closes the corner menu first, without unlocking or closing the drawer/editor", async () => {
+    const user = userEvent.setup({ delay: null });
+    const { onClose } = renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+    const moreBtn = screen.getByRole("button", { name: "More" });
+    await user.click(moreBtn);
+    expect(moreBtn.getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(moreBtn.getAttribute("aria-expanded")).toBe("false");
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("unlocks the toolbar next, when the menu is already closed", async () => {
+    const { onClose } = renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+    // fireEvent, not user.click: the lock button's ancestor column is
+    // pointerEvents:none until real hover flips toolbarPeeking, which
+    // userEvent's pointer-events precheck rejects before that can happen.
+    const lockBtn = screen.getByTitle("Lock toolbar open");
+    fireEvent.click(lockBtn);
+    expect(screen.getByTitle("Unlock toolbar").getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(screen.getByTitle("Lock toolbar open").getAttribute("aria-pressed")).toBe("false");
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("closes the pinned drawer next, when the menu is closed and the toolbar is unlocked", async () => {
+    const user = userEvent.setup({ delay: null });
+    const { onClose } = renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: "Metadata" }));
+    expect(screen.queryByText("METADATA")).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(screen.queryByText("METADATA")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("closes the editor last, when menu/lock/drawer are all already closed", async () => {
+    const { onClose } = renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("NoteEditor — toggleToolbarLock mode restore", () => {
+  it("restores view mode on unlock when the lock was engaged from view mode", async () => {
+    const user = userEvent.setup({ delay: null });
+    renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+
+    await user.click(screen.getByRole("button", { name: "Switch to view" }));
+    expect(screen.getByRole("button", { name: "Switch to edit" })).toBeTruthy();
+
+    // fireEvent, not user.click: the lock button's ancestor column is
+    // pointerEvents:none until real hover flips toolbarPeeking, which
+    // userEvent's pointer-events precheck rejects before that can happen.
+    fireEvent.click(screen.getByTitle("Lock toolbar open"));
+    // toggleToolbarLock: mode === "view" -> lockPriorModeRef = "view", forces mode back to "edit"
+    expect(screen.getByRole("button", { name: "Switch to view" })).toBeTruthy();
+
+    fireEvent.click(screen.getByTitle("Unlock toolbar"));
+    // unlock: lockPriorModeRef.current === "view" -> restores view mode
+    expect(screen.getByRole("button", { name: "Switch to edit" })).toBeTruthy();
+  });
+
+  it("does not change mode on unlock when the lock was engaged from edit mode", async () => {
+    renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+
+    fireEvent.click(screen.getByTitle("Lock toolbar open"));
+    // mode was already "edit" -> lockPriorModeRef = null, mode stays "edit"
+    expect(screen.getByRole("button", { name: "Switch to view" })).toBeTruthy();
+
+    fireEvent.click(screen.getByTitle("Unlock toolbar"));
+    // lockPriorModeRef.current !== "view" -> no restore
+    expect(screen.getByRole("button", { name: "Switch to view" })).toBeTruthy();
+  });
+});
+
+describe("NoteEditor — menu reset on note switch + outside click", () => {
+  it("closes the menu when clicking outside it", async () => {
+    const user = userEvent.setup({ delay: null });
+    renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+    const moreBtn = screen.getByRole("button", { name: "More" });
+    await user.click(moreBtn);
+    expect(moreBtn.getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.click(document.body);
+
+    expect(moreBtn.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("resets menuOpen when the editor switches to a different note", async () => {
+    const user = userEvent.setup({ delay: null });
+    const { rerender, onClose, onOpenExternal } = renderEditor("Test/note.md");
+    await screen.findByRole("heading", { name: "Test Note" });
+    await user.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("button", { name: "More" }).getAttribute("aria-expanded")).toBe("true");
+
+    vi.mocked(api.getNoteContent).mockResolvedValue({
+      ...noteFixture,
+      path: "Test/other.md",
+      title: "Other Note",
+    });
+    rerender(<NoteEditor open path="Test/other.md" onClose={onClose} onOpenExternal={onOpenExternal} />);
+    await screen.findByRole("heading", { name: "Other Note" });
+
+    expect(screen.getByRole("button", { name: "More" }).getAttribute("aria-expanded")).toBe("false");
+  });
+});
+
+describe("NoteEditor — toolbar peek chevron", () => {
+  it("is visible while the toolbar is closed, and hides itself once clicked", async () => {
+    renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+    const chevron = screen.getByRole("button", { name: "Show formatting toolbar" });
+    expect(chevron.className).toContain("ne-peek-arrow");
+    expect(chevron.getAttribute("data-hidden")).toBe("false");
+
+    fireEvent.click(chevron);
+
+    // onClick only ever sets toolbarPeeking(true) -- there is no toggle-off on
+    // this element. data-hidden flips true because toolbarOut is now true,
+    // hiding the "come here" arrow once the toolbar it points at is already out.
+    expect(chevron.getAttribute("data-hidden")).toBe("true");
+  });
+});
+
+describe("NoteEditor — autosave debounce + backoff", () => {
+  it("debounces the save, and backs off to 2x the base delay after a failure", async () => {
+    renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+    const textarea = screen.getByLabelText("Note body (editable)") as HTMLTextAreaElement;
+
+    vi.useFakeTimers();
+    vi.mocked(api.saveNoteContent).mockRejectedValueOnce(new Error("network down"));
+
+    fireEvent.change(textarea, { target: { value: "hello world, edited" } });
+    expect(api.saveNoteContent).not.toHaveBeenCalled();
+
+    // Base debounce fires once at 900ms and fails.
+    await vi.advanceTimersByTimeAsync(SAVE_BASE_DELAY_MS);
+    expect(api.saveNoteContent).toHaveBeenCalledTimes(1);
+
+    // Backoff is 2x base from the failure -- one more base tick alone must NOT retry.
+    await vi.advanceTimersByTimeAsync(SAVE_BASE_DELAY_MS);
+    expect(api.saveNoteContent).toHaveBeenCalledTimes(1);
+
+    // The remaining half elapses -> retry fires.
+    await vi.advanceTimersByTimeAsync(SAVE_BASE_DELAY_MS);
+    expect(api.saveNoteContent).toHaveBeenCalledTimes(2);
+  });
+});
