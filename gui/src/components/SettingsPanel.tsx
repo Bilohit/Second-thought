@@ -1034,7 +1034,7 @@ export default function SettingsPanel({
                       }}
                       style={{ ...INPUT_STYLE, cursor: "pointer" }}
                     >
-                      {(["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "OFF"] as const).map((name) => (
+                      {(["TRACE", "DEBUG", "INFO", "WARN", "ERROR"] as const).map((name) => (
                         <option key={name} value={name}>{name}</option>
                       ))}
                     </select>

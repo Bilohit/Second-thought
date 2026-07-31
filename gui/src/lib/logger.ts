@@ -70,7 +70,11 @@ function initialLevel(): LogLevel {
   try {
     const stored = typeof localStorage !== "undefined" ? localStorage.getItem(LOCAL_STORAGE_KEY) : null;
     if (stored && stored.toUpperCase() in LogLevel) {
-      return LogLevel[stored.toUpperCase() as keyof typeof LogLevel] as LogLevel;
+      const level = LogLevel[stored.toUpperCase() as keyof typeof LogLevel] as LogLevel;
+      // OFF silences the global error/rejection handlers below — a user (or a
+      // stale install) sitting at OFF loses crash evidence with no way to
+      // notice. Floor it to ERROR so those handlers always have a live level.
+      return level === LogLevel.OFF ? LogLevel.ERROR : level;
     }
   } catch { /* localStorage unavailable (e.g. private mode) */ }
 
@@ -224,8 +228,8 @@ function buildLine(level: LogLevel, scope: string, message: string, data?: unkno
 // instead of recursing — a failure inside the logger must stay console-only.
 let emitting = false;
 
-function emit(level: LogLevel, scope: string, message: string, data?: unknown) {
-  if (level < currentLevel) return;
+function emit(level: LogLevel, scope: string, message: string, data?: unknown, force = false) {
+  if (!force && level < currentLevel) return;
   if (emitting) {
     console.error("[logger] re-entrant log call suppressed:", scope, message);
     return;
@@ -314,12 +318,12 @@ function installGlobalHandlers() {
   handlersInstalled = true;
 
   window.addEventListener("error", (e: ErrorEvent) => {
-    emit(LogLevel.ERROR, "window", "Uncaught error", e.error ?? e.message);
+    emit(LogLevel.ERROR, "window", "Uncaught error", e.error ?? e.message, true);
     flushNow(); // don't wait out the debounce — this may precede a crash/force-kill
   });
 
   window.addEventListener("unhandledrejection", (e: PromiseRejectionEvent) => {
-    emit(LogLevel.ERROR, "window", "Unhandled promise rejection", e.reason);
+    emit(LogLevel.ERROR, "window", "Unhandled promise rejection", e.reason, true);
     flushNow();
   });
 
@@ -331,9 +335,12 @@ function installGlobalHandlers() {
 /** Call once at app boot. Installs global handlers and logs the startup banner. */
 export function initLogger() {
   installGlobalHandlers();
-  logger.info("app", "Logger initialized", {
+  // Forced: at OFF (or a stored level above INFO) this would otherwise be
+  // silenced, and a log file with zero frontend lines needs to unambiguously
+  // mean "the frontend never started" rather than "it was just quiet".
+  emit(LogLevel.INFO, "app", "Logger initialized", {
     level: LEVEL_NAME[currentLevel] ?? currentLevel,
     format: logFormat,
     userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "n/a",
-  });
+  }, true);
 }

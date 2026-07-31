@@ -1,5 +1,14 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { SENSITIVE_KEY_RE } from "./logger";
+
+// GUI-XX: the "OFF" log level silenced the window error/unhandledrejection
+// handlers, so a real crash left zero trace in console or on disk. Fix:
+// emit() gained an opt-in force parameter that bypasses the level gate for
+// the boot banner + the two global handlers, and a stored "OFF" now floors
+// to ERROR on load so existing installs recover without user action.
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+}));
 
 /** GUI-20: the redaction key pattern. The regression that motivated the last
  *  alternative is the LAN secretbox key, whose field is literally named `key`
@@ -36,5 +45,60 @@ describe("SENSITIVE_KEY_RE", () => {
   it("is stateless across calls (no /g flag)", () => {
     expect(SENSITIVE_KEY_RE.test("key")).toBe(true);
     expect(SENSITIVE_KEY_RE.test("key")).toBe(true);
+  });
+});
+
+describe("forced emit vs. the level gate", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("initLogger's boot banner is forced through even at a level above INFO", async () => {
+    const { logger, initLogger, LogLevel } = await import("./logger");
+    const { invoke } = await import("@tauri-apps/api/core");
+    logger.setLevel(LogLevel.ERROR); // banner is INFO — would normally be gated out
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      initLogger();
+      expect(infoSpy).toHaveBeenCalled(); // console sink reached despite the gate
+      await logger.flush();
+      expect(invoke).toHaveBeenCalledWith(
+        "append_log",
+        expect.objectContaining({ line: expect.stringContaining("Logger initialized") }),
+      );
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("an unforced record below the current threshold is still dropped", async () => {
+    const { logger, LogLevel } = await import("./logger");
+    logger.setLevel(LogLevel.ERROR);
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    try {
+      logger.debug("test", "should not appear — below ERROR and not forced");
+      expect(debugSpy).not.toHaveBeenCalled();
+    } finally {
+      debugSpy.mockRestore();
+    }
+  });
+});
+
+describe("initialLevel()", () => {
+  it("floors a stored OFF to ERROR on load", async () => {
+    const original = (globalThis as any).localStorage;
+    (globalThis as any).localStorage = {
+      getItem: (key: string) => (key === "second-thought:log-level" ? "OFF" : null),
+      setItem: () => {},
+    };
+    try {
+      vi.resetModules();
+      const mod = await import("./logger");
+      expect(mod.logger.getLevel()).toBe(mod.LogLevel.ERROR);
+    } finally {
+      if (original === undefined) delete (globalThis as any).localStorage;
+      else (globalThis as any).localStorage = original;
+      vi.resetModules();
+    }
   });
 });
