@@ -421,10 +421,16 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     setTimeout(() => setFiredFmt(null), reducedMotion ? 0 : 260);
   }, [body, reducedMotion]);
 
+  const lockPriorModeRef = useRef<"view" | "edit" | null>(null);
   const toggleToolbarLock = useCallback(() => {
     setToolbarLocked((locked) => {
       const next = !locked;
-      if (next && mode === "view") setMode("edit");
+      if (next) {
+        if (mode === "view") { lockPriorModeRef.current = "view"; setMode("edit"); }
+      } else if (lockPriorModeRef.current === "view") {
+        setMode("view");
+        lockPriorModeRef.current = null;
+      }
       return next;
     });
   }, [mode]);
@@ -636,10 +642,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
 
   const bodyRowStyle: CSSProperties = { flex: 1, minHeight: 0, display: "flex", position: "relative" };
   const contentStyle: CSSProperties = { flex: 1, minWidth: 0, overflowY: "auto", position: "relative" };
-  const measureStyle: CSSProperties = {
-    maxWidth: "62ch", margin: "0 auto", width: "100%",
-    padding: mode === "edit" ? "24px 70px 96px 24px" : "24px 24px 96px",
-  };
+  const measureStyle: CSSProperties = { maxWidth: "62ch", margin: "0 auto", width: "100%", padding: "24px 70px 96px 24px" };
   const h1Style: CSSProperties = { fontSize: 21, fontWeight: 600, letterSpacing: "-0.02em", margin: "0 0 16px", color: "var(--text-1)" };
   const paperStyle: CSSProperties = {
     width: "100%", minHeight: 380, background: "transparent", border: "none", color: "var(--text-1)",
@@ -806,20 +809,20 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
               )}
             </div>
 
-            {mode === "edit" && (
-              <div style={fmtEdgeStyle} onMouseEnter={() => setToolbarPeeking(true)} onMouseLeave={() => setToolbarPeeking(false)}>
-                <button
-                  className="ne-toolbar-btn"
-                  style={peekArrowStyle}
-                  aria-label="Show formatting toolbar"
-                  onFocus={() => setToolbarPeeking(true)}
-                  onBlur={() => setToolbarPeeking(false)}
-                >
-                  <svg width="9" height="13" viewBox="0 0 9 13" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
-                    <path d="M7 1.5L2 6.5l5 5" />
-                  </svg>
-                </button>
-                <div style={toolbarColStyle}>
+            <div style={fmtEdgeStyle} onMouseEnter={() => setToolbarPeeking(true)} onMouseLeave={() => setToolbarPeeking(false)}>
+              <button
+                className="ne-toolbar-btn"
+                style={peekArrowStyle}
+                aria-label="Show formatting toolbar"
+                onFocus={() => setToolbarPeeking(true)}
+                onBlur={() => setToolbarPeeking(false)}
+              >
+                <svg width="9" height="13" viewBox="0 0 9 13" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
+                  <path d="M7 1.5L2 6.5l5 5" />
+                </svg>
+              </button>
+              <div style={toolbarColStyle}>
+                {mode === "edit" && (
                   <div style={fmtStripStyle}>
                     {FMT_ORDER.map(({ kind, label, Icon }) => (
                       <button key={kind} className="ne-toolbar-btn" style={fmtRowStyle(kind)} aria-label={label} title={label} onClick={() => applyFmt(kind)}>
@@ -841,21 +844,21 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
                       <CameraIcon size={13} />
                     </button>
                   </div>
-                  <button
-                    className="ne-toolbar-btn"
-                    style={lockBtnStyle}
-                    aria-pressed={toolbarLocked}
-                    title={toolbarLocked ? "Unlock toolbar" : "Lock toolbar open"}
-                    onClick={toggleToolbarLock}
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="5" y="10.5" width="14" height="9" rx="0.5" />
-                      <path d={toolbarLocked ? "M8 10.5V7a4 4 0 0 1 8 0v3.5" : "M8 10.5V7a4 4 0 0 1 8 0"} />
-                    </svg>
-                  </button>
-                </div>
+                )}
+                <button
+                  className="ne-toolbar-btn"
+                  style={lockBtnStyle}
+                  aria-pressed={toolbarLocked}
+                  title={toolbarLocked ? "Unlock toolbar" : "Lock toolbar open"}
+                  onClick={toggleToolbarLock}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="5" y="10.5" width="14" height="9" rx="0.5" />
+                    <path d={toolbarLocked ? "M8 10.5V7a4 4 0 0 1 8 0v3.5" : "M8 10.5V7a4 4 0 0 1 8 0"} />
+                  </svg>
+                </button>
               </div>
-            )}
+            </div>
           </div>
 
           {/* Corner overflow menu (replaces the old always-visible Instrument rail) */}
