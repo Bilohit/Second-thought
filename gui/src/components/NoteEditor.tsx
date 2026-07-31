@@ -238,7 +238,6 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "conflict" | "error">("idle");
   const [conflictBody, setConflictBody] = useState<string | null>(null);
   const [pinnedDrawer, setPinnedDrawer] = useState<DrawerKey | null>(null);
-  const [hoverDrawer, setHoverDrawer] = useState<DrawerKey | null>(null);
   const [toolbarPeeking, setToolbarPeeking] = useState(false);
   const [toolbarLocked, setToolbarLocked] = useState(false);
   const [firedFmt, setFiredFmt] = useState<FormatKind | null>(null);
@@ -312,7 +311,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     setMode("edit");
     setConflictBody(null);
     setPinnedDrawer(null);
-    setHoverDrawer(null);
+    setMenuOpen(false);
     setToolbarPeeking(false);
     setToolbarLocked(false);
     lockPriorModeRef.current = null;
@@ -403,18 +402,34 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     }).catch(() => {});
   }, [path]);
 
+  const lockPriorModeRef = useRef<"view" | "edit" | null>(null);
+  const toggleToolbarLock = useCallback(() => {
+    const next = !toolbarLocked;
+    // Always set (not just on the "view" branch) so a lock-from-edit-mode
+    // clears any stale prior value instead of inheriting it.
+    if (next) {
+      lockPriorModeRef.current = mode === "view" ? "view" : null;
+      if (mode === "view") setMode("edit");
+    } else if (lockPriorModeRef.current === "view") {
+      setMode("view");
+      lockPriorModeRef.current = null;
+    }
+    setToolbarLocked(next);
+  }, [toolbarLocked, mode]);
+
   // -- Escape: close a drawer/radial first, else close the editor --
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (toolbarLocked) { setToolbarLocked(false); return; }
+      if (menuOpen) { setMenuOpen(false); return; }
+      if (toolbarLocked) { toggleToolbarLock(); return; }
       if (pinnedDrawer) { setPinnedDrawer(null); return; }
       onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, toolbarLocked, pinnedDrawer, onClose]);
+  }, [open, menuOpen, toolbarLocked, pinnedDrawer, onClose, toggleToolbarLock]);
 
   const applyFmt = useCallback((kind: FormatKind) => {
     const ta = textareaRef.current;
@@ -428,23 +443,6 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     });
     setTimeout(() => setFiredFmt(null), reducedMotion ? 0 : 260);
   }, [body, reducedMotion]);
-
-  const lockPriorModeRef = useRef<"view" | "edit" | null>(null);
-  const toggleToolbarLock = useCallback(() => {
-    setToolbarLocked((locked) => {
-      const next = !locked;
-      if (next) {
-        // Always set (not just on the "view" branch) so a lock-from-edit-mode
-        // clears any stale prior value instead of inheriting it.
-        lockPriorModeRef.current = mode === "view" ? "view" : null;
-        if (mode === "view") setMode("edit");
-      } else if (lockPriorModeRef.current === "view") {
-        setMode("view");
-        lockPriorModeRef.current = null;
-      }
-      return next;
-    });
-  }, [mode]);
 
   const scrollToLine = useCallback((line: number) => {
     const ta = textareaRef.current;
@@ -512,7 +510,6 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
 
   const togglePin = useCallback((key: DrawerKey) => {
     setPinnedDrawer((cur) => (cur === key ? null : key));
-    setHoverDrawer(null);
     if (key === "conn") loadMentions();
     if (key === "history") loadHistory();
   }, [loadMentions, loadHistory]);
@@ -620,7 +617,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
 
   if (!everOpened || !path) return null;
 
-  const activeDrawer = pinnedDrawer ?? hoverDrawer;
+  const activeDrawer = pinnedDrawer;
   const drawerOpen = activeDrawer !== null;
 
   // -- styles --
@@ -671,7 +668,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     transition: `background 160ms ${SETTLE}, border-color 160ms ${SETTLE}, color 160ms ${SETTLE}`,
   });
   const menuDropStyle = (open: boolean): CSSProperties => ({
-    position: "absolute", top: 34, right: 0, width: 138, background: "var(--surface)",
+    position: "absolute", top: 56, right: 0, width: 138, background: "var(--surface)",
     border: "1px solid var(--border)", zIndex: 20, boxShadow: "0 8px 20px rgba(0,0,0,0.35)",
     opacity: open ? 1 : 0, transform: open ? "translateY(0) scale(1)" : "translateY(-6px) scale(0.98)",
     pointerEvents: open ? "auto" : "none",
@@ -702,12 +699,11 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
   // right by the corner-menu column's width so the two zones never overlap.
   const fmtEdgeStyle: CSSProperties = { position: "absolute", top: 0, right: CORNER_MENU_WIDTH, bottom: 0, width: 46 };
   const peekArrowStyle: CSSProperties = {
-    position: "absolute", top: "50%", right: 6, transform: "translateY(-50%)",
+    position: "absolute", top: "50%", right: 6,
     width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center",
-    color: "var(--text-3)", opacity: toolbarLocked ? 0 : 0.4, cursor: "pointer",
+    color: "var(--text-3)", cursor: "pointer",
     background: "none", border: "none", padding: 0,
     transition: `opacity ${reducedMotion ? 1 : 200}ms ${SETTLE}, color ${reducedMotion ? 1 : 200}ms ${SETTLE}`,
-    pointerEvents: toolbarLocked ? "none" : "auto",
   };
   const toolbarColStyle: CSSProperties = {
     position: "absolute", top: "50%", right: 8, display: "flex", flexDirection: "column",
@@ -850,8 +846,10 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
             onBlur={() => setToolbarPeeking(false)}
           >
             <button
-              className="ne-toolbar-btn"
+              className="ne-toolbar-btn ne-peek-arrow"
               style={peekArrowStyle}
+              data-hidden={toolbarLocked || toolbarOut}
+              onClick={() => setToolbarPeeking(true)}
               aria-label="Show formatting toolbar"
             >
               <svg width="9" height="13" viewBox="0 0 9 13" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
@@ -918,10 +916,10 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
               <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("remind"); }}>
                 <BellIcon size={13} />Reminder
               </button>
-              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("conn"); }}>
+              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); if (pinnedDrawer !== "conn") togglePin("conn"); }}>
                 <IconConnections size={13} />Connections
               </button>
-              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("conn"); }}>
+              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); if (pinnedDrawer !== "conn") togglePin("conn"); }}>
                 <OutlineIcon size={13} />Outline
               </button>
               {historyStatus !== "offline" && (

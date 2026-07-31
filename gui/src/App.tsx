@@ -2059,7 +2059,7 @@ export default function App() {
         // screen is CSS-animating, so a WM_MOVE/WM_SIZE compositor frame
         // split has no visible content difference to split (verified fix for
         // the right/center-zone open+close flicker — investigated via
-        // geoLog's traceCapsuleMorph). Scoped to capsule only; every other
+        // geoLog's frame-by-frame capsule-morph tracing). Scoped to capsule only; every other
         // mode keeps the pre-existing animate/instant paths untouched.
         if (displayMode === "capsule" && moveKind === "instant" && targetPos) {
           const scale = await getCurrentWindow().scaleFactor();

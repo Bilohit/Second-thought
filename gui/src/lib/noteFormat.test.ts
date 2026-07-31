@@ -40,11 +40,15 @@ describe("applyMarkdownFormat — bold and link still work (regression guard)", 
   it("bold wraps the selection in '**'", () => {
     const r = applyMarkdownFormat("hello world", 6, 11, "bold");
     expect(r.value).toBe("hello **world**");
+    expect(r.selStart).toBe(13);
+    expect(r.selEnd).toBe(13);
   });
 
   it("link wraps the selection in '[' and '](url)'", () => {
     const r = applyMarkdownFormat("see docs", 4, 8, "link");
     expect(r.value).toBe("see [docs](url)");
+    expect(r.selStart).toBe(9);
+    expect(r.selEnd).toBe(9);
   });
 });
 

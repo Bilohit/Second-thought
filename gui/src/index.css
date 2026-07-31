@@ -1064,6 +1064,11 @@ html, body, #root {
 .ne-toolbar-btn:active { transform: scale(0.88); }
 .ne-menu-row:active { transform: scale(0.97); background: var(--accent-glow); }
 
+.ne-peek-arrow { transform: translateY(-50%); opacity: 0.4; }
+.ne-peek-arrow:hover, .ne-peek-arrow:focus-visible { opacity: 0.85; }
+.ne-peek-arrow:active { transform: translateY(-50%) scale(0.88); }
+.ne-peek-arrow[data-hidden="true"] { opacity: 0; pointer-events: none; }
+
 .spoke-hide {
   opacity: 0;
   color: var(--text-3);
