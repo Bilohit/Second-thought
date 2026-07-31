@@ -284,6 +284,13 @@ const PANEL_READY_WATCHDOG_MS = 1000;
 // bail it before that line, stranding a blank window (showPill true, renderPill
 // false, full content hidden) until restart. Same rescue as PANEL_READY_WATCHDOG_MS.
 const RENDER_PILL_WATCHDOG_MS = 1000;
+// panelGeom watchdog ceiling: targetWinW/targetWinH grow the OS window to panel
+// size unconditionally, but capsulePanelGeom/islandMorphGeom are only set inside
+// the panel-open try/catch below -- a thrown getActiveWorkArea() or a superseded
+// reconcileToken can leave them null while panelReady still flips true
+// (blank-but-grown panel, s114). Same ceiling as PANEL_READY_WATCHDOG_MS --
+// exceeds any legitimate compute+commit lag.
+const PANEL_GEOM_WATCHDOG_MS = 1000;
 
 // Menu open/close (for_sonnet.md "Problem 4") gets a single atomic, instant
 // resize+reposition instead of the rAF tween above — the tween's per-frame
@@ -742,6 +749,20 @@ export default function App() {
   }, [displayMode]);
   const closeCompactPanelRef = useRef(closeCompactPanel);
   useEffect(() => { closeCompactPanelRef.current = closeCompactPanel; }, [closeCompactPanel]);
+
+  // s114 panelGeom watchdog: mirrors the panelReady watchdog's discipline -- only
+  // ever forces the SAFE state. There is no safe way to fabricate a geometry, so
+  // the safe state here is CLOSED (revert to the idle pill), never "assume the
+  // panel is ready" the way panelReady's own watchdog does. It never fights a
+  // legitimate open: the moment the active mode's geometry commits, the guard
+  // clause returns before arming the timer.
+  useEffect(() => {
+    if (compactPanel === null) return;
+    const geom = displayMode === "capsule" ? capsulePanelGeom : islandMorphGeom;
+    if (geom !== null) return;
+    const t = setTimeout(() => closeCompactPanelRef.current(), PANEL_GEOM_WATCHDOG_MS);
+    return () => clearTimeout(t);
+  }, [compactPanel, displayMode, capsulePanelGeom, islandMorphGeom]);
 
   // A-3 fix: "Clear chat on close" is a no-op inside LookPanel itself —
   // its own visible-edge reset() needs a true->false prop transition, but
