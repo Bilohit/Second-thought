@@ -178,3 +178,63 @@ def test_unknown_keys_survive_a_merge():
 def test_renamed_from_is_carried_through_a_merge():
     out = pr.merge(_reg(), _reg(new={**_entry("d"), "renamed_from": "old"}), _reg())
     assert out["projects"]["new"]["renamed_from"] == "old"
+
+
+def test_resolve_returns_the_project_when_registered():
+    reg = _reg(research=_entry())
+    assert pr.resolve_project("body #project@research", reg) == "research"
+
+
+def test_no_tag_is_loose():
+    assert pr.resolve_project("plain body", _reg(research=_entry())) is None
+
+
+def test_an_unregistered_name_is_loose_this_one_rule_absorbs_deletion_and_sync_lag():
+    assert pr.resolve_project("#project@deleted", _reg()) is None
+
+
+def test_an_ineligible_name_is_loose_and_never_registered():
+    assert pr.resolve_project("#project@a/b", _reg()) is None
+
+
+def test_renamed_from_resolves_the_old_name_to_the_new_project():
+    # Required for CORRECTNESS, not convenience: a note on an offline phone still carries the old
+    # tag, and without this a rename silently empties its own project (contract §1.3).
+    reg = _reg(**{"research-cancer": {**_entry(), "renamed_from": "cancer"}})
+    assert pr.resolve_project("#project@cancer", reg) == "research-cancer"
+    assert pr.resolve_project("#project@research-cancer", reg) == "research-cancer"
+
+
+def test_a_current_key_beats_another_entrys_renamed_from():
+    reg = {"schema": pr.SCHEMA, "projects": {
+        "cancer": _entry(),
+        "research-cancer": {**_entry(), "renamed_from": "cancer"},
+    }}
+    assert pr.resolve_project("#project@cancer", reg) == "cancer"
+
+
+def test_rebuild_from_vault_finds_every_project_with_an_empty_description(tmp_path):
+    (tmp_path / "research").mkdir()
+    (tmp_path / "research" / "a.md").write_text("---\nid: 1\n---\n\nbody #project@research\n", encoding="utf-8")
+    (tmp_path / "_loose").mkdir()
+    (tmp_path / "_loose" / "b.md").write_text("---\nid: 2\n---\n\nno tag here\n", encoding="utf-8")
+    reg = pr.rebuild_from_vault(tmp_path)
+    assert set(reg["projects"]) == {"research"}
+    assert reg["projects"]["research"]["description"] == ""
+
+
+def test_rebuild_skips_ineligible_names(tmp_path):
+    (tmp_path / "a.md").write_text("---\nid: 1\n---\n\n#project@a/b\n", encoding="utf-8")
+    assert pr.rebuild_from_vault(tmp_path)["projects"] == {}
+
+
+def test_clear_stale_renamed_from_clears_when_no_note_carries_the_old_name():
+    reg = _reg(new={**_entry(), "renamed_from": "old"})
+    out = pr.clear_stale_renamed_from(reg, live_names=set())
+    assert "renamed_from" not in out["projects"]["new"]
+
+
+def test_clear_stale_renamed_from_keeps_it_while_a_note_still_carries_the_old_name():
+    reg = _reg(new={**_entry(), "renamed_from": "old"})
+    out = pr.clear_stale_renamed_from(reg, live_names={"old"})
+    assert out["projects"]["new"]["renamed_from"] == "old"

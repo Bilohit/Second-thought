@@ -15,7 +15,7 @@ from typing import Any, Dict
 import tomlkit
 from tomlkit.items import KeyType, SingleKey
 
-from projects import is_valid_project_name
+from projects import is_valid_project_name, parse_project_tag
 
 REGISTRY_FILENAME = ".projects.toml"
 SCHEMA = 1
@@ -122,3 +122,57 @@ def merge(base: Registry, local: Registry, remote: Registry) -> Registry:
         # deleted on both sides -> gone (row 4 with the delete on either side)
 
     return {"schema": SCHEMA, "projects": out}
+
+
+def resolve_project(body: str, reg: Registry) -> str | None:
+    """THE single resolution rule. Every surface calls this — never reimplement it.
+
+    A tag resolves only if the name is registry-eligible AND the registry holds it, under its
+    current key or as some entry's transitional `renamed_from`. Everything else — no tag, invalid
+    name, unregistered name, registry not synced yet — is LOOSE. That one rule absorbs deletion,
+    invalid names, rename lag and sync lag alike (contract §1.3, "dangling reads as loose").
+    """
+    name = parse_project_tag(body)
+    if not name or not is_valid_project_name(name):
+        return None
+
+    projects_ = reg.get("projects", {})
+    if name in projects_:
+        return name
+    for key, entry in projects_.items():
+        if entry.get("renamed_from") == name:
+            return key
+    return None
+
+
+def rebuild_from_vault(vault_root: Path) -> Registry:
+    """Contract §13.3: if the registry is lost, rebuild it by scanning bodies for `#project@`.
+    Every project reappears with an EMPTY description; `renamed_from` cannot be reconstructed and
+    is simply absent, so a note still carrying an old name reads as loose — the correct fallback,
+    no special case. No note is lost, no note changes project, no grouping breaks."""
+    names: set = set()
+    for path in Path(vault_root).rglob("*.md"):
+        try:
+            body = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        name = parse_project_tag(body)
+        if name and is_valid_project_name(name):
+            names.add(name)
+
+    reg = empty_registry()
+    for name in sorted(names):
+        reg["projects"][name] = {"description": "", "created": "", "modified": "", "device": ""}
+    return reg
+
+
+def clear_stale_renamed_from(reg: Registry, live_names: set) -> Registry:
+    """`renamed_from` clears once no vault note still carries the old name (contract §13.3).
+    While set, the old name is reserved — no new project may claim it."""
+    out = {"schema": reg.get("schema", SCHEMA), "projects": {}}
+    for name, entry in reg.get("projects", {}).items():
+        entry = dict(entry)
+        if entry.get("renamed_from") and entry["renamed_from"] not in live_names:
+            entry.pop("renamed_from")
+        out["projects"][name] = entry
+    return out
