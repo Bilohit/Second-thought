@@ -14,17 +14,20 @@ from pathlib import Path
 import pytest
 
 from index_writer import init_db, search, upsert_capture_from_file
+import project_registry
 from tag_index import parse_tags, resolve_paths, scan_tag_paths
 from vault_admin import _build_tag_tree
 
 
-def _note(vault: Path, project: str, name: str, tags_block: str, origin: str = "note") -> Path:
+def _note(vault: Path, project: str, name: str, tags_block: str, origin: str = "note",
+          project_tag: str | None = None) -> Path:
     d = vault / project
     d.mkdir(parents=True, exist_ok=True)
     p = d / f"{name}.md"
+    body_tag = f" #project@{project_tag}" if project_tag else ""
     p.write_text(
         f"---\ntitle: {name}\norigin: {origin}\n{tags_block}\n---\n"
-        f"# {name}\n\nBody of {name}.\n",
+        f"# {name}\n\nBody of {name}.{body_tag}\n",
         encoding="utf-8",
     )
     return p
@@ -36,12 +39,19 @@ def vault():
     editor-created notes (tags never reach the DB column) with nested tags
     (no tag is literally spelled `project/`)."""
     tmp = Path(tempfile.mkdtemp())
-    _note(tmp, "Tech_Notes", "alpha", "tags: [project/alpha, reading]")
-    _note(tmp, "Tech_Notes", "beta", "tags: [project/beta]")
-    _note(tmp, "Tech_Notes", "both", "tags: [project/alpha, project/beta]")
-    _note(tmp, "Tech_Notes", "bare", "tags: [reading]")
+    # `Tech_Notes` is a real registered project here (not just a directory name)
+    # so the `project` filter in test_tag_filter_still_composes_with_fts_and_project
+    # has an actual `#project@Tech_Notes` tag to resolve against.
+    reg = project_registry.empty_registry()
+    reg["projects"]["Tech_Notes"] = {"description": "", "created": "", "modified": "", "device": ""}
+    project_registry.save(tmp, reg)
+    _note(tmp, "Tech_Notes", "alpha", "tags: [project/alpha, reading]", project_tag="Tech_Notes")
+    _note(tmp, "Tech_Notes", "beta", "tags: [project/beta]", project_tag="Tech_Notes")
+    _note(tmp, "Tech_Notes", "both", "tags: [project/alpha, project/beta]", project_tag="Tech_Notes")
+    _note(tmp, "Tech_Notes", "bare", "tags: [reading]", project_tag="Tech_Notes")
     # a pipeline capture: block-form frontmatter, the shape storage_engine writes
-    _note(tmp, "Tech_Notes", "cap", "tags:\n  - project/alpha\n  - deep/a/b", origin="capture")
+    _note(tmp, "Tech_Notes", "cap", "tags:\n  - project/alpha\n  - deep/a/b", origin="capture",
+          project_tag="Tech_Notes")
     # index every file, exactly as vault_sync does on a real vault
     init_db(tmp)
     for md in tmp.rglob("*.md"):

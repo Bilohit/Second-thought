@@ -54,6 +54,8 @@ from typing import Optional
 
 from frontmatter import strip_frontmatter
 from tag_index import parse_tags, resolve_paths
+from projects import LOOSE_DIR
+import project_registry
 import index_health
 
 # ponytail: 64k cap; raise or chunk FTS if vault notes routinely exceed this
@@ -607,16 +609,37 @@ def remove_capture_by_path(vault_root: Path, abs_path: Path) -> None:
         index_health.record_failure("captures", exc)
 
 
-def upsert_capture_from_file(vault_root: Path, abs_path: Path) -> None:
+def derive_project(abs_path: Path, registry: Optional[dict], vault_root: Path) -> str:
+    """THE index's project derivation: the body tag resolved against the registry.
+
+    Never the directory name. The directory is derived housekeeping maintained by the
+    tidy pass (design §1, "no surface may present a path as the source of truth"), so a
+    vault whose files predate the tidy pass -- or that the pass has not reached yet --
+    has directories that disagree with the tag. Deriving from `p.parent.name` made every
+    legacy folder read as a project the registry has never heard of.
+
+    Reads the WHOLE file, not `_read_body_excerpt`, which truncates at
+    _BODY_EXCERPT_MAX_CHARS and would miss a tag past the cap.
+
+    `registry` is optional so a bulk sync loads it once instead of per file.
+    """
+    if registry is None:
+        registry = project_registry.load(vault_root)
+    try:
+        text = abs_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return LOOSE_DIR
+    return project_registry.resolve_project(text, registry) or LOOSE_DIR
+
+
+def upsert_capture_from_file(vault_root: Path, abs_path: Path,
+                             registry: Optional[dict] = None) -> None:
     """Insert or update a captures row from the file on disk. Fails silently."""
     try:
         p = abs_path
         if not p.exists():
             return
-        # The note's directory name IS its resolved project (or `_loose`) -- every
-        # note stays at depth 1 (contract §1.3), so this agrees with
-        # resolve_project(body, reg) by construction, same as the frontmatter cache.
-        project    = p.parent.name
+        project    = derive_project(p, registry, vault_root)
         body       = _read_body_excerpt(str(p))
         h          = _file_hash(str(p))
         # Tags come from the FILE's frontmatter -- the source of truth. This
@@ -640,7 +663,12 @@ def upsert_capture_from_file(vault_root: Path, abs_path: Path) -> None:
                 hash         = excluded.hash,
                 body_excerpt = excluded.body_excerpt,
                 timestamp    = excluded.timestamp,
-                tags         = excluded.tags
+                tags         = excluded.tags,
+                -- project was omitted here, so a row's project could never be
+                -- corrected once written: a note whose tag changed, or whose
+                -- project was created/renamed/deleted in the registry, kept its
+                -- first-ever value forever.
+                project      = excluded.project
             """,
             (timestamp, project, str(p), h, p.name, body, tags),
         )

@@ -489,6 +489,12 @@ class TestProjectColumnAgreesWithFrontmatterCache(unittest.TestCase):
             note_path = note_dir / "note.md"
             note_path.write_text(serialized, encoding="utf-8")
 
+            # Persist the registry so the DB side (which loads it from disk when no
+            # registry is passed) resolves the same `#project@research` tag the
+            # frontmatter side just resolved from the in-memory `reg`.
+            from project_registry import save as save_registry
+            save_registry(vault, reg)
+
             upsert_capture_from_file(vault, note_path)
             conn = init_db(vault)
             row = conn.execute("SELECT project FROM captures WHERE path = ?", (str(note_path),)).fetchone()

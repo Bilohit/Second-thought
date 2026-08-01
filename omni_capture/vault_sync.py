@@ -17,7 +17,9 @@ from typing import Optional, TypedDict
 
 from index_writer import (
     init_db, _file_hash, heal_corrupt_db, remove_capture_by_path, upsert_capture_from_file,
+    derive_project,
 )
+import project_registry
 from vector_store import (
     _connect, index_note, remove_from_index,
     heal_corrupt_db as heal_corrupt_vector_db, embedded_parents,
@@ -30,6 +32,40 @@ from vector_store import (
 from mobile_sync_agent import _RESERVED_FOLDERS
 
 _SKIP_DIRS = {".omni_capture", ".git", ".obsidian"} | _RESERVED_FOLDERS
+
+
+def _project_rows(vault_root: Path):
+    """(path, project) for every non-provisional row — the snapshot the skip path
+    compares against. Provisional rows are excluded for the same reason the orphan
+    purge excludes them: their synthetic path is not a real vault file."""
+    try:
+        conn = init_db(vault_root)
+        rows = conn.execute(
+            "SELECT path, project FROM captures WHERE provisional = 0"
+        ).fetchall()
+        conn.close()
+        return rows
+    except Exception as exc:
+        print(f"[VaultSync] _project_rows error: {exc}", file=sys.stderr)
+        return []
+
+
+def _update_project(vault_root: Path, abs_path: Path, project: str) -> None:
+    """Correct one row's project column in place. Deliberately NOT a full
+    upsert_capture_from_file: the file is byte-identical, so re-reading its body,
+    re-hashing and re-stamping the timestamp would be work for no change -- and
+    re-stamping `timestamp` would poison Recent activity, the same trap the
+    mtime-not-now comment in index_writer guards."""
+    try:
+        conn = init_db(vault_root)
+        conn.execute(
+            "UPDATE captures SET project = ? WHERE path = ?", (project, str(abs_path))
+        )
+        conn.commit()
+        conn.close()
+        print(f"[VaultSync] reprojected: {abs_path} -> {project}", flush=True)
+    except Exception as exc:
+        print(f"[VaultSync] _update_project error: {exc}", file=sys.stderr)
 
 
 def _iter_vault_md(vault_root: Path):
@@ -45,6 +81,7 @@ class SyncResult(TypedDict):
     updated: int
     skipped: int
     reembedded: int       # notes re-embedded despite an unchanged captures.hash (empty/rebuilt vectors.db, OF-1)
+    reprojected: int      # rows whose project column was corrected despite an unchanged hash (registry moved under them)
     healed: bool          # a corrupt captures.db was discarded and rebuilt from files
     vectors_healed: bool  # a corrupt vectors.db was discarded and rebuilt from files (OF-1)
     dedup_rebuilt: bool   # a missing/empty dedup ledger was rebuilt from the vault files (R-1)
@@ -95,7 +132,8 @@ def purge_orphan_index_entries(vault_root: Path) -> int:
 def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> SyncResult:
     """Full diff-sync: heal a corrupt index, remove orphans, add/update changed files."""
     result: SyncResult = {"added": 0, "removed": 0, "updated": 0, "skipped": 0,
-                          "reembedded": 0, "healed": False, "vectors_healed": False,
+                          "reembedded": 0, "reprojected": 0,
+                          "healed": False, "vectors_healed": False,
                           "dedup_rebuilt": False, "embed_failed": 0, "error": None}
     try:
         # --- heal a corrupt captures.db BEFORE anything reads it ---
@@ -181,6 +219,15 @@ def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> Syn
         # any note absent from it even on the skip path.
         embedded = embedded_parents(vault_root)
 
+        # Loaded ONCE for the whole pass, not per file: every row's project resolves
+        # against the same registry snapshot, and a bulk sync re-reads one file instead
+        # of N. Passed explicitly into upsert_capture_from_file for the same reason.
+        registry = project_registry.load(vault_root)
+        project_map = {
+            row["path"]: row["project"]
+            for row in _project_rows(vault_root)
+        }
+
         for p in _iter_vault_md(vault_root):
             ap = str(p)
             current_hash = _file_hash(ap)
@@ -188,19 +235,30 @@ def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> Syn
 
             if ap not in hash_map:
                 # new file — upsert into captures + embed
-                upsert_capture_from_file(vault_root, p)
+                upsert_capture_from_file(vault_root, p, registry)
                 if not _embed_file(vault_root, p, base_url, embed_model):
                     result["embed_failed"] += 1   # SYNC-30
                 result["added"] += 1
             elif current_hash != stored_hash:
                 # changed — re-upsert + re-embed
-                upsert_capture_from_file(vault_root, p)
+                upsert_capture_from_file(vault_root, p, registry)
                 if not _embed_file(vault_root, p, base_url, embed_model):
                     result["embed_failed"] += 1   # SYNC-30
                 result["updated"] += 1
             else:
-                # captures.hash unchanged — but re-embed if the vector store is
-                # missing this note (rebuilt/emptied/corrupt-then-healed store, OF-1).
+                # captures.hash unchanged — but the file hash is NOT a valid gate on the
+                # project column, for the same structural reason OF-1 gives just above for
+                # embeddings: a note's project changes when the REGISTRY changes (a project
+                # created, renamed or deleted) with the file byte-identical. Gating on the
+                # hash left those rows asserting a project the registry has never held.
+                # Re-derive on the skip path and correct only on a real difference.
+                expected = derive_project(p, registry, vault_root)
+                if project_map.get(ap) != expected:
+                    _update_project(vault_root, p, expected)
+                    result["reprojected"] += 1
+
+                # OF-1: re-embed if the vector store is missing this note
+                # (rebuilt/emptied/corrupt-then-healed store).
                 rel = str(p.relative_to(vault_root)).replace("\\", "/")
                 if rel not in embedded:
                     if not _embed_file(vault_root, p, base_url, embed_model):

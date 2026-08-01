@@ -50,6 +50,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import dedup
 import index_writer
 import mobile_sync_agent
+import project_registry
 import storage_engine as se
 import vault_sync
 import vector_store
@@ -104,28 +105,51 @@ _NOTES: dict[str, dict] = {
 
 
 def _mk_vault(tmp_path: Path) -> Path:
-    """A small synthetic vault: several notes across categories, with tags."""
+    """A small synthetic vault: several notes across projects, with tags.
+
+    Each note's directory name matches its `#project@<name>` body tag, and a
+    `.projects.toml` registers every one of those names -- so the note genuinely
+    BELONGS to the project (contract §1.3), it does not merely sit in a
+    like-named folder. The DB's `project` column is derived from the tag
+    resolved against the registry (index_writer.derive_project), never from
+    `p.parent.name`, so a fixture that only matched folder names would silently
+    stop proving anything the moment the tag/registry rule diverges from the
+    directory.
+    """
     vault = tmp_path / "vault"
+    reg = project_registry.empty_registry()
     for rel, spec in _NOTES.items():
         p = vault / rel
         p.parent.mkdir(parents=True, exist_ok=True)
+        project = spec["category"]
+        reg["projects"].setdefault(
+            project, {"description": "", "created": "", "modified": "", "device": ""}
+        )
         fm = "---\n" + f"tags: [{', '.join(spec['tags'])}]\n" + f"category: {spec['category']}\n" + "---\n"
-        p.write_text(fm + spec["body"] + "\n", encoding="utf-8")
+        body = f"{spec['body']} #project@{project}\n"
+        p.write_text(fm + body, encoding="utf-8")
+    project_registry.save(vault, reg)
     return vault
 
 
 def _oracle(vault: Path) -> dict:
     """Fresh-scan oracle: walk the .md files and derive what a correct index
-    MUST contain. Reads files only — never a database."""
+    MUST contain. Reads files only — never a database. `category` is derived the
+    same way production derives the `project` column: the body's `#project@name`
+    tag resolved against `.projects.toml` (index_writer.derive_project /
+    project_registry.resolve_project) -- NOT the directory the file sits in."""
+    reg = project_registry.load(vault)
     notes: dict[str, dict] = {}
     for p in sorted(vault.rglob("*.md")):
         if any(part.startswith(".") for part in p.relative_to(vault).parts):
             continue
-        fields = read_all_fields(p.read_text(encoding="utf-8"))
+        text = p.read_text(encoding="utf-8")
+        fields = read_all_fields(text)
         raw_tags = (fields.get("tags") or "").strip().strip("[]")
         tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+        project = project_registry.resolve_project(text, reg) or index_writer.LOOSE_DIR
         notes[str(p.relative_to(vault)).replace("\\", "/")] = {
-            "category": fields.get("category") or p.parent.name,
+            "category": project,
             "tags": sorted(tags),
         }
     return {
