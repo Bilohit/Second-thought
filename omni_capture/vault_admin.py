@@ -545,12 +545,29 @@ _SEARCH_ROW_FIELDS = ("id", "timestamp", "project", "path", "filename",
                       "source_url", "confidence", "tags", "tier", "score")
 
 
+def _note_modified(path: Optional[str]) -> Optional[float]:
+    """Filesystem mtime (epoch-seconds float) for a /search result's note file --
+    same convention as the folder listing's "modified" field above. Neither
+    captures.db nor vector_store carries an mtime column, so this is a stat per
+    row rather than a projected DB field; the route caps at 200 rows, so that's
+    cheap. A missing/unreadable file (index lagging a vault delete) publishes
+    None rather than raising."""
+    if not path:
+        return None
+    try:
+        return Path(path).stat().st_mtime
+    except OSError:
+        return None
+
+
 def _shape_search_row(row: dict) -> dict:
     """Project one captures.db row onto the published /search result shape."""
-    return {k: row.get(k) for k in _SEARCH_ROW_FIELDS}
+    shaped = {k: row.get(k) for k in _SEARCH_ROW_FIELDS}
+    shaped["modified"] = _note_modified(shaped.get("path"))
+    return shaped
 
 
-def _shape_semantic_row(row: dict) -> dict:
+def _shape_semantic_row(row: dict, root: Optional[Path] = None) -> dict:
     """Project one vector_store.semantic_search row onto the SAME /search result
     shape as _shape_search_row, tagged tier="semantic" -- so FTS and semantic hits
     fuse into one scored, tier-labeled list (P-DSEARCH item 6) instead of the GUI
@@ -559,6 +576,11 @@ def _shape_semantic_row(row: dict) -> dict:
     GUI already treats those as optional for this reason."""
     path = row.get("path") or ""
     filename = path.replace("\\", "/").rsplit("/", 1)[-1] or None
+    # `path` here is vault-relative (unlike the FTS tier's absolute `path` --
+    # see the dedupe comment below), so it must be resolved against the vault
+    # root before stat'ing; no root (e.g. a unit test shaping a row in
+    # isolation) publishes modified: None rather than stat'ing a bogus path.
+    abs_path = str(root / path) if root is not None and path else None
     return {
         "id": None,
         "timestamp": None,
@@ -573,6 +595,7 @@ def _shape_semantic_row(row: dict) -> dict:
         "tags": None,
         "tier": "semantic",
         "score": row.get("similarity"),
+        "modified": _note_modified(abs_path),
     }
 
 
@@ -619,7 +642,7 @@ async def search_captures(
             rel = (sr.get("path") or "").replace("\\", "/")
             if rel and any(p.endswith(rel) for p in existing):
                 continue
-            results.append(_shape_semantic_row(sr))
+            results.append(_shape_semantic_row(sr, root))
 
     results.sort(key=lambda r: r["score"] if r.get("score") is not None else -1.0, reverse=True)
     results = results[:limit]

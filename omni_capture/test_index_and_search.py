@@ -416,6 +416,28 @@ class TestSemanticFusion(unittest.TestCase):
             self.assertEqual(sem["score"], 0.87)
             self.assertEqual(sem["path"], "Tech_Notes/related.md")
 
+    def test_semantic_tier_publishes_modified_from_vault_relative_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            note_dir = vault / "Tech_Notes"
+            note_dir.mkdir(parents=True)
+            note_path = note_dir / "related.md"
+            note_path.write_text("---\ntitle: related\n---\nbody\n", encoding="utf-8")
+            client = self._make_client(vault)
+            import vector_store
+            fake_row = {
+                "path": "Tech_Notes/related.md",
+                "similarity": 0.87,
+                "excerpt": "…",
+                "category": "Tech_Notes",
+            }
+            with mock.patch.object(vector_store, "semantic_search", return_value=[fake_row]):
+                data = client.get("/search?q=something").json()
+
+            sem = next(r for r in data["results"] if r["tier"] == "semantic")
+            self.assertIsInstance(sem["modified"], float)
+            self.assertAlmostEqual(sem["modified"], note_path.stat().st_mtime, places=3)
+
 
 class TestStats(unittest.TestCase):
     def _populate(self, vault: Path) -> None:
@@ -692,6 +714,31 @@ class TestSearchEndpoint(unittest.TestCase):
             data   = client.get("/search?q=anything").json()
             self.assertEqual(data["count"],   0)
             self.assertEqual(data["results"], [])
+
+    # GET /search — projects screen "recently edited" sort needs a modified field
+    def test_search_result_publishes_note_mtime(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            note_dir = vault / "Tech_Notes"
+            note_dir.mkdir(parents=True)
+            note_path = note_dir / "docker.md"
+            note_path.write_text("---\ntitle: docker\n---\nbody\n", encoding="utf-8")
+            self._seed(vault, [_entry_search(filepath=str(note_path), filename="docker")])
+            client = self._make_client(vault)
+            data = client.get("/search?q=docker").json()
+            row = next(r for r in data["results"] if r["filename"] == "docker")
+            self.assertIsInstance(row["modified"], float)
+            self.assertAlmostEqual(row["modified"], note_path.stat().st_mtime, places=3)
+
+    def test_search_result_modified_none_when_file_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            self._seed(vault, [_entry_search(filepath="/v/T/gone.md", filename="gone")])
+            client = self._make_client(vault)
+            data = client.get("/search?q=gone").json()
+            row = next(r for r in data["results"] if r["filename"] == "gone")
+            self.assertIsNone(row["modified"])
 
 
 class TestStatsEndpoint(unittest.TestCase):
