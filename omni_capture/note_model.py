@@ -16,14 +16,20 @@ from __future__ import annotations
 import re
 
 from reconcile import Note
+from project_registry import Registry, resolve_project
+from projects import project_cache_value
 
 # Canonical known-key serialize order (mirrors note.ts KNOWN_KEY_ORDER).
 # v2.2 (2026-07-24, DESKTOP-FIRST): `category` is NOT serialized — the parent folder IS the
 # category (data-model §1.2). Legacy `category:` is still parsed into note.category (ignored) but
 # dropped at the note's first save; `category_source` (an unknown key riding `extra`) is filtered
 # out on serialize. The phone still emits `category:` during the interim; the desktop ignores it.
+# v3.1 (2026-08-01, s125): `project` joins `tags`/`attachments` as a derived body cache (contract
+# §1.3) — resolved via `resolve_project(note.body, registry)` at serialize time, never stored on
+# the Note struct. A legacy/hand-edited `project:` line is parsed and dropped (see parse_note),
+# exactly like `category`, because the frontmatter is a cache and the body is truth.
 _KNOWN_KEY_ORDER = [
-    "id", "title", "origin", "created", "modified", "device", "tags",
+    "id", "title", "origin", "created", "modified", "device", "tags", "project",
     "origin_device", "aliases", "attachments", "enriched", "enrich_source", "remind_at",
 ]
 
@@ -139,6 +145,10 @@ def parse_note(raw_file: str) -> Note:
             note.origin = "capture" if _parse_scalar(raw) == "capture" else "note"
         elif key == "category":
             note.category = _parse_scalar(raw)
+        elif key == "project":
+            # v3.1: derived cache, never trusted from disk — dropped on read exactly like
+            # `category`. Re-derived from the body at serialize_note's next save.
+            pass
         elif key == "origin_device":
             v = _parse_scalar(raw)
             note.origin_device = v if v in ("phone", "desktop", "shared") else None
@@ -178,8 +188,15 @@ def _emit_list(items: list[str]) -> str:
     return "[" + ", ".join(_emit_scalar(x) for x in items) + "]"
 
 
-def serialize_note(note: Note) -> str:
-    """Serialize a Note back to note-file text in canonical key order. Body appended byte-exact."""
+def serialize_note(note: Note, registry: Registry | None = None) -> str:
+    """Serialize a Note back to note-file text in canonical key order. Body appended byte-exact.
+
+    `registry` is optional (v3.1, s125): when given, `project:` is written as the RESOLVED,
+    ALWAYS-bracketed cache of the body's `#project@<name>` tag — `[research]` when it resolves,
+    `[-]` when the note is loose (contract §1.3). When omitted (every pre-existing caller), no
+    `project:` line is emitted — unchanged behaviour for callers that have not been wired to a
+    registry yet.
+    """
     lines: list[str] = []
     for key in _KNOWN_KEY_ORDER:
         if key == "id":
@@ -196,6 +213,9 @@ def serialize_note(note: Note) -> str:
             lines.append(f"device: {_emit_scalar(note.device)}")
         elif key == "tags":
             lines.append(f"tags: {_emit_list(note.tags)}")
+        elif key == "project":
+            if registry is not None:
+                lines.append(f"project: {project_cache_value(resolve_project(note.body, registry))}")
         elif key == "origin_device":
             if note.origin_device is not None:
                 lines.append(f"origin_device: {note.origin_device}")

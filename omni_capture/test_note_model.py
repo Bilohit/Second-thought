@@ -1,4 +1,5 @@
 from note_model import parse_note, serialize_note
+from project_registry import empty_registry
 
 SAMPLE = """---
 id: 01J8ZQ8ZQ8ZQ8ZQ8ZQ8ZQ8ZQ8
@@ -190,3 +191,69 @@ def test_programmatically_set_category_is_not_written():
     n = parse_note("---\nid: x\n---\nbody\n")
     n.category = "ideas"             # a reader may stamp the folder name onto the struct
     assert "category:" not in serialize_note(n)
+
+
+# v3.1 (2026-08-01, s125): `project` is a derived body cache, recomputed at serialize_note's same
+# trigger point as `tags`/`attachments` — resolved from note.body via resolve_project(body, registry).
+def _registry_with(*names: str) -> dict:
+    reg = empty_registry()
+    for name in names:
+        reg["projects"][name] = {"description": "", "created": "", "modified": "", "device": ""}
+    return reg
+
+
+def test_project_line_is_written_bracketed_when_resolved():
+    reg = _registry_with("research")
+    n = parse_note("---\nid: x\n---\n#project@research\n\nbody\n")
+    serialized = serialize_note(n, reg)
+    assert "project: [research]" in serialized
+
+
+def test_loose_notes_get_an_explicit_marker_never_an_absent_line():
+    reg = _registry_with("research")
+    n = parse_note("---\nid: x\n---\nno project tag here\n")
+    serialized = serialize_note(n, reg)
+    assert "project: [-]" in serialized
+
+
+def test_a_dangling_tag_caches_as_loose():
+    # The value written is the RESOLVED project, so an unregistered tag caches as [-] —
+    # because that note IS loose (contract §1.3).
+    reg = _registry_with("research")   # "unregistered" is NOT in the registry
+    n = parse_note("---\nid: x\n---\n#project@unregistered\n\nbody\n")
+    serialized = serialize_note(n, reg)
+    assert "project: [-]" in serialized
+
+
+def test_hand_edited_project_line_is_overwritten_from_the_body():
+    # Identical to how `tags:` behaves today: the frontmatter is a cache, the body is truth.
+    reg = _registry_with("research")
+    n = parse_note("---\nid: x\nproject: [some-other-project]\n---\n#project@research\n\nbody\n")
+    serialized = serialize_note(n, reg)
+    assert "project: [research]" in serialized
+    assert "project: [some-other-project]" not in serialized
+
+
+def test_deleting_the_project_line_rebuilds_it_losslessly():
+    reg = _registry_with("research")
+    # no `project:` line at all in the source text
+    n = parse_note("---\nid: x\n---\n#project@research\n\nbody\n")
+    assert "project" not in n.extra
+    serialized = serialize_note(n, reg)
+    assert "project: [research]" in serialized
+
+
+def test_the_body_is_byte_identical_after_a_recompute():
+    # Mandatory on every non-editor op, both repos.
+    reg = _registry_with("research")
+    before = parse_note("---\nid: x\nproject: [stale]\n---\n#project@research\n\nbody\n")
+    before_body_bytes = before.body
+    after = parse_note(serialize_note(before, reg))
+    after_body_bytes = after.body
+    assert after_body_bytes == before_body_bytes
+
+
+def test_project_omitted_when_no_registry_given():
+    # Pre-existing callers (not yet wired to a registry) keep today's behaviour unchanged.
+    n = parse_note("---\nid: x\n---\n#project@research\n\nbody\n")
+    assert "project:" not in serialize_note(n)
