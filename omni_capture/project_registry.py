@@ -23,6 +23,14 @@ SCHEMA = 1
 Registry = Dict[str, Any]
 
 
+def _registry_lock_path(vault_root: Path) -> Path:
+    # Vault-root sidecar, same convention as merge.py's _merge_lock_path. Callers doing a
+    # load->merge->save cycle (contract §13.2) hold this for the ENTIRE cycle -- acquired
+    # before the read, released after the write. `save()` itself does not acquire it (its
+    # docstring already states callers hold the lock), this just names the path.
+    return Path(vault_root) / ".projects.lock"
+
+
 class UnknownSchemaError(Exception):
     """The file declares a schema this build does not understand. Leave it alone and surface it —
     rewriting would drop fields we cannot see (contract §13.2)."""

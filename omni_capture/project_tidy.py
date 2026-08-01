@@ -85,7 +85,17 @@ def apply_tidy(vault_root: Path, moves: List[Move]) -> TidyResult:
                 skipped += 1
                 continue
             move.dst.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(move.src, move.dst)
+            try:
+                os.replace(move.src, move.dst)
+            except OSError:
+                # ponytail: one move held open by another writer (e.g. mid-append) aborts only
+                # itself, not the whole pass -- tidy is idempotent housekeeping, and the worst
+                # case is already contract-accepted: "the vault on disk is untidy while both
+                # apps read correctly, self-healing, never wrong" (data-model §1.3). The next
+                # tidy pass retries this move. Upgrade path if that's ever not good enough:
+                # take `.merge.lock` too, so tidy wins the race instead of retrying.
+                skipped += 1
+                continue
             source_dirs.add(move.src.parent)
             moved += 1
 

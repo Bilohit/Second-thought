@@ -9,6 +9,10 @@ def _write(vault: Path, text: str) -> None:
     (vault / pr.REGISTRY_FILENAME).write_text(text, encoding="utf-8")
 
 
+def test_registry_lock_path_is_a_vault_root_sidecar(tmp_path):
+    assert pr._registry_lock_path(tmp_path) == tmp_path / ".projects.lock"
+
+
 def test_missing_file_loads_as_empty_never_raises(tmp_path):
     reg = pr.load(tmp_path)
     assert reg == {"schema": pr.SCHEMA, "projects": {}}

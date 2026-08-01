@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import project_tidy as pt
@@ -112,3 +113,33 @@ def test_apply_removes_an_emptied_project_directory_but_never_loose(tmp_path):
 
 def test_apply_on_an_empty_move_list_is_a_no_op(tmp_path):
     assert pt.apply_tidy(tmp_path, []) == pt.TidyResult(0, 0, 0)
+
+
+def test_a_blocked_move_is_skipped_and_the_pass_continues(tmp_path, monkeypatch):
+    (tmp_path / "_loose").mkdir()
+    (tmp_path / "research").mkdir()
+    blocked_src = tmp_path / "_loose" / "a.md"
+    blocked_src.write_text("blocked", encoding="utf-8")
+    healthy_src = tmp_path / "_loose" / "b.md"
+    healthy_src.write_text("healthy", encoding="utf-8")
+
+    blocked_dst = tmp_path / "research" / "a.md"
+    healthy_dst = tmp_path / "research" / "b.md"
+
+    real_replace = os.replace
+
+    def flaky_replace(src, dst, *a, **kw):
+        if Path(src) == blocked_src:
+            raise OSError("held open by another writer")
+        return real_replace(src, dst, *a, **kw)
+
+    monkeypatch.setattr(pt.os, "replace", flaky_replace)
+
+    result = pt.apply_tidy(tmp_path, [pt.Move(blocked_src, blocked_dst), pt.Move(healthy_src, healthy_dst)])
+
+    assert result.skipped == 1
+    assert result.moved == 1
+    assert blocked_src.exists()
+    assert not blocked_dst.exists()
+    assert healthy_dst.exists()
+    assert not healthy_src.exists()
