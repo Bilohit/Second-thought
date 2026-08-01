@@ -160,6 +160,29 @@ def test_created_is_immutable_and_takes_the_earlier_value():
     assert out["projects"]["a"]["created"] == "2026-07-30T08:00:00Z"
 
 
+def test_merge_raises_on_an_unreadable_remote_schema():
+    # Contract §13.2: `schema` is not merged — an unreadable remote schema must not be silently
+    # stamped over with SCHEMA, which would drop fields this build cannot see.
+    remote = {"schema": 99, "projects": {}}
+    with pytest.raises(pr.UnknownSchemaError):
+        pr.merge(_reg(), _reg(), remote)
+
+
+def test_merge_raises_on_an_unreadable_local_schema():
+    # Same contract row, other side: a local registry carrying an unreadable schema must also
+    # be refused rather than merged.
+    local = {"schema": 99, "projects": {}}
+    with pytest.raises(pr.UnknownSchemaError):
+        pr.merge(_reg(), local, _reg())
+
+
+def test_merge_succeeds_when_all_three_registries_are_schema_1():
+    # The guard must not over-fire on the ordinary all-schema-1 case.
+    out = pr.merge(_reg(), _reg(a=_entry("mine")), _reg())
+    assert out["schema"] == pr.SCHEMA
+    assert out["projects"]["a"]["description"] == "mine"
+
+
 def test_unrelated_entries_on_each_side_both_survive():
     # The whole reason this is not last-writer-wins: two devices editing DIFFERENT projects in
     # one batch window write the same file.

@@ -95,6 +95,13 @@ def merge(base: Registry, local: Registry, remote: Registry) -> Registry:
     NEVER last-writer-wins on the whole file: two devices editing DIFFERENT projects in one batch
     window write the same file, and a whole-file rule silently discards one of them.
     """
+    # `schema` is not merged (contract §13.2): a peer carrying a schema this build cannot read
+    # must never be silently rewritten as SCHEMA, dropping fields it cannot see.
+    for reg in (base, local, remote):
+        schema = reg.get("schema", SCHEMA)
+        if schema != SCHEMA:
+            raise UnknownSchemaError(f"registry schema {schema!r} is not readable by this build")
+
     b, l, r = base.get("projects", {}), local.get("projects", {}), remote.get("projects", {})
     out: Dict[str, dict] = {}
 
