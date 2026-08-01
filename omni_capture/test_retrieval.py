@@ -124,7 +124,7 @@ class TestTags(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 class TestLinkResolver(unittest.TestCase):
 
-    def test_crm_name_injected(self):
+    def test_two_word_name_injected(self):
         with _temp_vault({"CRM/john-smith.md": "# John Smith\n"}) as vault:
             idx = build_link_index(vault)
             result = inject_wikilinks("Spoke with John Smith today.", idx)
@@ -136,10 +136,19 @@ class TestLinkResolver(unittest.TestCase):
             result = inject_wikilinks("See Python Asyncio Notes for details.", idx)
         self.assertIn("python-asyncio-notes", result)
 
-    def test_single_word_non_crm_not_injected(self):
+    def test_single_word_name_not_injected(self):
         with _temp_vault({"Tech_Notes/python.md": "# Python\n"}) as vault:
             idx = build_link_index(vault)
             result = inject_wikilinks("I love python programming.", idx)
+        self.assertNotIn("[[", result)
+
+    def test_a_folder_named_crm_no_longer_buys_a_single_word_name_out_of_the_rule(self):
+        # Projects S1 (s125 item 5): the `category == "CRM"` exemption is DELETED.
+        # A folder is a project name -- a user string with no meaning to the linker --
+        # so the word-count rule applies to every note equally.
+        with _temp_vault({"CRM/acme.md": "# Acme\n"}) as vault:
+            idx = build_link_index(vault)
+            result = inject_wikilinks("Met Acme yesterday.", idx)
         self.assertNotIn("[[", result)
 
     def test_code_block_protected(self):
@@ -587,7 +596,7 @@ def test_chunked_note_resolves_to_parent_and_appears_once():
     assert paths.count(str(note)) == 1
 
 def test_prompt_numbers_sources_without_llm_refusal():
-    srcs = [{"n": 1, "path": "/v/Tech/a.md", "category": "Tech",
+    srcs = [{"n": 1, "path": "/v/Tech/a.md", "project": "Tech",
              "filename": "a.md", "snippet": "async io"}]
     p = build_system_prompt(srcs, "vault")
     assert "[1] (Tech/a.md)" in p

@@ -8,7 +8,7 @@ Two public functions:
   build_link_index(vault_root)
       Walk all .md files in the vault and build a mapping of
       {display_name → vault-relative stem path} for every note that is
-      specific enough to auto-link (multi-word names, or any CRM entry).
+      specific enough to auto-link (multi-word names).
       Also reads YAML `aliases` frontmatter when present.
 
   inject_wikilinks(content, link_index, exclude_stems=None)
@@ -32,9 +32,14 @@ from typing import Optional
 
 # ── Minimum word count for auto-linking ──────────────────────────────────────
 # Single-word note names (e.g. "Python") are too broad and cause false
-# positives.  Only CRM entries are linked regardless of word count because
-# they are always proper names.
-_MIN_WORDS_NON_CRM = 2
+# positives.
+#
+# Projects S1 (s125 item 5): the `category == "CRM"` exemption that linked any
+# single-word name inside a folder literally called "CRM" is DELETED along with
+# the folder-name category concept -- an authorised feature subtraction. A
+# project's name is a user string with no meaning to the linker, so no folder
+# may buy a note out of the word-count rule any more.
+_MIN_WORDS = 2
 
 # Minimum character length of the display name to link
 _MIN_DISPLAY_LEN = 4
@@ -151,7 +156,6 @@ def build_link_index(vault_root: Path) -> dict[str, str]:
         except ValueError:
             continue
 
-        category = rel.parts[0] if len(rel.parts) > 1 else ""
         stem = md.stem  # e.g. "john-smith"
 
         # Build display name: "john-smith" → "John Smith"
@@ -159,20 +163,17 @@ def build_link_index(vault_root: Path) -> dict[str, str]:
             w.capitalize() for w in re.split(r"[-_]+", stem) if w
         )
         word_count = len(display.split())
-        rel_stem = rel.with_suffix("").as_posix()  # "CRM/john-smith" (POSIX separators on every OS)
+        rel_stem = rel.with_suffix("").as_posix()  # "research/john-smith" (POSIX separators on every OS)
 
         # Apply auto-link filter
-        if len(display) >= _MIN_DISPLAY_LEN:
-            if category == "CRM" or word_count >= _MIN_WORDS_NON_CRM:
-                index[display] = rel_stem
+        if len(display) >= _MIN_DISPLAY_LEN and word_count >= _MIN_WORDS:
+            index[display] = rel_stem
 
         # Also index any frontmatter aliases
         for alias in _parse_aliases(md):
             alias = alias.strip()
-            if len(alias) >= _MIN_DISPLAY_LEN:
-                a_words = len(alias.split())
-                if category == "CRM" or a_words >= _MIN_WORDS_NON_CRM:
-                    index[alias] = rel_stem
+            if len(alias) >= _MIN_DISPLAY_LEN and len(alias.split()) >= _MIN_WORDS:
+                index[alias] = rel_stem
 
     return index
 

@@ -425,11 +425,10 @@ def log_capture_db(entry: dict, vault_root: Path) -> None:
     """
     Upsert one capture record.
 
-    *entry* mirrors the JSONL schema produced by capture_log.py, plus optional
-    ``tags`` (list[str]) and ``confidence`` (float) keys. Its ``category`` key
-    is the caller's field name (Task 14 re-keys the real callers) -- it is
-    written into the renamed `project` column, and already carries the
-    resolved project (or `_loose`) by construction of the write path.
+    *entry* mirrors the schema produced by capture_log.py, plus optional ``tags``
+    (list[str]) and ``confidence`` (float) keys. Its ``project`` key already
+    carries the resolved project (or `_loose`) by construction of the write path
+    -- capture_log reads it off the written note's parent directory.
 
     Fails silently — a DB error must never break the capture pipeline.
     """
@@ -455,7 +454,7 @@ def log_capture_db(entry: dict, vault_root: Path) -> None:
             """,
             (
                 entry.get("timestamp") or datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                entry.get("category", ""),
+                entry.get("project", ""),
                 entry.get("filepath", ""),
                 h,
                 tags,
@@ -570,7 +569,10 @@ def migrate_jsonl(jsonl_path: Path, vault_root: Path) -> int:
                 """,
                 (
                     entry.get("timestamp", ""),
-                    entry.get("category", ""),
+                    # A captures.jsonl on disk predates the rename by definition, so the
+                    # legacy `category` key is still read here -- this is a one-shot
+                    # importer for a historic file, not a live write path.
+                    entry.get("project", entry.get("category", "")),
                     filepath,
                     h,
                     tags,
@@ -693,7 +695,7 @@ def upsert_provisional(db: sqlite3.Connection, op_id: str, note_id: str, body: s
         """,
         (
             timestamp,
-            meta.get("category", ""),
+            meta.get("project", ""),
             _provisional_path(op_id),
             op_id,
             body_excerpt,
@@ -762,7 +764,7 @@ def _row_filter_clauses(
 def search(
     query: str,
     vault_root: Path,
-    category: Optional[str] = None,
+    project: Optional[str] = None,
     since: Optional[str]    = None,
     limit: int              = 25,
     tag: Optional[str]      = None,
@@ -804,9 +806,7 @@ def search(
     Parameters
     ----------
     query     Free-text query (or blank to browse).
-    category  Optional project filter (matches the `project` column; kept
-              named `category` here so existing callers -- e.g. vault_admin's
-              /search route -- don't need a keyword-argument rename).
+    project   Optional exact-match filter on the `project` column.
     since     ISO-8601 timestamp lower-bound (inclusive).
     limit     Max rows to return.
     tag       F-4: tag filter -- the Library tags browser's "jump to filtered
@@ -843,7 +843,7 @@ def search(
 
     if not query.strip():
         sql = "SELECT * FROM captures WHERE 1=1"
-        clauses, params = _row_filter_clauses(category, since, tag_paths)
+        clauses, params = _row_filter_clauses(project, since, tag_paths)
         for c in clauses:
             sql += f" AND {c}"
         sql += " ORDER BY timestamp DESC LIMIT ?"
@@ -870,7 +870,7 @@ def search(
             "JOIN captures_fts fts ON fts.rowid = c.id WHERE captures_fts MATCH ?"
         )
         params: list = [match_query]
-        clauses, extra = _row_filter_clauses(category, since, tag_paths, prefix="c.")
+        clauses, extra = _row_filter_clauses(project, since, tag_paths, prefix="c.")
         for c in clauses:
             sql += f" AND {c}"
         params.extend(extra)
@@ -907,7 +907,7 @@ def search(
         "OR tags LIKE ? ESCAPE '\\')"
     )
     like_params: list = [like_val] * 5
-    clauses, extra = _row_filter_clauses(category, since, tag_paths)
+    clauses, extra = _row_filter_clauses(project, since, tag_paths)
     for c in clauses:
         like_sql += f" AND {c}"
     like_params.extend(extra)

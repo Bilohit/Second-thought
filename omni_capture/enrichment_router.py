@@ -520,8 +520,9 @@ def _save_image_attachment(image_bytes: bytes, vault_root) -> "Path":
 
     Underscore-prefixed (not dot-prefixed) so the folder is both visible to
     Obsidian's vault index (dot-prefixed folders are invisible, breaking the
-    ![[...]] embed) and excluded from discover_categories (which excludes
-    '_'/'.'-prefixed folders).
+    ![[...]] embed) and unreachable as a project name -- `projects.is_valid_project_name`
+    rejects a leading '_', which is what reserves every '_'-prefixed vault folder
+    (contract §1.3).
     """
     import hashlib
     import time

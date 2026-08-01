@@ -32,7 +32,7 @@ def test_provisional_row_is_flagged_and_excluded_from_dedup(tmp_path):
 
     iw.upsert_provisional(
         db, "op1", "noteA", "---\ntags: [x]\n---\nprovisional body\n",
-        {"modified": "2026-07-11T00:00:00Z", "category": "Tech_Notes"},
+        {"modified": "2026-07-11T00:00:00Z", "project": "Tech_Notes"},
     )
 
     row = db.execute(
@@ -84,7 +84,7 @@ def test_reindex_bodies_leaves_provisional_body_intact(tmp_path):
 
     iw.upsert_provisional(
         db, "op1", "noteA", "---\n---\nprovisional body\n",
-        {"modified": "2026-07-11T00:00:00Z", "category": "Tech_Notes"},
+        {"modified": "2026-07-11T00:00:00Z", "project": "Tech_Notes"},
     )
     db.close()
 
@@ -110,7 +110,7 @@ def test_stats_total_excludes_provisional_rows(tmp_path):
 
     iw.upsert_provisional(
         db, "op1", "noteA", "---\n---\nprovisional body\n",
-        {"modified": "2026-07-11T00:00:00Z", "category": "Tech_Notes"},
+        {"modified": "2026-07-11T00:00:00Z", "project": "Tech_Notes"},
     )
     db.close()
 

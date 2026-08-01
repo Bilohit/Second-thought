@@ -18,9 +18,9 @@ from mobile_sync_agent import (
 
 
 def _mk(body="b", modified="2026-01-01T00:00:00Z", remind=None, tags=None,
-        category=None, enriched=False, extra=None, device="d"):
+        enriched=False, extra=None, device="d"):
     return Note(id="01A", created="2026-01-01T00:00:00Z", origin="note", title="T",
-                aliases=[], tags=tags or [], remind_at=remind, category=category,
+                aliases=[], tags=tags or [], remind_at=remind,
                 origin_device=None, enriched=enriched, enrich_source=None, modified=modified,
                 device=device, attachments=[], extra=dict(extra or {}), body=body)
 
@@ -55,9 +55,9 @@ def test_legacy_category_source_ignored_and_not_a_merge_input():
 
 def test_reconcile_never_serializes_category_or_category_source():
     base = _mk(extra={"category_source": "machine"})
-    local = _mk(category="Finance", extra={"category_source": "user"},
+    local = _mk(extra={"category_source": "user"},
                 modified="2026-01-02T00:00:00Z")
-    remote = _mk(category="Random", enriched=True, extra={"category_source": "machine"})
+    remote = _mk(enriched=True, extra={"category_source": "machine"})
     text = serialize_note(reconcile(base, local, remote).merged)
     assert "category:" not in text            # folder IS the category — never written to disk
     assert "category_source:" not in text     # dead field, dropped at save

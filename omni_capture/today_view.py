@@ -114,7 +114,7 @@ def create_daily_note(vault_root: Path, day_iso: str, folder: str = "Daily",
     ts = now_iso or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())  # UTC-Z, desktop convention
     note = Note(
         id=_mint_capture_id(), created=ts, origin="note", title=day_iso,
-        aliases=[], tags=[], remind_at=None, category=None,
+        aliases=[], tags=[], remind_at=None,
         origin_device="desktop", enriched=False, enrich_source=None,
         modified=ts, device="desktop", attachments=[], extra={},
         body=_DAILY_BODY.format(day=day_iso),

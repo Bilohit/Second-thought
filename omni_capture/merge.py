@@ -99,7 +99,7 @@ def _is_synced_note(path: Path) -> bool:
     """
     True if `path` is a synced NOTE (origin: note, or carries an `id:` — a phone/desktop note whose
     body is sacred), as opposed to a pipeline capture. B-1: such a file must NEVER be a smart-merge
-    append target. A phone note filed under a category folder shares tags with same-topic captures;
+    append target. A phone note filed under a project folder shares tags with same-topic captures;
     appending a capture below its frontmatter is a body-sacred violation, and the next sync pass reads
     the appended bytes as a local body edit. Only the leading frontmatter block is inspected.
     """
@@ -179,17 +179,17 @@ def find_merge_target(
     """
     from storage_engine import _note_dir
 
-    cat = _note_dir(output, vault_root)
+    note_dir = _note_dir(output, vault_root)
     new_tags = _signals_to_keys(output.key_signals)
     if not new_tags:
         return None
 
-    cat_dir = vault_root / cat
-    if not cat_dir.exists():
+    note_dir_path = vault_root / note_dir
+    if not note_dir_path.exists():
         return None
 
     candidates = [
-        f for f in cat_dir.iterdir()
+        f for f in note_dir_path.iterdir()
         # B-1: exclude synced notes (origin: note / id:) — a capture must never merge into a note body.
         if f.is_file() and f.suffix == ".md" and not _is_synced_note(f)
     ]
@@ -200,9 +200,12 @@ def find_merge_target(
     if enable_semantic_merge and embed_base_url:
         try:
             from vector_store import best_match
+            # `category=` is vector_store's own parameter name for its `embeddings.category`
+            # column, a separate schema this task does not touch. The value it holds has always
+            # been the note's parent directory name, i.e. the project (or `_loose`).
             match = best_match(
                 vault_root, output.markdown_content,
-                embed_base_url, embed_model, category=cat,
+                embed_base_url, embed_model, category=note_dir,
             )
             if match:
                 rel, sim = match

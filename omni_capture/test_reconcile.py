@@ -5,7 +5,7 @@ from reconcile import Note, reconcile
 def mk(**o) -> Note:
     base = dict(
         id="n1", created="2026-01-01T00:00:00Z", origin="note", title="Note",
-        aliases=[], tags=[], remind_at=None, category=None, origin_device=None, enriched=False,
+        aliases=[], tags=[], remind_at=None, origin_device=None, enriched=False,
         enrich_source=None, modified="2026-01-01T00:00:00Z", device="phone-a1",
         attachments=[], extra={}, body="base body",
     )
@@ -76,7 +76,7 @@ def test_body_conflict_without_fresh_id_raises():
 # --- enrichment frontmatter (silent merge) ---
 def test_c2_phone_body_desktop_enrich_clean_merge():
     base, local = mk(body="b0"), mk(body="phone edit")
-    remote = mk(body="b0", tags=["finance"], category="work",
+    remote = mk(body="b0", tags=["finance"],
                 enriched=True, enrich_source="desktop-llm")
     r = reconcile(base, local, remote)
     assert r.conflicted_copy is None
@@ -105,11 +105,12 @@ def test_c4_enrichment_flag_desktop_llm_wins():
     assert r.merged.enrich_source == "desktop-llm"
 
 
-def test_category_is_not_a_merge_input():
-    # divergent categories no longer produce a decided winner — the folder decides on next read,
-    # so reconcile never raises and never spins a conflict over category.
-    r = reconcile(mk(category="a"), mk(category="b"), mk(category="c"))
-    assert r.conflicted_copy is None          # category divergence is not a body conflict
+def test_the_note_struct_carries_no_grouping_field_at_all():
+    # Projects S1: the dead `category` field is deleted from Note. A note's project is the
+    # `#project@` body tag, so it is covered by the body merge and there is nothing left for
+    # reconcile to decide about grouping.
+    assert not hasattr(mk(), "category")
+    assert not hasattr(mk(), "project")
 
 
 def test_category_source_dropped_from_merged_extra():
@@ -199,7 +200,7 @@ def test_capture_body_both_edited_conflicted_copy_keeps_capture_origin():
 def test_capture_frontmatter_only_zero_conflict():
     base = cap(tags=[])
     local = cap(body="edited capture text")
-    remote = cap(tags=["clipping"], category="inbox", enriched=True,
+    remote = cap(tags=["clipping"], enriched=True,
                  enrich_source="desktop-llm")
     r = reconcile(base, local, remote)
     assert r.conflicted_copy is None

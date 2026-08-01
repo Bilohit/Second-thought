@@ -18,12 +18,12 @@ from tag_index import parse_tags, resolve_paths, scan_tag_paths
 from vault_admin import _build_tag_tree
 
 
-def _note(vault: Path, category: str, name: str, tags_block: str, origin: str = "note") -> Path:
-    d = vault / category
+def _note(vault: Path, project: str, name: str, tags_block: str, origin: str = "note") -> Path:
+    d = vault / project
     d.mkdir(parents=True, exist_ok=True)
     p = d / f"{name}.md"
     p.write_text(
-        f"---\ntitle: {name}\ncategory: {category}\norigin: {origin}\n{tags_block}\n---\n"
+        f"---\ntitle: {name}\norigin: {origin}\n{tags_block}\n---\n"
         f"# {name}\n\nBody of {name}.\n",
         encoding="utf-8",
     )
@@ -171,8 +171,8 @@ def test_reserved_folders_are_skipped(vault):
     assert tree["count"] == len(search("", vault, tag="reading", limit=100)) == 2
 
 
-def test_tag_filter_still_composes_with_fts_and_category(vault):
-    """The tag filter narrows the same rows the text/category filters do.
+def test_tag_filter_still_composes_with_fts_and_project(vault):
+    """The tag filter narrows the same rows the text/project filters do.
     `alpha` now matches 3 notes on text alone -- alpha.md by filename/body, plus
     both.md and cap.md whose `project/alpha` TAG is part of the indexed FTS body
     (the captures_ai/au triggers concatenate `tags`, and R-2's fix means note rows
@@ -180,5 +180,5 @@ def test_tag_filter_still_composes_with_fts_and_category(vault):
     `reading` narrows that back to the one note that is both."""
     assert len(search("alpha", vault, tag="reading", limit=100)) == 1
     assert len(search("alpha", vault, limit=100)) == 3, "tags are part of the FTS body"
-    assert len(search("", vault, tag="reading", category="Tech_Notes", limit=100)) == 2
-    assert search("", vault, tag="reading", category="Nope", limit=100) == []
+    assert len(search("", vault, tag="reading", project="Tech_Notes", limit=100)) == 2
+    assert search("", vault, tag="reading", project="Nope", limit=100) == []

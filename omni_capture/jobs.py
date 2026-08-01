@@ -39,7 +39,7 @@ from fastapi import APIRouter, HTTPException
 # reminders.py -- the table is authoritative for nothing but job status, and
 # a DB failure must never break in-memory tracking (files/ops are truth).
 # ---------------------------------------------------------------------------
-_jobs: dict[str, dict] = {}   # job_id -> {status, kind, category, path, error, created, updated}
+_jobs: dict[str, dict] = {}   # job_id -> {status, kind, project, path, error, created, updated}
 _jobs_lock = threading.Lock()
 _DEFAULT_JOB_TTL_S = 3600
 # SRV-23: per-job retention, kept beside _jobs rather than inside the entry so it
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     job_id   TEXT PRIMARY KEY,
     status   TEXT,
     kind     TEXT,
-    category TEXT,
+    project  TEXT,
     path     TEXT,
     error    TEXT,
     created  REAL,
@@ -73,7 +73,20 @@ def _connect() -> sqlite3.Connection:
     p.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(p))
     conn.execute(_JOBS_DDL)
+    _migrate_category_column_to_project(conn)
     return conn
+
+
+def _migrate_category_column_to_project(conn: sqlite3.Connection) -> None:
+    """Projects S1: a captures.db written before the rename still carries a `jobs`
+    table with a `category` column, and CREATE TABLE IF NOT EXISTS will not touch it.
+    Without this, every _persist would raise "no such column: project" into the
+    swallow-and-print handler and job status would silently stop surviving a restart.
+    Mirrors index_writer._migrate_category_column_to_project."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+    if "category" in cols and "project" not in cols:
+        conn.execute("ALTER TABLE jobs RENAME COLUMN category TO project")
+        conn.commit()
 
 
 def _persist(job_id: str, entry: dict) -> None:
@@ -84,13 +97,13 @@ def _persist(job_id: str, entry: dict) -> None:
         try:
             path = entry.get("path")
             conn.execute(
-                "INSERT INTO jobs (job_id, status, kind, category, path, error, created, updated) "
+                "INSERT INTO jobs (job_id, status, kind, project, path, error, created, updated) "
                 "VALUES (?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(job_id) DO UPDATE SET "
-                "status=excluded.status, kind=excluded.kind, category=excluded.category, "
+                "status=excluded.status, kind=excluded.kind, project=excluded.project, "
                 "path=excluded.path, error=excluded.error, updated=excluded.updated",
                 (
-                    job_id, entry.get("status"), entry.get("kind"), entry.get("category"),
+                    job_id, entry.get("status"), entry.get("kind"), entry.get("project"),
                     str(path) if path is not None else None,
                     entry.get("error"), entry.get("created"), entry.get("updated"),
                 ),
@@ -118,7 +131,7 @@ def _delete_jobs(job_ids: list[str]) -> None:
 
 def _row_to_entry(row: tuple) -> dict:
     return {
-        "status": row[1], "kind": row[2], "category": row[3], "path": row[4],
+        "status": row[1], "kind": row[2], "project": row[3], "path": row[4],
         "error": row[5], "created": row[6], "updated": row[7],
     }
 
@@ -130,7 +143,7 @@ def load_jobs() -> int:
         conn = _connect()
         try:
             rows = conn.execute(
-                "SELECT job_id, status, kind, category, path, error, created, updated FROM jobs"
+                "SELECT job_id, status, kind, project, path, error, created, updated FROM jobs"
             ).fetchall()
         finally:
             conn.close()
@@ -187,7 +200,7 @@ def _get_job(job_id: str) -> Optional[dict]:
         conn = _connect()
         try:
             row = conn.execute(
-                "SELECT job_id, status, kind, category, path, error, created, updated "
+                "SELECT job_id, status, kind, project, path, error, created, updated "
                 "FROM jobs WHERE job_id = ?", (job_id,)
             ).fetchone()
         finally:
@@ -208,7 +221,7 @@ class _TranscriptFetch:
     full_text: str
     segments: list  # list[dict] -- chunk_transcript's expected shape
     path: Path      # vault note path, already written with the raw transcript
-    category: str   # job's completed `category` field
+    project: str    # job's completed `project` field -- the note's directory name
     dedup_source: str  # `source` arg for register_in_dedup_index
     log_enriched: object  # enriched-payload-like object passed to log_capture
 
@@ -344,18 +357,20 @@ def _run_transcript_job(
             import index_health
             index_health.record_failure("dedup", exc)
 
-        set_status("done", category=fetched.category, path=str(path), warning=dedup_warning)
+        set_status("done", project=fetched.project, path=str(path), warning=dedup_warning)
 
         try:
             from notifier import notify_capture_success
             from capture_log import log_capture
             from models import CaptureOutput
             if cfg.notifications.enabled:
-                notify_capture_success(category=fetched.category,
+                notify_capture_success(project=fetched.project,
                                        filepath=str(path),
                                        title_prefix=cfg.notifications.title_prefix)
+            # No `project=` here on purpose: log_capture reads the note's project off
+            # the written path, never off the model, so the log can never disagree
+            # with where the file actually landed.
             minimal_output = CaptureOutput(
-                category=fetched.category,
                 suggested_filename=path.stem,
                 markdown_content=summary,
                 confidence=1.0,
@@ -403,7 +418,7 @@ def _run_youtube_job(job_id: str, url: str, cfg) -> None:
             full_text=full_text,
             segments=segments,
             path=path,
-            category=cfg.youtube.folder_name,
+            project=cfg.youtube.folder_name,
             dedup_source=url,
             log_enriched=EnrichedPayload(
                 raw_input=url, input_type="url_youtube", enriched_text=full_text, source_url=url,
@@ -441,7 +456,7 @@ def _run_voice_job(job_id: str, enriched, cfg) -> None:
             full_text=full_text,
             segments=segments,
             path=path,
-            category=path.parent.name,
+            project=path.parent.name,
             dedup_source=str(path),
             log_enriched=enriched,
         )
@@ -468,7 +483,7 @@ async def get_job(job_id: str):
         "job_id": job_id,
         "status": job.get("status"),
         "kind": job.get("kind"),
-        "category": job.get("category"),
+        "project": job.get("project"),
         "path": job.get("path"),
         "error": job.get("error"),
         "chunk_index": job.get("chunk_index"),

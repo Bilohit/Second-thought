@@ -32,7 +32,6 @@ def test_parses_scalar_fields():
     assert n.id == "01J8ZQ8ZQ8ZQ8ZQ8ZQ8ZQ8ZQ8"
     assert n.title == "Call mom re taxes"
     assert n.origin == "note"
-    assert n.category == "personal"
     assert n.enriched is False
     assert n.enrich_source == "phone-heuristic"
     assert n.remind_at == "2026-07-08T09:00:00Z"
@@ -169,13 +168,14 @@ def test_origin_device_not_leaked_into_extra():
     assert "origin_device" not in n.extra
 
 
-# v2.2 (2026-07-24, DESKTOP-FIRST): category is folder-derived — never serialized on desktop.
-# Legacy `category:` is still parsed (ignored) but dropped at first save; `category_source` too.
-def test_category_never_serialized_even_when_set():
+# Projects S1: the `category` concept is deleted. Legacy `category:` is IGNORED on read (it does
+# not even reach the struct any more) and dropped at first save; `category_source` too.
+def test_legacy_category_is_not_read_onto_the_struct_and_never_serialized():
     n = parse_note(SAMPLE)          # SAMPLE carries `category: personal`
-    assert n.category == "personal"  # still parsed into the struct (legacy read)
+    assert not hasattr(n, "category")   # the field is gone, not merely ignored
+    assert "category" not in n.extra    # nor does it survive as an unknown key
     out = serialize_note(n)
-    assert "category:" not in out    # ...but never written back to disk
+    assert "category:" not in out       # ...and it is never written back to disk
 
 
 def test_category_source_dropped_from_disk_at_first_save():
@@ -187,10 +187,11 @@ def test_category_source_dropped_from_disk_at_first_save():
     assert "category_source" not in parse_note(out).extra
 
 
-def test_programmatically_set_category_is_not_written():
-    n = parse_note("---\nid: x\n---\nbody\n")
-    n.category = "ideas"             # a reader may stamp the folder name onto the struct
-    assert "category:" not in serialize_note(n)
+def test_a_hand_edited_project_line_is_dropped_on_read_like_category():
+    # Both are derived caches; the body is truth. Neither is trusted from disk.
+    n = parse_note("---\nid: x\ncategory: work\nproject: [made-up]\n---\nbody\n")
+    assert "project" not in n.extra
+    assert "category" not in n.extra
 
 
 # v3.1 (2026-08-01, s125): `project` is a derived body cache, recomputed at serialize_note's same

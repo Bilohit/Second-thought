@@ -103,17 +103,18 @@ def _project_file_count(root: Path, name: str) -> int:
 
 
 # -- Vault-path safety helpers --------------------------------------------------
-# Also used by server.py's /inbox/{note_id}/approve (target_category validation)
-# via `vault_admin._safe_category_dir` -- kept here since category-directory
+# Also used by server.py's /inbox/{note_id}/approve (target-folder validation)
+# via `vault_admin._safe_folder_dir` -- kept here since vault-directory
 # safety is fundamentally a vault-CRUD concern.
 
 _safe_name = path_safety.safe_name
 
 
-def _safe_category_dir(root: Path, name: str) -> Path:
+def _safe_folder_dir(root: Path, name: str) -> Path:
     """
-    Resolve a category directory and guarantee it stays directly inside the
-    vault root.
+    Resolve a vault folder and guarantee it stays directly inside the
+    vault root. The name is a project name or a reserved folder (`_loose`,
+    `_scratchpad`, ...) -- this guard does not care which.
 
     The logic lives in `path_safety.safe_subdir` so that trash.py and
     mobile_sync_agent.py can reuse the same resolve-and-compare backstop
@@ -123,12 +124,12 @@ def _safe_category_dir(root: Path, name: str) -> Path:
     try:
         return path_safety.safe_subdir(root, name)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid category name.")
+        raise HTTPException(status_code=400, detail="Invalid folder name.")
 
 
 # -- Vault management endpoints -----------------------------------------------
 
-@router.get("/vault/categories")
+@router.get("/vault/folders")
 async def list_vault_folders():
     """The vault's top-level DIRECTORY listing (Library's folder browser), not the
     project registry -- `GET /vault/projects` is that. Both exist because they answer
@@ -138,14 +139,12 @@ async def list_vault_folders():
     ISS-014: dot-prefixed folders (`.omni_capture`, `.sync`) are internal
     pipeline/sync bookkeeping and must never reach this list at all.
 
-    ponytail: the route path and response key still say "categories" so the gui keeps
-    typechecking; Task 14 renames both to `/vault/folders` in one gui+server sweep.
-    Descriptions now come from the registry (`.category.toml` is gone), so a folder
+    Descriptions come from the registry (`.category.toml` is gone), so a folder
     that is not a registered project simply has none.
     """
     root = _srv()._get_vault_root()
     if not root.exists():
-        return {"categories": [], "vault_root": str(root)}
+        return {"folders": [], "vault_root": str(root)}
     registry = project_registry.load(root).get("projects", {})
     result = []
     for entry in sorted(root.iterdir()):
@@ -160,7 +159,7 @@ async def list_vault_folders():
                 "rel_path": entry.name,
                 "description": (registry.get(entry.name) or {}).get("description") or None,
             })
-    return {"categories": result, "vault_root": str(root)}
+    return {"folders": result, "vault_root": str(root)}
 
 def _set_vault_root_config(root: Path) -> None:
     """Persist `[vault] root` to config.toml -- mirrors PATCH /config's
@@ -198,7 +197,7 @@ def _set_vault_root_config(root: Path) -> None:
 @router.get("/vault/setup/check")
 async def check_vault_setup(root: str):
     """ISS-002/P-WIZARD: detect whether *root* is already an existing vault
-    with user categories, BEFORE it is ever written to config -- so the
+    with user projects, BEFORE it is ever written to config -- so the
     first-run wizard can skip its folder-picker step (mock's "existing vault
     found" branch) for a path the user Browse'd to that's already set up.
     Read-only: never mutates config. *root* is whatever the Tauri folder
@@ -207,11 +206,11 @@ async def check_vault_setup(root: str):
         raise HTTPException(status_code=400, detail="root must be an absolute path")
     p = Path(root).expanduser()
     if not p.exists():
-        return {"exists": False, "has_categories": False, "categories": []}
+        return {"exists": False, "has_projects": False, "projects": []}
     # "Already set up" now means "has projects registered", not "has folders on disk":
     # a folder is a consequence of filing a note, never the definition of a project.
-    cats = sorted(project_registry.load(p).get("projects", {}))
-    return {"exists": True, "has_categories": len(cats) > 0, "categories": cats}
+    names = sorted(project_registry.load(p).get("projects", {}))
+    return {"exists": True, "has_projects": len(names) > 0, "projects": names}
 
 
 @router.post("/vault/setup")
@@ -433,8 +432,8 @@ def _tidy(root: Path):
     return project_tidy.apply_tidy(root, project_tidy.plan_tidy(entries, root, reg))
 
 
-@router.get("/vault/categories/{name}/files")
-async def list_category_files(name: str):
+@router.get("/vault/folders/{name}/files")
+async def list_folder_files(name: str):
     """Task 2.6: also carries `hub_name`/`name_clash` per note -- the SAME
     resolution mobile_sync_agent runs before a hub upload (_resolve_hub_names
     over every note in the folder, by title+created), so a row whose stored
@@ -445,14 +444,14 @@ async def list_category_files(name: str):
     from mobile_sync_agent import _hub_filename, _resolve_hub_names
 
     root = _srv()._get_vault_root()
-    target = _safe_category_dir(root, name)
+    target = _safe_folder_dir(root, name)
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"'{name}' not found.")
 
     md_files = [f for f in sorted(target.iterdir()) if f.is_file() and f.suffix == ".md"]
 
-    # _resolve_hub_names needs id/title/created/category for every note in the
-    # folder (its clash grouping is per (category, name)) -- only notes that
+    # _resolve_hub_names needs id/title/created/folder for every note in the
+    # folder (its clash grouping is per (folder, name)) -- only notes that
     # have an id are sync-addressable, so id-less files (e.g. a stray capture)
     # sit out the resolution and are never flagged.
     notes = []
@@ -477,7 +476,10 @@ async def list_category_files(name: str):
                 "id": note_id,
                 "title": fields.get("title", ""),
                 "created": fields.get("created", ""),
-                "category": name,
+                # Task 12 re-keyed _resolve_hub_names' grouping onto "folder"; this dict was
+                # still handing it "category", so every note grouped under None. Harmless here
+                # (one folder per call, so the key was constant) but wrong by construction.
+                "folder": name,
             })
     resolved = _resolve_hub_names(notes)
 
@@ -499,14 +501,14 @@ async def list_category_files(name: str):
             hub_name = f.name
             name_clash = False
         # `path` is absolute by contract: the GUI opens the file with it, and the
-        # caller already holds `vault_root` from /vault/categories. `rel_path` is the
+        # caller already holds `vault_root` from /vault/folders. `rel_path` is the
         # vault-relative form for anything that only needs to identify the note.
         files.append({"name": f.stem, "filename": f.name, "path": str(f),
                       "rel_path": f"{name}/{f.name}",
                       "size_bytes": stat.st_size, "modified": stat.st_mtime,
                       "hub_name": hub_name, "name_clash": name_clash,
                       "unreadable": f in unreadable})
-    return {"category": name, "files": files}
+    return {"folder": name, "files": files}
 
 
 # -- Search & stats endpoints -------------------------------------------------
@@ -536,9 +538,9 @@ def _extract_tag_filter(q: str) -> tuple[str, Optional[str]]:
 # P-DSEARCH: `tier` ("exact"|"substring"|"semantic") and `score` (0..1, higher
 # == more relevant) are now part of that published shape -- see index_writer.search.
 # Projects S1: captures.db's `category` column was renamed to `project` -- this
-# projection follows it. `_shape_semantic_row` below keeps its own "category" key
-# unchanged on purpose: it reads vector_store's `embeddings` table, a separate
-# schema this task does not touch.
+# projection follows it, and `_shape_semantic_row` below maps vector_store's own
+# `category` column (a separate schema this task does not touch) onto the same
+# published key, so both tiers of one result list agree on their field names.
 _SEARCH_ROW_FIELDS = ("id", "timestamp", "project", "path", "filename",
                       "source_url", "confidence", "tags", "tier", "score")
 
@@ -560,7 +562,10 @@ def _shape_semantic_row(row: dict) -> dict:
     return {
         "id": None,
         "timestamp": None,
-        "category": row.get("category"),
+        # vector_store's `embeddings.category` column has always held the note's parent
+        # directory name, i.e. its project (or `_loose`) -- published under the same key
+        # as the FTS tier's `project` so one list never carries two names for one field.
+        "project": row.get("category"),
         "path": path,
         "filename": filename,
         "source_url": None,
@@ -574,7 +579,7 @@ def _shape_semantic_row(row: dict) -> dict:
 @router.get("/search")
 async def search_captures(
     q: str = "",
-    category: Optional[str] = None,
+    project: Optional[str] = None,
     since: Optional[str] = None,
     limit: int = 25,
     x_log_level: Optional[str] = Header(None, alias="X-Log-Level"),
@@ -593,9 +598,9 @@ async def search_captures(
     set_look_verbose(debug_logging_from_level(x_log_level))
     limit = min(max(1, limit), 200)
     free_q, tag = _extract_tag_filter(q)
-    look_debug(f"GET /search q={q!r} category={category} since={since} limit={limit} tag={tag}")
+    look_debug(f"GET /search q={q!r} project={project} since={since} limit={limit} tag={tag}")
     root = _srv()._get_vault_root()
-    rows = idx_search(free_q, root, category=category, since=since, limit=limit, tag=tag)
+    rows = idx_search(free_q, root, project=project, since=since, limit=limit, tag=tag)
     results = [_shape_search_row(r) for r in rows]
 
     cfg = get_config()
@@ -859,22 +864,22 @@ async def set_sync_ignore(body: SyncIgnorePatch):
 
 
 if __name__ == "__main__":
-    # Smoke check: _safe_category_dir accepts a plain name and rejects
+    # Smoke check: _safe_folder_dir accepts a plain name and rejects
     # traversal/separator attempts, independent of any FastAPI wiring.
     root = Path(".").resolve()
-    ok = _safe_category_dir(root, "My Notes")
+    ok = _safe_folder_dir(root, "My Notes")
     assert ok.parent == root and ok.name == "My Notes"
 
     for bad in ("..", ".", "", "   "):
         try:
-            _safe_category_dir(root, bad)
+            _safe_folder_dir(root, bad)
             raise AssertionError(f"expected rejection for {bad!r}")
         except HTTPException:
             pass
 
     # Path separators are sanitized into a literal single-segment name rather
     # than traversing -- the result must always land directly inside root.
-    sanitized = _safe_category_dir(root, "../escape")
+    sanitized = _safe_folder_dir(root, "../escape")
     assert sanitized.parent == root
 
     print("vault_admin.py smoke check OK")

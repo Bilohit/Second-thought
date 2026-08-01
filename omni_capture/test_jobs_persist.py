@@ -22,7 +22,7 @@ def test_set_job_survives_restart(monkeypatch):
         jobs._jobs.clear()
 
         jobs._set_job("j1", status="running", kind="youtube",
-                      category="Videos", path=Path(td) / "note.md", error=None)
+                      project="Videos", path=Path(td) / "note.md", error=None)
 
         # Simulate a restart: wipe the in-memory cache, reload from DB.
         jobs._jobs.clear()
@@ -34,7 +34,7 @@ def test_set_job_survives_restart(monkeypatch):
         assert got is not None
         assert got["status"] == "running"
         assert got["kind"] == "youtube"
-        assert got["category"] == "Videos"
+        assert got["project"] == "Videos"
         assert got["path"].endswith("note.md")
 
         config.reload_config()  # restore default singleton for other tests
@@ -47,7 +47,7 @@ def test_get_job_db_fallback_before_load(monkeypatch):
         _use_temp_vault(monkeypatch, Path(td))
         jobs._jobs.clear()
 
-        jobs._set_job("j2", status="done", kind="voice", category=None,
+        jobs._set_job("j2", status="done", kind="voice", project=None,
                       path=None, error=None)
         jobs._jobs.clear()  # restart, no load_jobs() yet
 
@@ -69,9 +69,9 @@ def test_stale_eviction_removes_from_db(monkeypatch):
         # default-ttl "old" -- i.e. it asserted the bug, one caller's ttl applied to
         # every entry in the registry. A job is now retired only by its own ttl.)
         jobs._set_job("old", ttl_seconds=0, status="done", kind="voice",
-                      category=None, path=None, error=None)
+                      project=None, path=None, error=None)
         jobs._set_job("new", status="running", kind="youtube",
-                      category=None, path=None, error=None)
+                      project=None, path=None, error=None)
 
         jobs._jobs.clear()
         jobs.load_jobs()

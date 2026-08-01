@@ -61,7 +61,7 @@ def classify_outbound_soft_deletes(
     hub_ids: Set[str],
 ) -> Set[str]:
     """Notes the DESKTOP soft-deleted locally (now sitting in the vault's local `_trash/`) whose
-    once-synced hub copy is STILL LIVE in a hub category folder → the soft-move must propagate to the
+    once-synced hub copy is STILL LIVE in a hub project folder → the soft-move must propagate to the
     hub `_trash/` so the peer sees the delete (ISS-005 A follow-up, §3 "delete is symmetric").
 
     Scoping (all load-bearing): a note with no `drive_file_id` was never synced — there is nothing on
@@ -87,7 +87,7 @@ def classify_inbound_deletes(
     hub_trashed_ids: Set[str],
 ) -> Dict[str, str]:
     """Notes the desktop STILL holds (present in the vault) whose once-synced hub file is now absent
-    from the hub's category folders → inbound delete (ISS-005 C). `"trash"` when the hub file sits in
+    from the hub's project folders → inbound delete (ISS-005 C). `"trash"` when the hub file sits in
     the hub `_trash/` (a peer soft-delete → prompt), else `"remove"` (a peer permanent delete)."""
     out: Dict[str, str] = {}
     for note_id, s in state.items():
@@ -212,7 +212,7 @@ def process_deletes(
         if move_file is not None and ensure_hub_trash is not None else set()
     )
     # Cheap pre-check for the inbound side: any once-synced note present locally but absent from the
-    # hub category folders. Only if that set is non-empty do we pay for a hub `_trash/` listing.
+    # hub project folders. Only if that set is non-empty do we pay for a hub `_trash/` listing.
     maybe_inbound = {
         nid for nid, s in state.items()
         if isinstance(s, dict) and s.get("drive_file_id") and s.get("base_rev")
@@ -232,7 +232,7 @@ def process_deletes(
     # --- OUTBOUND desktop soft-delete → hub _trash/ (ISS-005 A follow-up, §3 symmetric delete) ---
     # SCOPED here, OUTSIDE reconcile_changes/mirror_to_hub so those loops' byte-behavior for
     # non-deleted notes is untouched. A note the desktop moved to its LOCAL `_trash/` whose hub copy
-    # is still live in a category folder is propagated as the SAME soft move to the hub `_trash/`.
+    # is still live in a project folder is propagated as the SAME soft move to the hub `_trash/`.
     for note_id in outbound:
         hf = hub_files.get(note_id)
         if not hf or not hf.get("id"):
@@ -334,7 +334,7 @@ if __name__ == "__main__":
     # Outbound soft-delete: "soft" sits in local _trash/ AND its hub copy is still live → propagate.
     outb = classify_outbound_soft_deletes(st, local_trashed={"soft"}, hub_ids={"live", "soft"})
     assert outb == {"soft"}, outb
-    # Hub copy already gone from category folders (trashed/removed) → nothing to propagate (idempotent).
+    # Hub copy already gone from project folders (trashed/removed) → nothing to propagate (idempotent).
     assert classify_outbound_soft_deletes(st, local_trashed={"soft"}, hub_ids={"live"}) == set()
     # Never-synced note in local _trash/ → nothing on the hub to move.
     assert classify_outbound_soft_deletes(st, local_trashed={"unsynced"}, hub_ids={"unsynced"}) == set()

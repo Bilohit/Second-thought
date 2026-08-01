@@ -526,7 +526,7 @@ def run_pipeline(
                     # The destination folder IS the note's project (or `_loose`) --
                     # read it off the written path so the toast can never disagree
                     # with where the file actually landed.
-                    category=Path(written_path).parent.name,
+                    project=Path(written_path).parent.name,
                     filepath=str(written_path),
                     title_prefix=cfg.notifications.title_prefix,
                 )

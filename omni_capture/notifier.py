@@ -89,8 +89,8 @@ def send_notification(
 
     Args:
         title:    Notification title (e.g. "Second Thought").
-        message:  Body text (e.g. "→ CRM/jane-smith.md").
-        subtitle: Optional subtitle shown on macOS (e.g. "CRM").
+        message:  Body text (e.g. "→ research/jane-smith.md").
+        subtitle: Optional subtitle shown on macOS (e.g. "research").
     """
     try:
         full_title = f"{title} — {subtitle}" if subtitle else title
@@ -107,16 +107,17 @@ def send_notification(
 
 
 def notify_capture_success(
-    category: str,
+    project: str,
     filepath: str,
     title_prefix: str = "Second Thought",
 ) -> None:
-    """Convenience wrapper for a successful vault write."""
+    """Convenience wrapper for a successful vault write. *project* is the note's
+    directory name -- the resolved project, or `_loose` when the note is loose."""
     short_path = Path(filepath).name
     send_notification(
         title=title_prefix,
-        subtitle=category,
-        message=f"→ {category}/{short_path}",
+        subtitle=project,
+        message=f"→ {project}/{short_path}",
     )
 
 

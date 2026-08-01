@@ -63,7 +63,7 @@ def _vault(tmp: Path) -> Path:
 
 
 def _entry_index(
-    category: str = "Tech_Notes",
+    project: str = "Tech_Notes",
     filepath: str = "/vault/Tech_Notes/test-note.md",
     filename: str = "test-note",
     source_url: str | None = None,
@@ -73,7 +73,7 @@ def _entry_index(
     model: str = "llama3.2",
 ) -> dict:
     return {
-        "category":   category,
+        "project":    project,
         "filepath":   filepath,
         "filename":   filename,
         "source_url": source_url,
@@ -86,14 +86,14 @@ def _entry_index(
 
 
 def _entry_search(
-    category: str   = "Tech_Notes",
+    project: str    = "Tech_Notes",
     filepath: str   = "/v/T/note.md",
     filename: str   = "note",
     source_url: str = "",
     timestamp: str  = "2025-06-17T10:00:00",
 ) -> dict:
     return {
-        "category":   category,
+        "project":    project,
         "filepath":   filepath,
         "filename":   filename,
         "source_url": source_url or None,
@@ -196,7 +196,7 @@ class TestLogCaptureDb(unittest.TestCase):
         """log_capture_db must fail silently on bad input."""
         with tempfile.TemporaryDirectory() as td:
             vault = _vault(Path(td))
-            log_capture_db({"category": "Test"}, vault)  # no exception
+            log_capture_db({"project": "Test"}, vault)  # no exception
 
 
 class TestMigrateJsonl(unittest.TestCase):
@@ -211,7 +211,7 @@ class TestMigrateJsonl(unittest.TestCase):
             jpath    = vault / ".omni_capture" / "captures.jsonl"
             jpath.parent.mkdir(parents=True, exist_ok=True)
             entries  = [
-                _entry_index(category="CRM",       filepath=f"/vault/CRM/note-{i}.md", filename=f"note-{i}")
+                _entry_index(project="CRM",       filepath=f"/vault/CRM/note-{i}.md", filename=f"note-{i}")
                 for i in range(3)
             ]
             self._write_jsonl(jpath, entries)
@@ -238,6 +238,8 @@ class TestMigrateJsonl(unittest.TestCase):
             vault   = _vault(Path(td))
             jpath   = vault / ".omni_capture" / "captures.jsonl"
             jpath.parent.mkdir(parents=True, exist_ok=True)
+            # A captures.jsonl on disk predates the `category`->`project` rename by definition,
+            # so these rows keep the legacy key -- migrate_jsonl's fallback is what reads it.
             with open(jpath, "w") as f:
                 f.write('{"category":"CRM","filepath":"/vault/x.md","filename":"x","timestamp":"2025-01-01T00:00:00"}\n')
                 f.write("NOT JSON\n")
@@ -249,10 +251,10 @@ class TestMigrateJsonl(unittest.TestCase):
 class TestSearch(unittest.TestCase):
     def _populate(self, vault: Path) -> None:
         entries = [
-            _entry_index(category="Tech_Notes",  filepath="/v/T/asyncio.md",  filename="asyncio",   source_url=None),
-            _entry_index(category="CRM",         filepath="/v/C/acme.md",      filename="acme",      source_url="https://acme.com"),
-            _entry_index(category="Finance",     filepath="/v/F/invoice.md",   filename="invoice",   timestamp="2025-01-15T08:00:00"),
-            _entry_index(category="Tech_Notes",  filepath="/v/T/docker.md",    filename="docker",    source_url="https://docs.docker.com"),
+            _entry_index(project="Tech_Notes",  filepath="/v/T/asyncio.md",  filename="asyncio",   source_url=None),
+            _entry_index(project="CRM",         filepath="/v/C/acme.md",      filename="acme",      source_url="https://acme.com"),
+            _entry_index(project="Finance",     filepath="/v/F/invoice.md",   filename="invoice",   timestamp="2025-01-15T08:00:00"),
+            _entry_index(project="Tech_Notes",  filepath="/v/T/docker.md",    filename="docker",    source_url="https://docs.docker.com"),
         ]
         for e in entries:
             log_capture_db(e, vault)
@@ -264,7 +266,7 @@ class TestSearch(unittest.TestCase):
             results = search("", vault)
             self.assertEqual(len(results), 4)
 
-    def test_fts_matches_category(self):
+    def test_fts_matches_project(self):
         with tempfile.TemporaryDirectory() as td:
             vault = _vault(Path(td))
             self._populate(vault)
@@ -281,11 +283,11 @@ class TestSearch(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertIn("docker", results[0]["path"])
 
-    def test_category_filter(self):
+    def test_project_filter(self):
         with tempfile.TemporaryDirectory() as td:
             vault = _vault(Path(td))
             self._populate(vault)
-            results = search("", vault, category="CRM")
+            results = search("", vault, project="CRM")
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0]["project"], "CRM")
 
@@ -306,12 +308,12 @@ class TestSearch(unittest.TestCase):
 class TestTieredSearch(unittest.TestCase):
     """P-DSEARCH: substring + exact + bm25-relevance tiers (ISS-011, ISS-012)."""
 
-    def _write_note(self, vault: Path, category: str, name: str, body: str, **kw) -> None:
-        cat_dir = vault / category
-        cat_dir.mkdir(parents=True, exist_ok=True)
-        path = cat_dir / f"{name}.md"
+    def _write_note(self, vault: Path, project: str, name: str, body: str, **kw) -> None:
+        project_dir = vault / project
+        project_dir.mkdir(parents=True, exist_ok=True)
+        path = project_dir / f"{name}.md"
         path.write_text(f"---\ntitle: {name}\n---\n{body}\n", encoding="utf-8")
-        log_capture_db(_entry_index(filepath=str(path), filename=name, category=category, **kw), vault)
+        log_capture_db(_entry_index(filepath=str(path), filename=name, project=project, **kw), vault)
 
     def test_substring_tier_finds_non_token_boundary_fragment(self):
         """'bug' inside 'debugger' is not a token/prefix match for FTS5 (the
@@ -422,7 +424,7 @@ class TestStats(unittest.TestCase):
             ("Tech_Notes", "/v/T/note2.md"),
             ("CRM",        "/v/C/contact.md"),
         ]):
-            log_capture_db(_entry_index(category=cat, filepath=fp, filename=f"note{i}"), vault)
+            log_capture_db(_entry_index(project=cat, filepath=fp, filename=f"note{i}"), vault)
 
     def test_total(self):
         with tempfile.TemporaryDirectory() as td:
@@ -431,7 +433,7 @@ class TestStats(unittest.TestCase):
             s = stats(vault)
             self.assertEqual(s["total"], 3)
 
-    def test_by_category_structure(self):
+    def test_by_project_structure(self):
         with tempfile.TemporaryDirectory() as td:
             vault = _vault(Path(td))
             self._populate(vault)
@@ -639,8 +641,8 @@ class TestSearchEndpoint(unittest.TestCase):
             vault = Path(td) / "vault"
             vault.mkdir()
             self._seed(vault, [
-                _entry_search(category="Tech_Notes",  filepath="/v/T/docker.md",   filename="docker"),
-                _entry_search(category="CRM",         filepath="/v/C/acme.md",     filename="acme"),
+                _entry_search(project="Tech_Notes",  filepath="/v/T/docker.md",   filename="docker"),
+                _entry_search(project="CRM",         filepath="/v/C/acme.md",     filename="acme"),
             ])
             client  = self._make_client(vault)
             data    = client.get("/search?q=docker").json()
@@ -648,16 +650,16 @@ class TestSearchEndpoint(unittest.TestCase):
             self.assertTrue(any("docker" in p for p in paths))
             self.assertFalse(any("acme" in p for p in paths))
 
-    def test_search_category_filter(self):
+    def test_search_project_filter(self):
         with tempfile.TemporaryDirectory() as td:
             vault = Path(td) / "vault"
             vault.mkdir()
             self._seed(vault, [
-                _entry_search(category="Tech_Notes", filepath="/v/T/a.md"),
-                _entry_search(category="CRM",        filepath="/v/C/b.md"),
+                _entry_search(project="Tech_Notes", filepath="/v/T/a.md"),
+                _entry_search(project="CRM",        filepath="/v/C/b.md"),
             ])
             client = self._make_client(vault)
-            data   = client.get("/search?category=CRM").json()
+            data   = client.get("/search?project=CRM").json()
             for r in data["results"]:
                 self.assertEqual(r["project"], "CRM")
 
@@ -694,10 +696,10 @@ class TestStatsEndpoint(unittest.TestCase):
 
     def _seed(self, vault: Path) -> None:
         entries = [
-            _entry_search(category="Tech_Notes",  filepath="/v/T/note1.md", filename="note1"),
-            _entry_search(category="Tech_Notes",  filepath="/v/T/note2.md", filename="note2"),
-            _entry_search(category="CRM",         filepath="/v/C/contact.md", filename="contact"),
-            _entry_search(category="Finance",     filepath="/v/F/invoice.md",  filename="invoice", timestamp="2025-01-10T08:00:00"),
+            _entry_search(project="Tech_Notes",  filepath="/v/T/note1.md", filename="note1"),
+            _entry_search(project="Tech_Notes",  filepath="/v/T/note2.md", filename="note2"),
+            _entry_search(project="CRM",         filepath="/v/C/contact.md", filename="contact"),
+            _entry_search(project="Finance",     filepath="/v/F/invoice.md",  filename="invoice", timestamp="2025-01-10T08:00:00"),
         ]
         for e in entries:
             log_capture_db(e, vault)
@@ -730,7 +732,7 @@ class TestStatsEndpoint(unittest.TestCase):
             data   = client.get("/stats").json()
             self.assertEqual(data["total"], 4)
 
-    def test_stats_by_category(self):
+    def test_stats_by_project(self):
         with tempfile.TemporaryDirectory() as td:
             vault = Path(td) / "vault"
             vault.mkdir()

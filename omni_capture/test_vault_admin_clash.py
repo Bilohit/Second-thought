@@ -1,5 +1,5 @@
 """
-test_vault_admin_clash.py — Phase 2 Task 2.6: `/vault/categories/{name}/files`
+test_vault_admin_clash.py — Phase 2 Task 2.6: `/vault/folders/{name}/files`
 must expose the server-authoritative name-clash signal so the GUI can badge a
 clashing row without recomputing naming rules in TS.
 
@@ -68,7 +68,7 @@ def test_later_note_with_same_title_is_flagged_as_name_clash(gui):
     _write_note(vault, "Work", "winner.md", id_="01AAAAAA", title="Meeting", created="2026-07-19T10:00:00Z")
     _write_note(vault, "Work", "loser.md", id_="01BBBBBB", title="Meeting", created="2026-07-19T11:00:00Z")
 
-    r = client.get("/vault/categories/Work/files", headers=HEADERS)
+    r = client.get("/vault/folders/Work/files", headers=HEADERS)
     assert r.status_code == 200
     files = {f["filename"]: f for f in r.json()["files"]}
 
@@ -83,7 +83,7 @@ def test_unique_title_is_never_flagged(gui):
     client, vault = gui
     _write_note(vault, "Work", "solo.md", id_="01CCCCCC", title="Solo", created="2026-07-19T10:00:00Z")
 
-    r = client.get("/vault/categories/Work/files", headers=HEADERS)
+    r = client.get("/vault/folders/Work/files", headers=HEADERS)
     assert r.status_code == 200
     f = r.json()["files"][0]
     assert f["name_clash"] is False

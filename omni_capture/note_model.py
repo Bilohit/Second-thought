@@ -20,10 +20,9 @@ from project_registry import Registry, resolve_project
 from projects import project_cache_value
 
 # Canonical known-key serialize order (mirrors note.ts KNOWN_KEY_ORDER).
-# v2.2 (2026-07-24, DESKTOP-FIRST): `category` is NOT serialized — the parent folder IS the
-# category (data-model §1.2). Legacy `category:` is still parsed into note.category (ignored) but
-# dropped at the note's first save; `category_source` (an unknown key riding `extra`) is filtered
-# out on serialize. The phone still emits `category:` during the interim; the desktop ignores it.
+# Legacy `category:` is IGNORED on read and dropped at the note's first save — Projects S1 does no
+# migration (plan Step B rule 5). `category_source` (an unknown key riding `extra`) is filtered out
+# on serialize. The phone may still emit `category:` during the interim; the desktop ignores it.
 # v3.1 (2026-08-01, s125): `project` joins `tags`/`attachments` as a derived body cache (contract
 # §1.3) — resolved via `resolve_project(note.body, registry)` at serialize time, never stored on
 # the Note struct. A legacy/hand-edited `project:` line is parsed and dropped (see parse_note),
@@ -126,7 +125,7 @@ def parse_note(raw_file: str) -> Note:
 
     note = Note(
         id="", created="", origin="note", title="", aliases=[], tags=[], remind_at=None,
-        category=None, origin_device=None, enriched=False, enrich_source=None, modified="", device="",
+        origin_device=None, enriched=False, enrich_source=None, modified="", device="",
         attachments=[], extra={}, body=body,
     )
 
@@ -143,11 +142,10 @@ def parse_note(raw_file: str) -> Note:
             note.title = _parse_scalar(raw) or ""
         elif key == "origin":
             note.origin = "capture" if _parse_scalar(raw) == "capture" else "note"
-        elif key == "category":
-            note.category = _parse_scalar(raw)
-        elif key == "project":
-            # v3.1: derived cache, never trusted from disk — dropped on read exactly like
-            # `category`. Re-derived from the body at serialize_note's next save.
+        elif key in ("category", "project"):
+            # `category` is a retired concept and `project:` is a derived cache: neither is ever
+            # trusted from disk. Both are dropped on read and `project:` is re-derived from the
+            # body at serialize_note's next save (contract §1.3).
             pass
         elif key == "origin_device":
             v = _parse_scalar(raw)
@@ -233,8 +231,8 @@ def serialize_note(note: Note, registry: Registry | None = None) -> str:
             if note.remind_at is not None:
                 lines.append(f"remind_at: {_emit_scalar(note.remind_at)}")
     for k, raw in note.extra.items():
-        # v2.2: `category_source` is a dead field (category is folder-derived) — never write it back,
-        # so a legacy note carrying it drops it at first save.
+        # `category_source` is a dead field from the retired category concept — never write it
+        # back, so a legacy note carrying it drops it at first save.
         if k == "category_source":
             continue
         # Parsed extras keep the raw text after ":" (leading space included) — emit verbatim for

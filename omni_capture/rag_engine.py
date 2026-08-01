@@ -60,7 +60,7 @@ _TOPIC_PREFIXES = (
 class Source(TypedDict):
     n: int
     path: str
-    category: str
+    project: str
     filename: str
     snippet: str
 
@@ -179,7 +179,7 @@ def hybrid_retrieve(
     for rank, ap in enumerate(fts_paths):
         rrf[ap] = rrf.get(ap, 0.0) + 1.0 / (_RRF_K + rank)
     for r in fts_rows:
-        meta[r["path"]] = {"category": r.get("category", ""), "filename": r.get("filename") or ""}
+        meta[r["path"]] = {"project": r.get("project", ""), "filename": r.get("filename") or ""}
 
     if not rrf:
         return [], best_sim, no_match_tier
@@ -195,7 +195,7 @@ def hybrid_retrieve(
         sources.append(Source(
             n=len(sources) + 1,
             path=ap,
-            category=m.get("category") or p.parent.name,
+            project=m.get("project") or p.parent.name,
             filename=m.get("filename") or p.name,
             snippet=_read_snippet(p, retrieval_query),
         ))
@@ -224,7 +224,7 @@ def build_system_prompt(
         return base
 
     numbered = "\n\n".join(
-        f"[{s['n']}] ({s['category']}/{s['filename']})\n{s['snippet']}" for s in sources
+        f"[{s['n']}] ({s['project']}/{s['filename']})\n{s['snippet']}" for s in sources
     )
     rules = (
         "Rules:\n"
@@ -247,7 +247,7 @@ def build_system_prompt(
 if __name__ == "__main__":
     assert DEFAULT_CHAT_SYSTEM_PROMPT in build_system_prompt([], "talk")
     vault_prompt = build_system_prompt(
-        [{"n": 1, "path": "/v/a.md", "category": "T", "filename": "a.md", "snippet": "dinosaur facts"}],
+        [{"n": 1, "path": "/v/a.md", "project": "T", "filename": "a.md", "snippet": "dinosaur facts"}],
         "vault",
     )
     assert "[1] (T/a.md)" in vault_prompt

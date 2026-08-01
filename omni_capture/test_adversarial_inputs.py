@@ -49,7 +49,7 @@ from reconcile import Note, reconcile
 def _note(**over) -> Note:
     base = dict(
         id="01ABC", created="", origin="note", title="T", aliases=[], tags=[], remind_at=None,
-        category=None, origin_device=None, enriched=False, enrich_source=None, modified="", device="",
+        origin_device=None, enriched=False, enrich_source=None, modified="", device="",
         attachments=[], extra={}, body="body\n",
     )
     base.update(over)

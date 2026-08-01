@@ -15,14 +15,14 @@ Endpoints
   POST /share                          Browser-extension / OS share-target (no clipboard)
   GET  /config
   PATCH /config
-  GET  /vault/categories                    vault folder listing (Library browser)
-  GET  /vault/categories/{name}/files
+  GET  /vault/folders                       vault folder listing (Library browser)
+  GET  /vault/folders/{name}/files
   GET  /vault/projects                      project registry (.projects.toml)
   POST /vault/projects
   PATCH /vault/projects/{name}              rename (writes renamed_from)
   PATCH /vault/projects/{name}/description
   DELETE /vault/projects/{name}             registry entry ONLY -- never a note
-  GET  /search?q=&category=&since=&limit=   FTS search (SQLite)
+  GET  /search?q=&project=&since=&limit=    FTS search (SQLite)
   GET  /stats                               project + time statistics (SQLite)
   GET  /inbox
   POST /inbox/{note_id}/approve
@@ -741,7 +741,7 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
             emit("step", step="intercept", status="done")
             job_id = uuid.uuid4().hex[:12]
             jobs._set_job(job_id, ttl_seconds=cfg.youtube.job_ttl_seconds,
-                     status="queued", kind="youtube", category=None, path=None, error=None)
+                     status="queued", kind="youtube", project=None, path=None, error=None)
             jobs._bg_executor.submit(jobs._run_youtube_job, job_id, content, cfg)
             emit("job", job_id=job_id, kind="youtube", status="queued")
             return
@@ -804,7 +804,7 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                 token_count=token_count, threshold=cfg.whisper.summarize_threshold_tokens
             ):
                 job_id = uuid.uuid4().hex
-                jobs._set_job(job_id, status="queued", kind="voice", category=None, path=None, error=None)
+                jobs._set_job(job_id, status="queued", kind="voice", project=None, path=None, error=None)
                 emit("job", job_id=job_id, kind="voice", status="queued")
                 jobs._bg_executor.submit(jobs._run_voice_job, job_id, enriched, cfg)
                 return
@@ -1059,7 +1059,7 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                 from notifier import notify_capture_success
                 from capture_log import log_capture
                 if cfg.notifications.enabled:
-                    notify_capture_success(category=Path(written_path).parent.name,
+                    notify_capture_success(project=Path(written_path).parent.name,
                                            filepath=str(written_path),
                                            title_prefix=cfg.notifications.title_prefix)
                 log_capture(output, enriched, str(written_path), cfg.ollama.model)

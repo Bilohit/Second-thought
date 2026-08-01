@@ -111,7 +111,7 @@ def test_check_reports_fresh_when_path_does_not_exist(tmp_path):
     r = client.get("/vault/setup/check", params={"root": str(candidate)})
     assert r.status_code == 200
     body = r.json()
-    assert body == {"exists": False, "has_categories": False, "categories": []}
+    assert body == {"exists": False, "has_projects": False, "projects": []}
 
 
 def test_check_detects_existing_vault_with_user_projects(tmp_path):
@@ -127,11 +127,11 @@ def test_check_detects_existing_vault_with_user_projects(tmp_path):
     assert r.status_code == 200
     body = r.json()
     assert body["exists"] is True
-    assert body["has_categories"] is True
-    assert body["categories"] == ["Tech_Notes"]
+    assert body["has_projects"] is True
+    assert body["projects"] == ["Tech_Notes"]
 
 
-def test_check_existing_empty_dir_has_no_categories(tmp_path):
+def test_check_existing_empty_dir_has_no_projects(tmp_path):
     client, srv = _client(tmp_path / "config.toml")
     candidate = tmp_path / "EmptyDir"
     candidate.mkdir()
@@ -139,7 +139,7 @@ def test_check_existing_empty_dir_has_no_categories(tmp_path):
     r = client.get("/vault/setup/check", params={"root": str(candidate)})
     assert r.status_code == 200
     body = r.json()
-    assert body == {"exists": True, "has_categories": False, "categories": []}
+    assert body == {"exists": True, "has_projects": False, "projects": []}
 
 
 def test_check_rejects_relative_root():

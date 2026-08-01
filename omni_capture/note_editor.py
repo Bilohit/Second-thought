@@ -171,7 +171,9 @@ def read_note(vault_root: Path, path_str: str) -> dict:
     return {
         "path": str(path),
         "title": _title_from(body, fields, path.stem),
-        "category": path.parent.name,
+        # The note's directory name IS its project (or `_loose`) -- read off the path, never
+        # off frontmatter, so the editor can never disagree with where the file actually is.
+        "project": path.parent.name,
         "status": fields.get("status"),
         "tags": tags,
         "body": body,
@@ -337,6 +339,7 @@ if __name__ == "__main__":
         cat = vault / "Tech_Notes"
         cat.mkdir()
         note = cat / "example.md"
+        # The legacy `category:` line is deliberately present: it must be ignored on read.
         note.write_text(
             "---\ntitle: Example note\ncategory: Tech_Notes\nstatus: active\ntags: [work, radial]\n---\n"
             "# Example note\n\nOriginal body.\n",
@@ -346,7 +349,7 @@ if __name__ == "__main__":
         # T1: read_note preserves body, exposes read-only frontmatter fields.
         data = read_note(vault, str(note))
         assert data["title"] == "Example note"
-        assert data["category"] == "Tech_Notes"
+        assert data["project"] == "Tech_Notes"
         assert data["status"] == "active"
         assert data["tags"] == ["work", "radial"]
         assert "Original body." in data["body"]

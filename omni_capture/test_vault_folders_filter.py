@@ -1,7 +1,7 @@
 """
-test_vault_categories_filter.py — ISS-014 regression: GET /vault/categories
+test_vault_folders_filter.py — ISS-014 regression: GET /vault/folders
 must never surface dot-prefixed internal bookkeeping folders (`.omni_capture`,
-`.sync`) as renamable/deletable user categories, but must keep surfacing
+`.sync`) as renamable/deletable user folders, but must keep surfacing
 `_scratchpad` -- VaultManager.tsx (owned by another package) relabels that
 row "Needs review" from this same response.
 """
@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 
 import server
 
-SECRET = "categories-filter-test-secret"
+SECRET = "folders-filter-test-secret"
 HEADERS = {"X-Omni-Secret": SECRET}
 
 
@@ -41,9 +41,9 @@ def test_dot_prefixed_system_folders_are_excluded(gui):
     (vault / ".sync").mkdir()
     (vault / "Tech_Notes").mkdir()
 
-    r = client.get("/vault/categories", headers=HEADERS)
+    r = client.get("/vault/folders", headers=HEADERS)
     assert r.status_code == 200
-    names = {c["name"] for c in r.json()["categories"]}
+    names = {c["name"] for c in r.json()["folders"]}
 
     assert names == {"Tech_Notes"}
 
@@ -53,13 +53,13 @@ def test_scratchpad_folder_still_surfaces_for_needs_review_display(gui):
     (vault / "_scratchpad").mkdir()
     (vault / "Tech_Notes").mkdir()
 
-    r = client.get("/vault/categories", headers=HEADERS)
+    r = client.get("/vault/folders", headers=HEADERS)
     assert r.status_code == 200
-    names = {c["name"] for c in r.json()["categories"]}
+    names = {c["name"] for c in r.json()["folders"]}
 
-    # NOT excluded here -- unlike storage_engine.discover_categories (which
-    # excludes it so the LLM never routes to it), the CRUD listing must keep
-    # it so VaultManager can relabel/restrict it, not lose it entirely.
+    # NOT excluded here -- `_scratchpad` can never be a project (a leading `_` is
+    # registry-ineligible, so the LLM can never route to it), but the folder listing
+    # must keep it so VaultManager can relabel/restrict it, not lose it entirely.
     assert "_scratchpad" in names
     assert "Tech_Notes" in names
 

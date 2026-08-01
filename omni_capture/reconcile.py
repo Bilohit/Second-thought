@@ -8,10 +8,12 @@ Drive head) and applies the result.
 
 Core invariant: a user's typed BODY is never merged, overwritten, or lost. A body-vs-body
 divergence spins the remote body off as a conflicted copy; everything else (tags, enrichment,
-remind_at) merges silently. Category is NO LONGER a merged field (v2.2, 2026-07-24, DESKTOP-FIRST)
-— the parent folder IS the category, re-derived from the write folder on next read (data-model
-§1.2). The common case — body edited on the phone while the desktop enriches frontmatter — is
-conflict-free by construction (disjoint concerns).
+remind_at) merges silently. A note's PROJECT is not a merged field at all (Projects S1, v3.1
+§1.3): it is the `#project@<name>` body tag, so it travels inside the body and is re-derived on
+every read. The `project:` frontmatter line and the `project` index column are derived caches with
+no independent value to merge — the dead v2.2 `category` field that used to sit on this struct for
+that purpose is deleted. The common case — body edited on the phone while the desktop enriches
+frontmatter — is conflict-free by construction (disjoint concerns).
 
 Scope: body + frontmatter reconciliation. The delete-vs-edit race (edge-case C5) is the op-queue's
 job (data-model §5), not here.
@@ -34,9 +36,6 @@ class Note:
     aliases: list[str]
     tags: list[str]
     remind_at: Optional[str]
-    # v2.2: folder-derived, NOT serialized (data-model §1.2). Kept on the struct so readers can
-    # stamp it from the parent folder; never a merge input, never written to frontmatter on desktop.
-    category: Optional[str]
     origin_device: Optional[str]  # v2.2 provenance: "phone"|"desktop"|"shared"; None on legacy notes
     enriched: bool
     enrich_source: Optional[str]  # "phone-heuristic" | "desktop-llm" | None
@@ -144,11 +143,10 @@ def reconcile(
     )
 
     # enrichment frontmatter (machine-owned; merges silently, never a conflicted copy).
-    # v2.2 (2026-07-24, DESKTOP-FIRST): `category` is NO LONGER a merged field — the parent folder
-    # IS the category (data-model §1.2), re-derived from the note's write folder on next read. So
-    # nothing about category is decided here, `category_source` is dropped from the merged `extra`,
-    # and the merged Note's `category` value is irrelevant (never serialized). Only `enriched`/
-    # `enrich_source` still merge: the desktop LLM pass sets enriched:true.
+    # Projects S1 (v3.1 §1.3): nothing about a note's project is decided here — the `#project@`
+    # tag rides the body, so it is already covered by the body merge above. The legacy
+    # `category_source` key is dropped from the merged `extra`. Only `enriched`/`enrich_source`
+    # still merge: the desktop LLM pass sets enriched:true.
     remote_auth = remote.enriched
     local_auth = local.enriched
     enriched = remote_auth or local_auth
@@ -185,9 +183,6 @@ def reconcile(
         aliases=_lww(base.aliases, local.aliases, remote.aliases, local.device, remote.device),
         tags=_union(local.tags, remote.tags),  # set-union; user-typed tags always survive (C3)
         remind_at=remind_at,
-        # v2.2: category is folder-derived, never serialized — the merged value is irrelevant.
-        # Carry a live side's value only so the dataclass stays populated.
-        category=local.category if local.category is not None else remote.category,
         # origin_device is immutable once a real platform is stamped (§2.1); prefer whichever side
         # carries a value so provenance survives reconcile. Both sides normally agree (same note).
         origin_device=local.origin_device or remote.origin_device,
@@ -197,7 +192,7 @@ def reconcile(
         modified=_newest(local.modified, remote.modified),
         device=local.device,  # the reconciling device stamps; informational only
         attachments=_union(local.attachments, remote.attachments),  # additive; never lose one
-        # preserve both (local wins collisions); v2.2 drops the dead `category_source` from disk
+        # preserve both (local wins collisions); the dead `category_source` is dropped from disk
         extra={k: v for k, v in {**remote.extra, **local.extra}.items() if k != "category_source"},
         body=merged_body,
     )

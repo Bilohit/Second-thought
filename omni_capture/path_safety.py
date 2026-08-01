@@ -1,10 +1,10 @@
 """
 path_safety.py - one neutral resolve-and-compare guard for vault subdirectories.
 
-Extracted from vault_admin._safe_category_dir so that non-server modules
+Extracted from vault_admin._safe_folder_dir so that non-server modules
 (trash.py, mobile_sync_agent.py) can reuse the strongest guard in the repo
 without importing a server-adjacent admin module and without inheriting its
-FastAPI coupling. `vault_admin._safe_category_dir` is now a thin HTTP-wrapping
+FastAPI coupling. `vault_admin._safe_folder_dir` is now a thin HTTP-wrapping
 call into this; it remains the entry point for route handlers.
 
 This is deliberately NOT a replacement for the two narrower guards:
@@ -32,7 +32,7 @@ def safe_subdir(root: Path, name: str) -> Path:
     `root`.
 
     Note the two-stage contract, preserved verbatim from vault_admin so that
-    category CRUD behaviour does not change: separators and traversal segments
+    vault-folder CRUD behaviour does not change: separators and traversal segments
     are first NEUTRALIZED by `safe_name` (`../evil` -> `.._evil`, a harmless
     literal directory name), and the resolve-and-compare below is the backstop
     that guarantees the result never escapes or nests below the root. Only a

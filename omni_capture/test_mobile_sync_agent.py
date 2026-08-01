@@ -1233,8 +1233,9 @@ def test_enrich_notes_enriches_unenriched_note(tmp_path):
     assert note.enriched is True
     assert note.enrich_source == "desktop-llm"
     assert note.origin_device == "desktop"           # legacy null note backfilled + stamped (§2.1)
-    # v3.0: the legacy `category: personal` seed is dropped at save; the concept is gone.
-    assert note.category is None
+    # Projects S1: the legacy `category: personal` seed never reaches the struct and is dropped
+    # at save; the concept is gone.
+    assert not hasattr(note, "category")
     assert "category:" not in written
     # §7: the assignment is the `#project@` tag on the machine trailing body line, and NOTHING
     # else -- the key_signals-derived descriptive tags are deleted.
@@ -1446,7 +1447,7 @@ def test_enrich_notes_empty_body_skips_llm_and_marks_enriched(tmp_path):
     note = parse_note(written)
     assert note.enriched is True                 # marked done → not retried next pass
     assert note.enrich_source == "phone-heuristic"  # left as-is (no desktop-LLM pass actually ran)
-    assert note.category is None                 # v2.2: legacy `category: _scratchpad` dropped at save
+    assert not hasattr(note, "category")         # legacy `category: _scratchpad` never read
     assert "category:" not in written            # never re-emitted to frontmatter
     assert strip_frontmatter(written) == ""      # BODY SACRED — still empty, byte-identical
 

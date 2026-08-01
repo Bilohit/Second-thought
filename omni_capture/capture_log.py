@@ -10,7 +10,7 @@ migrate --jsonl <path>` to import any existing JSONL history into the DB.
 CLI usage
   python capture_log.py          # print last 20 entries
   python capture_log.py --n 50   # print last 50 entries
-  python capture_log.py --stats  # category breakdown
+  python capture_log.py --stats  # project breakdown
 """
 
 from __future__ import annotations
@@ -48,8 +48,8 @@ def log_capture(
         "timestamp":    datetime.now().isoformat(timespec="seconds"),
         # Projects S1: CaptureOutput.category is deleted. The directory the note actually
         # landed in IS its project (or `_loose`) -- read it off `filepath` so the log can
-        # never disagree with the vault. Task 11 renames this column to `project`.
-        "category":     Path(filepath).parent.name,
+        # never disagree with the vault.
+        "project":      Path(filepath).parent.name,
         "filename":     output.suggested_filename,
         "filepath":     filepath,
         "input_type":   enriched.input_type,
@@ -57,7 +57,6 @@ def log_capture(
         "model":        model,
         "confidence":   round(output.confidence, 4),
         "tags":         [],
-        "new_category": True if output.requires_new_category else None,
     }
 
     _log_or_warn("SQLite write", log_capture_db, entry, cfg.vault.root)
@@ -68,7 +67,7 @@ def log_capture_failure(
     enriched: EnrichedPayload,
     filepath: str,
     model: str,
-    category: str,
+    project: str,
 ) -> None:
     """Upsert a FAILED capture into captures.db, mirroring log_capture()'s success
     path. Only successes were logged before, so `--log`/`--stats` showed a clean
@@ -78,7 +77,7 @@ def log_capture_failure(
 
     entry = {
         "timestamp":      datetime.now().isoformat(timespec="seconds"),
-        "category":       category,
+        "project":        project,
         "filename":       None,
         "filepath":       filepath,
         "input_type":     enriched.input_type,
@@ -86,7 +85,6 @@ def log_capture_failure(
         "model":          model,
         "confidence":     0.0,
         "tags":           [],
-        "new_category":   None,
     }
 
     _log_or_warn("SQLite write (failure)", log_capture_db, entry, cfg.vault.root)
@@ -106,14 +104,14 @@ def print_recent(n: int = 20) -> None:
         print("No captures logged yet.")
         return
 
-    print(f"\n{'Timestamp':<22}  {'Category':<20}  {'Filename':<35}  Source")
+    print(f"\n{'Timestamp':<22}  {'Project':<20}  {'Filename':<35}  Source")
     print("─" * 100)
     for e in entries:
         ts   = (e.get("timestamp") or "")[:19]
-        cat  = (e.get("category") or "")[:19]
+        proj = (e.get("project") or "")[:19]
         fn   = ((e.get("filename") or "") + ".md")[:34]
         src  = (e.get("source_url") or e.get("input_type") or "")[:40]
-        print(f"{ts:<22}  {cat:<20}  {fn:<35}  {src}")
+        print(f"{ts:<22}  {proj:<20}  {fn:<35}  {src}")
 
 
 def print_stats() -> None:
@@ -128,7 +126,7 @@ def print_stats() -> None:
         return
 
     print(f"\nTotal captures: {total}")
-    print(f"\n{'Category':<25}  {'Count':>6}  {'%':>6}")
+    print(f"\n{'Project':<25}  {'Count':>6}  {'%':>6}")
     print("─" * 45)
-    for row in s.get("by_category", []):
-        print(f"{row['category']:<25}  {row['count']:>6}  {row['pct']:>5.1f}%")
+    for row in s.get("by_project", []):
+        print(f"{row['project']:<25}  {row['count']:>6}  {row['pct']:>5.1f}%")
