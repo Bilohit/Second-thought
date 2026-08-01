@@ -7,7 +7,7 @@
  * and refresh button it used to render inline move into CompactShell's
  * `headerActions` slot instead, so there's a single merged header
  * (`Inbox  [Inbox|Reminders] ↻`, no count badge) rather than two stacked
- * ones. Body rows (category select incl. "+ New folder…", Approve,
+ * ones. Body rows (project select incl. "+ New project…", Approve,
  * Discard, delete reminder) are unchanged — nothing re-flowed there.
  */
 import type { ReactNode } from "react";

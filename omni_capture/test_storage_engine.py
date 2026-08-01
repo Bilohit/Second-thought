@@ -272,7 +272,7 @@ class TestListInbox:
         items = list_scratchpad(vault)
         assert len(items) == 1
         item = items[0]
-        for key in ("note_id", "filename", "path", "category", "size", "modified"):
+        for key in ("note_id", "filename", "path", "project", "size", "modified"):
             assert key in item, f"Missing key: {key}"
 
 

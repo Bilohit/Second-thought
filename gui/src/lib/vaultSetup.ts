@@ -8,8 +8,8 @@
  *
  * The 10-folder catalog is a SEED LIST only — picking from it just pre-fills
  * a folder name + starter routing description for POST /vault/setup to
- * create on disk. It never becomes a hardcoded category enum: models.py's
- * category enum is built live from whatever folders exist in the vault at
+ * register. It never becomes a hardcoded project list: models.py's project
+ * enum is built live from whatever projects the registry holds at
  * capture time (CLAUDE.md hard rule), same as any folder the user creates
  * by hand later in Library -> Vault.
  */
@@ -113,7 +113,7 @@ export interface SetupFolderPayload {
  *  the catalog's pre-written description for a name the user never touched
  *  (or picked but didn't edit). Every entry ships trimmed and non-empty so
  *  a fresh vault never has a description-less folder (ISS-002's root cause
- *  was exactly an empty category_descriptions dict reaching the LLM). */
+ *  was exactly an empty project-description set reaching the LLM). */
 export function buildFoldersPayload(
   selected: string[],
   descriptions: Record<string, string>,

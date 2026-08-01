@@ -2,11 +2,11 @@
  * CompactVault.tsx
  * -----------------
  * Compact Mode Menu Decoupling, Task 2.4 (+ B3 de-clutter): FULL-parity
- * category tree + drill-in file list for the capsule's `CompactShell` body.
+ * folder tree + drill-in file list for the capsule's `CompactShell` body.
  * VaultManager's top-level action buttons (open vault folder / refresh /
- * new category) are lifted into CompactShell's `headerActions` slot instead
+ * new project) are lifted into CompactShell's `headerActions` slot instead
  * of duplicating a second header row (`compactHeader` on VaultManager); the
- * "By category" / "Daily rhythm" stat sections FullWindow's LibraryView
+ * "By project" / "Daily rhythm" stat sections FullWindow's LibraryView
  * shows alongside VaultManager are dropped outright here — not enough room
  * at 288px to justify them, and they duplicate the History panel's stats.
  */

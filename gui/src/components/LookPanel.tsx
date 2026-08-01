@@ -201,7 +201,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
   }, [messages, mode]);
 
   const openResult = useCallback((r: SearchResult) => {
-    logger.debug("look", "open search result", { path: r.path, category: r.category });
+    logger.debug("look", "open search result", { path: r.path, project: r.project });
     openFilePath(r.path);
     onClose();
   }, [onClose]);
@@ -477,7 +477,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                         whiteSpace: "nowrap",
                       }}
                     >
-                      {r.category}
+                      {r.project}
                     </span>
                     <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {resultSnippet(r)}
@@ -575,7 +575,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                           return (
                             <button
                               key={j}
-                              title={src ? `${src.category}/${src.filename}` : `Source ${seg.cite}`}
+                              title={src ? `${src.project}/${src.filename}` : `Source ${seg.cite}`}
                               disabled={!src}
                               onClick={() => src && openFilePath(src.path)}
                               style={{
@@ -660,7 +660,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                               animationDelay: `${Math.min(si, 8) * 45}ms`,
                             }}
                           >
-                            [{src.n}] {src.category}/{src.filename}
+                            [{src.n}] {src.project}/{src.filename}
                           </button>
                         ))}
                       </div>

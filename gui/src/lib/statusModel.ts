@@ -17,7 +17,7 @@ export function statusVisual(captureState: CaptureState, llmStatus: LlmStatus): 
     return { dotColor: "var(--red)", label: "Error", pulse: "none" };
   }
   if (phase === "done") {
-    return { dotColor: "var(--green)", label: captureState.result?.category ?? "Done", pulse: "none" };
+    return { dotColor: "var(--green)", label: captureState.result?.project ?? "Done", pulse: "none" };
   }
   if (phase === "capturing" || phase === "background") {
     return { dotColor: "var(--accent)", label: "Working", pulse: "pillPulseGlow" };

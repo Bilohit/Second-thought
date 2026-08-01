@@ -2,7 +2,7 @@
  * InboxPanel.tsx
  * --------------
  * Review queue for scratchpad captures the pipeline routed as "needs review."
- * Each item can be approved (optionally into a different category) or
+ * Each item can be approved (optionally into a different project) or
  * discarded outright. Mirrors SettingsPanel's slide-in frame.
  */
 
@@ -13,8 +13,8 @@ import {
   approveInboxItem,
   discardInboxItem,
   retryInbox,
-  getVaultCategories,
-  suggestCategories,
+  getVaultFolders,
+  suggestProjects,
   listReminders,
   deleteReminder,
   type InboxItem,
@@ -34,18 +34,18 @@ import {
 
 const NEW_FOLDER_SENTINEL = "__new_folder__";
 /** s114/d07 — no pre-selected destination. The dropdown opened on `_scratchpad`
- *  (the only value `item.category` can ever hold, since list_scratchpad reports
+ *  (the only value `item.project` can ever hold, since list_scratchpad reports
  *  the parent folder) and Approve then "filed" the note into the folder it was
  *  already in: status stripped, file renamed, item back in the list forever. */
 const PICK_SENTINEL = "__pick__";
 
 /** Folders a scratchpad item can be approved INTO. `_`-prefixed folders are the
  *  vault's machine territory (`_scratchpad`, `_trash`, `_attachments`,
- *  `_mobile_inbox`, `_templates`) — `/vault/categories` returns them because the
+ *  `_mobile_inbox`, `_templates`) — `/vault/folders` returns them because the
  *  Library legitimately lists them, but none is a filing destination. The server
  *  rejects the scratchpad itself too (approve_scratchpad_item); this keeps it
  *  off the menu so the rejection is never reachable by an ordinary click. */
-export function filingCategories(names: string[]): string[] {
+export function filingFolders(names: string[]): string[] {
   return names.filter((n) => !n.startsWith("_") && !n.startsWith("."));
 }
 
@@ -96,7 +96,7 @@ interface Props {
 
 function InboxRow({
   item,
-  categories,
+  projects,
   onApprove,
   onDiscard,
   onRetry,
@@ -105,7 +105,7 @@ function InboxRow({
   retrying,
 }: {
   item: InboxItem;
-  categories: string[];
+  projects: string[];
   onApprove: (noteId: string, target?: string) => void;
   onDiscard: (noteId: string) => void;
   onRetry: () => void;
@@ -119,7 +119,7 @@ function InboxRow({
   retrying: boolean;
 }) {
   // s114/d07: starts UNSET, always. There is no correct default here — the only
-  // value the server can report for `item.category` is the scratchpad folder
+  // value the server can report for `item.project` is the scratchpad folder
   // itself, and approving into that was the dead loop this row is fixing.
   const [target, setTarget] = useState("");
   const [creatingNew, setCreatingNew] = useState(false);
@@ -130,8 +130,8 @@ function InboxRow({
   // Drop a selection that disappeared from the vault (folder renamed/deleted
   // while the panel was open) back to unset, rather than filing somewhere else.
   useEffect(() => {
-    if (target && !categories.includes(target)) setTarget("");
-  }, [categories, target]);
+    if (target && !projects.includes(target)) setTarget("");
+  }, [projects, target]);
 
   const date = new Date(item.modified * 1000).toLocaleDateString(undefined, {
     month: "short", day: "numeric",
@@ -142,7 +142,7 @@ function InboxRow({
     setNewName("");
     if (suggestions === null && !suggestLoading) {
       setSuggestLoading(true);
-      suggestCategories(item.note_id)
+      suggestProjects(item.note_id)
         .then((res) => setSuggestions(res.suggestions))
         .catch(() => setSuggestions([]))
         .finally(() => setSuggestLoading(false));
@@ -223,7 +223,7 @@ function InboxRow({
               else if (e.target.value === PICK_SENTINEL) setTarget("");
               else setTarget(e.target.value);
             }}
-            aria-label={`Target category for ${item.filename}`}
+            aria-label={`Target project for ${item.filename}`}
             style={{
               flex: 1,
               minWidth: 0,
@@ -239,7 +239,7 @@ function InboxRow({
             }}
           >
             <option value={PICK_SENTINEL}>Choose a folder…</option>
-            {categories.map((c) => (
+            {projects.map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
             <option value={NEW_FOLDER_SENTINEL}>+ New folder…</option>
@@ -356,7 +356,7 @@ export default function InboxPanel({
 }: Props) {
   const [mounted, setMounted] = useState(visible);
   const [items, setItems] = useState<InboxItem[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
+  const [projects, setProjects] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [leavingIds, setLeavingIds] = useState<Set<string>>(new Set());
@@ -390,12 +390,12 @@ export default function InboxPanel({
     setLoading(true);
     setError(null);
     try {
-      const [inboxRes, catRes] = await Promise.all([getInbox(), getVaultCategories()]);
+      const [inboxRes, catRes] = await Promise.all([getInbox(), getVaultFolders()]);
       setItems(inboxRes.inbox);
       onCountChange?.(inboxRes.count);
       // s114/d07: machine folders (`_scratchpad`, `_trash`, `_attachments`, …) come back from
-      // /vault/categories because the Library lists them; none is a filing destination.
-      setCategories(filingCategories(catRes.categories.map((c) => c.name)));
+      // /vault/folders because the Library lists them; none is a filing destination.
+      setProjects(filingFolders(catRes.folders.map((c) => c.name)));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load inbox");
     } finally {
@@ -430,10 +430,10 @@ export default function InboxPanel({
       await approveInboxItem(noteId, target);
       removeItem(noteId);
       // Target may be a brand-new folder name (the backend auto-creates it
-      // on approve) -- refresh the category list so it shows up elsewhere.
-      if (target && !categories.includes(target)) {
-        getVaultCategories()
-          .then((res) => setCategories(filingCategories(res.categories.map((c) => c.name))))
+      // on approve) -- refresh the project list so it shows up elsewhere.
+      if (target && !projects.includes(target)) {
+        getVaultFolders()
+          .then((res) => setProjects(filingFolders(res.folders.map((c) => c.name))))
           .catch(() => {});
       }
     } catch (e) {
@@ -577,7 +577,7 @@ export default function InboxPanel({
             <InboxRow
               key={item.note_id}
               item={item}
-              categories={categories}
+              projects={projects}
               onApprove={handleApprove}
               onDiscard={handleDiscard}
               onRetry={handleRetry}

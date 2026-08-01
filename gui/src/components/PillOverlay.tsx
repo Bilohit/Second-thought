@@ -174,7 +174,7 @@ function stepPillLabel(def: CaptureStep): string {
 function pillLabel(state: CaptureState, stepDefs: CaptureStep[], llmStatus: LlmStatus): string {
   if (state.phase === "error") return "Error";
   if (state.phase === "done") {
-    return state.result?.category ?? "Done";
+    return state.result?.project ?? "Done";
   }
   if (state.phase === "background" && state.backgroundJob) {
     const { steps, stepDefs: ytDefs } = deriveYoutubeSteps(state.backgroundJob);

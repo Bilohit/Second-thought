@@ -3,7 +3,7 @@
  * --------------------
  * Compact Mode Menu Decoupling, Task 2.4: FULL-parity History/Stats content
  * for the capsule's `CompactShell` body. Mirrors the "capture rhythm"
- * summary (`CategoryBar` by-category breakdown + `DaySparkline` daily
+ * summary (`ProjectBar` by-project breakdown + `DaySparkline` daily
  * counts, both from `StatsPanel.tsx`) and the complete "Recent activity"
  * list (`DashboardView.tsx`'s `renderRecentCard`, driven by
  * `getStats().recent` — already newest-first from the server) in one
@@ -11,7 +11,7 @@
  * capsule panel has room to show the whole list rather than a preview.
  */
 import { useEffect, useState } from "react";
-import { CategoryBar, DaySparkline } from "../StatsPanel";
+import { ProjectBar, DaySparkline } from "../StatsPanel";
 import { getStats, openFilePath, type Stats } from "../../lib/api";
 
 interface Props {
@@ -31,7 +31,7 @@ export default function CompactHistory({ onOpenFile }: Props) {
   return (
     <div style={{ height: "100%", minWidth: 0, display: "flex", flexDirection: "column", gap: 10, overflowY: "auto", overflowX: "hidden" }}>
       {/* minHeight sized so ~5 recent rows show at a glance before the outer
-          column scrolls (the compact body is 288px; the Daily/Category cards
+          column scrolls (the compact body is 288px; the Daily/Project cards
           live below the fold). A shorter min-height floored the card at ~2
           rows once the column became height-constrained. */}
       <div style={{ flex: "1 1 auto", minHeight: 260, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "var(--space-3)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -60,7 +60,7 @@ export default function CompactHistory({ onOpenFile }: Props) {
                 {row.filename ?? row.path}
               </span>
               <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 0 }}>
-                <span style={{ fontSize: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "1px 5px", color: "var(--text-3)", display: "inline-block", maxWidth: 108, whiteSpace: "normal", wordBreak: "break-word", textAlign: "right", lineHeight: 1.25 }}>{row.category}</span>
+                <span style={{ fontSize: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "1px 5px", color: "var(--text-3)", display: "inline-block", maxWidth: 108, whiteSpace: "normal", wordBreak: "break-word", textAlign: "right", lineHeight: 1.25 }}>{row.project}</span>
                 <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap" }}>{row.timestamp}</span>
               </span>
             </button>
@@ -80,13 +80,13 @@ export default function CompactHistory({ onOpenFile }: Props) {
 
       <div style={{ flex: "none", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "var(--space-3)" }}>
         <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 8 }}>
-          By category
+          By project
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {(stats?.by_category ?? []).map((c) => (
-            <CategoryBar key={c.category} category={c.category} count={c.count} pct={c.pct} />
+          {(stats?.by_project ?? []).map((c) => (
+            <ProjectBar key={c.project} project={c.project} count={c.count} pct={c.pct} />
           ))}
-          {(!stats || stats.by_category.length === 0) && (
+          {(!stats || stats.by_project.length === 0) && (
             <span style={{ fontSize: 11, color: "var(--text-3)" }}>No captures yet.</span>
           )}
         </div>

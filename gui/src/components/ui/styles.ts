@@ -115,7 +115,7 @@ export function blurRing(e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElem
 
 // ── Rows (Part B3.6) ─────────────────────────────────────────────────────
 // One row language per surface kind: filled cards for actionable rows
-// (Vault categories, Inbox items — click/approve/delete), bare dividers for
+// (Vault folders, Inbox items — click/approve/delete), bare dividers for
 // read-only rows (Stats recent activity, Vault file listings).
 
 export const ROW_CARD: CSSProperties = {

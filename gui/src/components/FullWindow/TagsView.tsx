@@ -119,7 +119,7 @@ export default function TagsView({ visible, onOpenNote }: Props) {
               onClick={() => onOpenNote?.(r.path)}
             >
               <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.filename ?? r.path}</span>
-              <span style={{ fontSize: 10, color: "var(--text-3)" }}>{r.category}</span>
+              <span style={{ fontSize: 10, color: "var(--text-3)" }}>{r.project}</span>
             </button>
           ))}
         </div>

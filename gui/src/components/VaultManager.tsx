@@ -1,12 +1,12 @@
 /**
  * VaultManager.tsx
  * ----------------
- * Full-screen overlay for browsing and managing vault category folders.
+ * Full-screen overlay for browsing and managing vault folders.
  *
  * Features
  *  · Lists every top-level directory under the vault root as a card
  *  · Shows per-folder .md file count
- *  · Create / rename / delete category folders (with non-empty guard)
+ *  · Create / rename / delete PROJECTS (registry entries, never notes)
  *  · Drill into a folder to see its .md files with sizes + dates
  *  · All mutations go through the Python server's /vault/* REST endpoints
  *
@@ -20,19 +20,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { openVaultPath } from "../lib/api";
 import { BellIcon, ClockIcon, WarningTriangleIcon } from "./PillMenu/icons";
 import {
-  getVaultCategories,
-  createVaultCategory,
-  renameVaultCategory,
-  deleteVaultCategory,
-  updateCategoryDescription,
-  getVaultCategoryFiles,
+  getVaultFolders,
+  createProject,
+  renameProject,
+  deleteProject,
+  updateProjectDescription,
+  getVaultFolderFiles,
   getProvisional,
   getVaultConflicts,
   createReminder,
   getSyncIgnore,
   setSyncIgnore,
   moveToTrash,
-  type VaultCategory,
+  type VaultFolder,
   type VaultFile,
   type ProvisionalItem,
 } from "../lib/api";
@@ -45,11 +45,11 @@ import {
 } from "./ui/styles";
 import { MenuIcon } from "./PillMenu/icons";
 
-// `_scratchpad` is a real category folder (still returned by GET
-// /vault/categories, by design) — this relabels it for display only. The
+// `_scratchpad` is a real vault folder (still returned by GET
+// /vault/folders, by design) — this relabels it for display only. The
 // underlying identity used for every API call (drill-in, delete, etc.)
 // stays `cat.name` ("_scratchpad"); only the rendered text changes.
-function categoryDisplayName(name: string): string {
+function folderDisplayName(name: string): string {
   // s114/D10: one name for the review queue across both shells. This surface said "Needs review",
   // the desktop panel said "Inbox", and the phone said "Needs review" — three surfaces, two words
   // for one concept (council/copy). "Inbox" is now the single term everywhere.
@@ -68,8 +68,8 @@ const PATH_MAX_CHARS_FULL = 26;
 interface Props {
   visible: boolean;
   onClose: () => void;
-  /** Set by App when a search result should open directly into a category's file list. */
-  openResult?: { category: string; path: string } | null;
+  /** Set by App when a search result should open directly into a folder's file list. */
+  openResult?: { project: string; path: string } | null;
   /** Called once openResult has been consumed, so App can clear it. */
   onConsumeOpenResult?: () => void;
   measureRef?: (el: HTMLDivElement | null) => void;
@@ -78,7 +78,7 @@ interface Props {
    *  LibraryView also passes `embedded`, so this is the flag that actually
    *  means "hosted inside a CompactShell panel." Hides the vault-root path
    *  string and moves the top-level action buttons (open folder / refresh /
-   *  new category) out of this component's own header via
+   *  new project) out of this component's own header via
    *  `onHeaderActionsChange`, so CompactShell's header can render them
    *  instead of duplicating a second header row. Full-window usage never
    *  sets this, so its render is unaffected. */
@@ -93,10 +93,10 @@ interface Props {
   onOpenNote?: (path: string) => void;
 }
 
-// ── Category card ─────────────────────────────────────────────────────────────
+// ── Folder card ───────────────────────────────────────────────────────────────
 
-interface CategoryCardProps {
-  cat: VaultCategory;
+interface FolderCardProps {
+  cat: VaultFolder;
   onDrillIn: (name: string) => void;
   onRename: (name: string) => void;
   onEditDescription: (name: string, current: string | null) => void;
@@ -106,12 +106,12 @@ interface CategoryCardProps {
   onConfirmDelete: (name: string, count: number) => void;
 }
 
-function CategoryCard({
+function FolderCard({
   cat, onDrillIn, onRename, onEditDescription,
   confirming, onRequestDelete, onCancelDelete, onConfirmDelete,
-}: CategoryCardProps) {
+}: FolderCardProps) {
   const isSystem = cat.name.startsWith("_");
-  const displayName = categoryDisplayName(cat.name);
+  const displayName = folderDisplayName(cat.name);
 
   return (
     <div
@@ -184,7 +184,7 @@ function CategoryCard({
             className="btn-hover"
             style={BTN_GHOST}
             title="Rename"
-            aria-label="Rename category"
+            aria-label="Rename project"
             onClick={() => onRename(cat.name)}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -197,7 +197,7 @@ function CategoryCard({
             className="btn-hover hover-danger"
             style={BTN_GHOST}
             title="Delete"
-            aria-label="Delete category"
+            aria-label="Delete project"
             onClick={() => onRequestDelete(cat.name)}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -425,7 +425,7 @@ function FileRow({
         )}
       </div>
 
-      {/* Inline delete confirmation — same pattern as CategoryCard's. */}
+      {/* Inline delete confirmation — same pattern as FolderCard's. */}
       {confirmingDelete && (
         <div
           style={{
@@ -712,7 +712,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
   const [mounted, setMounted] = useState(visible);
   const wasVisible = useRef(visible);
 
-  const [categories, setCategories] = useState<VaultCategory[]>([]);
+  const [folders, setFolders] = useState<VaultFolder[]>([]);
   const [vaultRoot, setVaultRoot] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -751,8 +751,8 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
     setLoading(true);
     setError(null);
     try {
-      const data = await getVaultCategories();
-      setCategories(data.categories);
+      const data = await getVaultFolders();
+      setFolders(data.folders);
       setVaultRoot(data.vault_root);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load vault");
@@ -815,7 +815,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
     setDrillLoading(true);
     setDeleteConfirmPath(null);
     try {
-      const data = await getVaultCategoryFiles(name);
+      const data = await getVaultFolderFiles(name);
       setDrillFiles(data.files);
       if (highlightPath) {
         const target = highlightPath.split(/[\\/]/).pop();
@@ -858,7 +858,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
   }, [visible, load]);
 
   // Reset stale drill-in/modal state on the visible: true -> false edge, so
-  // reopening the panel never lands back in a previously-drilled category.
+  // reopening the panel never lands back in a previously-drilled folder.
   useEffect(() => {
     if (wasVisible.current && !visible) {
       setDrillCat(null);
@@ -874,11 +874,11 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
     wasVisible.current = visible;
   }, [visible]);
 
-  // Honor a search-result deep link: drill straight into its category and
+  // Honor a search-result deep link: drill straight into its folder and
   // briefly highlight the matching file once the listing loads.
   useEffect(() => {
     if (visible && openResult) {
-      drillInto(openResult.category, openResult.path);
+      drillInto(openResult.project, openResult.path);
       onConsumeOpenResult?.();
     }
   }, [visible, openResult, drillInto, onConsumeOpenResult]);
@@ -896,7 +896,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
   const handleCreate = async (name: string) => {
     setActionError(null);
     try {
-      await createVaultCategory(name);
+      await createProject(name);
       setModal({ kind: "none" });
       await load();
     } catch (e) {
@@ -907,7 +907,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
   const handleRename = async (oldName: string, newName: string) => {
     setActionError(null);
     try {
-      await renameVaultCategory(oldName, newName);
+      await renameProject(oldName, newName);
       setModal({ kind: "none" });
       if (drillCat === oldName) setDrillCat(newName);
       await load();
@@ -919,7 +919,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
   const handleEditDescription = async (name: string, description: string | null) => {
     setActionError(null);
     try {
-      await updateCategoryDescription(name, description || null);
+      await updateProjectDescription(name, description || null);
       setModal({ kind: "none" });
       await load();
     } catch (e) {
@@ -927,10 +927,13 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
     }
   };
 
-  const handleDelete = async (name: string, force: boolean) => {
+  // DELETE removes the REGISTRY ENTRY ONLY -- it never deletes, trashes, moves or
+  // edits a note (contract 1.3), so there is no `force` for a non-empty folder any
+  // more: the notes simply go loose and the server's tidy pass refiles them.
+  const handleDelete = async (name: string) => {
     setActionError(null);
     try {
-      await deleteVaultCategory(name, force);
+      await deleteProject(name);
       setConfirmingDeleteName(null);
       if (drillCat === name) setDrillCat(null);
       await load();
@@ -982,7 +985,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
         <button
           className="btn-hover"
           style={{ ...BTN_GHOST, color: "var(--accent)" }}
-          title="New category"
+          title="New project"
           onClick={() => { setActionError(null); setModal({ kind: "create" }); }}
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -1022,7 +1025,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
       {/* compactHeader: this header div is otherwise empty (icon/title/vaultRoot
           and the close button all gate off in that mode, and the top-level
           action buttons are forwarded to CompactShell's headerActions slot
-          instead) — render it only for the drill-in back button + category
+          instead) — render it only for the drill-in back button + folder
           title, which live only here and aren't lifted anywhere else. */}
       {(!compactHeader || drillCat) && (
         <div className={embedded ? "" : "drag-region"} style={PANEL_HEADER}>
@@ -1047,7 +1050,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
             )}
             {(drillCat || !embedded) && (
               <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-1)" }}>
-                {drillCat ? categoryDisplayName(drillCat) : "Vault"}
+                {drillCat ? folderDisplayName(drillCat) : "Vault"}
               </span>
             )}
             {/* ISS-026: single-line middle-ellipsis instead of CSS
@@ -1105,7 +1108,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
         {/* Inline modal: create or rename */}
         {(modal.kind === "create" || modal.kind === "rename") && (
           <InlinePrompt
-            label={modal.kind === "create" ? "New category name" : `Rename "${modal.name}"`}
+            label={modal.kind === "create" ? "New project name" : `Rename "${modal.name}"`}
             placeholder={modal.kind === "create" ? "e.g. Research" : "New name"}
             initial={modal.kind === "rename" ? modal.name : ""}
             onConfirm={(v) => {
@@ -1147,7 +1150,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
           <span style={{ fontSize: 11, color: "var(--red)", padding: "0 2px" }}>{actionError}</span>
         )}
 
-        {/* Category list */}
+        {/* Folder list */}
         {!drillCat && (
           <>
             {loading && (
@@ -1160,13 +1163,13 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
                 {error} — is the Python server running?
               </span>
             )}
-            {!loading && !error && categories.length === 0 && (
+            {!loading && !error && folders.length === 0 && (
               <span style={{ fontSize: 12, color: "var(--text-3)", textAlign: "center", paddingTop: 20 }}>
-                No categories found. Create one to get started.
+                No folders yet. Create a project to get started.
               </span>
             )}
-            {categories.map((cat) => (
-              <CategoryCard
+            {folders.map((cat) => (
+              <FolderCard
                 key={cat.name}
                 cat={cat}
                 onDrillIn={drillInto}
@@ -1175,7 +1178,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
                 confirming={confirmingDeleteName === cat.name}
                 onRequestDelete={(name) => { setActionError(null); setConfirmingDeleteName(name); }}
                 onCancelDelete={() => { setActionError(null); setConfirmingDeleteName(null); }}
-                onConfirmDelete={(name, count) => handleDelete(name, count > 0)}
+                onConfirmDelete={(name) => handleDelete(name)}
               />
             ))}
 

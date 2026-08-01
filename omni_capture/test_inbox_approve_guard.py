@@ -165,5 +165,5 @@ def test_list_scratchpad_carries_the_description(tmp_path: Path):
     assert item["source"] == "example.com"
     assert item["failure"] is None
     # the pre-existing contract is untouched
-    assert item["category"] == SP
+    assert item["project"] == SP
     assert item["filename"].endswith(".md")

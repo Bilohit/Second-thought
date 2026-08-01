@@ -5,13 +5,13 @@ import type { CaptureStep } from "./useCapture";
 // ISS-018: applyAiOfflineOverride is the pure piece of the fast-Ollama-
 // reachability stall guard -- it swaps the "decide" step's copy so the
 // existing generic renderers (StepIndicator, PillOverlay's pillLabel) show
-// "AI offline -- saved for retry" instead of "Deciding category" without any
+// "AI offline -- saved for retry" instead of "Deciding project" without any
 // component needing to know about Ollama reachability at all.
 
 const DEFS: CaptureStep[] = [
   { id: "intercept", label: "Intercepting" },
   { id: "enrich", label: "Enriching content", pillLabel: "Enriching" },
-  { id: "decide", label: "Deciding category", pillLabel: "Deciding" },
+  { id: "decide", label: "Deciding project", pillLabel: "Deciding" },
   { id: "write", label: "Writing to vault", pillLabel: "Writing" },
 ];
 

@@ -37,7 +37,7 @@ describe("SENSITIVE_KEY_RE", () => {
   });
 
   it("leaves ordinary field names alone", () => {
-    for (const k of ["path", "count", "status", "category", "bytes"]) {
+    for (const k of ["path", "count", "status", "project", "bytes"]) {
       expect(SENSITIVE_KEY_RE.test(k), k).toBe(false);
     }
   });

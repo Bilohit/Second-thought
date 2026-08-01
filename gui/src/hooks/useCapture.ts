@@ -39,7 +39,7 @@ export interface ThinkingState {
   rationale: string;
   key_signals: string[];
   confidence: number;
-  category: string;
+  project: string;
 }
 
 export interface BackgroundJobState {
@@ -59,7 +59,7 @@ export interface CaptureState {
   phase: "idle" | "capturing" | "background" | "done" | "error";
   steps: Record<StepName, StepState>;
   preview: ContentPreview | null;
-  result: { path: string | null; category: string | null; mergedInto?: string | null } | null;
+  result: { path: string | null; project: string | null; mergedInto?: string | null } | null;
   errorMsg: string | null;
   thinking: ThinkingState | null;
   backgroundJob: BackgroundJobState | null;
@@ -83,7 +83,7 @@ export interface CaptureState {
 const STEP_DEFS: CaptureStep[] = [
   { id: "intercept", label: "Intercepting" },
   { id: "enrich",    label: "Enriching content", pillLabel: "Enriching" },
-  { id: "decide",    label: "Deciding category", pillLabel: "Deciding" },
+  { id: "decide",    label: "Deciding project", pillLabel: "Deciding" },
   { id: "write",     label: "Writing to vault",  pillLabel: "Writing" },
 ];
 
@@ -98,7 +98,7 @@ const INITIAL_STEPS: Record<StepName, StepState> = {
  *  reachability pre-check has come back negative for this run. Every other
  *  step (and the decide step's `id`) is left untouched -- the real SSE
  *  "decide" step event still lands and flips it to "done"/"error" exactly as
- *  before, just now reading this label instead of "Deciding category" while
+ *  before, just now reading this label instead of "Deciding project" while
  *  it does. Exported for its sibling unit test. */
 export function applyAiOfflineOverride(defs: CaptureStep[], aiOffline: boolean): CaptureStep[] {
   if (!aiOffline) return defs;
@@ -371,7 +371,7 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
           return {
             ...prev,
             phase,
-            result: job.status === "done" ? { path: job.path, category: job.category } : prev.result,
+            result: job.status === "done" ? { path: job.path, project: job.project } : prev.result,
             errorMsg: job.status === "error" ? job.error ?? "Background job failed" : prev.errorMsg,
             backgroundJob: {
               ...prevJob,
@@ -461,16 +461,16 @@ export function useCapture(holdOpenRef?: { current: boolean }) {
                   rationale: event.rationale,
                   key_signals: event.key_signals,
                   confidence: event.confidence,
-                  category: event.category,
+                  project: event.project,
                 },
               }));
             } else if (event.kind === "done") {
-              logger.info("capture", "capture done", { category: event.category, path: event.path });
+              logger.info("capture", "capture done", { project: event.project, path: event.path });
               stopRun();
               setState((prev) => ({
                 ...prev,
                 phase: "done",
-                result: { path: event.path, category: event.category, mergedInto: event.merged_into ?? null },
+                result: { path: event.path, project: event.project, mergedInto: event.merged_into ?? null },
               }));
               scheduleDismiss(AUTO_DISMISS_DONE_MS);
               return;

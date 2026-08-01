@@ -33,7 +33,7 @@ vi.mock("../lib/api", async (importOriginal) => {
 const noteFixture: NoteContent = {
   path: "Test/note.md",
   title: "Test Note",
-  category: "Test",
+  project: "Test",
   status: null,
   tags: [],
   body: "hello world",

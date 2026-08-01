@@ -4,7 +4,7 @@ import { CAPSULE_CLOSED_W, CAPSULE_LABEL_CHROME } from "../components/PillMenu/C
 /** Geist Mono 12px measured text width for the idle default label. */
 const PILL_REFERENCE_TEXT_W = 98;
 
-/** Every fixed string pillLabel() can show (done-state vault categories ellipsize). */
+/** Every fixed string pillLabel() can show (done-state project names ellipsize). */
 const FIXED_PILL_LABELS = [
   "Second Thought",
   "Error",

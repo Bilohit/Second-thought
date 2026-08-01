@@ -41,7 +41,7 @@ const TITLES: Record<RailView, [string, string]> = {
   dashboard: ["Dashboard", "capture · recent · inbox"],
   today:     ["Today", "agenda · daily note"],
   look:      ["Look", "search · chat over vault"],
-  library:   ["Vault", "folders · category · rhythm"],
+  library:   ["Vault", "folders · project · rhythm"],
   settings:  ["Settings", ""],
   inbox:     ["Inbox", "review · reminders"],
 };

@@ -272,7 +272,7 @@ function renderCaptureCard(
       {last?.path && (
         <div style={{ marginTop: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 10, background: "var(--glass-bg)" }}>
           <div style={{ fontSize: 12, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{last.path}</div>
-          {last.category && <div style={{ fontSize: 11, color: "var(--text-2)", marginTop: 4 }}>Routed to <b>{last.category}</b></div>}
+          {last.project && <div style={{ fontSize: 11, color: "var(--text-2)", marginTop: 4 }}>Routed to <b>{last.project}</b></div>}
         </div>
       )}
     </div>
@@ -325,9 +325,9 @@ function renderRecentCard(stats: Stats | null, onOpenFile: (path: string) => voi
               {row.filename ?? row.path}
             </span>
             {/* Shrinkable (minWidth 0) so the filename's 120px floor wins on
-                narrow windows — the category chip ellipsizes first. */}
+                narrow windows — the project chip ellipsizes first. */}
             <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 1, minWidth: 0 }}>
-              <span style={{ fontSize: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "0 5px", color: "var(--text-3)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{row.category}</span>
+              <span style={{ fontSize: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "0 5px", color: "var(--text-3)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{row.project}</span>
               <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{row.timestamp}</span>
             </span>
           </button>

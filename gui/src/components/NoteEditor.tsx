@@ -942,7 +942,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
               <div key="meta" className="fw-view-panel" style={drawerInnerStyle}>
                 <div style={drawerHeadStyle}>METADATA</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "8px 14px", fontSize: 11.5, color: "var(--text-3)" }}>
-                  <span>category: <b style={{ color: "var(--text-2)" }}>{note.category}</b></span>
+                  <span>project: <b style={{ color: "var(--text-2)" }}>{note.project}</b></span>
                   <span>status: <b style={{ color: "var(--text-2)" }}>{note.status ?? "—"}</b></span>
                   {note.tags.length > 0 && (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>

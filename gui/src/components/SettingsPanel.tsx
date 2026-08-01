@@ -15,7 +15,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getConfig, patchConfig } from "../lib/api";
 import { formatHotkey, DEFAULT_HOTKEY, canParseHotkey } from "../lib/hotkey";
 import { setHotkey as setHotkeyRust, setLogLevel, revealLogFile } from "../lib/tauri";
-import { getVaultCategories } from "../lib/api";
+import { getVaultFolders } from "../lib/api";
 import { DEFAULT_CHAT_SYSTEM_PROMPT } from "../lib/lookChatDefaults";
 import { logger, LogLevel } from "../lib/logger";
 import { isGeoDebugEnabled, setGeoDebugEnabled } from "../lib/geoLog";
@@ -470,7 +470,7 @@ export default function SettingsPanel({
           // default rather than a client-side guess (which previously drifted
           // from omni_capture/config.py's DEFAULT_VAULT_ROOT).
           try {
-            root = (await getVaultCategories()).vault_root;
+            root = (await getVaultFolders()).vault_root;
           } catch {
             root = "";
           }

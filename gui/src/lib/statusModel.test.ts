@@ -83,15 +83,15 @@ describe("statusVisual", () => {
   });
 
   describe("done phase", () => {
-    it("done/ready, no category → green dot, Done label, no pulse", () => {
+    it("done/ready, no project → green dot, Done label, no pulse", () => {
       expect(statusVisual(state("done"), "ready")).toEqual({
         dotColor: "var(--green)",
         label: "Done",
         pulse: "none",
       });
     });
-    it("done with category → green dot, category as label", () => {
-      expect(statusVisual(state("done", { result: { path: "/vault/t.md", category: "Tools" } }), "ready")).toEqual({
+    it("done with project → green dot, project as label", () => {
+      expect(statusVisual(state("done", { result: { path: "/vault/t.md", project: "Tools" } }), "ready")).toEqual({
         dotColor: "var(--green)",
         label: "Tools",
         pulse: "none",

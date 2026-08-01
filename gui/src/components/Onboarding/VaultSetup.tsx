@@ -4,7 +4,7 @@
  * First-run vault-setup wizard (ISS-002 / P-WIZARD), built from the approved
  * mock (iss002-vault-setup-mock.html): a 3-step flow -- Location -> Folders
  * -> Ready -- that skips the Folders step entirely when the chosen path is
- * already an existing vault with user categories.
+ * already an existing vault with user projects.
  *
  * Stateful orchestration only: which folders are selected, what step is
  * showing, and the existing-vault detection are all resolved by the pure
@@ -12,14 +12,14 @@
  * fetches, commits (POST /vault/setup), and renders.
  *
  * Rendered by App.tsx BEFORE the pill/capture view whenever GET /config has
- * no `[vault] root` configured (isFirstRun). It never hardcodes the category
+ * no `[vault] root` configured (isFirstRun). It never hardcodes the project
  * enum -- the 10-folder catalog only seeds folder names + starter routing
- * descriptions for the server to create on disk; models.py's category enum
+ * descriptions for the server to register; models.py's project enum
  * is still built live from whatever folders exist at capture time.
  */
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { checkVaultSetup, getVaultCategories, postVaultSetup, type VaultSetupCheckResult } from "../../lib/api";
+import { checkVaultSetup, getVaultFolders, postVaultSetup, type VaultSetupCheckResult } from "../../lib/api";
 import { MenuIcon, CheckIcon, AlertIcon } from "../PillMenu/icons";
 import { BTN_PRIMARY, BTN_SECONDARY, INPUT_STYLE, focusRing, blurRing } from "../ui/styles";
 import type { PillCorner } from "../PillOverlay";
@@ -56,13 +56,13 @@ export default function VaultSetup({ pillCorner, onComplete }: Props) {
 
   // Existing-vault-with-user-folders is the only signal that skips step 2 --
   // an existing but empty directory still needs the folder picker.
-  const existingVaultFound = checkResult?.has_categories === true;
+  const existingVaultFound = checkResult?.has_projects === true;
 
   // Prefill with the server's own resolved default (mirrors SettingsPanel's
   // handlePickFolder precedent: never guess a client-side path).
   useEffect(() => {
     let cancelled = false;
-    getVaultCategories()
+    getVaultFolders()
       .then((res) => { if (!cancelled && res.vault_root) setVaultRoot(res.vault_root); })
       .catch(() => { /* leave blank -- user can Browse or type */ });
     return () => { cancelled = true; };
@@ -258,7 +258,7 @@ function LocationStep({
   checking: boolean;
   checkResult: VaultSetupCheckResult | null;
 }) {
-  const exists = !checking && checkResult?.has_categories === true;
+  const exists = !checking && checkResult?.has_projects === true;
 
   return (
     <div>
@@ -331,7 +331,7 @@ function FoldersStep({
         Pick your starter folders
       </h1>
       <p style={{ color: "var(--text-2)", fontSize: 13, maxWidth: "60ch", marginBottom: 24 }}>
-        These become the categories Second Thought auto-files captures into. Choose up to 5 to
+        These become the projects Second Thought auto-files captures into. Choose up to 5 to
         start — the description under each teaches the AI what belongs there.
       </p>
 
@@ -407,7 +407,7 @@ function FoldersStep({
         </span>
         <span>
           You can add, rename, remove, or re-describe folders any time in <b style={{ color: "var(--text-1)" }}>Library → Vault</b>.
-          Descriptions are what drive auto-categorization — edit them whenever routing feels off.
+          Descriptions are what drive auto-filing — edit them whenever routing feels off.
         </span>
       </div>
     </div>
@@ -424,7 +424,7 @@ function ReadyStep({
   existingVaultFound: boolean;
   checkResult: VaultSetupCheckResult | null;
 }) {
-  const chips = existingVaultFound ? (checkResult?.categories ?? []) : selected;
+  const chips = existingVaultFound ? (checkResult?.projects ?? []) : selected;
   return (
     <div>
       <h1 style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.01em", marginBottom: 8 }}>
@@ -433,12 +433,12 @@ function ReadyStep({
       <p style={{ color: "var(--text-2)", fontSize: 13, maxWidth: "60ch", marginBottom: 24 }}>
         {existingVaultFound
           ? "We'll point Second Thought at this vault as-is — nothing on disk changes."
-          : "We'll create the folder, your chosen categories, and the system folders. Nothing is sent anywhere — this is all local until you connect Drive."}
+          : "We'll create the folder, register your chosen projects, and create the system folders. Nothing is sent anywhere — this is all local until you connect Drive."}
       </p>
 
       <ReviewRow k="Location" v={vaultRoot} />
       <ReviewRow
-        k={existingVaultFound ? "Existing categories" : "Starter folders"}
+        k={existingVaultFound ? "Existing projects" : "Starter projects"}
         v={
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "flex-end" }}>
             {chips.length === 0

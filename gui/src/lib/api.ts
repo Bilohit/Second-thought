@@ -17,7 +17,7 @@ let vaultRootCache: string | null = null;
 async function vaultRoot(): Promise<string | null> {
   if (vaultRootCache !== null) return vaultRootCache;
   try {
-    const { vault_root } = await getVaultCategories();
+    const { vault_root } = await getVaultFolders();
     if (vault_root) vaultRootCache = vault_root;
     return vault_root || null;
   } catch {
@@ -89,13 +89,13 @@ export interface ThinkingEvent {
   rationale: string;
   key_signals: string[];
   confidence: number;
-  category: string;
+  project: string;
 }
 
 export interface DoneEvent {
   kind: "done";
   path: string;
-  category: string;
+  project: string;
   /** s114/d05 — set ONLY when the pipeline folded this capture into a different
    *  existing note (storage_engine's smart merge). A merge used to be completely
    *  silent: a clipboard image was absorbed into an unrelated text capture and
@@ -140,7 +140,7 @@ export interface JobStatus {
   job_id: string;
   status: string;
   kind: string;
-  category: string | null;
+  project: string | null;
   path: string | null;
   error: string | null;
   chunk_index: number | null;
@@ -148,11 +148,12 @@ export interface JobStatus {
   detail: string | null;
 }
 
-export interface VaultCategory {
+export interface VaultFolder {
   name: string;
   file_count: number;
   path: string;
-  description: string | null;  // from .category.toml; null if not set
+  /** From the project registry; null when the folder is not a registered project. */
+  description: string | null;
 }
 
 export interface VaultFile {
@@ -202,7 +203,7 @@ export interface InboxItem {
   note_id: string;
   filename: string;
   path: string;
-  category: string;
+  project: string;
   size: number;
   modified: number;
   /** s114/d07 — what the review row leads with, derived server-side by
@@ -218,7 +219,7 @@ export interface InboxItem {
 
 export interface Stats {
   total: number;
-  by_category: { category: string; count: number; pct: number }[];
+  by_project: { project: string; count: number; pct: number }[];
   by_day: { date: string; count: number }[];
   recent: SearchResult[];
 }
@@ -232,7 +233,7 @@ export interface Stats {
 export interface SearchResult {
   id?: number | null;
   timestamp?: string | null;
-  category: string | null;
+  project: string | null;
   path: string;
   filename: string | null;
   source_url?: string | null;
@@ -346,11 +347,11 @@ export async function* streamCapture(
             rationale: parsed.rationale ?? "",
             key_signals: parsed.key_signals ?? [],
             confidence: parsed.confidence ?? 0.9,
-            category: parsed.category ?? "",
+            project: parsed.project ?? "",
           } as ThinkingEvent;
         } else if (eventType === "done") {
           yield {
-            kind: "done", path: parsed.path, category: parsed.category,
+            kind: "done", path: parsed.path, project: parsed.project,
             merged_into: parsed.merged_into ?? null,
           } as DoneEvent;
         } else if (eventType === "error") {
@@ -531,8 +532,8 @@ export interface VaultSetupFolder {
 
 export interface VaultSetupCheckResult {
   exists: boolean;
-  has_categories: boolean;
-  categories: string[];
+  has_projects: boolean;
+  projects: string[];
 }
 
 export interface VaultSetupResult {
@@ -542,7 +543,7 @@ export interface VaultSetupResult {
 }
 
 /** Read-only: checks whether *root* (a candidate path, not yet the configured
- *  vault) already looks like an existing vault with user categories, so the
+ *  vault) already looks like an existing vault with user projects, so the
  *  wizard can skip its folder-picker step. Never mutates config. */
 export async function checkVaultSetup(root: string): Promise<VaultSetupCheckResult> {
   const params = new URLSearchParams({ root });
@@ -551,9 +552,10 @@ export async function checkVaultSetup(root: string): Promise<VaultSetupCheckResu
   return r.json();
 }
 
-/** Sets the vault root, eagerly runs init_vault, and creates every chosen
- *  starter folder WITH its .category.toml description written at creation
- *  time -- see vault_admin.py's POST /vault/setup. */
+/** Sets the vault root, eagerly runs init_vault, and REGISTERS every chosen
+ *  starter project with its description in `.projects.toml` -- see
+ *  vault_admin.py's POST /vault/setup. No directory is created here: a
+ *  project's folder appears the first time a note is filed into it. */
 export async function postVaultSetup(root: string, folders: VaultSetupFolder[]): Promise<VaultSetupResult> {
   const r = await fetch(`${BASE}/vault/setup`, {
     method: "POST",
@@ -564,40 +566,40 @@ export async function postVaultSetup(root: string, folders: VaultSetupFolder[]):
   return r.json();
 }
 
-export async function getVaultCategories(): Promise<{ categories: VaultCategory[]; vault_root: string }> {
-  const r = await fetch(`${BASE}/vault/categories`, { headers: await authHeaders() });
-  if (!r.ok) throw new Error("Failed to list vault categories");
+export async function getVaultFolders(): Promise<{ folders: VaultFolder[]; vault_root: string }> {
+  const r = await fetch(`${BASE}/vault/folders`, { headers: await authHeaders() });
+  if (!r.ok) throw new Error("Failed to list vault folders");
   const body = await r.json();
   return {
-    categories: arrayField<VaultCategory>(body, "categories"),
+    folders: arrayField<VaultFolder>(body, "folders"),
     vault_root: typeof body?.vault_root === "string" ? body.vault_root : "",
   };
 }
 
-export async function createVaultCategory(name: string): Promise<void> {
-  const r = await fetch(`${BASE}/vault/categories`, {
+export async function createProject(name: string): Promise<void> {
+  const r = await fetch(`${BASE}/vault/projects`, {
     method: "POST",
     headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ name }),
   });
-  await assertOk(r, "Failed to create category");
+  await assertOk(r, "Failed to create project");
 }
 
-export async function renameVaultCategory(oldName: string, newName: string): Promise<void> {
-  const r = await fetch(`${BASE}/vault/categories/${encodeURIComponent(oldName)}`, {
+export async function renameProject(oldName: string, newName: string): Promise<void> {
+  const r = await fetch(`${BASE}/vault/projects/${encodeURIComponent(oldName)}`, {
     method: "PATCH",
     headers: await authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ new_name: newName }),
   });
-  await assertOk(r, "Failed to rename category");
+  await assertOk(r, "Failed to rename project");
 }
 
-export async function updateCategoryDescription(
+export async function updateProjectDescription(
   name: string,
   description: string | null,
 ): Promise<void> {
   const r = await fetch(
-    `${BASE}/vault/categories/${encodeURIComponent(name)}/description`,
+    `${BASE}/vault/projects/${encodeURIComponent(name)}/description`,
     {
       method: "PATCH",
       headers: await authHeaders({ "Content-Type": "application/json" }),
@@ -607,18 +609,20 @@ export async function updateCategoryDescription(
   await assertOk(r, "Failed to update description");
 }
 
-export async function deleteVaultCategory(name: string, force = false): Promise<void> {
+/** Removes the REGISTRY ENTRY ONLY -- never a note (contract 1.3). Its notes go
+ *  loose by the dangling rule and the server tidy pass moves them into `_loose/`. */
+export async function deleteProject(name: string): Promise<void> {
   const r = await fetch(
-    `${BASE}/vault/categories/${encodeURIComponent(name)}?force=${force}`,
+    `${BASE}/vault/projects/${encodeURIComponent(name)}`,
     { method: "DELETE", headers: await authHeaders() },
   );
-  await assertOk(r, "Failed to delete category");
+  await assertOk(r, "Failed to delete project");
 }
 
-export async function getVaultCategoryFiles(
-  category: string,
-): Promise<{ category: string; files: VaultFile[] }> {
-  const r = await fetch(`${BASE}/vault/categories/${encodeURIComponent(category)}/files`, {
+export async function getVaultFolderFiles(
+  folder: string,
+): Promise<{ folder: string; files: VaultFile[] }> {
+  const r = await fetch(`${BASE}/vault/folders/${encodeURIComponent(folder)}/files`, {
     headers: await authHeaders(),
   });
   if (!r.ok) throw new Error("Failed to list files");
@@ -627,12 +631,12 @@ export async function getVaultCategoryFiles(
 
 export async function searchCaptures(
   q: string,
-  opts?: { category?: string; since?: string; limit?: number },
+  opts?: { project?: string; since?: string; limit?: number },
 ): Promise<{ results: SearchResult[]; count: number; query: string }> {
   const stop = logger.time("look", "GET /search");
   logger.debug("look", "search query", { q, ...opts });
   const params = new URLSearchParams({ q });
-  if (opts?.category) params.set("category", opts.category);
+  if (opts?.project) params.set("project", opts.project);
   if (opts?.since) params.set("since", opts.since);
   if (opts?.limit) params.set("limit", String(opts.limit));
   try {
@@ -662,7 +666,7 @@ export async function getStats(): Promise<Stats> {
   const body = await r.json();
   return {
     total: typeof body?.total === "number" ? body.total : 0,
-    by_category: arrayField<Stats["by_category"][number]>(body, "by_category"),
+    by_project: arrayField<Stats["by_project"][number]>(body, "by_project"),
     by_day: arrayField<Stats["by_day"][number]>(body, "by_day"),
     recent: arrayField<SearchResult>(body, "recent"),
   };
@@ -692,21 +696,21 @@ export async function getProvisional(): Promise<{ provisional: ProvisionalItem[]
   return r.json();
 }
 
-export async function approveInboxItem(noteId: string, targetCategory?: string): Promise<{ ok: boolean; path: string }> {
+export async function approveInboxItem(noteId: string, targetProject?: string): Promise<{ ok: boolean; path: string }> {
   const r = await fetch(`${BASE}/inbox/${encodeURIComponent(noteId)}/approve`, {
     method: "POST",
     headers: await authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ target_category: targetCategory ?? null }),
+    body: JSON.stringify({ target_project: targetProject ?? null }),
   });
   await assertOk(r, "Failed to approve item");
   return r.json();
 }
 
-export async function suggestCategories(noteId: string): Promise<{ suggestions: string[] }> {
-  const r = await fetch(`${BASE}/inbox/${encodeURIComponent(noteId)}/suggest-categories`, {
+export async function suggestProjects(noteId: string): Promise<{ suggestions: string[] }> {
+  const r = await fetch(`${BASE}/inbox/${encodeURIComponent(noteId)}/suggest-projects`, {
     headers: await authHeaders(),
   });
-  await assertOk(r, "Failed to suggest categories");
+  await assertOk(r, "Failed to suggest projects");
   return r.json();
 }
 
@@ -791,7 +795,7 @@ export async function createDailyNote(day?: string): Promise<TodayDailyNote> {
   return r.json() as Promise<TodayDailyNote>;
 }
 
-export interface LookSource { n: number; path: string; category: string; filename: string; snippet: string; }
+export interface LookSource { n: number; path: string; project: string; filename: string; snippet: string; }
 export type LookTier = "high" | "none" | "talk" | "offline";
 export type LookChatEvent =
   | { kind: "meta"; confidence: number; tier: LookTier; answerable: boolean }
@@ -890,7 +894,8 @@ export async function* streamLookChat(
 export interface NoteContent {
   path: string;
   title: string;
-  category: string;
+  /** The note's directory name -- its project, or `_loose`. Read off the path. */
+  project: string;
   status: string | null;
   tags: string[];
   body: string;
@@ -1035,6 +1040,11 @@ export async function getVaultConflicts(): Promise<VaultConflictEntry[]> {
 export interface TrashItem {
   filename: string;
   title: string;
+  /** ponytail: trash.py still speaks `category` end to end -- it records the folder a
+   *  note was trashed FROM and restores it there, falling back to an `Uncategorized`
+   *  folder. That restore model predates projects and was not in the rip-out's scope,
+   *  so this key mirrors the server verbatim. Rename both together when trash restore
+   *  is reworked to resolve the note's `#project@` tag instead. */
   category: string;
   deleted_at: number;
   purge_at: number;
@@ -1126,6 +1136,10 @@ export interface SemanticResult {
   path: string;
   similarity: number;
   excerpt: string;
+  /** ponytail: GET /search/semantic returns vector_store's rows verbatim, and its
+   *  `embeddings.category` column is a separate schema the projects rip-out did not
+   *  touch. The value has always been the note's parent directory. Rename the column
+   *  and this key together when the embeddings store is next migrated. */
   category: string | null;
 }
 

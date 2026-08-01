@@ -207,14 +207,14 @@ def list_scratchpad(vault_root: Path, scratchpad_folder: str = "_scratchpad") ->
         if f.is_file() and f.suffix == ".md":
             text = f.read_text(encoding="utf-8", errors="ignore")
             note_id = _extract_frontmatter_field(text, "note_id") or f.stem
-            # v2.2 (data-model §1.2): category IS the parent folder, not a frontmatter field.
-            # Scratchpad items sit in the scratchpad folder until the user files them on approve.
-            category = f.parent.name
+            # The directory a note sits in IS its project, never a frontmatter field.
+            # Scratchpad items sit in the scratchpad folder until the user files them on
+            # approve, so this reads `_scratchpad` -- honest, and never a real project.
             items.append({
                 "note_id":  note_id,
                 "filename": f.name,
                 "path":     str(f),
-                "category": category,
+                "project":  f.parent.name,
                 "size":     f.stat().st_size,
                 "modified": f.stat().st_mtime,
                 **describe_capture(text),

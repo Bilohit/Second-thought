@@ -1,21 +1,21 @@
 /**
  * StatsPanel.tsx
  * --------------
- * History tab: recent activity, live category counts, daily sparkline, total.
- * Category counts come from getVaultCategories() (live vault folder listing)
+ * History tab: recent activity, live project counts, daily sparkline, total.
+ * Project counts come from getVaultFolders() (live vault folder listing)
  * rather than the /stats SQLite snapshot — files are source of truth.
  */
 
 import { useState, useEffect } from "react";
 
-export function CategoryBar({ category, count, pct }: { category: string; count: number; pct: number }) {
+export function ProjectBar({ project, count, pct }: { project: string; count: number; pct: number }) {
   const [width, setWidth] = useState(0);
   useEffect(() => { requestAnimationFrame(() => setWidth(pct)); }, [pct]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
-        <span style={{ color: "var(--text-1)" }}>{category}</span>
+        <span style={{ color: "var(--text-1)" }}>{project}</span>
         <span style={{ color: "var(--text-3)" }}>{count}</span>
       </div>
       <div style={{ height: 5, borderRadius: "var(--radius-sm)", background: "var(--border)", overflow: "hidden" }}>

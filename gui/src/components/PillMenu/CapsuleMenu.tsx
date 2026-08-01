@@ -32,7 +32,7 @@ import FluidVisualizer from "./FluidVisualizer";
 // 154px — "Second Thought" (Geist Mono 12px, 98px text) with symmetric side
 // insets: 28px left (12px pad + 8px dot + 8px gap) = 28px right (12px pad +
 // 16px label slack). pillLabel strings in useCapture.ts stay within the text
-// budget; long vault category names on done ellipsize instead of widening.
+// budget; long project names on done ellipsize instead of widening.
 export const CAPSULE_PAD_X = 12; // must equal --space-3 in index.css
 export const CAPSULE_DOT_W = 8;
 export const CAPSULE_DOT_GAP = 8; // must equal --space-2 on .capsule-label
