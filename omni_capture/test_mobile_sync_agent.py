@@ -19,6 +19,8 @@ from mobile_sync_agent import (
     _FOLDER_MIME,
 )
 from frontmatter import read_all_fields, strip_frontmatter
+from projects import LOOSE_DIR
+import project_registry
 
 FM = "---\nid: {id}\ntitle: {title}\norigin: note\n---\n{body}"
 
@@ -27,6 +29,20 @@ def _write(dirpath: Path, fname: str, note_id: str, body: str) -> Path:
     p = dirpath / fname
     p.write_text(FM.format(id=note_id, title="T", body=body), encoding="utf-8", newline="")
     return p
+
+
+def _reg(*names) -> dict:
+    """An in-memory registry holding exactly `names` — what `resolve_project` needs to turn a
+    `#project@<name>` body tag into that project rather than into loose."""
+    return {"schema": 1, "projects": {n: {"description": ""} for n in names}}
+
+
+def _write_registry(vault_root: Path, *names) -> dict:
+    """The same, written to `<vault>/.projects.toml` for code paths that load it themselves."""
+    reg = _reg(*names)
+    Path(vault_root).mkdir(parents=True, exist_ok=True)
+    project_registry.save(Path(vault_root), reg)
+    return reg
 
 
 def test_read_vault_notes_keys_by_frontmatter_id(tmp_path):
@@ -155,7 +171,7 @@ def test_mirrored_capture_never_reaches_enrich_fn(tmp_path):
     def classify(text):
         raise AssertionError("must not classify a mirrored capture")
 
-    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify, vocab={})
+    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify)
     assert (enriched, failed) == (0, 0)
 
 
@@ -304,7 +320,8 @@ def test_mirror_creates_missing_note():
     assert new_state["01ABC"] == {
         "drive_file_id": "F1", "base_rev": "rev1", "local_hash": "hashA",
         "hub_name": "Untitled.md",   # no title in this fixture -> Untitled fallback
-        "base_parent": None,         # v2.3: created at the hub root (fixture has no category)
+        # v3.0: an untagged note is LOOSE, and loose is `_loose/`, never the hub root.
+        "base_parent": LOOSE_DIR,
     }
 
 
@@ -404,9 +421,14 @@ def _recon_drive(remote_text, base_text=None, up_rev="rev2", up_id="F1"):
     return drive
 
 
-def _vault_note(content, path="/vault/x.md", nid="01ABC", h="NEW"):
+# v3.0: EVERY note lives at depth 1 -- `<project>/<file>.md` or `_loose/<file>.md`, never the
+# vault root. These fixtures carry no `#project@` tag, so their directory is `_loose/`.
+_LOOSE_PATH = str(Path("/vault") / LOOSE_DIR / "x.md")
+
+
+def _vault_note(content, path=_LOOSE_PATH, nid="01ABC", h="NEW"):
     return {nid: {"id": nid, "path": path, "content": content,
-                  "body": content.split("---\n", 2)[-1], "hash": h}}
+                  "body": content.split("---\n", 2)[-1], "hash": h, "folder": LOOSE_DIR}}
 
 
 def test_reconcile_pull_remote_only_change_no_upload():
@@ -422,7 +444,7 @@ def test_reconcile_pull_remote_only_change_no_upload():
         write_file=lambda p, c: written.__setitem__(p, c), new_id=lambda: "X",
     )
     assert (reconciled, conflicts, failed) == (1, 0, 0)
-    assert written["/vault/x.md"] == remote_text           # verbatim pull
+    assert written[_LOOSE_PATH] == remote_text           # verbatim pull
     assert new_state["01ABC"]["base_rev"] == "rev9"
     assert new_state["01ABC"]["local_hash"] == _sha256(remote_text)
     drive.files().update().execute.assert_not_called()     # pull never uploads
@@ -444,7 +466,7 @@ def test_reconcile_both_changed_clean_merge_uploads():
         write_file=lambda p, c: written.__setitem__(p, c), new_id=lambda: "X",
     )
     assert (reconciled, conflicts, failed) == (1, 0, 0)
-    merged = written["/vault/x.md"]
+    merged = written[_LOOSE_PATH]
     assert "phone edit" in merged                 # local body kept (body-sacred)
     assert "finance" in merged                    # desktop enrichment merged in
     assert "enriched: true" in merged
@@ -467,10 +489,10 @@ def test_reconcile_body_conflict_writes_conflicted_copy():
         write_file=lambda p, c: written.__setitem__(p, c), new_id=lambda: "CONFLICT1",
     )
     assert (reconciled, conflicts, failed) == (1, 1, 0)
-    assert "local body" in written["/vault/x.md"]                     # local kept in place
+    assert "local body" in written[_LOOSE_PATH]                     # local kept in place
     # s114/x04: the copy is named from its TITLE, not `<id>.md` -- a hex-blob filename beside the
     # note is what made a correct keep-both look like data loss to someone reading the vault.
-    cc_path = next(k for k in written if k != "/vault/x.md")
+    cc_path = next(k for k in written if k != _LOOSE_PATH)
     assert "conflicted copy desktop" in cc_path                       # recognisable on disk
     assert "CONFLICT1" not in cc_path                                 # the id is not the filename
     cc = written[cc_path]
@@ -496,7 +518,7 @@ def test_reconcile_adopts_hub_file_when_state_empty_and_bytes_match():
     drive.files().update().execute.assert_not_called()
     assert new_state["01ABC"] == {
         "drive_file_id": "HUBF1", "base_rev": "rev9", "local_hash": "H1",
-        "base_parent": None,   # v2.3: hub folder at last sync (this fixture's hub record has none)
+        "base_parent": None,   # hub folder at last sync (this fixture's hub record has none)
     }
 
 
@@ -515,9 +537,9 @@ def test_reconcile_adopt_with_no_base_keeps_both_bodies():
         write_file=lambda p, c: written.__setitem__(p, c), new_id=lambda: "CONFLICT1",
     )
     assert (reconciled, conflicts, failed) == (1, 1, 0)
-    assert "local body" in written["/vault/x.md"]                  # local kept in place
+    assert "local body" in written[_LOOSE_PATH]                  # local kept in place
     # s114/x04: title-derived filename, not `<id>.md` -- see the body-conflict test above.
-    cc = written[next(k for k in written if k != "/vault/x.md")]
+    cc = written[next(k for k in written if k != _LOOSE_PATH)]
     assert "remote body" in cc                                     # the head's body survives
     drive.revisions().get_media().execute.assert_not_called()      # no base rev exists to fetch
     assert new_state["01ABC"]["drive_file_id"] == "HUBF1"           # updated in place, no orphan
@@ -636,7 +658,7 @@ def _tree_drive(categories, files_by_folder):
     return drive
 
 
-def test_get_hub_notes_walks_category_folders_and_normalizes_keys():
+def test_get_hub_notes_walks_note_folders_and_normalizes_keys():
     drive = _tree_drive(
         categories={"personal": "c1", "_trash": "t1"},
         files_by_folder={
@@ -651,12 +673,13 @@ def test_get_hub_notes_walks_category_folders_and_normalizes_keys():
     )
     notes = get_hub_notes(drive, "HUB")
     assert set(notes) == {"01ABC", "01XYZ"}     # both keyed by bare id; trash excluded
-    assert notes["01ABC"]["category"] == "personal"
+    assert notes["01ABC"]["folder"] == "personal"
     assert notes["01ABC"]["headRevisionId"] == "r1"
 
 
-def test_get_hub_notes_scans_root_level_uncategorised_notes():
-    # B-5: an uncategorised note lives at the hub ROOT (category=None). It must be scanned + reconciled,
+def test_get_hub_notes_scans_root_level_notes():
+    # B-5: v3.0 never PUTS a note at the hub root (a loose note goes to `_loose/`), but a
+    # legacy/foreign root file (folder=None) must still be scanned + reconciled,
     # not silently invisible. Dispatch: the root FILE query carries `mimeType!=folder`; the folder-list
     # query carries `mimeType=folder`.
     drive = MagicMock()
@@ -679,9 +702,9 @@ def test_get_hub_notes_scans_root_level_uncategorised_notes():
 
     drive.files().list.side_effect = _list
     notes = get_hub_notes(drive, "HUB")
-    assert set(notes) == {"01CAT", "01ROOT"}       # both the category note AND the root note
-    assert notes["01CAT"]["category"] == "personal"
-    assert notes["01ROOT"]["category"] is None      # uncategorised
+    assert set(notes) == {"01CAT", "01ROOT"}       # both the folder note AND the root note
+    assert notes["01CAT"]["folder"] == "personal"
+    assert notes["01ROOT"]["folder"] is None        # at the hub root
 
 
 def test_get_hub_notes_prefers_appProperties_noteId_and_logs_filename_stem_fallback(capsys):
@@ -721,27 +744,32 @@ def test_get_hub_notes_prefers_appProperties_noteId_and_logs_filename_stem_fallb
     assert out.count("no appProperties") == 1     # only the fallback (01J9.md), not the F1 note
 
 
-def test_read_vault_notes_category_is_the_parent_folder(tmp_path):
-    # v2.2 (§1.2): category IS the parent folder. A note in a subfolder → that folder name.
+def test_read_vault_notes_folder_is_derived_from_the_body_tag(tmp_path):
+    # v3.0 (§1.3): `folder` is note_dir_for(resolve_project(body, reg)) — the note's project or
+    # `_loose`. Derived from the BODY TAG, never from the file's parent dir and never from a
+    # legacy `category:` line.
+    _write_registry(tmp_path, "work")
     workd = tmp_path / "work"
     workd.mkdir()
-    (workd / "a.md").write_text("---\nid: 01A\ntitle: T\norigin: note\n---\nB", encoding="utf-8", newline="")
-    # a legacy `category: ideas` frontmatter is IGNORED — a root-level note is uncategorised (None).
+    # tagged + registered -> its project
+    (workd / "a.md").write_text("---\nid: 01A\ntitle: T\norigin: note\n---\nB #project@work",
+                                encoding="utf-8", newline="")
+    # no tag -> loose, and a legacy `category: ideas` line changes nothing
     (tmp_path / "b.md").write_text(
         "---\nid: 01B\ntitle: T\norigin: note\ncategory: ideas\n---\nB", encoding="utf-8", newline="")
-    # a subfolder note whose legacy frontmatter disagrees with its folder → folder wins.
+    # tag naming an UNREGISTERED project -> dangling reads as loose, whatever folder it sits in
     (workd / "c.md").write_text(
-        "---\nid: 01C\ntitle: T\norigin: note\ncategory: ideas\n---\nB", encoding="utf-8", newline="")
+        "---\nid: 01C\ntitle: T\norigin: note\n---\nB #project@ideas", encoding="utf-8", newline="")
     notes = read_vault_notes(str(tmp_path))
-    assert notes["01A"]["category"] == "work"
-    assert notes["01B"]["category"] is None      # root note, legacy frontmatter ignored
-    assert notes["01C"]["category"] == "work"    # folder beats the disagreeing frontmatter
+    assert notes["01A"]["folder"] == "work"
+    assert notes["01B"]["folder"] == LOOSE_DIR   # untagged, wherever it sits
+    assert notes["01C"]["folder"] == LOOSE_DIR   # dangling tag reads as loose
 
 
-def test_mirror_places_new_note_in_category_folder():
+def test_mirror_places_new_note_in_its_project_folder():
     vault_notes = {
         "01A": {"id": "01A", "path": "/v/work/a.md", "content": "---\nid: 01A\ntitle: Groceries\n---\nB",
-                "body": "B", "hash": "h", "category": "work", "title": "Groceries", "created": ""}
+                "body": "B", "hash": "h", "folder": "work", "title": "Groceries", "created": ""}
     }
     drive = MagicMock()
     drive.files().list().execute.return_value = {"files": []}            # category folder absent
@@ -751,85 +779,102 @@ def test_mirror_places_new_note_in_category_folder():
     # the note-create body must carry parents = [the work-folder id], not [HUB]
     create_calls = [c for c in drive.files().create.call_args_list if c.kwargs.get("body", {}).get("name") == "Groceries.md"]
     assert create_calls, "note was not created with name Groceries.md (title-based naming)"
-    assert create_calls[0].kwargs["body"]["parents"] != ["HUB"]          # placed in a category folder
+    assert create_calls[0].kwargs["body"]["parents"] != ["HUB"]          # placed in a project folder
 
 
 from mobile_sync_agent import pull_new_hub_notes
 
 
-def _hub_note_text(nid, category=None, body="phone body"):
-    cat = f"category: {category}\n" if category else ""
-    return f"---\nid: {nid}\ntitle: T\norigin: note\n{cat}---\n{body}"
+def _hub_note_text(nid, project=None, body="phone body"):
+    """v3.0: a note's project is the `#project@<name>` BODY tag — there is no project
+    frontmatter field to author. `project=None` is a loose note."""
+    tag = f" #project@{project}" if project else ""
+    return f"---\nid: {nid}\ntitle: T\norigin: note\n---\n{body}{tag}"
 
 
 def test_pull_places_new_note_under_the_hub_resolved_title_name():
     """Task 2.4: pull_new_hub_notes must mirror the HUB FILE'S OWN resolved `name` (get_hub_notes
     already carries it, clash-unique on the hub) rather than recomputing/hardcoding <id>.md."""
-    hub_files = {"01NEW": {"id": "F1", "headRevisionId": "r1", "category": "personal", "name": "T.md"}}
+    hub_files = {"01NEW": {"id": "F1", "headRevisionId": "r1", "folder": "personal", "name": "T.md"}}
     drive = MagicMock()
     drive.files().get_media().execute.return_value = _hub_note_text("01NEW", "work").encode("utf-8")
     written = {}
     pulled, failed, new_state = pull_new_hub_notes(
-        {}, hub_files, {}, drive, "/vault", "_scratchpad",
-        write_file=lambda p, c: written.__setitem__(p, c),
+        {}, hub_files, {}, drive, "/vault",
+        write_file=lambda p, c: written.__setitem__(p, c), reg=_reg("work"),
     )
     assert (pulled, failed) == (1, 0)
-    # v2.2: placement uses the HUB FOLDER category ("personal"), NOT the note's legacy frontmatter
-    # `category: work` (which is ignored). Filename = the hub's resolved name (T.md). Body verbatim.
-    assert written == {str(Path("/vault/personal/T.md")): _hub_note_text("01NEW", "work")}
+    # v3.0: placement comes from the BODY TAG (`#project@work`), NOT the hub parent folder
+    # ("personal"). Filename = the hub's resolved name (T.md). Body verbatim.
+    assert written == {str(Path("/vault/work/T.md")): _hub_note_text("01NEW", "work")}
     assert new_state["01NEW"] == {
         "drive_file_id": "F1", "base_rev": "r1",
         "local_hash": _sha256(_hub_note_text("01NEW", "work")),
         "hub_name": "T.md",
-        "base_parent": "personal",   # v2.3: the hub folder it was pulled from
+        "base_parent": "personal",   # the hub folder it was pulled from, still just bookkeeping
     }
 
 
 def test_pull_falls_back_to_id_name_when_hub_record_has_no_name():
     """Guard: a hub record with no usable `name` (missing/unsafe) never crashes the pull — it
     falls back to the legacy <id>.md local filename."""
-    hub_files = {"01NEW": {"id": "F1", "headRevisionId": "r1", "category": "personal"}}
+    hub_files = {"01NEW": {"id": "F1", "headRevisionId": "r1", "folder": "personal"}}
     drive = MagicMock()
     drive.files().get_media().execute.return_value = _hub_note_text("01NEW", "work").encode("utf-8")
     written = {}
     pulled, failed, new_state = pull_new_hub_notes(
-        {}, hub_files, {}, drive, "/vault", "_scratchpad",
-        write_file=lambda p, c: written.__setitem__(p, c),
+        {}, hub_files, {}, drive, "/vault",
+        write_file=lambda p, c: written.__setitem__(p, c), reg=_reg("work"),
     )
     assert (pulled, failed) == (1, 0)
-    # v2.2: folder-derived category ("personal") drives placement, not the frontmatter ("work").
-    assert written == {str(Path("/vault/personal/01NEW.md")): _hub_note_text("01NEW", "work")}
+    # v3.0: the body tag drives placement, not the hub parent folder ("personal").
+    assert written == {str(Path("/vault/work/01NEW.md")): _hub_note_text("01NEW", "work")}
     assert new_state["01NEW"] == {
         "drive_file_id": "F1", "base_rev": "r1",
         "local_hash": _sha256(_hub_note_text("01NEW", "work")),
         "hub_name": None,
-        "base_parent": "personal",   # v2.3
+        "base_parent": "personal",
     }
 
 
-def test_pull_falls_back_to_scratchpad_without_category():
-    # v2.2: "no category" = a hub note at the ROOT (get_hub_notes carries category=None), NOT a
-    # missing frontmatter field. Such a note falls back to the scratchpad.
-    hub_files = {"01NC": {"id": "F2", "headRevisionId": "r2", "category": None, "name": "T.md"}}
+def test_pull_files_an_untagged_note_into_loose_never_the_vault_root():
+    # v3.0 (§1.3): a note with no `#project@` tag is LOOSE, and loose lives at depth 1 in
+    # `_loose/` -- never the vault root, which would break its `../_attachments/` body refs.
+    # The old scratchpad fallback is gone with the category concept.
+    hub_files = {"01NC": {"id": "F2", "headRevisionId": "r2", "folder": None, "name": "T.md"}}
     drive = MagicMock()
     drive.files().get_media().execute.return_value = _hub_note_text("01NC").encode("utf-8")
     written = {}
     pulled, failed, _ = pull_new_hub_notes(
-        {}, hub_files, {}, drive, "/vault", "_scratchpad",
+        {}, hub_files, {}, drive, "/vault",
         write_file=lambda p, c: written.__setitem__(p, c),
     )
     assert (pulled, failed) == (1, 0)
-    assert str(Path("/vault/_scratchpad/T.md")) in written
+    assert str(Path("/vault") / LOOSE_DIR / "T.md") in written
+
+
+def test_pull_files_a_dangling_tag_into_loose():
+    # A tag naming a project the registry does not hold reads as loose (§1.3 "dangling reads as
+    # loose") -- it never creates the directory and never errors.
+    hub_files = {"01DG": {"id": "F3", "headRevisionId": "r3", "folder": "personal", "name": "T.md"}}
+    written = {}
+    pulled, failed, _ = pull_new_hub_notes(
+        {}, hub_files, {}, MagicMock(), "/vault",
+        download=lambda fid: _hub_note_text("01DG", "not-registered"),
+        write_file=lambda p, c: written.__setitem__(p, c),
+    )
+    assert (pulled, failed) == (1, 0)
+    assert str(Path("/vault") / LOOSE_DIR / "T.md") in written
 
 
 def test_pull_skips_notes_already_local_or_tracked():
-    hub_files = {"01A": {"id": "F1", "headRevisionId": "r1", "category": "personal", "name": "T.md"}}
+    hub_files = {"01A": {"id": "F1", "headRevisionId": "r1", "folder": "personal", "name": "T.md"}}
     drive = MagicMock()
     # already in the vault
-    p1, _, _ = pull_new_hub_notes({"01A": {}}, hub_files, {}, drive, "/vault", "_scratchpad",
+    p1, _, _ = pull_new_hub_notes({"01A": {}}, hub_files, {}, drive, "/vault",
                                   write_file=lambda p, c: None)
     # already tracked in state
-    p2, _, _ = pull_new_hub_notes({}, hub_files, {"01A": {}}, drive, "/vault", "_scratchpad",
+    p2, _, _ = pull_new_hub_notes({}, hub_files, {"01A": {}}, drive, "/vault",
                                   write_file=lambda p, c: None)
     assert p1 == 0 and p2 == 0
 
@@ -839,21 +884,21 @@ def test_pull_skips_a_locally_trashed_id(tmp_path):
     fresh active copy (which would leave a duplicate active+trashed pair). A live hub copy going
     live again — peer restore / out-of-order delete after the state row was dropped — is skipped
     when local_trashed_ids carries that id; a note NOT locally trashed still pulls normally."""
-    content = "---\nid: 01TR\ntitle: Trashed\norigin: note\ncategory: personal\n---\nbody"
-    hub_files = {"01TR": {"id": "F1", "headRevisionId": "r1", "category": "personal", "name": "Trashed.md"}}
+    content = "---\nid: 01TR\ntitle: Trashed\norigin: note\n---\nbody #project@personal"
+    hub_files = {"01TR": {"id": "F1", "headRevisionId": "r1", "folder": "personal", "name": "Trashed.md"}}
     vault = tmp_path / "vault"
-    # id is in local _trash/ → skipped, nothing written, no active copy minted
+    # id is in local _trash/ -> skipped, nothing written, no active copy minted
     pulled, failed, new_state = pull_new_hub_notes(
-        {}, hub_files, {}, MagicMock(), str(vault), "_scratchpad",
-        download=lambda fid: content, local_trashed_ids={"01TR"},
+        {}, hub_files, {}, MagicMock(), str(vault),
+        download=lambda fid: content, local_trashed_ids={"01TR"}, reg=_reg("personal"),
     )
     assert (pulled, failed) == (0, 0)
     assert "01TR" not in new_state
     assert not (vault / "personal" / "Trashed.md").exists()
     # sanity: the SAME note with no local-trash entry pulls as before (guard is scoped, not blanket)
     pulled2, _, state2 = pull_new_hub_notes(
-        {}, hub_files, {}, MagicMock(), str(vault), "_scratchpad",
-        download=lambda fid: content, local_trashed_ids=set(),
+        {}, hub_files, {}, MagicMock(), str(vault),
+        download=lambda fid: content, local_trashed_ids=set(), reg=_reg("personal"),
     )
     assert pulled2 == 1 and "01TR" in state2
 
@@ -863,14 +908,14 @@ def test_pull_writes_hub_resolved_name_not_id_and_pins_hub_name_in_state(tmp_pat
     pull_new_hub_notes the local file exists at <vault>/<cat>/Pulled Note.md (NOT <id>.md),
     body byte-identical to the hub content, and the new sync-state entry carries
     hub_name='Pulled Note.md' — so a later reconcile/_maybe_rename_local never renames it."""
-    content = "---\nid: 01PN\ntitle: Pulled Note\norigin: note\ncategory: personal\n---\nphone body"
-    hub_files = {"01PN": {"id": "F9", "headRevisionId": "r9", "category": "personal", "name": "Pulled Note.md"}}
+    content = "---\nid: 01PN\ntitle: Pulled Note\norigin: note\n---\nphone body #project@personal"
+    hub_files = {"01PN": {"id": "F9", "headRevisionId": "r9", "folder": "personal", "name": "Pulled Note.md"}}
     drive = MagicMock()
     drive.files().get_media().execute.return_value = content.encode("utf-8")
     vault = tmp_path / "vault"
     pulled, failed, new_state = pull_new_hub_notes(
-        {}, hub_files, {}, drive, str(vault), "_scratchpad",
-        download=lambda fid: content,
+        {}, hub_files, {}, drive, str(vault),
+        download=lambda fid: content, reg=_reg("personal"),
     )
     assert (pulled, failed) == (1, 0)
     dest = vault / "personal" / "Pulled Note.md"
@@ -998,11 +1043,13 @@ def test_run_once_pulls_then_intakes_then_mirrors(tmp_path, monkeypatch):
     pipeline_calls = []
     uploaded, failed, reconciled, conflicts, pulled, ingested, enriched = run_once(
         str(vault), state_path, drive,
-        vault_root=str(vault), scratchpad_folder="_scratchpad",
+        vault_root=str(vault),
         run_pipeline=lambda **kw: pipeline_calls.append(kw) or {},
     )
     assert pulled == 1                                   # hub-only note pulled
-    assert (vault / "personal" / "01NEW.md").exists()    # placed by category
+    # v3.0: the pulled body carries no `#project@` tag, so it is LOOSE -- filed under `_loose/`,
+    # not under the hub's `personal/` parent (the tag is the truth, the hub folder is not).
+    assert (vault / LOOSE_DIR / "01NEW.md").exists()
     assert ingested == 1 and pipeline_calls == [{"text": "hello from phone"}]
 
 
@@ -1055,7 +1102,7 @@ def test_run_once_supersedes_provisionals_on_pull(tmp_path, monkeypatch):
     drive = _pull_one_drive(monkeypatch, _hub_note_text("noteA", "personal", "phone body"), "noteA")
     uploaded, failed, reconciled, conflicts, pulled, ingested, enriched = run_once(
         str(vault), state_path, drive,
-        vault_root=str(vault), scratchpad_folder="_scratchpad",
+        vault_root=str(vault),
         provisional_fn=provisional_fn,
     )
     assert pulled == 1                          # hub-only note pulled to canonical
@@ -1076,7 +1123,7 @@ def test_run_once_swallows_raising_provisional_fn(tmp_path, monkeypatch):
     drive = _pull_one_drive(monkeypatch, _hub_note_text("noteA", "personal", "phone body"), "noteA")
     result = run_once(
         str(vault), state_path, drive,
-        vault_root=str(vault), scratchpad_folder="_scratchpad",
+        vault_root=str(vault),
         provisional_fn=provisional_fn,
     )
     assert len(result) == 7                      # pass completed, 7-tuple contract intact
@@ -1102,9 +1149,9 @@ def test_run_once_threads_mirror_captures_into_both_reads(tmp_path, monkeypatch)
     seen = []
     real_read = read_vault_notes
 
-    def spy(vault_path, mirror_captures=False):
+    def spy(vault_path, mirror_captures=False, reg=None):
         seen.append(mirror_captures)
-        return real_read(vault_path, mirror_captures)
+        return real_read(vault_path, mirror_captures, reg)
 
     monkeypatch.setattr("mobile_sync_agent.read_vault_notes", spy)
 
@@ -1130,11 +1177,13 @@ def test_provisional_supersede_never_edits_body(tmp_path, monkeypatch):
 
     drive = _pull_one_drive(monkeypatch, hub_note, "noteA")
     run_once(str(vault), state_path, drive,
-             vault_root=str(vault), scratchpad_folder="_scratchpad",
+             vault_root=str(vault),
              provisional_fn=provisional_fn)
 
     # Canonical mirror is byte-identical to the Drive-delivered note — body sacred.
-    canonical = (vault / "personal" / "noteA.md").read_text(encoding="utf-8")
+    # v3.0: `personal` is not in this vault's (absent) registry, so the tag DANGLES and the note
+    # is loose -> `_loose/`. The filename mirrors the hub's own resolved name (T.md).
+    canonical = (vault / LOOSE_DIR / "noteA.md").read_text(encoding="utf-8")
     assert canonical == hub_note
     # Supersede only deleted the staging file; it never wrote through to the canonical mirror.
     assert not staging_file.exists()
@@ -1166,14 +1215,14 @@ def test_enrich_notes_enriches_unenriched_note(tmp_path):
 
     def classify(text):
         captured["text"] = text
-        return (["ml", "keep"], "research")
+        return "research"
 
     embedded = []
     def embed(path, content):
         embedded.append((path, content))
 
     enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify,
-                                    vocab={}, embed=embed)
+                                    embed=embed, reg=_reg("research"))
 
     assert (enriched, failed) == (1, 0)
     from note_model import parse_note
@@ -1184,13 +1233,17 @@ def test_enrich_notes_enriches_unenriched_note(tmp_path):
     assert note.enriched is True
     assert note.enrich_source == "desktop-llm"
     assert note.origin_device == "desktop"           # legacy null note backfilled + stamped (§2.1)
-    # v2.2: enrichment does NOT write category; the legacy `category: personal` seed is DROPPED at
-    # save (folder is now the category, classify's "research" is not applied — deferred move op).
+    # v3.0: the legacy `category: personal` seed is dropped at save; the concept is gone.
     assert note.category is None
     assert "category:" not in written
-    # v2.2 §3: machine tags in the body trailing line; frontmatter tags: is the recomputed cache
-    assert set(note.tags) == {"keep", "ml"}
-    assert "\ntags: #" in strip_frontmatter(written)
+    # §7: the assignment is the `#project@` tag on the machine trailing body line, and NOTHING
+    # else -- the key_signals-derived descriptive tags are deleted.
+    assert "\ntags: #project@research\n" in strip_frontmatter(written)
+    # §1.3: structural tags are EXCLUDED from the derived `tags:` cache, and the seeded
+    # frontmatter `keep` is not in the body, so the recomputed cache is empty.
+    assert note.tags == []
+    # ...and `project:` is the always-present, always-bracketed derived frontmatter cache.
+    assert "project: [research]" in written
     assert strip_trailing_tags_line(strip_frontmatter(written)) == body  # BODY SACRED above the line
     assert captured["text"] == body                  # classify saw the user body, not frontmatter
     assert embedded == [(str(tmp_path / "n1.md"), written)]
@@ -1206,7 +1259,7 @@ def test_enrich_notes_skips_already_enriched(tmp_path):
     def classify(text):
         raise AssertionError("must not classify an already-enriched note")
 
-    assert enrich_notes(vault_notes, str(tmp_path), classify, vocab={}) == (0, 0)
+    assert enrich_notes(vault_notes, str(tmp_path), classify) == (0, 0)
 
 
 def test_enrich_notes_skips_captures(tmp_path):
@@ -1217,7 +1270,7 @@ def test_enrich_notes_skips_captures(tmp_path):
     def classify(text):
         raise AssertionError("must not classify a capture")
 
-    assert enrich_notes(vault_notes, str(tmp_path), classify, vocab={}) == (0, 0)
+    assert enrich_notes(vault_notes, str(tmp_path), classify) == (0, 0)
 
 
 def test_enrich_notes_failsoft_on_classify_error(tmp_path):
@@ -1229,13 +1282,14 @@ def test_enrich_notes_failsoft_on_classify_error(tmp_path):
     def classify(text):
         raise RuntimeError("ollama down")
 
-    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify, vocab={})
+    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify)
     assert (enriched, failed) == (0, 1)
     assert (tmp_path / "n1.md").read_text(encoding="utf-8") == before   # untouched, retried next pass
 
 
-def test_enrich_writes_machine_tags_to_trailing_body_line(tmp_path):
-    # ISS-051 §3: desktop machine tags land in the BODY as a trailing `tags:` line, not frontmatter.
+def test_enrich_writes_the_project_tag_to_the_trailing_body_line(tmp_path):
+    # ISS-051 §3 + §7: the desktop's assignment lands in the BODY as the machine trailing
+    # `tags:` line, never as a frontmatter field the user cannot see.
     body = "# My note\n\nSome body text.\n"
     _note_file(tmp_path, "n1.md",
                "id: n1\norigin: note\norigin_device: desktop\nenriched: false", body)
@@ -1244,9 +1298,9 @@ def test_enrich_writes_machine_tags_to_trailing_body_line(tmp_path):
 
     def classify(text):
         seen["text"] = text
-        return (["ml", "research"], "papers")
+        return "papers"
 
-    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify, vocab={})
+    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify, reg=_reg("papers"))
     assert (enriched, failed) == (1, 0)
     from note_model import parse_note
     from frontmatter import strip_frontmatter
@@ -1255,34 +1309,55 @@ def test_enrich_writes_machine_tags_to_trailing_body_line(tmp_path):
     note = parse_note(written)
     assert note.enriched is True and note.enrich_source == "desktop-llm"
     assert note.origin_device == "desktop"
-    # the machine tags are in the body trailing line...
-    assert "\ntags: #ml #research\n" in strip_frontmatter(written)
+    # the project tag is in the body trailing line...
+    assert "\ntags: #project@papers\n" in strip_frontmatter(written)
     # ...the user body ABOVE it is byte-identical (body-sacred, amended §3)...
     assert strip_trailing_tags_line(strip_frontmatter(written)) == body
-    # ...and frontmatter tags: is the recomputed derived cache (§1.2).
-    assert set(note.tags) == {"ml", "research"}
+    # ...`tags:` excludes it (structural, §1.3) and `project:` caches it.
+    assert note.tags == []
+    assert "project: [papers]" in written
     assert seen["text"] == body  # classify saw the user body
 
 
-def test_enrich_never_auto_attaches_project_or_action_tags(tmp_path):
-    # 2026-07-30 grouping split: project/ and @-action tags are user-assigned only — the LLM
-    # classifier may never attach them, whether invented or reused from the vocab.
+def test_enrich_writes_no_tag_other_than_project(tmp_path):
+    # §7: "auto-enrichment writes a `#project@<name>` tag and NOTHING else" -- the
+    # key_signals-derived descriptive tag generation is deleted, so a classifier that returns
+    # something that is not a registry-eligible, REGISTERED project writes no tag at all and
+    # the note stays loose (degrades to loose, never a guess).
+    from frontmatter import strip_frontmatter
     body = "# My note\n\nSome body text.\n"
+    # unregistered name · a reserved `_`-prefixed name the name rule forbids · nothing picked
+    for i, picked in enumerate(("not-registered", "_loose", None)):
+        d = tmp_path / f"case{i}"
+        d.mkdir()
+        _note_file(d, "n.md", "id: n\norigin: note\norigin_device: desktop\nenriched: false", body)
+        vault_notes = _vault_notes_from(d)
+        enriched, failed = enrich_notes(vault_notes, str(d), lambda text, v=picked: v,
+                                        reg=_reg("papers"))
+        assert (enriched, failed) == (1, 0), picked
+        written = (d / "n.md").read_text(encoding="utf-8")
+        assert strip_frontmatter(written) == body, picked  # BODY untouched: no tag line at all
+        assert "project: [-]" in written, picked           # cached as loose
+
+
+def test_enrich_never_overrides_a_project_tag_the_user_typed(tmp_path):
+    # §1.3: the user's tag IS the truth. The machine may assign a project to a note that has
+    # none; it may never reclassify one the user already tagged.
+    body = "# My note\n\nabout #project@papers\n"
     _note_file(tmp_path, "n1.md",
                "id: n1\norigin: note\norigin_device: desktop\nenriched: false", body)
     vault_notes = _vault_notes_from(tmp_path)
 
     def classify(text):
-        return (["project/website", "@errands", "ml"], "papers")
+        raise AssertionError("must not classify a note the user already tagged")
 
     enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify,
-                                    vocab={"project/website": "project/website"})
+                                    reg=_reg("papers", "research"))
     assert (enriched, failed) == (1, 0)
     from frontmatter import strip_frontmatter
     written = (tmp_path / "n1.md").read_text(encoding="utf-8")
-    assert "\ntags: #ml\n" in strip_frontmatter(written)
-    assert "project/" not in strip_frontmatter(written)
-    assert "@errands" not in written
+    assert strip_frontmatter(written) == body          # BODY SACRED, byte-identical
+    assert "project: [papers]" in written              # cache follows the user's own tag
 
 
 def test_enrich_skips_phone_origin_note(tmp_path):
@@ -1296,7 +1371,7 @@ def test_enrich_skips_phone_origin_note(tmp_path):
     def classify(text):
         raise AssertionError("must not classify a phone-origin note")
 
-    assert enrich_notes(vault_notes, str(tmp_path), classify, vocab={}) == (0, 0)
+    assert enrich_notes(vault_notes, str(tmp_path), classify) == (0, 0)
     assert (tmp_path / "p1.md").read_text(encoding="utf-8") == before  # untouched
 
 
@@ -1310,7 +1385,7 @@ def test_enrich_backfills_phone_from_heuristic_marker_and_skips(tmp_path):
     def classify(text):
         raise AssertionError("phone-heuristic legacy note must not be enriched by desktop")
 
-    assert enrich_notes(vault_notes, str(tmp_path), classify, vocab={}) == (0, 0)
+    assert enrich_notes(vault_notes, str(tmp_path), classify) == (0, 0)
     assert (tmp_path / "p2.md").read_text(encoding="utf-8") == before
 
 
@@ -1320,9 +1395,9 @@ def test_enrich_backfills_desktop_and_stamps_legacy_null_note(tmp_path):
     vault_notes = _vault_notes_from(tmp_path)
 
     def classify(text):
-        return (["work"], "tasks")
+        return "tasks"
 
-    assert enrich_notes(vault_notes, str(tmp_path), classify, vocab={}) == (1, 0)
+    assert enrich_notes(vault_notes, str(tmp_path), classify, reg=_reg("tasks")) == (1, 0)
     from note_model import parse_note
     note = parse_note((tmp_path / "d1.md").read_text(encoding="utf-8"))
     assert note.origin_device == "desktop"
@@ -1340,13 +1415,13 @@ def test_enrich_re_enrich_replaces_trailing_line_user_body_survives(tmp_path):
 
     def classify(text):
         assert text == user_body  # never the prior machine line
-        return (["fresh"], "cat")
+        return "fresh"
 
-    assert enrich_notes(vault_notes, str(tmp_path), classify, vocab={}) == (1, 0)
+    assert enrich_notes(vault_notes, str(tmp_path), classify, reg=_reg("fresh")) == (1, 0)
     from frontmatter import strip_frontmatter
     from machine_tags import strip_trailing_tags_line
     written = (tmp_path / "r1.md").read_text(encoding="utf-8")
-    assert "\ntags: #fresh\n" in strip_frontmatter(written)
+    assert "\ntags: #project@fresh\n" in strip_frontmatter(written)
     assert "#stale" not in written
     assert strip_trailing_tags_line(strip_frontmatter(written)) == user_body
 
@@ -1363,7 +1438,7 @@ def test_enrich_notes_empty_body_skips_llm_and_marks_enriched(tmp_path):
     def classify(text):
         raise AssertionError("must not classify an empty-body note")
 
-    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify, vocab={})
+    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify)
     assert (enriched, failed) == (1, 0)          # counted done, NOT failed — no timeout, no retry
     from note_model import parse_note
     from frontmatter import strip_frontmatter
@@ -1383,7 +1458,7 @@ def test_enrich_notes_whitespace_only_body_treated_as_empty(tmp_path):
     def classify(text):
         raise AssertionError("whitespace-only body must not be classified")
 
-    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify, vocab={})
+    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify)
     assert (enriched, failed) == (1, 0)          # no classify call, marked enriched
     from note_model import parse_note
     from frontmatter import strip_frontmatter
@@ -1397,22 +1472,32 @@ def test_enrich_notes_embed_failure_does_not_lose_enrichment(tmp_path):
     vault_notes = _vault_notes_from(tmp_path)
 
     def classify(text):
-        return ([], "personal")
+        return "personal"
     def embed(path, content):
         raise RuntimeError("embed server down")
 
-    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify, vocab={}, embed=embed)
+    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify, embed=embed,
+                                    reg=_reg("personal"))
     from note_model import parse_note
     assert parse_note((tmp_path / "n1.md").read_text(encoding="utf-8")).enriched is True
     assert enriched == 1        # embed failure is not an enrichment failure
 
 
-def test_build_enrich_fn_uses_live_categories_and_embeds(tmp_path, monkeypatch):
+def test_build_enrich_fn_reads_out_project_from_a_real_CaptureOutput(tmp_path, monkeypatch):
+    """The classifier seam is bound against the REAL `CaptureOutput` shape, unpatched.
+
+    Regression: `_build_enrich_fn.classify` used to read `out.category`, a field Task 9 deleted
+    from the model. Every existing test faked the `run_llm_engine` seam with a duck-typed stub,
+    so the suite stayed green while a real enrichment pass would have raised AttributeError.
+    This test returns a genuine `models.CaptureOutput`, so touching any deleted attribute fails.
+    """
     import mobile_sync_agent as agent
     from mobile_sync_agent import _build_enrich_fn
+    from models import CaptureOutput
 
     body = "Note body.\n"
     _note_file(tmp_path, "n1.md", "id: n1\norigin: note\nenriched: false", body)
+    _write_registry(tmp_path, "research", "personal")
     vault_notes = _vault_notes_from(tmp_path)
 
     class _Ollama:  base_url = "http://localhost:11434"
@@ -1421,30 +1506,58 @@ def test_build_enrich_fn_uses_live_categories_and_embeds(tmp_path, monkeypatch):
     class _Cfg:     ollama = _Ollama(); vector = _Vector(); vault = _Vault()
 
     seen = {}
-    def fake_run_llm_engine(enriched, category_descriptions, **kw):
+    def fake_run_llm_engine(enriched, registry, **kw):
         seen["input_type"] = enriched.input_type
-        seen["cats"] = list(category_descriptions.keys())
-        class _Out:  key_signals = ["ml"]; category = "research"
-        return _Out()
-    def fake_categories(vault_root, scratchpad_folder="_scratchpad"):
-        return {"research": "d", "personal": "d"}
+        # the second argument is the REGISTRY now, not a folder-name map
+        seen["projects"] = sorted((registry.get("projects") or {}).keys())
+        return CaptureOutput(project="research", suggested_filename="x",
+                             markdown_content=enriched.enriched_text)
     embeds = []
     def fake_index_note(root, path, content, base_url, embed_model):
         embeds.append((str(path), base_url, embed_model))
 
     monkeypatch.setattr(agent, "run_llm_engine", fake_run_llm_engine, raising=False)
-    monkeypatch.setattr(agent, "build_category_descriptions", fake_categories, raising=False)
     monkeypatch.setattr(agent, "index_note", fake_index_note, raising=False)
-    monkeypatch.setattr(agent, "load_vocab", lambda db: {}, raising=False)
-    monkeypatch.setattr(agent, "get_db_path", lambda root: tmp_path / "captures.db", raising=False)
 
     enrich_fn = _build_enrich_fn(_Cfg(), str(tmp_path))
     enriched, failed = enrich_fn(vault_notes, str(tmp_path))
 
     assert (enriched, failed) == (1, 0)
     assert seen["input_type"] == "note"
-    assert set(seen["cats"]) == {"research", "personal"}          # live enum, not hardcoded
+    assert seen["projects"] == ["personal", "research"]   # live registry, not a hardcoded list
     assert embeds == [(str(tmp_path / "n1.md"), "http://localhost:11434", "nomic-embed-text")]
+    from frontmatter import strip_frontmatter
+    written = (tmp_path / "n1.md").read_text(encoding="utf-8")
+    assert "\ntags: #project@research\n" in strip_frontmatter(written)
+
+
+def test_build_enrich_fn_leaves_a_note_loose_when_the_engine_picks_nothing(tmp_path, monkeypatch):
+    import mobile_sync_agent as agent
+    from mobile_sync_agent import _build_enrich_fn
+    from models import CaptureOutput
+
+    body = "Note body.\n"
+    _note_file(tmp_path, "n1.md", "id: n1\norigin: note\nenriched: false", body)
+    _write_registry(tmp_path, "research")
+    vault_notes = _vault_notes_from(tmp_path)
+
+    class _Cfg:
+        class ollama:  base_url = "http://localhost:11434"
+        class vector:  embed_model = "nomic-embed-text"
+        class vault:   root = tmp_path
+
+    monkeypatch.setattr(agent, "run_llm_engine",
+                        lambda enriched, registry, **kw: CaptureOutput(
+                            project=None, suggested_filename="x", markdown_content=""),
+                        raising=False)
+    monkeypatch.setattr(agent, "index_note", lambda *a, **k: None, raising=False)
+
+    enriched, failed = _build_enrich_fn(_Cfg(), str(tmp_path))(vault_notes, str(tmp_path))
+    assert (enriched, failed) == (1, 0)
+    from frontmatter import strip_frontmatter
+    written = (tmp_path / "n1.md").read_text(encoding="utf-8")
+    assert strip_frontmatter(written) == body      # no tag written at all
+    assert "project: [-]" in written
 
 
 def _mock_empty_drive():
@@ -1464,11 +1577,11 @@ def test_run_once_runs_enrich_between_pull_and_mirror(tmp_path, monkeypatch):
     monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
 
     calls = []
-    def fake_enrich_fn(vault_notes, vault_root, refile=None):
+    def fake_enrich_fn(vault_notes, vault_root):
         calls.append(sorted(vault_notes.keys()))
         from note_model import parse_note, serialize_note
         n = parse_note(vault_notes["n1"]["content"])
-        n.enriched = True; n.enrich_source = "desktop-llm"; n.category = "research"
+        n.enriched = True; n.enrich_source = "desktop-llm"
         new = serialize_note(n)
         vault_notes["n1"]["content"] = new
         vault_notes["n1"]["hash"] = _sha256(new)
@@ -1494,157 +1607,79 @@ def test_run_once_enrich_none_skips(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# v2.3 machine refile (contract §1.2 move-op, s71): at FIRST enrichment the desktop
-# moves a desktop/shared-origin note into the classified category folder — the mover
-# stamps frontmatter modified/device in the SAME atomic enrich write; hub move is a
-# metadata-only re-parent; base_parent starts being recorded in sync state.
+# v3.0 (contract §1.2 as amended): K-1 and the machine refile are RETIRED. Enrichment assigns a
+# project by writing a `#project@` tag and NEVER moves a file. The hub parent follows on the next
+# mirror; the LOCAL file is moved by the tidy pass, not by sync.
 # ---------------------------------------------------------------------------
 
-_STAMP_RE = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
+def _project_enrich_fn(picked="research"):
+    """A run_once-injectable enrich_fn forwarding to the real enrich_notes with a fake classifier."""
+    def enrich_fn(vault_notes, vault_root):
+        return enrich_notes(vault_notes, vault_root, lambda text: picked)
+    return enrich_fn
 
 
-def test_enrich_refile_fires_with_stamp_in_same_write_when_category_differs(tmp_path):
-    import re as _re
+def test_enrich_never_moves_a_file(tmp_path):
+    # The one thing K-1's deletion must not silently take with it: enrichment used to os.replace
+    # the note into the classified folder. It must now leave the file exactly where it is.
     body = "# Note\n\nBody text.\n"
     inbox = tmp_path / "inbox"
     inbox.mkdir()
+    _write_registry(tmp_path, "research")
     _note_file(inbox, "n1.md",
                "id: n1\norigin: note\norigin_device: desktop\nenriched: false", body)
     vault_notes = _vault_notes_from(tmp_path)
-    assert vault_notes["n1"]["category"] == "inbox"   # sanity: folder-derived
+    assert vault_notes["n1"]["folder"] == LOOSE_DIR   # untagged on the way in
 
-    def classify(text):
-        return (["ml"], "research")
+    enriched, failed = enrich_notes(vault_notes, str(tmp_path), lambda text: "research")
 
-    calls = []
-    def refile(note_id, entry, dest_cat):
-        # The stamp must ride the SAME atomic enrich write — by the time refile fires,
-        # the note ON DISK already carries modified/device + enriched:true (Gotcha 5).
-        from note_model import parse_note
-        on_disk = parse_note(Path(entry["path"]).read_text(encoding="utf-8"))
-        assert _re.match(_STAMP_RE, on_disk.modified)
-        assert on_disk.device == "desktop"
-        assert on_disk.enriched is True
-        calls.append((note_id, dest_cat))
-
-    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify,
-                                    vocab={}, refile=refile)
     assert (enriched, failed) == (1, 0)
-    assert calls == [("n1", "research")]
+    assert (inbox / "n1.md").exists()                # NOT moved -- tidy owns that
+    assert not (tmp_path / "research" / "n1.md").exists()
+    assert not (tmp_path / "research").exists()      # and no directory was created
+    # ...but the note's derived folder now tracks the tag it just wrote, so the same pass's
+    # mirror files it into the right hub folder.
+    assert vault_notes["n1"]["folder"] == "research"
     from note_model import parse_note
     from machine_tags import strip_trailing_tags_line
     written = (inbox / "n1.md").read_text(encoding="utf-8")
     note = parse_note(written)
-    assert _re.match(_STAMP_RE, note.modified)        # UTC-Z stamp (contract v2.3)
-    assert note.device == "desktop"
-    # BODY SACRED across the stamp: user body above the trailing tags line is byte-identical.
-    assert strip_trailing_tags_line(strip_frontmatter(written)) == body
-
-
-def test_enrich_refile_not_called_and_no_stamp_when_category_matches(tmp_path):
-    body = "Body.\n"
-    research = tmp_path / "research"
-    research.mkdir()
-    _note_file(research, "n1.md",
-               "id: n1\norigin: note\norigin_device: desktop\nenriched: false", body)
-    vault_notes = _vault_notes_from(tmp_path)
-
-    def classify(text):
-        return (["ml"], "research")   # classifier agrees with the current folder
-
-    def refile(note_id, entry, dest_cat):
-        raise AssertionError("refile must not fire when the note is already in place")
-
-    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify,
-                                    vocab={}, refile=refile)
-    assert (enriched, failed) == (1, 0)
-    from note_model import parse_note
-    note = parse_note((research / "n1.md").read_text(encoding="utf-8"))
-    assert note.modified == ""        # no move → no mover stamp
     assert note.enriched is True
+    assert note.modified == ""                       # no move -> no mover stamp (K-1 retired)
+    assert note.device == ""
+    assert strip_trailing_tags_line(strip_frontmatter(written)) == body   # BODY SACRED
 
 
-def test_enrich_refile_failure_is_failsoft_note_stays_enriched(tmp_path):
-    body = "Body.\n"
-    inbox = tmp_path / "inbox"
-    inbox.mkdir()
-    _note_file(inbox, "n1.md",
-               "id: n1\norigin: note\norigin_device: desktop\nenriched: false", body)
-    vault_notes = _vault_notes_from(tmp_path)
-
-    def classify(text):
-        return (["ml"], "research")
-
-    def refile(note_id, entry, dest_cat):
-        raise RuntimeError("drive down mid-move")
-
-    enriched, failed = enrich_notes(vault_notes, str(tmp_path), classify,
-                                    vocab={}, refile=refile)
-    assert (enriched, failed) == (1, 0)   # enrichment itself succeeded (move is best-effort)
-    from note_model import parse_note
-    note = parse_note((inbox / "n1.md").read_text(encoding="utf-8"))
-    assert note.enriched is True          # never re-enriched → never re-moved (enriched-once)
-
-
-def test_enrich_refile_never_fires_for_phone_origin_or_enriched(tmp_path):
-    # Provenance gate + enriched-once: neither note reaches classify, so neither can move.
-    _note_file(tmp_path, "p1.md",
-               "id: p1\norigin: note\norigin_device: phone\nenriched: false", "phone body\n")
-    _note_file(tmp_path, "d1.md",
-               "id: d1\norigin: note\norigin_device: desktop\nenriched: true\n"
-               "enrich_source: desktop-llm", "done body\n")
-    vault_notes = _vault_notes_from(tmp_path)
-
-    def classify(text):
-        raise AssertionError("must not classify phone-origin or already-enriched notes")
-
-    def refile(note_id, entry, dest_cat):
-        raise AssertionError("must not refile phone-origin or already-enriched notes")
-
-    assert enrich_notes(vault_notes, str(tmp_path), classify, vocab={}, refile=refile) == (0, 0)
-
-
-def _refile_enrich_fn(classified="research"):
-    """A run_once-injectable enrich_fn forwarding to the real enrich_notes with a fake classifier."""
-    def enrich_fn(vault_notes, vault_root, refile=None):
-        return enrich_notes(vault_notes, vault_root,
-                            lambda text: (["ml"], classified), vocab={}, refile=refile)
-    return enrich_fn
-
-
-def test_run_once_refile_moves_synced_note_reparents_hub_and_records_base_parent(
+def test_run_once_reparents_the_hub_file_when_enrichment_assigns_a_project(
         tmp_path, monkeypatch):
-    inbox = tmp_path / "inbox"
-    inbox.mkdir()
-    p = _note_file(inbox, "n1.md",
+    _write_registry(tmp_path, "research")
+    loose = tmp_path / LOOSE_DIR
+    loose.mkdir()
+    p = _note_file(loose, "n1.md",
                    "id: n1\norigin: note\norigin_device: desktop\nenriched: false", "Body.\n")
     content = p.read_text(encoding="utf-8", newline="")
     state_path = tmp_path / ".state.json"
-    # hub_name = the resolved title-based name (titleless → Untitled.md) so no rename interleaves;
+    # hub_name = the resolved title-based name (titleless -> Untitled.md) so no rename interleaves;
     # hub_names_migrated pre-set so the one-time Task 3.1 migration doesn't rename mid-test.
     save_state(str(state_path), {"hub_names_migrated": True,
                                  "n1": {"drive_file_id": "FID1", "base_rev": "r1",
                                         "local_hash": _sha256(content),
-                                        "hub_name": "Untitled.md"}})
+                                        "hub_name": "Untitled.md",
+                                        "base_parent": LOOSE_DIR}})
     monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
     drive = _mock_empty_drive()
     drive.files().get().execute.return_value = {"parents": ["OLDFOLDER"]}  # _move_file_to_folder read
 
     result = run_once(str(tmp_path), str(state_path), drive,
-                      vault_root=str(tmp_path), enrich_fn=_refile_enrich_fn())
+                      vault_root=str(tmp_path), enrich_fn=_project_enrich_fn())
 
     assert result[6] == 1                                  # enriched
-    assert not (inbox / "n1.md").exists()                  # moved out of inbox/
-    moved = tmp_path / "research" / "n1.md"
-    assert moved.exists()                                  # into the classified folder
-    from note_model import parse_note
-    note = parse_note(moved.read_text(encoding="utf-8"))
-    assert note.enriched is True and note.device == "desktop" and note.modified
+    assert (loose / "n1.md").exists()                      # sync never moves the local file
     # Hub side: a METADATA-ONLY re-parent happened (addParents, no media_body).
     reparents = [c for c in drive.files().update.call_args_list
                  if c.kwargs.get("addParents")]
     assert len(reparents) == 1
-    assert reparents[0].kwargs["fileId"] == "FID1"
+    assert reparents[0].kwargs["fileId"] == "F1"           # the id the byte upload returned
     assert reparents[0].kwargs.get("removeParents") == "OLDFOLDER"
     assert "media_body" not in reparents[0].kwargs         # bytes never re-uploaded on the move
     # base_parent recorded in the saved sidecar (survives mirror's row rewrite).
@@ -1652,29 +1687,35 @@ def test_run_once_refile_moves_synced_note_reparents_hub_and_records_base_parent
     assert final["n1"]["base_parent"] == "research"
 
 
-def test_run_once_refile_unsynced_note_moves_locally_and_uploads_into_category(
+def test_run_once_unsynced_note_uploads_straight_into_its_project_folder(
         tmp_path, monkeypatch):
-    # A note the hub has never seen: local move only (no re-parent call), mirror then
-    # CREATES it directly inside the classified hub folder and records base_parent.
-    _note_file(tmp_path, "n1.md",
+    # A note the hub has never seen: no re-parent call at all -- mirror CREATES it directly
+    # inside the project folder the tag names, and records base_parent.
+    _write_registry(tmp_path, "research")
+    loose = tmp_path / LOOSE_DIR
+    loose.mkdir()
+    _note_file(loose, "n1.md",
                "id: n1\norigin: note\norigin_device: desktop\nenriched: false", "Body.\n")
     monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
     drive = _mock_empty_drive()
     state_path = tmp_path / ".state.json"
 
     result = run_once(str(tmp_path), str(state_path), drive,
-                      vault_root=str(tmp_path), enrich_fn=_refile_enrich_fn())
+                      vault_root=str(tmp_path), enrich_fn=_project_enrich_fn())
 
     assert result[6] == 1
-    assert (tmp_path / "research" / "n1.md").exists()      # local move from vault root
-    assert not (tmp_path / "n1.md").exists()
+    assert (loose / "n1.md").exists()                      # local file untouched by sync
     # No hub re-parent for an unsynced note (nothing to move yet)...
     assert not [c for c in drive.files().update.call_args_list if c.kwargs.get("addParents")]
-    # ...instead the upload creates it inside the classified folder (find-or-create id "F1").
+    # ...instead the upload creates it inside the project folder (find-or-create id "F1").
     note_creates = [c for c in drive.files().create.call_args_list
                     if c.kwargs.get("body") and c.kwargs["body"].get("appProperties")]
     assert len(note_creates) == 1
     assert note_creates[0].kwargs["body"]["parents"] == ["F1"]
+    final = load_state(str(state_path))
+    assert final["n1"]["base_parent"] == "research"
+
+
     final = load_state(str(state_path))
     assert final["n1"]["base_parent"] == "research"
 
@@ -1684,10 +1725,11 @@ def test_reconcile_pull_records_base_parent():
     # reconcile's pull path stores the hub file's parent folder.
     remote = "---\nid: n1\norigin: note\n---\nRemote body"
     vault_notes = {
-        "n1": {"id": "n1", "path": "/v/n1.md", "content": "---\nid: n1\norigin: note\n---\nOld",
-               "body": "Old", "hash": "h1", "category": None, "title": "", "created": ""}
+        "n1": {"id": "n1", "path": str(Path("/v") / LOOSE_DIR / "n1.md"),
+               "content": "---\nid: n1\norigin: note\n---\nOld",
+               "body": "Old", "hash": "h1", "folder": LOOSE_DIR, "title": "", "created": ""}
     }
-    hub_files = {"n1": {"id": "F1", "headRevisionId": "r2", "category": "research"}}
+    hub_files = {"n1": {"id": "F1", "headRevisionId": "r2", "folder": "research"}}
     state = {"n1": {"drive_file_id": "F1", "base_rev": "r1", "local_hash": "h1"}}
     drive = MagicMock()
     drive.files().get_media().execute.return_value = remote.encode("utf-8")
@@ -1700,13 +1742,13 @@ def test_reconcile_pull_records_base_parent():
     assert new_state["n1"]["base_parent"] == "research"
 
 
-def test_reconcile_pull_relocates_local_file_on_incoming_category_move(tmp_path):
-    # A peer (the phone) recategorized a note: the hub head advanced and its PARENT changed
-    # (_scratchpad -> work), but the body is byte-identical. Category is folder-derived, so the
-    # desktop must MOVE its local mirror file into work/ (creating the folder) to consume the move.
-    # Regression: the pull branch wrote the remote bytes back to the OLD folder, leaving the file in
-    # _scratchpad while sync-state recorded base_parent=work — a silent local/sync-state divergence.
-    scratch = tmp_path / "_scratchpad"
+def test_reconcile_pull_relocates_local_file_when_the_incoming_body_changes_project(tmp_path):
+    # A peer edited the note's `#project@` tag. The pulled body is the truth, so the desktop --
+    # the only device that re-paths -- moves its local mirror into the directory that tag implies
+    # BEFORE writing the bytes. Regression: the pull branch wrote the bytes back to the OLD folder,
+    # leaving the file where sync-state said it was not.
+    _write_registry(tmp_path, "work")
+    scratch = tmp_path / LOOSE_DIR
     scratch.mkdir()
     seed = (
         "---\nid: n1\ntitle: T\norigin: note\ncreated: 2026-01-01T00:00:00Z\n"
@@ -1715,36 +1757,36 @@ def test_reconcile_pull_relocates_local_file_on_incoming_category_move(tmp_path)
     )
     old_path = scratch / "T.md"
     old_path.write_text(seed, encoding="utf-8")
-    # Hub head advanced (re-parented to work); body identical, only modified changed on the remote.
+    # The remote gained a `#project@work` tag (and the mover's `modified` stamp).
     remote = seed.replace(
         "modified: 2026-01-01T00:00:00Z", "modified: 2026-01-02T00:00:00Z"
-    )
+    ).replace("Unchanged body", "Unchanged body #project@work")
     vault_notes = {
         "n1": {"id": "n1", "path": str(old_path), "content": seed, "body": "Unchanged body",
-               "hash": _sha256(seed), "category": "_scratchpad", "title": "T",
+               "hash": _sha256(seed), "folder": LOOSE_DIR, "title": "T",
                "created": "2026-01-01T00:00:00Z"}
     }
-    hub_files = {"n1": {"id": "F1", "headRevisionId": "rev9", "category": "work"}}
+    hub_files = {"n1": {"id": "F1", "headRevisionId": "rev9", "folder": LOOSE_DIR}}
     state = {"n1": {"drive_file_id": "F1", "base_rev": "rev1", "local_hash": _sha256(seed),
-                    "base_parent": "_scratchpad", "hub_name": "T.md"}}
+                    "base_parent": LOOSE_DIR, "hub_name": "T.md"}}
     drive = _recon_drive(remote)
     reconciled, conflicts, failed, new_state = reconcile_changes(
-        vault_notes, hub_files, state, drive, "hub",
+        vault_notes, hub_files, state, drive, "hub", reg=_reg("work"),
     )
     assert (reconciled, conflicts, failed) == (1, 0, 0)
-    assert (tmp_path / "work" / "T.md").exists()        # relocated into the new category folder
-    assert not old_path.exists()                        # moved out of _scratchpad
+    assert (tmp_path / "work" / "T.md").exists()        # relocated into the tag's project folder
+    assert not old_path.exists()                        # moved out of _loose/
     assert (tmp_path / "work" / "T.md").read_text(encoding="utf-8") == remote  # remote bytes verbatim
-    assert new_state["n1"]["base_parent"] == "work"
+    assert new_state["n1"]["base_parent"] == LOOSE_DIR  # the hub parent we pulled from, unchanged
 
 
 def test_pull_new_hub_notes_records_base_parent(tmp_path):
     from mobile_sync_agent import pull_new_hub_notes
     remote = "---\nid: n1\norigin: note\n---\nBody"
-    hub_files = {"n1": {"id": "F1", "headRevisionId": "r1", "category": "research",
+    hub_files = {"n1": {"id": "F1", "headRevisionId": "r1", "folder": "research",
                         "name": "n1.md"}}
     pulled, failed, new_state = pull_new_hub_notes(
-        {}, hub_files, {}, None, str(tmp_path), "_scratchpad",
+        {}, hub_files, {}, None, str(tmp_path),
         download=lambda fid: remote,
     )
     assert (pulled, failed) == (1, 0)
@@ -2036,14 +2078,14 @@ def test_mirror_renames_local_vault_file_on_title_change(tmp_path):
 
     vault_notes = {
         "01H8": {"id": "01H8", "path": str(old_path), "content": content, "body": "same body\n",
-                 "hash": "HNEW", "category": "Inbox", "title": "New",
+                 "hash": "HNEW", "folder": "Inbox", "title": "New",
                  "created": "2026-07-19T10:00:00Z"}
     }
     # Prior sync tracked this note under its OLD resolved name "Old.md" -- the retitle is the
     # only thing that changed since, so the mismatch against the freshly resolved "New.md" is a
     # genuine title change, not a first-ever-sync placeholder.
     state = {"01H8": {"drive_file_id": "F1", "base_rev": "rev1", "local_hash": "HOLD",
-                       "hub_name": "Old.md"}}
+                       "hub_name": "Old.md", "base_parent": "Inbox"}}
     drive = MagicMock()
     drive.files().update().execute.return_value = {"id": "F1", "headRevisionId": "rev2",
                                                     "name": "New.md"}
@@ -2307,7 +2349,7 @@ def test_run_once_migration_renames_hub_and_local_file_for_a_tracked_note(tmp_pa
     )
     monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
 
-    run_once(str(vault), state_path, drive, vault_root=str(vault), scratchpad_folder="_scratchpad")
+    run_once(str(vault), state_path, drive, vault_root=str(vault))
 
     new_local = cat / "Alpha.md"
     assert new_local.exists()
@@ -2322,7 +2364,7 @@ def test_run_once_migration_renames_hub_and_local_file_for_a_tracked_note(tmp_pa
     # second pass: pure no-op migration-wise (flag set) -- no further Drive update calls, no
     # further local rename (already converged).
     drive._updates.clear()
-    run_once(str(vault), state_path, drive, vault_root=str(vault), scratchpad_folder="_scratchpad")
+    run_once(str(vault), state_path, drive, vault_root=str(vault))
     assert drive._updates == []
 
 
@@ -2640,7 +2682,7 @@ def test_enrich_derives_attachments_from_body(tmp_path):
                "id: n1\norigin: note\norigin_device: desktop\nenriched: false", body)
     vault_notes = _vault_notes_from(tmp_path)
 
-    enriched, failed = enrich_notes(vault_notes, str(tmp_path), lambda t: ([], None), vocab={})
+    enriched, failed = enrich_notes(vault_notes, str(tmp_path), lambda t: None)
 
     assert (enriched, failed) == (1, 0)
     from note_model import parse_note
@@ -2655,7 +2697,7 @@ def test_enrich_attachments_recompute_keeps_body_byte_identical(tmp_path):
     vault_notes = _vault_notes_from(tmp_path)
     before = (tmp_path / "n1.md").read_text(encoding="utf-8")
 
-    enrich_notes(vault_notes, str(tmp_path), lambda t: ([], None), vocab={})
+    enrich_notes(vault_notes, str(tmp_path), lambda t: None)
 
     written = (tmp_path / "n1.md").read_text(encoding="utf-8")
     from machine_tags import strip_trailing_tags_line
@@ -2670,7 +2712,7 @@ def test_enrich_no_refs_serializes_empty_attachments_list(tmp_path):
                "Nothing attached.\n")
     vault_notes = _vault_notes_from(tmp_path)
 
-    enrich_notes(vault_notes, str(tmp_path), lambda t: ([], None), vocab={})
+    enrich_notes(vault_notes, str(tmp_path), lambda t: None)
 
     written = (tmp_path / "n1.md").read_text(encoding="utf-8")
     assert "attachments: []" in written        # empty list, not a dropped key
@@ -2729,3 +2771,327 @@ def test_conflicted_copy_name_falls_back_when_the_title_is_empty(tmp_path):
     name = _conflicted_copy_name(_CC(), tmp_path)
     assert name.endswith(".md")
     assert len(name) > 3
+
+
+# ---------------------------------------------------------------------------
+# Contract SS13.2 - `.projects.toml` three-way merge + `base_projects` sync state
+# ---------------------------------------------------------------------------
+
+from mobile_sync_agent import (
+    BASE_PROJECTS_KEY,
+    PROJECTS_REV_KEY,
+    sync_project_registry,
+)
+import project_registry as _pr
+
+
+class _RegistryHub:
+    """Minimal fake Drive holding exactly one hub root file: `.projects.toml`.
+
+    Tracks calls so a test can assert the version token actually SKIPS work: `downloads` counts
+    `get_media`, `writes` counts content uploads.
+    """
+
+    def __init__(self, text=None, rev="r1"):
+        self.text = text
+        self.rev = rev
+        self.downloads = 0
+        self.writes = 0
+        self._n = 1
+
+    # -- drive shim ---------------------------------------------------------
+    def files(self):
+        return self
+
+    def list(self, q=None, fields=None, pageToken=None):
+        files = []
+        if self.text is not None and "mimeType!=" in (q or ""):
+            files = [{"id": "REGFILE", "name": _pr.REGISTRY_FILENAME,
+                      "headRevisionId": self.rev}]
+        return _Ret({"files": files, "nextPageToken": None})
+
+    def get_media(self, fileId=None):
+        self.downloads += 1
+        return _Ret(self.text.encode("utf-8"))
+
+    def create(self, body=None, media_body=None, fields=None):
+        self.writes += 1
+        self.text = media_body.getbytes(0, media_body.size()).decode("utf-8")
+        self._n += 1
+        self.rev = f"r{self._n}"
+        return _Ret({"id": "REGFILE", "headRevisionId": self.rev})
+
+    def update(self, fileId=None, media_body=None, fields=None, **kw):
+        self.writes += 1
+        self.text = media_body.getbytes(0, media_body.size()).decode("utf-8")
+        self._n += 1
+        self.rev = f"r{self._n}"
+        return _Ret({"id": "REGFILE", "headRevisionId": self.rev})
+
+
+class _Ret:
+    def __init__(self, r): self._r = r
+    def execute(self): return self._r
+
+
+def _toml(**projects) -> str:
+    return _pr.dumps({"schema": 1, "projects": {
+        n: {"description": d, "modified": m} for n, (d, m) in projects.items()}})
+
+
+def test_registry_sync_merges_per_entry_never_last_writer_wins(tmp_path):
+    """SS13.2's headline: two devices adding DIFFERENT projects in one batch window write the same
+    file. A whole-file rule silently discards one of them; the per-entry merge keeps both."""
+    base = {"schema": 1, "projects": {"shared": {"description": "s", "modified": "2026-01-01"}}}
+    _pr.save(tmp_path, {"schema": 1, "projects": {
+        "shared": {"description": "s", "modified": "2026-01-01"},
+        "local-only": {"description": "L", "modified": "2026-01-02"}}})
+    hub = _RegistryHub(_toml(shared=("s", "2026-01-01"), remote_only=("R", "2026-01-03")))
+
+    merged, new_state = sync_project_registry(
+        hub, "HUB", str(tmp_path), {BASE_PROJECTS_KEY: base, PROJECTS_REV_KEY: "r0"})
+
+    assert sorted(merged["projects"]) == ["local-only", "remote_only", "shared"]
+    # ...written back to BOTH sides, so neither peer loses its own addition.
+    assert sorted(_pr.load(tmp_path)["projects"]) == ["local-only", "remote_only", "shared"]
+    assert sorted(_pr.parse(hub.text)["projects"]) == ["local-only", "remote_only", "shared"]
+    # ...and the merged result becomes the next pass's base.
+    assert new_state[BASE_PROJECTS_KEY] == merged
+
+
+def test_registry_sync_version_token_is_headrevisionid_never_mtime(tmp_path):
+    """SS13: the hub head still equal to `projects_rev` means the remote IS `base_projects` --
+    so the pass costs ZERO downloads and ZERO writes, no matter what the file's mtime says."""
+    reg = {"schema": 1, "projects": {"a": {"description": "A", "modified": "2026-01-01"}}}
+    _pr.save(tmp_path, reg)
+    hub = _RegistryHub(_toml(a=("A", "2026-01-01")), rev="rHEAD")
+    # touch the local file far into the future: an mtime-based rule would see a local "edit"
+    import os
+    os.utime(tmp_path / _pr.REGISTRY_FILENAME, (4_102_444_800, 4_102_444_800))
+
+    merged, new_state = sync_project_registry(
+        hub, "HUB", str(tmp_path),
+        {BASE_PROJECTS_KEY: reg, PROJECTS_REV_KEY: "rHEAD"})
+
+    assert (hub.downloads, hub.writes) == (0, 0)      # nothing moved in either direction
+    assert new_state[PROJECTS_REV_KEY] == "rHEAD"
+    assert merged == reg
+
+
+def test_registry_sync_advanced_head_is_downloaded_and_merged(tmp_path):
+    reg = {"schema": 1, "projects": {"a": {"description": "A", "modified": "2026-01-01"}}}
+    _pr.save(tmp_path, reg)
+    hub = _RegistryHub(_toml(a=("A2", "2026-02-01")), rev="rNEW")
+
+    merged, new_state = sync_project_registry(
+        hub, "HUB", str(tmp_path),
+        {BASE_PROJECTS_KEY: reg, PROJECTS_REV_KEY: "rOLD"})
+
+    assert hub.downloads == 1                                    # head moved -> fetched
+    assert merged["projects"]["a"]["description"] == "A2"        # newer `modified` wins (row 5)
+    assert _pr.load(tmp_path)["projects"]["a"]["description"] == "A2"
+    assert new_state[PROJECTS_REV_KEY] == "rNEW"                 # remote already matched -> no write
+    assert hub.writes == 0
+
+
+def test_registry_sync_first_run_creates_the_hub_file_without_reading_base_as_deletes(tmp_path):
+    """A hub with no registry yet has never synced anything, so a recorded base must NOT be read
+    as 'every project was deleted remotely' -- that would wipe the local file on first run."""
+    _pr.save(tmp_path, {"schema": 1, "projects": {"a": {"description": "A"}}})
+    hub = _RegistryHub(None)
+    stale_base = {"schema": 1, "projects": {"a": {"description": "A"},
+                                            "b": {"description": "B"}}}
+
+    merged, new_state = sync_project_registry(
+        hub, "HUB", str(tmp_path), {BASE_PROJECTS_KEY: stale_base, PROJECTS_REV_KEY: "rX"})
+
+    assert sorted(merged["projects"]) == ["a"]         # local kept, nothing silently deleted
+    assert hub.writes == 1                              # created on the hub
+    assert sorted(_pr.parse(hub.text)["projects"]) == ["a"]
+    assert _pr.load(tmp_path)["projects"]["a"]["description"] == "A"
+
+
+def test_registry_sync_holds_one_lock_across_the_whole_load_merge_save(tmp_path, monkeypatch):
+    """SS13.2: 'the lock must be held across the ENTIRE load -> merge -> save cycle -- acquired
+    before the read, released after the write. A lock around the save alone does not close the
+    race.' Records the real ordering rather than trusting the comment."""
+    import contextlib
+    import mobile_sync_agent as agent
+
+    events = []
+    lock_paths = []
+    real_load, real_save = _pr.load, _pr.save
+
+    @contextlib.contextmanager
+    def spy_lock(lock_path, timeout=10.0):
+        lock_paths.append(Path(lock_path).name)
+        events.append("acquire")
+        try:
+            yield
+        finally:
+            events.append("release")
+
+    monkeypatch.setattr(agent, "_vault_lock", spy_lock)
+    monkeypatch.setattr(_pr, "load", lambda vr: events.append("load") or real_load(vr))
+    monkeypatch.setattr(_pr, "save", lambda vr, r: events.append("save") or real_save(vr, r))
+
+    hub = _RegistryHub(_toml(remote_only=("R", "2026-01-03")))
+    sync_project_registry(hub, "HUB", str(tmp_path), {})
+
+    assert events == ["acquire", "load", "save", "release"]
+    assert lock_paths == [".projects.lock"]             # its own path, not an unrelated cycle's
+
+
+def test_base_projects_is_never_mistaken_for_a_note_row(tmp_path, monkeypatch):
+    """`base_projects` is a dict living beside per-note dicts in the same sidecar. Every state
+    iteration guards on `drive_file_id`, which it lacks -- and it must survive a save/load."""
+    _write_registry(tmp_path, "research")
+    _note_file(tmp_path, "n1.md", "id: n1\norigin: note\nenriched: true", "Body.\n")
+    monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
+    drive = _mock_empty_drive()
+    state_path = tmp_path / ".state.json"
+
+    run_once(str(tmp_path), str(state_path), drive, vault_root=str(tmp_path))
+
+    final = load_state(str(state_path))                 # round-trips through JSON
+    assert "research" in final[BASE_PROJECTS_KEY]["projects"]
+    assert "drive_file_id" not in final[BASE_PROJECTS_KEY]
+    assert final["n1"]["drive_file_id"] == "F1"         # the real note row is untouched beside it
+
+
+# ---------------------------------------------------------------------------
+# SYNC IS PURE TRANSPORT (SS1.3, user priority s125) - stronger than body-sacred:
+# the pass moves bytes and writes bookkeeping, and NEVER edits file content in
+# EITHER direction. Frontmatter writes are legal only from a local save/enrich.
+# ---------------------------------------------------------------------------
+
+def test_a_sync_pass_leaves_a_synced_notes_bytes_untouched(tmp_path, monkeypatch):
+    """A full run_once over an already-synced note must not rewrite one byte of it -- not the
+    body, and not the derived `project:`/`tags:` frontmatter caches either."""
+    _write_registry(tmp_path, "research")
+    loose = tmp_path / LOOSE_DIR
+    loose.mkdir()
+    # Deliberately INCONSISTENT caches: the body says `#project@research`, the frontmatter says
+    # `[stale]` and carries a `tags:` entry the body does not. A local save would rebuild both.
+    # A sync pass must leave every byte alone -- recomputing here would be an edit.
+    content = ("---\nid: n1\ntitle: T\norigin: note\nproject: [stale]\ntags: [ghost]\n"
+               "enriched: true\nenrich_source: desktop-llm\norigin_device: desktop\n"
+               "---\nreal body #project@research\n")
+    p = loose / "T.md"
+    p.write_text(content, encoding="utf-8", newline="")
+    save_state(str(tmp_path / ".state.json"),
+               {"hub_names_migrated": True,
+                "n1": {"drive_file_id": "F1", "base_rev": "r1",
+                       "local_hash": _sha256(content), "hub_name": "T.md",
+                       "base_parent": "research"}})
+    monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
+
+    before = p.read_bytes()
+    run_once(str(tmp_path), str(tmp_path / ".state.json"), _mock_empty_drive(),
+             vault_root=str(tmp_path))
+
+    assert p.read_bytes() == before, "a sync pass rewrote a note it was only supposed to transport"
+
+
+def _reconcile_pull_drive(monkeypatch, remote_text, folder="research", fid="F1"):
+    """Fake drive whose hub holds ONE note, in `folder`, at an ADVANCED head — so run_once takes
+    reconcile_changes' PULL branch (remote moved, local unchanged) rather than pull_new/mirror."""
+    drive = MagicMock()
+
+    def _list(**kw):
+        q = kw.get("q", "")
+        resp = MagicMock()
+        if "'HUB' in parents" in q and f"mimeType='{_FOLDER_MIME}'" in q:
+            resp.execute.return_value = {"files": [
+                {"id": "c1", "name": folder, "mimeType": _FOLDER_MIME}], "nextPageToken": None}
+        elif "'c1' in parents" in q:
+            resp.execute.return_value = {"files": [
+                {"id": fid, "name": "T.md", "headRevisionId": "rNEW",
+                 "appProperties": {"noteId": "n1"}}], "nextPageToken": None}
+        else:
+            resp.execute.return_value = {"files": [], "nextPageToken": None}
+        return resp
+
+    drive.files().list.side_effect = _list
+    drive.files().get_media.side_effect = lambda fileId=None: _Ret2(remote_text.encode("utf-8"))
+    monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
+    return drive
+
+
+class _Ret2:
+    def __init__(self, r): self._r = r
+    def execute(self): return self._r
+
+
+def test_run_once_pull_branch_writes_the_hub_bytes_verbatim(tmp_path, monkeypatch):
+    """The downward direction through the REAL run_once -> reconcile_changes PULL branch.
+
+    The arriving bytes carry a `project:` cache that disagrees with their own body tag AND a
+    `tags:` entry the body does not contain. Sync must write them EXACTLY as delivered: repairing
+    a peer's derived caches here would be an edit, and edits are the one thing transport may not do.
+    """
+    _write_registry(tmp_path, "research")
+    loose = tmp_path / LOOSE_DIR
+    loose.mkdir()
+    local = ("---\nid: n1\ntitle: T\norigin: note\norigin_device: phone\nenriched: true\n"
+             "---\nold body\n")
+    p = loose / "T.md"
+    p.write_text(local, encoding="utf-8", newline="")
+    remote = ("---\nid: n1\ntitle: T\norigin: note\norigin_device: phone\nenriched: true\n"
+              "project: [wrong]\ntags: [ghost]\n---\nnew body #project@research\n")
+    state_path = tmp_path / ".state.json"
+    save_state(str(state_path), {"hub_names_migrated": True,
+                                 "n1": {"drive_file_id": "F1", "base_rev": "rOLD",
+                                        "local_hash": _sha256(local), "hub_name": "T.md",
+                                        "base_parent": "research"}})
+
+    drive = _reconcile_pull_drive(monkeypatch, remote)
+    _u, _f, reconciled, _c, _p2, _i, _e = run_once(
+        str(tmp_path), str(state_path), drive, vault_root=str(tmp_path))
+
+    assert reconciled == 1                       # the PULL branch really ran (not a vacuous pass)
+    # re-pathed by the incoming TAG (moving a file is not editing one)...
+    dest = tmp_path / "research" / "T.md"
+    assert dest.exists() and not p.exists()
+    # ...and the bytes are the hub's, verbatim, stale caches and all.
+    assert dest.read_bytes() == remote.encode("utf-8")
+
+
+def test_a_pull_writes_the_hub_bytes_verbatim_even_when_the_caches_disagree(tmp_path):
+    """The downward direction. A peer's note whose `project:` cache disagrees with its body tag
+    is written to disk EXACTLY as it arrived -- sync does not 'repair' the other device's file."""
+    hub_bytes = ("---\nid: 01P\ntitle: T\norigin: note\nproject: [wrong]\ntags: [ghost]\n"
+                 "---\nphone body #project@research\n")
+    written = {}
+    pulled, failed, _ = pull_new_hub_notes(
+        {}, {"01P": {"id": "F1", "headRevisionId": "r1", "folder": "personal", "name": "T.md"}},
+        {}, MagicMock(), str(tmp_path),
+        download=lambda fid: hub_bytes,
+        write_file=lambda pth, c: written.__setitem__(pth, c),
+        reg=_reg("research"),
+    )
+    assert (pulled, failed) == (1, 0)
+    # placed by the TAG (research/), and byte-identical -- the stale `project: [wrong]` line rides
+    # along untouched, to be rebuilt by whichever device next SAVES the note.
+    assert written == {str(tmp_path / "research" / "T.md"): hub_bytes}
+
+
+def test_an_upload_ships_the_disk_bytes_verbatim(tmp_path):
+    """The upward direction: mirror_to_hub uploads `content` as read off disk. `_upload_note`'s
+    body-sacred guard covers the body; this pins the WHOLE file, frontmatter included."""
+    content = ("---\nid: 01U\ntitle: T\norigin: note\nproject: [stale]\n"
+               "---\nbody #project@research\n")
+    vault_notes = {"01U": {"id": "01U", "path": str(tmp_path / "research" / "T.md"),
+                           "content": content, "body": "body #project@research\n",
+                           "hash": "H", "folder": "research", "title": "T", "created": ""}}
+    drive = MagicMock()
+    drive.files().list().execute.return_value = {"files": [], "nextPageToken": None}
+    drive.files().create().execute.return_value = {"id": "F1", "headRevisionId": "r1"}
+
+    uploaded, failed, _ = mirror_to_hub(vault_notes, {}, {}, drive, "HUB")
+
+    assert (uploaded, failed) == (1, 0)
+    note_create = next(c for c in drive.files().create.call_args_list
+                       if (c.kwargs.get("body") or {}).get("appProperties"))
+    media = note_create.kwargs["media_body"]
+    assert media.getbytes(0, media.size()) == content.encode("utf-8")

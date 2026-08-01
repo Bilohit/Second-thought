@@ -101,6 +101,7 @@ def create_daily_note(vault_root: Path, day_iso: str, folder: str = "Daily",
 
     from mobile_sync_agent import _atomic_write_note, _mint_capture_id
     from note_model import parse_note, serialize_note
+    from project_registry import load as load_registry
     from reconcile import Note
 
     dest = Path(vault_root) / folder
@@ -119,7 +120,9 @@ def create_daily_note(vault_root: Path, day_iso: str, folder: str = "Daily",
         body=_DAILY_BODY.format(day=day_iso),
     )
     dest.mkdir(parents=True, exist_ok=True)
-    _atomic_write_note(str(path), serialize_note(note))   # atomic: never a torn note
+    # v3.1: the registry is what turns the body's `#project@` tag into the `project:` frontmatter
+    # cache — the line is ALWAYS present (`[-]` for a loose note, which a fresh daily note is).
+    _atomic_write_note(str(path), serialize_note(note, load_registry(vault_root)))   # atomic: never torn
     return {"id": note.id, "path": str(path), "title": day_iso}
 
 

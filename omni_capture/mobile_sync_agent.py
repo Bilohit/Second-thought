@@ -20,21 +20,23 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, Optional, Set, Tuple
 
 from googleapiclient.http import MediaInMemoryUpload
 
+from dedup import _vault_lock
 from frontmatter import add_fields, read_all_fields, strip_frontmatter
 from note_model import parse_note, serialize_note
 from body_tags import extract_body_tags, derive_body_attachments
 from machine_tags import apply_trailing_tags_line, strip_trailing_tags_line
 from reconcile import reconcile
 from sync_ignore import filter_ignored_notes
+import project_registry
+from project_registry import Registry, resolve_project
+from projects import LOOSE_DIR, is_valid_project_name, note_dir_for, parse_project_tag
 
 # D4 note-enrichment seam collaborators (patched as module attributes in tests).
 from llm_engine import run_llm_engine
-from storage_engine import build_category_descriptions
-from tag_vocab import load_vocab
 from index_writer import get_db_path
 from reminders import sync_reminders_from_notes
 from vector_store import index_note
@@ -144,7 +146,7 @@ def _resolve_hub_names(notes: list) -> dict:
     groups: dict = {}
     for n in notes:
         name = _hub_filename(n["title"], n["created"])
-        groups.setdefault((n.get("category"), name), []).append(n)
+        groups.setdefault((n.get("folder"), name), []).append(n)
     out: dict = {}
     for (_cat, name), members in groups.items():
         members.sort(key=lambda n: (n["created"], n["id"]))
@@ -207,7 +209,8 @@ def _mint_capture_id() -> str:
     return uuid.uuid4().hex[:26]
 
 
-def read_vault_notes(vault_path: str, mirror_captures: bool = False) -> Dict[str, Dict]:
+def read_vault_notes(vault_path: str, mirror_captures: bool = False,
+                     reg: Optional[Registry] = None) -> Dict[str, Dict]:
     """Scan the vault, return {frontmatter-id: note}.
 
     A file is a NOTE iff frontmatter `origin == "note"`; otherwise it is a desktop CAPTURE
@@ -219,11 +222,20 @@ def read_vault_notes(vault_path: str, mirror_captures: bool = False) -> Dict[str
       minted (ULID-style) and `id`/`origin: capture` written back as a FRONTMATTER-ONLY edit
       (body byte-identical — enforced below) so it gains a stable sync identity (closes B-15).
 
-    Notes (origin: note) are always included when they have an id, regardless of the flag."""
+    Notes (origin: note) are always included when they have an id, regardless of the flag.
+
+    Each record carries `folder` — the directory the note BELONGS in, `note_dir_for(
+    resolve_project(body, reg))`: its project, or `_loose` (contract §1.3). It is derived from
+    the body TAG, never from where the file currently sits, because the tag is the truth and the
+    path is derived housekeeping the tidy pass converges. `reg` defaults to the vault's own
+    `.projects.toml`; a missing/unreadable registry is an empty one, so every note reads loose —
+    a degradation the contract names explicitly, never an error."""
     notes: Dict[str, Dict] = {}
     vault_dir = Path(vault_path)
     if not vault_dir.exists():
         return notes
+    if reg is None:
+        reg = project_registry.load(vault_dir)
 
     for md_file in vault_dir.rglob("*.md"):
         if any(part in _RESERVED_FOLDERS for part in md_file.relative_to(vault_dir).parts[:-1]):
@@ -263,17 +275,17 @@ def read_vault_notes(vault_path: str, mirror_captures: bool = False) -> Dict[str
         if not note_id:
             print(f"[mobile_sync_agent] no id, skip {md_file}")
             continue
-        parent = md_file.parent
-        folder_cat = parent.name if parent != vault_dir else None
+        body = strip_frontmatter(parsed)
         notes[note_id] = {
             "id": note_id,
             "path": str(md_file),
             "content": content,
-            "body": strip_frontmatter(parsed),
+            "body": body,
             "hash": _sha256(content),
-            # v2.2: category IS the parent folder (data-model §1.2). Frontmatter `category:` is a
-            # legacy field, ignored on read — the folder is the single source of truth.
-            "category": folder_cat,
+            # v3.0 (§1.3): the note's directory is DERIVED from its `#project@` body tag, not read
+            # off disk. Legacy `category:` frontmatter and the file's current parent are both
+            # ignored — the tag is the only truth.
+            "folder": note_dir_for(resolve_project(body, reg)),
             "title": fields.get("title", ""),
             "created": fields.get("created", ""),
         }
@@ -349,13 +361,17 @@ def _list_children(drive, parent_id: str, mime_is_folder: Optional[bool] = None)
 
 
 def list_hub_tree(drive, hub_folder_id: str) -> Tuple[Dict[str, str], Dict[str, str]]:
-    """Split the hub root's subfolders into (categories{name:id}, reserved{name:id})."""
-    categories: Dict[str, str] = {}
+    """Split the hub root's subfolders into (note_dirs{name:id}, reserved{name:id}).
+
+    A note dir is a PROJECT folder or `_loose` (contract §2, §1.3) — both hold notes, so `_loose`
+    is deliberately NOT in `_RESERVED_FOLDERS`. Project folders are derived, never authoritative:
+    a folder exists because notes carry that tag and the tidy pass created it."""
+    note_dirs: Dict[str, str] = {}
     reserved: Dict[str, str] = {}
     for f in _list_children(drive, hub_folder_id, mime_is_folder=True):
-        target = reserved if f["name"] in _RESERVED_FOLDERS else categories
+        target = reserved if f["name"] in _RESERVED_FOLDERS else note_dirs
         target[f["name"]] = f["id"]
-    return categories, reserved
+    return note_dirs, reserved
 
 
 def _find_or_create_subfolder(drive, parent_id: str, name: str) -> str:
@@ -536,18 +552,18 @@ def purge_expired_hub_trash(
 
 
 def get_hub_notes(drive, hub_folder_id: str) -> Dict[str, Dict]:
-    """List every .md note across the hub's category subfolders (2-level walk, contract §2).
+    """List every .md note across the hub's project/`_loose` subfolders (2-level walk, contract §2).
 
     Reserved folders (_trash/_mobile_inbox/_attachments/_templates/.sync) are skipped.
     Keyed by note id: appProperties.noteId when present, else the filename stem — this
     normalizes phone-origin `<id>.md` (no appProperties) and desktop-origin `<id>` to one
     key so reconcile can match them against the vault (which is keyed by frontmatter id).
-    Each record carries its `category` (parent folder name). headRevisionId is the only
+    Each record carries its `folder` (parent folder name). headRevisionId is the only
     version token; no modifiedTime is ever read.
     """
-    categories, _reserved = list_hub_tree(drive, hub_folder_id)
+    note_dirs, _reserved = list_hub_tree(drive, hub_folder_id)
     files: Dict[str, Dict] = {}
-    for cat_name, cat_id in categories.items():
+    for cat_name, cat_id in note_dirs.items():
         for f in _list_children(drive, cat_id, mime_is_folder=False):
             if not f["name"].endswith(".md"):
                 continue
@@ -558,23 +574,23 @@ def get_hub_notes(drive, hub_folder_id: str) -> Dict[str, Dict]:
                 print(f"[mobile_sync_agent] hub file {f.get('id')} ({f['name']}) has no "
                       f"appProperties.noteId; keying by filename stem {note_id} (legacy/foreign)")
             key = note_id
-            f["category"] = cat_name
+            f["folder"] = cat_name
             # SYNC-22 (graduates the ponytail here — ceiling reached): this dict is flat across
-            # every category folder, so two files keyed to the same id in different folders used
+            # every note folder, so two files keyed to the same id in different folders used
             # to silently last-wins, and the loser became invisible to reconcile. Real for files
             # with no appProperties.noteId, which fall back to the filename stem above: two
-            # legacy/foreign notes sharing a title in different categories collide. First-wins +
+            # legacy/foreign notes sharing a title in different folders collide. First-wins +
             # a warning, matching the root scan's `setdefault` below.
             if key in files:
                 print(f"[mobile_sync_agent] duplicate hub note id {key!r}: keeping "
-                      f"{files[key].get('category')}/{files[key]['name']}, skipping "
+                      f"{files[key].get('folder')}/{files[key]['name']}, skipping "
                       f"{cat_name}/{f['name']}")
                 continue
             files[key] = f
-    # B-5: also scan root-level .md notes. `_resolve_dest_folder` uploads uncategorised notes to the
-    # hub ROOT; without this pass get_hub_notes never saw them → invisible to the phone AND never
-    # reconciled (remote edits to an uncategorised note were silently never pulled). category=None marks
-    # uncategorised. setdefault so a category-folder note always wins a same-id root duplicate.
+    # B-5: also scan root-level .md notes. v3.0 never PUTS a note at the hub root (a loose note goes
+    # to `_loose/`, §1.3), but legacy/foreign root files must still be seen, or a remote edit to one
+    # is silently never pulled. folder=None marks "at the root"; setdefault so a real note folder
+    # always wins a same-id root duplicate.
     for f in _list_children(drive, hub_folder_id, mime_is_folder=False):
         if not f["name"].endswith(".md"):
             continue
@@ -585,22 +601,23 @@ def get_hub_notes(drive, hub_folder_id: str) -> Dict[str, Dict]:
             print(f"[mobile_sync_agent] hub file {f.get('id')} ({f['name']}) has no "
                   f"appProperties.noteId; keying by filename stem {note_id} (legacy/foreign)")
         key = note_id
-        f["category"] = None
+        f["folder"] = None
         files.setdefault(key, f)
     return files
 
 
-def _resolve_dest_folder(drive, hub_folder_id: str, category: Optional[str], cache: Dict[str, str]) -> str:
-    """Category folder id for a note (find-or-create, cached per run). Falsy category → hub root.
+def _resolve_dest_folder(drive, hub_folder_id: str, folder: Optional[str], cache: Dict[str, str]) -> str:
+    """Hub folder id for a note (find-or-create, cached per run).
 
-    ponytail: uncategorised notes land at the hub root; give them a default category folder
-    only if the vault ever forbids root-level notes.
+    `folder` is the note's resolved project directory — `note_dir_for(resolve_project(body, reg))`,
+    which is never falsy. A falsy value (a hand-built record, a legacy row) is LOOSE, and a loose
+    note goes to `_loose/`, NEVER the hub root: depth 1 is what keeps every note's
+    `../_attachments/<id>/…` body ref valid across every move (contract §1.3, §2).
     """
-    if not category:
-        return hub_folder_id
-    if category not in cache:
-        cache[category] = _find_or_create_subfolder(drive, hub_folder_id, category)
-    return cache[category]
+    folder = folder or LOOSE_DIR
+    if folder not in cache:
+        cache[folder] = _find_or_create_subfolder(drive, hub_folder_id, folder)
+    return cache[folder]
 
 
 def _upload_note(drive, note: Dict, dest_folder_id: str, existing: Optional[Dict],
@@ -629,9 +646,10 @@ def _upload_note(drive, note: Dict, dest_folder_id: str, existing: Optional[Dict
     metadata = {"name": name, "appProperties": {"noteId": note["id"]}}
 
     if existing and existing.get("drive_file_id"):
-        # ponytail: update-in-place by file id — a note whose category changed stays in its
-        # original hub folder (no move). Wire a parents add/remove here if per-category hub
-        # placement must track category edits.
+        # Update-in-place by file id: the bytes are written here and the PARENT is never touched,
+        # because a re-parent is a separate metadata-only op (`_move_file_to_folder`) that must not
+        # bump headRevisionId. Callers that see the note's project change re-parent right after
+        # this returns — see mirror_to_hub's base_parent comparison.
         prev_name = existing.get("hub_name")
         if prev_name is not None and prev_name == name:
             metadata.pop("name")  # unchanged name — skip the rename, avoid a needless rev bump
@@ -683,45 +701,44 @@ def _maybe_rename_local(local_path: str, hub_name: Optional[str],
     return new_path
 
 
-def _maybe_refile_local(local_path: str, hub_category: Optional[str], note_id: str) -> str:
-    """Local half of consuming a MOVE: when an incoming hub parent-change (a peer recategorized the
-    note — PKG-CAT-PHONE's phone move op) names a real category folder different from the one the
-    vault file currently sits in, relocate the file into vault/<hub-category>/<name>, creating the
-    category folder if new.
+def _maybe_refile_local(local_path: str, dest_folder: Optional[str], note_id: str) -> str:
+    """Keep the local mirror in the directory the note's project TAG implies.
 
-    Category is folder-derived (data-model §1.2), so the local folder MUST track the hub parent or
-    the desktop's derived category silently diverges from sync-state's `base_parent` — the exact
-    file-stays-in-_scratchpad-but-base_parent=work divergence a phone recategorize otherwise left
-    (the reconcile pull/merge paths recorded the new parent but wrote the bytes back to the old
-    folder). Mirrors _maybe_rename_local: atomic os.replace BEFORE any new content is written, so the
-    note is never bodyless mid-move nor duplicated under both folders.
+    v3.0 (§1.3): `dest_folder` is `note_dir_for(resolve_project(body, reg))` — the note's project,
+    or `_loose`. It is NOT the hub's parent folder: the tag is the truth and the path is derived
+    housekeeping, so a body arriving from the hub with a different `#project@` tag re-paths the
+    local file, while a hub folder that merely disagrees with the tag does not. **Desktop alone
+    re-paths a file** — the phone never moves one — which is what makes this safe to do unilaterally
+    and is why §1.2's divergent-move arm is unreachable.
 
-    A FALSY hub_category is a NO-OP (never a move to the scratchpad/root): the phone's recategorize
-    picker filters the scratchpad out, so it can never move a note back to uncategorized — an
-    incoming empty category is 'unchanged/unknown', not an explicit move-to-root. Leaving the file
-    put also keeps the many reconcile unit tests whose minimal hub records omit `category` untouched.
+    This MOVES a file; it never edits one byte of it, so "sync is pure transport" holds. Mirrors
+    _maybe_rename_local: atomic os.replace BEFORE any new content is written, so the note is never
+    bodyless mid-move nor duplicated under both folders.
 
-    ponytail: derives the vault root as the file's grandparent (vault/<category>/<name>), the
-    one-level-deep layout read_vault_notes and the pull path both maintain; a genuine vault-root note
+    A falsy `dest_folder` is a defensive NO-OP (a caller that could not resolve one at all); the
+    real loose case is the string `_loose`, which does move.
+
+    ponytail: derives the vault root as the file's grandparent (vault/<project>/<name>), the
+    depth-1 layout read_vault_notes and the pull path both maintain; a genuine vault-root note
     would resolve wrong, but this sync model never files a note at the root. Returns the (possibly
     new) path. A path not yet on disk (injected-write_file unit tests, or a not-yet-materialized note)
     is only RESOLVED — no folder created, no file moved — so the compute stays side-effect-free."""
-    if not hub_category:
-        return local_path  # uncategorized/unknown — never a real phone move (see docstring)
+    if not dest_folder:
+        return local_path  # unresolvable — leave the file where it is (see docstring)
     p = Path(local_path)
-    if p.parent.name == hub_category:
-        return local_path  # already in the folder the hub names
-    new_path = p.parent.parent / hub_category / p.name
+    if p.parent.name == dest_folder:
+        return local_path  # already in the directory its tag implies
+    new_path = p.parent.parent / dest_folder / p.name
     if not p.exists():
         return str(new_path)  # nothing on disk to move (or a fake path) — resolve only, touch nothing
     if new_path.exists():
         # SYNC-06 sibling: os.replace silently overwrites — never move onto an existing file (it
         # would destroy a whole note). Keep the current folder; the next pass retries.
-        print(f"[mobile_sync_agent] refile {note_id} -> {hub_category!r} skipped: destination exists")
+        print(f"[mobile_sync_agent] refile {note_id} -> {dest_folder!r} skipped: destination exists")
         return local_path
     new_path.parent.mkdir(parents=True, exist_ok=True)
     os.replace(local_path, str(new_path))   # atomic within the vault filesystem
-    print(f"[mobile_sync_agent] local refile {note_id}: {p.parent.name!r} -> {hub_category!r}")
+    print(f"[mobile_sync_agent] local refile {note_id}: {p.parent.name!r} -> {dest_folder!r}")
     return str(new_path)
 
 
@@ -799,10 +816,10 @@ def migrate_hub_filenames(drive, hub_folder_id: str, state: Dict[str, Dict]) -> 
         return state
 
     new_state = dict(state)
-    categories, _reserved = list_hub_tree(drive, hub_folder_id)
+    note_dirs, _reserved = list_hub_tree(drive, hub_folder_id)
 
-    entries = []  # (drive_file, category_name_or_None)
-    for cat_name, cat_id in categories.items():
+    entries = []  # (drive_file, folder_name_or_None)
+    for cat_name, cat_id in note_dirs.items():
         for f in _list_children(drive, cat_id, mime_is_folder=False):
             if f["name"].endswith(".md"):
                 entries.append((f, cat_name))
@@ -817,15 +834,15 @@ def migrate_hub_filenames(drive, hub_folder_id: str, state: Dict[str, Dict]) -> 
         fields = read_all_fields(content)
         note_id = fields.get("id") or Path(f["name"]).stem
         if note_id in seen_ids:
-            continue  # category-folder note wins over a same-id root duplicate (mirrors get_hub_notes)
+            continue  # a note-folder note wins over a same-id root duplicate (mirrors get_hub_notes)
         seen_ids.add(note_id)
         parsed.append({
-            "file": f, "id": note_id, "category": cat_name,
+            "file": f, "id": note_id, "folder": cat_name,
             "title": fields.get("title") or "", "created": fields.get("created") or "",
         })
 
     hub_names = _resolve_hub_names([
-        {"id": p["id"], "title": p["title"], "created": p["created"], "category": p["category"]}
+        {"id": p["id"], "title": p["title"], "created": p["created"], "folder": p["folder"]}
         for p in parsed
     ])
 
@@ -860,6 +877,7 @@ def reconcile_changes(
     hub_folder_id: str,
     write_file: Optional[Callable[[str, str], None]] = None,
     new_id: Optional[Callable[[], str]] = None,
+    reg: Optional[Registry] = None,
 ) -> Tuple[int, int, int, Dict[str, Dict]]:
     """Pull + field-aware three-way reconcile every note whose hub head advanced past our base_rev.
 
@@ -875,7 +893,14 @@ def reconcile_changes(
     fabricated. Returns (reconciled, conflicts, failed, new_state).
 
     write_file / new_id are injected so the merge logic is unit-testable without disk or randomness.
+    `reg` is the project registry this pass resolved (run_once merges it first); omitted → empty,
+    so every note reads loose, which is the contract's own degradation, never an error.
+
+    PURE TRANSPORT (§1.3): the only bytes written here are bytes reconcile() produced from the two
+    inputs verbatim. Nothing on this path recomputes a frontmatter cache or edits a body.
     """
+    if reg is None:
+        reg = project_registry.empty_registry()
     if write_file is None:
         # Atomic + byte-verbatim (_atomic_write_note owns both): a kill mid-write must never leave
         # a torn body the next scan mistakes for a local edit and pushes to the hub (S4-1).
@@ -890,14 +915,14 @@ def reconcile_changes(
     failed = 0
     new_state = dict(state)
     folder_cache: Dict[str, str] = {}
-    # Resolved once per folder (via (category, name) grouping inside _resolve_hub_names) over every
+    # Resolved once per folder (via (folder, name) grouping inside _resolve_hub_names) over every
     # local note — used below to rename/re-upload a note whose title changed. Based on the LOCAL
     # (pre-merge) title: the common case is a user retitling on this device; a title that changed
     # ONLY on the remote side during this same pass keeps its prior local name here (simplification —
     # the next pass's mirror/pull sees the merged title and converges it).
     _name_rows = [
         {"id": nid, "title": n.get("title", ""), "created": n.get("created", ""),
-         "category": n.get("category")}
+         "folder": n.get("folder")}
         for nid, n in vault_notes.items()
     ]
     hub_names = _resolve_hub_names(_name_rows)
@@ -940,25 +965,30 @@ def reconcile_changes(
                     "drive_file_id": file_id,
                     "base_rev": remote_rev,
                     "local_hash": local["hash"],
-                    # v2.3: base_parent = the note's hub folder at last sync (recorded at every
-                    # row rewrite; the three-way divergent-move merge lands with PKG-CAT-PHONE).
-                    "base_parent": hub_file.get("category"),
+                    # base_parent = the note's hub folder at last sync, recorded at every row
+                    # rewrite. v3.0: it no longer ARBITRATES anything (the divergent-move arm is
+                    # unreachable — only the desktop re-paths); it is the record of whether the
+                    # hub already reflects the note's project (contract §1.2 as amended).
+                    "base_parent": hub_file.get("folder"),
                 }
                 continue
             if not local_changed:
-                # PULL: remote-only change. Verbatim propagation of the other device's edit.
-                # A peer's category MOVE arrives here (body identical, only the hub PARENT + modified
-                # changed): relocate the local mirror into the folder the hub now names BEFORE the
-                # write, so the folder-derived category tracks base_parent instead of diverging.
+                # PULL: remote-only change. Verbatim propagation of the other device's edit —
+                # `remote_text` is written byte-for-byte, never re-serialized (pure transport).
+                # The incoming body may carry a different `#project@` tag, so re-path the local
+                # mirror to the directory that tag implies BEFORE the write (moving a file is not
+                # editing one). Desktop alone re-paths; the phone never moves a file.
                 pull_path = _maybe_refile_local(
-                    local["path"], hub_file.get("category"), note_id
+                    local["path"],
+                    note_dir_for(resolve_project(strip_frontmatter(_strip_bom(remote_text)), reg)),
+                    note_id,
                 )
                 write_file(pull_path, remote_text)
                 new_state[note_id] = {
                     "drive_file_id": file_id,
                     "base_rev": remote_rev,
                     "local_hash": _sha256(remote_text),
-                    "base_parent": hub_file.get("category"),   # v2.3 (see above)
+                    "base_parent": hub_file.get("folder"),   # see above
                 }
                 reconciled += 1
                 continue
@@ -989,7 +1019,11 @@ def reconcile_changes(
             merged_result = reconcile(
                 base, local_note, parse_note(remote_text), new_id()
             )
-            merged_text = serialize_note(merged_result.merged)
+            # v3.1: `project:` is a DERIVED cache dropped on parse, so the registry MUST ride this
+            # re-serialization or every reconciled note silently loses the line. This is the merge
+            # result being materialized, not a transported file being edited — reconcile() still
+            # guarantees the merged body is a verbatim copy of one input.
+            merged_text = serialize_note(merged_result.merged, reg)
             hub_name = hub_names.get(note_id)
             # SYNC-20: `hub_names` above was resolved from the PRE-merge local title, so a title
             # that changed only on the remote side named the file from the stale title and only
@@ -1005,14 +1039,12 @@ def reconcile_changes(
             local_path = _maybe_rename_local(
                 local["path"], hub_name, prior.get("hub_name"), note_id
             )
-            # A peer's category MOVE that coincides with a local body edit lands in this 3-way path:
-            # relocate the local mirror into the folder the hub now names (base_parent, recorded
-            # below) so the folder-derived category never diverges from it.
-            local_path = _maybe_refile_local(
-                local_path, hub_file.get("category"), note_id
-            )
+            # The MERGED body decides the directory (its `#project@` tag may have come from either
+            # side), so re-path the local mirror before writing it.
+            merged_folder = note_dir_for(resolve_project(merged_result.merged.body, reg))
+            local_path = _maybe_refile_local(local_path, merged_folder, note_id)
             write_file(local_path, merged_text)
-            dest = _resolve_dest_folder(drive, hub_folder_id, local.get("category"), folder_cache)
+            dest = _resolve_dest_folder(drive, hub_folder_id, merged_folder, folder_cache)
             up = _upload_note(
                 drive,
                 {"id": note_id, "content": merged_text, "body": merged_result.merged.body},
@@ -1025,15 +1057,16 @@ def reconcile_changes(
                 "base_rev": up.get("headRevisionId"),
                 "local_hash": _sha256(merged_text),
                 "hub_name": hub_name,
-                # v2.3: _upload_note updates in place (never re-parents), so the hub folder
-                # after a merge is whatever it already was.
-                "base_parent": hub_file.get("category"),
+                # _upload_note updates in place (never re-parents), so the hub folder after a
+                # merge is whatever it already was — mirror_to_hub's next pass reconciles it
+                # against `merged_folder` if the merge moved the note's project.
+                "base_parent": hub_file.get("folder"),
             }
             reconciled += 1
 
             if merged_result.conflicted_copy is not None:
                 cc = merged_result.conflicted_copy
-                cc_text = serialize_note(cc)
+                cc_text = serialize_note(cc, reg)   # v3.1: the copy carries its own `project:` cache
                 cc_name = _conflicted_copy_name(cc, Path(local_path).parent)
                 cc_path = str(Path(local_path).with_name(cc_name))
                 write_file(cc_path, cc_text)
@@ -1053,8 +1086,8 @@ def reconcile_changes(
                     # _maybe_rename_local returns early and _upload_note never renames — the
                     # conflicted copy's local and hub names diverge permanently.
                     "hub_name": cc_name,
-                    # v2.3: the conflicted copy was just CREATED under `dest` = the local folder.
-                    "base_parent": local.get("category"),
+                    # The conflicted copy was just CREATED under `dest` = the merged note's folder.
+                    "base_parent": merged_folder,
                 }
                 conflicts += 1
         except Exception as e:
@@ -1077,16 +1110,22 @@ def mirror_to_hub(
     modifiedTime. A note the sidecar has no record of is only CREATED here (hub-absent);
     if the hub already holds it, no sync was ever observed for it and reconcile_changes
     owns it. Returns (uploaded, failed, new_state).
+
+    v3.0: this is also where the HUB learns a note's project changed. `note["folder"]` is derived
+    from the body tag; when it disagrees with the sidecar's `base_parent` (the hub folder at last
+    sync) the file is re-parented metadata-only AFTER the byte upload — Drive does not bump
+    headRevisionId on a metadata patch, so the base_rev just recorded stays valid. Desktop alone
+    re-paths; the phone reads the tag and never needs the hub to be tidy.
     """
     uploaded = 0
     failed = 0
     new_state = dict(state)
     folder_cache: Dict[str, str] = {}
-    # _resolve_hub_names groups by (category, name) internally, so one pass over every note
+    # _resolve_hub_names groups by (folder, name) internally, so one pass over every note
     # being mirrored already scopes clash resolution per hub folder.
     hub_names = _resolve_hub_names([
         {"id": nid, "title": n.get("title", ""), "created": n.get("created", ""),
-         "category": n.get("category")}
+         "folder": n.get("folder")}
         for nid, n in vault_notes.items()
     ])
 
@@ -1115,21 +1154,31 @@ def mirror_to_hub(
             # from the canonical head. Leave it for the next reconcile pass.
             continue
         try:
-            dest = _resolve_dest_folder(drive, hub_folder_id, note.get("category"), folder_cache)
+            folder = note.get("folder") or LOOSE_DIR
+            dest = _resolve_dest_folder(drive, hub_folder_id, folder, folder_cache)
             hub_name = hub_names.get(note_id)
             prev_hub_name = prior.get("hub_name") if prior else None
             local_path = _maybe_rename_local(note["path"], hub_name, prev_hub_name, note_id)
             if local_path != note["path"]:
                 note = dict(note, path=local_path)  # keep this pass's in-memory note consistent
             result = _upload_note(drive, note, dest, prior, hub_name=hub_name)
+            # A CREATE already landed inside `dest`. An UPDATE never re-parents, so when the note's
+            # project moved since the last sync, carry the hub file across now — metadata-only, so
+            # the headRevisionId just recorded above is unaffected.
+            if prior and prior.get("drive_file_id"):
+                hub_folder = hub_file.get("folder") if hub_file else prior.get("base_parent")
+                if hub_folder != folder:
+                    _move_file_to_folder(drive, result["id"], dest)
+                    print(f"[mobile_sync_agent] hub reparent {note_id}: "
+                          f"{hub_folder!r} -> {folder!r}")
             new_state[note_id] = {
                 "drive_file_id": result["id"],
                 "base_rev": result.get("headRevisionId"),
                 "local_hash": note["hash"],
                 "hub_name": hub_name,
-                # v2.3 base_parent: an UPDATE never re-parents (_upload_note ponytail), so the hub
-                # folder stays hub_file's; a CREATE lands in the note's own category folder.
-                "base_parent": hub_file.get("category") if hub_file else note.get("category"),
+                # base_parent: the hub folder the file now sits in — `folder` either way, since a
+                # CREATE lands there and an UPDATE was just re-parented there if it had drifted.
+                "base_parent": folder,
             }
             uploaded += 1
         except Exception as e:
@@ -1153,22 +1202,27 @@ def pull_new_hub_notes(
     state: Dict[str, Dict],
     drive,
     vault_root: str,
-    scratchpad_folder: str,
     write_file: Optional[Callable[[str, str], None]] = None,
     download: Optional[Callable[[str], str]] = None,
     local_trashed_ids: Optional[Set[str]] = None,
+    reg: Optional[Registry] = None,
 ) -> Tuple[int, int, Dict[str, Dict]]:
     """Pull hub notes the desktop has never seen (phone-created / first sync) into the vault.
 
-    'New' = id in neither the local vault nor the state sidecar. Placement:
-    vault/<category-from-frontmatter>/<hub-name>.md; missing/empty category → the scratchpad.
+    'New' = id in neither the local vault nor the state sidecar. Placement (v3.0, §1.3):
+    `vault/<note_dir_for(resolve_project(body, reg))>/<hub-name>.md` — the note's project, or
+    `_loose/`. Derived from the PULLED BODY's `#project@` tag, not from the hub parent folder and
+    never from frontmatter: the tag is the truth, and a loose note lands at depth 1 in `_loose/`
+    rather than the vault root so its `../_attachments/<id>/…` refs stay valid.
     <hub-name> mirrors the hub file's OWN resolved `name` (get_hub_notes already carries it,
     clash-unique on the hub) — this function never recomputes `_resolve_hub_names`, it just
     matches the local filename to the hub's. Falls back to `<id>.md` only if the hub record's
     name is missing/unsafe (never crash on an untrusted Drive listing).
-    Bytes are written verbatim (body-sacred — we never touch a pulled body).
+    Bytes are written VERBATIM — pure transport, we never touch a pulled file's content.
     Returns (pulled, failed, new_state).
     """
+    if reg is None:
+        reg = project_registry.empty_registry()
     if write_file is None:
         def write_file(path: str, content: str) -> None:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -1201,12 +1255,12 @@ def pull_new_hub_notes(
                 # active-in-personal/ + trashed-in-_trash/ duplicate). Honor the local soft-delete: skip.
                 # If the user wants it back they restore from `_trash/`. Non-destructive (trash copy kept).
                 continue
-            # v2.2: category IS the hub parent folder (get_hub_notes carries it), not frontmatter.
-            # A phone note may still emit a legacy `category:`; it is ignored — the folder wins.
-            category = hub_file.get("category")
-            sub = category if category else scratchpad_folder
-            # Hub folder name is untrusted input — `id`/`category` become path components (B-12
-            # class). Reject anything that could step outside vault/<category>/<local_name>.
+            # v3.0 (§1.3): the note's directory comes from its own body tag, resolved against the
+            # registry — its project, or `_loose`. The hub's parent folder and any legacy
+            # `category:`/`project:` frontmatter are both ignored.
+            sub = note_dir_for(resolve_project(strip_frontmatter(_strip_bom(content)), reg))
+            # `note_id` is untrusted hub input and becomes a path component (B-12 class); `sub` is
+            # ours by construction but is asserted with it rather than trusted silently.
             _safe_path_component(note_id)
             _safe_path_component(sub)
             hub_name = hub_file.get("name")
@@ -1236,7 +1290,7 @@ def pull_new_hub_notes(
                 "base_rev": hub_file.get("headRevisionId"),
                 "local_hash": _sha256(content),
                 "hub_name": hub_name,
-                "base_parent": hub_file.get("category"),   # v2.3 (recorded at every row rewrite)
+                "base_parent": hub_file.get("folder"),   # the hub folder at this sync
             }
             pulled += 1
         except Exception as e:
@@ -1311,7 +1365,7 @@ def intake_mobile_inbox(
                 # Worse than temp pollution: the staged file is then read back by
                 # run_pipeline(audio=/image=), making an unguarded name a
                 # write-then-read-back gadget. Same guard the block above already
-                # applies to note_id / category / hub_name. ValueError -> failed++.
+                # applies to note_id / the project dir / hub_name. ValueError -> failed++.
                 sibling_name = _safe_path_component(m.group(1))
                 sibling = by_name.get(sibling_name)
                 if sibling is None:
@@ -1361,31 +1415,32 @@ def intake_mobile_inbox(
 def enrich_notes(
     vault_notes: Dict[str, Dict],
     vault_root: str,
-    classify: Callable[[str], Tuple[List[str], str]],
-    vocab: Dict[str, str],
+    classify: Callable[[str], Optional[str]],
     embed: Optional[Callable[[str, str], None]] = None,
-    refile: Optional[Callable[[str, Dict, str], None]] = None,
+    reg: Optional[Registry] = None,
 ) -> Tuple[int, int]:
     """Note-only enrichment (contract §7). For every origin:note, enriched:false note the desktop
-    ORIGINATED (provenance gate, §2.2), refine tags via `classify`, embed via `embed`, and mark
-    enriched:true / enrich_source:desktop-llm. Machine tags are written to the BODY as a single
-    trailing `tags:` line (§3) — the one sanctioned body write; frontmatter `tags:` is then a derived
-    cache recomputed from the whole body (§1.2). Everything ABOVE the trailing line stays byte-exact.
+    ORIGINATED (provenance gate, §2.2), assign a PROJECT via `classify`, embed via `embed`, and
+    mark enriched:true / enrich_source:desktop-llm.
 
-    v2.2 (2026-07-24): category is folder-derived, NOT a frontmatter field.
-    v2.3 machine refile (contract §1.2, s71): when `refile` is given and the classifier's
-    category differs from the note's current folder, the mover stamps frontmatter
-    `modified`/`device` in the SAME atomic enrich write (the stamp is what makes divergent
-    moves decidable), then `refile(note_id, entry, dest_category)` performs the actual move
-    (local os.replace + metadata-only hub re-parent + base_parent record — built by run_once).
-    Refile is best-effort: a move failure never un-enriches the note, and enriched-once means
-    the machine will never move it again (K-1 holds from enrichment onward).
+    v3.0 narrows enrichment to exactly one job. `classify(user_body)` returns the name of an
+    EXISTING registry project, or None. It is written as a `#project@<name>` token on the machine's
+    single trailing `tags:` body line (§3, the one sanctioned body write) and **nothing else is
+    written there** — the `key_signals`-derived arbitrary tag generation is deleted, so this pass
+    never invents descriptive vocabulary. A note whose USER body already carries a `#project@` tag
+    is left alone: the user's tag is the truth, and the machine never overrides it.
 
-    Body is sacred: asserted byte-identical before every write. NEVER touches run_pipeline
-    (notes-are-not-captures lock). Fail-soft per note: a classify/write error leaves the note
-    enriched:false for the next pass. `vault_notes` is mutated in place so a later mirror in
-    the same run_once sees the new content. Returns (enriched_count, failed)."""
-    from tag_vocab import normalize_tags
+    K-1 and the v2.3 machine refile are RETIRED (§1.2 as amended): enrichment does not move a file
+    and does not stamp `modified`/`device`. The tag it writes is the move — the tidy pass
+    (`project_tidy.py`) and the next mirror converge the local path and the hub parent to it.
+
+    Body is sacred: everything ABOVE the trailing tags line is asserted byte-identical before every
+    write. NEVER touches run_pipeline (notes-are-not-captures lock). Fail-soft per note: a
+    classify/write error leaves the note enriched:false for the next pass. `vault_notes` is mutated
+    in place so a later mirror in the same run_once sees the new content.
+    Returns (enriched_count, failed)."""
+    if reg is None:
+        reg = project_registry.load(vault_root)
 
     enriched_count = 0
     failed = 0
@@ -1408,41 +1463,36 @@ def enrich_notes(
             "phone" if note.enrich_source == "phone-heuristic" else "desktop"
         )
         if effective_origin not in ("desktop", "shared"):
-            continue  # never touch a phone-origin note — no tags, no category, no body, nothing
+            continue  # never touch a phone-origin note — no tags, no project, no body, nothing
 
-        dest_category = None
         try:
             # Body-sacred baseline: the user body is everything ABOVE the machine trailing tags line
             # (§3). classify sees the user body, never the machine's own prior tags line.
             user_body = strip_trailing_tags_line(note.body)
             if user_body.strip():
-                key_signals, classified_category = classify(user_body)
-                # ISS-051 §3: machine enrichment tags live in the BODY, as a single trailing
-                # `tags: #a #b` line (idempotent replace). Frontmatter `tags:` is then a derived cache
-                # (§1.2) recomputed from the whole body — user inline #tags unified with this line.
-                # 2026-07-30 grouping split: project/ and @-action tags are user-assigned only —
-                # the machine never auto-attaches them (spec 2026-07-30-grouping-split-design.md).
-                machine_tags = [
-                    t for t in normalize_tags(list(key_signals), vocab)
-                    if not (t.startswith("project/") or t.startswith("@"))
-                ]
-                note.body = apply_trailing_tags_line(note.body, machine_tags)
+                # The user's own `#project@` tag wins outright — never reclassified, never
+                # overwritten (contract §1.3: the tag IS the truth).
+                if parse_project_tag(user_body) is None:
+                    picked = classify(user_body)
+                    # Untrusted LLM output: only a registry-eligible name that the registry
+                    # actually holds may be written. Anything else leaves the note loose, which
+                    # is a normal outcome, not a failure (§7 "degrades to loose, never a guess").
+                    if (picked and is_valid_project_name(picked)
+                            and picked in (reg.get("projects") or {})):
+                        # ISS-051 §3: the machine's one sanctioned body write, the single trailing
+                        # `tags:` line, idempotently replaced.
+                        # ponytail: the line is REPLACED, not merged — §7 says auto-enrichment
+                        # writes `#project@` and no other tag, so there is nothing of the machine's
+                        # to preserve. Merge instead only if a second machine-owned token appears.
+                        note.body = apply_trailing_tags_line(note.body, [f"project@{picked}"])
+                # `tags:` is a derived cache recomputed from the WHOLE body (§1.2); structural tags
+                # (`#project@`, `sys/*`) are excluded from it by body_tags (§1.3).
                 note.tags = extract_body_tags(note.body)
                 # v2.2 (§4.2): `attachments:` is a DERIVED cache recomputed from the body on save,
                 # exactly like `tags:` above — never authored independently. Frontmatter-only; the
                 # body-sacred assertion below covers this write too.
                 note.attachments = derive_body_attachments(note.body)
                 note.enrich_source = "desktop-llm"
-                # v2.3 machine refile: classifier wins at FIRST enrichment (user-decided s71 —
-                # ANY folder, not scratchpad-only). The mover stamps modified/device HERE so the
-                # stamp rides the same atomic write below; the stamp's content change is also what
-                # propagates the move to peers via ordinary reconcile (a metadata-only Drive
-                # re-parent never bumps headRevisionId).
-                if (refile is not None and classified_category
-                        and classified_category != entry.get("category")):
-                    dest_category = classified_category
-                    note.modified = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                    note.device = "desktop"
             # else: empty body → nothing to classify. Fall through to mark enriched WITHOUT an LLM
             # call so this note stops re-hitting Ollama every pass — an empty content block makes
             # llama3.2 synthesize every required schema field from nothing and ramble past
@@ -1454,7 +1504,9 @@ def enrich_notes(
             # persists `desktop`).
             note.origin_device = "desktop"
             note.enriched = True
-            new_content = serialize_note(note)
+            # v3.1: this is an explicit local ENRICHMENT save — the one kind of pass allowed to
+            # write frontmatter — so the derived `project:` cache is recomputed here from the body.
+            new_content = serialize_note(note, reg)
             # BODY SACRED (amended §3): everything ABOVE the machine trailing tags line is byte-identical.
             if strip_trailing_tags_line(strip_frontmatter(new_content)) != user_body:
                 raise RuntimeError(f"enrich would alter user body of {note_id}")
@@ -1471,17 +1523,11 @@ def enrich_notes(
         entry["content"] = new_content
         entry["body"] = strip_frontmatter(new_content)
         entry["hash"] = _sha256(new_content)
+        # The tag it may have just written re-derives the note's directory; mirror_to_hub reads
+        # this to place/re-parent the hub file in the same pass. The FILE is moved by the tidy
+        # pass, not here — enrichment never re-paths (K-1 retired, §1.2).
+        entry["folder"] = note_dir_for(resolve_project(entry["body"], reg))
         enriched_count += 1
-
-        # v2.3 machine refile: the enrich write (stamp included) is on disk — now move the note.
-        # Best-effort: a failed move leaves an enriched note in its old folder; enriched-once means
-        # it is never machine-moved again (acceptable — local and hub stay consistent either way).
-        # Runs BEFORE embed so the vector store indexes the note at its final path.
-        if dest_category is not None:
-            try:
-                refile(note_id, entry, dest_category)   # updates entry["path"]/["category"]
-            except Exception as e:
-                print(f"[mobile_sync_agent] refile {note_id} -> {dest_category!r} failed: {e}")
 
         # Embedding is best-effort — a failure here must not un-enrich the note.
         # ponytail: enriched-but-unembedded on embed failure; a re-embed sweep can backfill
@@ -1495,12 +1541,89 @@ def enrich_notes(
     return enriched_count, failed
 
 
+# Sync-state keys for the registry (contract §13.2). `base_projects` is the registry as of our last
+# sync — the merge BASE, exactly parallel to `base_note`/`base_parent`. Neither key is a note record:
+# every state iteration in this file and delete_detect.py guards on `drive_file_id`, which they lack.
+BASE_PROJECTS_KEY = "base_projects"
+PROJECTS_REV_KEY = "projects_rev"
+
+
+def sync_project_registry(drive, hub_folder_id: str, vault_root: str,
+                          state: Dict[str, Dict]) -> Tuple[Registry, Dict[str, Dict]]:
+    """Three-way merge `.projects.toml` between vault and hub (contract §13.2). Returns
+    (merged_registry, new_state).
+
+    The version token is **`headRevisionId`, never mtime** (§13): `state["projects_rev"]` is the head
+    we last synced at, and a hub head still equal to it means the remote content is exactly
+    `base_projects` — so the download is skipped entirely.
+
+    NEVER last-writer-wins: two devices editing DIFFERENT projects in one batch window write this
+    same file, and a whole-file rule silently discards one of them. `project_registry.merge` is
+    per-entry.
+
+    ATOMICITY: the `load -> merge -> save` cycle is held under ONE lock for its ENTIRE duration —
+    `<vault_root>/.projects.lock`, via the `dedup._vault_lock(lock_path)` FileLock factory (there is
+    no single shared vault lock in this codebase; every RMW cycle keys its own path). The Drive
+    download and upload sit OUTSIDE it: network latency must never be held across a file lock, and
+    neither call touches the local file.
+    """
+    new_state = dict(state)
+    vault_root = Path(vault_root)
+
+    remote_file = next(
+        (f for f in _list_children(drive, hub_folder_id, mime_is_folder=False)
+         if f["name"] == project_registry.REGISTRY_FILENAME),
+        None,
+    )
+    if remote_file is None:
+        # The hub has never held a registry, so nothing was ever synced from it. Treating our
+        # recorded base as real here would read every base entry as "deleted remotely".
+        base = remote = project_registry.empty_registry()
+        remote_rev = None
+    else:
+        base = new_state.get(BASE_PROJECTS_KEY) or project_registry.empty_registry()
+        remote_rev = remote_file.get("headRevisionId")
+        if remote_rev is not None and remote_rev == new_state.get(PROJECTS_REV_KEY):
+            remote = base          # hub head unmoved since our last sync — zero download
+        else:
+            remote = project_registry.parse(
+                _download_content(drive, remote_file["id"], remote_file.get("md5Checksum"))
+            )
+
+    with _vault_lock(project_registry._registry_lock_path(vault_root)):
+        local = project_registry.load(vault_root)
+        merged = project_registry.merge(base, local, remote)
+        if merged != local:
+            project_registry.save(vault_root, merged)
+
+    if merged != remote:
+        media = MediaInMemoryUpload(
+            project_registry.dumps(merged).encode("utf-8"), mimetype="text/plain")
+        if remote_file is None:
+            up = drive.files().create(
+                body={"name": project_registry.REGISTRY_FILENAME, "parents": [hub_folder_id]},
+                media_body=media, fields="id, headRevisionId",
+            ).execute()
+        else:
+            up = drive.files().update(
+                fileId=remote_file["id"], media_body=media, fields="id, headRevisionId",
+            ).execute()
+        rev = up.get("headRevisionId")
+        # The sidecar is JSON: only a real string token may be persisted. Drive always returns one
+        # for a content write; anything else records "no observed head" rather than poisoning the
+        # whole state file (save_state would raise on a non-serializable value and lose every row).
+        remote_rev = rev if isinstance(rev, str) else None
+
+    new_state[BASE_PROJECTS_KEY] = merged
+    new_state[PROJECTS_REV_KEY] = remote_rev
+    return merged, new_state
+
+
 def run_once(
     vault_path: str,
     state_path: str,
     drive,
     vault_root: Optional[str] = None,
-    scratchpad_folder: str = "_scratchpad",
     run_pipeline: Optional[Callable[..., Dict]] = None,
     enrich_fn: Optional[Callable[..., Tuple[int, int]]] = None,
     reminders_fn: Optional[Callable[[Dict], dict]] = None,
@@ -1508,6 +1631,8 @@ def run_once(
     mirror_captures: bool = False,
 ) -> Tuple[int, int, int, int, int, int, int]:
     """One full bidirectional pass:
+      0. three-way merge `.projects.toml` with the hub, so every step below resolves projects
+         against ONE settled registry,
       1. reconcile notes changed on both sides (three-way merge / conflicted copy),
       2. pull hub-only notes the desktop has never seen into the vault,
       3. drain _mobile_inbox/ captures through run_pipeline,
@@ -1539,8 +1664,18 @@ def run_once(
     if first_migration_pass:
         state = migrate_hub_filenames(drive, hub_id, state)
 
-    _categories, reserved = list_hub_tree(drive, hub_id)
-    vault_notes = read_vault_notes(vault_path, mirror_captures)
+    # Contract §13.2: settle the registry BEFORE anything reads a note, so every `#project@` tag in
+    # this pass resolves against one merged registry instead of a half-synced one. Fail-soft — a
+    # Drive/registry failure leaves the local `.projects.toml` exactly as it was (nothing is saved
+    # unless the merge succeeded), and the pass continues against that local copy.
+    try:
+        reg, state = sync_project_registry(drive, hub_id, vault_root, state)
+    except Exception as e:  # noqa: BLE001 - a registry failure must never abort a sync pass
+        print(f"[mobile_sync_agent] project registry sync failed: {e}")
+        reg = project_registry.load(vault_root)
+
+    _note_dirs, reserved = list_hub_tree(drive, hub_id)
+    vault_notes = read_vault_notes(vault_path, mirror_captures, reg)
     hub_files = get_hub_notes(drive, hub_id)
 
     # ISS-005 B/C: delete detection, best-effort and NON-DESTRUCTIVE by default (a failure must never
@@ -1615,14 +1750,15 @@ def run_once(
     # in either direction of outbound sync (see sync_ignore.py docstring).
     reconciled, conflicts, r_failed, state = reconcile_changes(
         filter_ignored_notes(vault_notes, Path(vault_root)), hub_files, state, drive, hub_id,
+        reg=reg,
     )
     # ISS-046: a note sitting in the local `_trash/` must never be re-pulled as a fresh active copy
     # (peer restore / out-of-order delete after the state row was dropped) — that leaves a duplicate
     # active+trashed pair. Scan the local `_trash/` ids once and let pull skip them.
     from delete_detect import local_trashed_ids as _local_trashed_ids
     pulled, p_failed, state = pull_new_hub_notes(
-        vault_notes, hub_files, state, drive, vault_root, scratchpad_folder,
-        local_trashed_ids=_local_trashed_ids(vault_path),
+        vault_notes, hub_files, state, drive, vault_root,
+        local_trashed_ids=_local_trashed_ids(vault_path), reg=reg,
     )
 
     ingested = i_failed = 0
@@ -1631,44 +1767,18 @@ def run_once(
         ingested, _skipped, i_failed = intake_mobile_inbox(drive, inbox_id, run_pipeline)
 
     # Re-read: reconcile/pull wrote merged/pulled bodies; the pipeline wrote captures.
-    vault_notes = read_vault_notes(vault_path, mirror_captures)
+    vault_notes = read_vault_notes(vault_path, mirror_captures, reg)
 
     # Enrich AFTER the re-read (so pulled/ingested notes are visible) and BEFORE mirror
     # (so enriched frontmatter is in vault_notes when mirror computes uploads). enrich_notes
     # mutates vault_notes in place. Notes are not captures — this never touches run_pipeline.
+    # v3.0: enrichment assigns a PROJECT by writing a `#project@` tag; it never moves a file
+    # (K-1 and the v2.3 machine-refile callback are retired, §1.2). The tag re-derives each note's
+    # `folder`, which mirror_to_hub below reads to place — and if needed re-parent — the hub file.
+    # The LOCAL file is moved by the tidy pass, not by sync.
     enriched = e_failed = 0
     if enrich_fn is not None:
-        # v2.3 machine refile (contract §1.2): enrich_notes calls this back at a note's FIRST
-        # enrichment when the classifier's folder differs from the current one. The frontmatter
-        # modified/device stamp already rode the enrich write; this closure does the move itself:
-        # local os.replace into vault/<dest>/, metadata-only hub re-parent (never bumps
-        # headRevisionId — the stamp is the propagation vehicle), base_parent record.
-        _refile_folder_cache: Dict[str, str] = {}
-
-        def _refile(note_id: str, entry: Dict, dest_cat: str) -> None:
-            dest_cat = _safe_path_component(dest_cat)   # classifier output is untrusted as a path
-            dest_dir = Path(vault_root) / dest_cat
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            new_path = str(dest_dir / Path(entry["path"]).name)
-            if os.path.abspath(new_path) != os.path.abspath(entry["path"]):
-                if Path(new_path).exists():
-                    # SYNC-06 class: never clobber an unrelated file; leave the note where it is.
-                    raise RuntimeError(f"refile destination exists: {new_path}")
-                os.replace(entry["path"], new_path)
-                entry["path"] = new_path
-            entry["category"] = dest_cat
-            prior = state.get(note_id)
-            if isinstance(prior, dict) and prior.get("drive_file_id"):
-                dest_id = _resolve_dest_folder(drive, hub_id, dest_cat, _refile_folder_cache)
-                _move_file_to_folder(drive, prior["drive_file_id"], dest_id)
-                prior["base_parent"] = dest_cat
-                hf = hub_files.get(note_id)
-                if hf is not None:
-                    hf["category"] = dest_cat   # keep this pass's hub snapshot honest for mirror
-            # else: never synced — mirror_to_hub below creates it directly inside dest_cat
-            # (entry["category"] drives _resolve_dest_folder) and records base_parent itself.
-
-        enriched, e_failed = enrich_fn(vault_notes, vault_root, _refile)
+        enriched, e_failed = enrich_fn(vault_notes, vault_root)
 
     # Reconcile the reminders table from each note's remind_at (files are the source of
     # truth — DB-only, never writes a note .md). Fail-soft: a reminders error must never
@@ -1746,29 +1856,25 @@ def run_once(
 
 
 def _build_enrich_fn(cfg, vault_root: str) -> Callable[..., Tuple[int, int]]:
-    """Bind the real LLM classifier + vault vocab + live category enum + vector-store embed
-    into an enrich_fn(vault_notes, vault_root) for run_once. Kept thin: all logic is in
-    enrich_notes; this only wires the seams (notes-are-not-captures — never run_pipeline)."""
+    """Bind the real LLM project classifier + vector-store embed into an
+    enrich_fn(vault_notes, vault_root) for run_once. Kept thin: all logic is in enrich_notes;
+    this only wires the seams (notes-are-not-captures — never run_pipeline)."""
     root = Path(vault_root)
-    scratchpad = getattr(cfg.vault, "scratchpad_folder", "_scratchpad")
 
-    try:
-        vocab = load_vocab(get_db_path(root))
-    except Exception:
-        vocab = {}   # derived cache; absent vocab just means no normalization this pass
-
-    def classify(body: str):
-        # Live category enum built from the vault's current folders every pass (hard rule).
-        category_descriptions = build_category_descriptions(root, scratchpad)
+    def classify(body: str) -> Optional[str]:
+        # The registry is re-read every call, so a project created mid-session is pickable at once
+        # (contract §13: the engine may only choose an EXISTING project, never invent one).
         payload = EnrichedPayload(raw_input=body, input_type="note", enriched_text=body)
-        out = run_llm_engine(payload, category_descriptions)
-        return (out.key_signals or [], out.category)
+        out = run_llm_engine(payload, project_registry.load(root))
+        # `out.project` is a dynamic-Enum member when the registry has projects and a plain
+        # str/None otherwise; `str()` yields the bare name for both (models._ProjectBase.__str__).
+        return str(out.project) if out.project else None
 
     def embed(path: str, content: str):
         index_note(cfg.vault.root, Path(path), content, cfg.ollama.base_url, cfg.vector.embed_model)
 
-    def enrich_fn(vault_notes: Dict, vr: str, refile=None) -> Tuple[int, int]:
-        return enrich_notes(vault_notes, vr, classify, vocab, embed=embed, refile=refile)
+    def enrich_fn(vault_notes: Dict, vr: str) -> Tuple[int, int]:
+        return enrich_notes(vault_notes, vr, classify, embed=embed)
 
     return enrich_fn
 
@@ -1847,7 +1953,6 @@ def run_pass() -> dict:
     uploaded, failed, reconciled, conflicts, pulled, ingested, enriched = run_once(
         vault_path, state_path, drive,
         vault_root=vault_path,
-        scratchpad_folder=cfg.vault.scratchpad_folder,
         run_pipeline=bound_pipeline,
         enrich_fn=enrich_fn,
         reminders_fn=reminders_fn,

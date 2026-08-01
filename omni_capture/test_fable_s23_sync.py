@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from note_model import parse_note, serialize_note
+from projects import LOOSE_DIR
 from reconcile import Note, reconcile
 from mobile_sync_agent import (
     mirror_to_hub,
@@ -111,7 +112,6 @@ def test_pull_never_writes_outside_vault_root(tmp_path):
     written = {}
     pull_new_hub_notes(
         {}, hub_files, {}, drive=None, vault_root=str(tmp_path / "vault"),
-        scratchpad_folder="_scratchpad",
         write_file=lambda p, c: written.__setitem__(p, c),
         download=lambda fid: evil,
     )
@@ -247,16 +247,18 @@ def test_pull_and_reconcile_write_hostile_bodies_verbatim(tmp_path, name, body):
     content = "---\nid: 01B\ntitle: T\norigin: note\ncategory: Inbox\n---\n" + body
 
     pulled, failed, _ = pull_new_hub_notes(
-        {}, {"01B": {"id": "F1", "headRevisionId": "r1", "category": "Inbox"}}, {}, None,
-        str(tmp_path), "Scratchpad", download=lambda fid: content)
+        {}, {"01B": {"id": "F1", "headRevisionId": "r1", "folder": "Inbox"}}, {}, None,
+        str(tmp_path), download=lambda fid: content)
     assert (pulled, failed) == (1, 0), name
     written = list(tmp_path.rglob("01B.md"))
     assert len(written) == 1
     assert written[0].read_bytes() == content.encode("utf-8"), name
 
-    local_path = tmp_path / "Inbox" / "01B.md"
+    # v3.0: the body carries no `#project@` tag, so pull filed it under `_loose/` — the legacy
+    # `category: Inbox` frontmatter is dead and the hub parent is not authoritative.
+    local_path = tmp_path / LOOSE_DIR / "01B.md"
     vault_notes = {"01B": {"id": "01B", "path": str(local_path), "content": "old",
-                           "body": "old", "hash": "H1", "category": "Inbox"}}
+                           "body": "old", "hash": "H1", "folder": LOOSE_DIR}}
     state = {"01B": {"drive_file_id": "F1", "base_rev": "r1", "local_hash": "H1"}}
     drive = MagicMock()
     drive.files().get_media().execute.return_value = content.encode("utf-8")
@@ -275,8 +277,8 @@ def test_pull_and_reconcile_write_note_bytes_verbatim(tmp_path):
 
     # pull_new_hub_notes: brand-new hub note written to disk byte-identical.
     pulled, failed, _ = pull_new_hub_notes(
-        {}, {"01B": {"id": "F1", "headRevisionId": "r1", "category": "Inbox"}}, {}, None,
-        str(tmp_path), "Scratchpad", download=lambda fid: content)
+        {}, {"01B": {"id": "F1", "headRevisionId": "r1", "folder": "Inbox"}}, {}, None,
+        str(tmp_path), download=lambda fid: content)
     assert (pulled, failed) == (1, 0)
     written = list(tmp_path.rglob("01B.md"))
     assert len(written) == 1
@@ -284,9 +286,11 @@ def test_pull_and_reconcile_write_note_bytes_verbatim(tmp_path):
 
     # reconcile_changes PULL branch (remote advanced, local unchanged): default write_file
     # must also be byte-verbatim.
-    local_path = tmp_path / "Inbox" / "01B.md"
+    # v3.0: the body carries no `#project@` tag, so pull filed it under `_loose/` — the legacy
+    # `category: Inbox` frontmatter is dead and the hub parent is not authoritative.
+    local_path = tmp_path / LOOSE_DIR / "01B.md"
     vault_notes = {"01B": {"id": "01B", "path": str(local_path), "content": "old",
-                           "body": "old", "hash": "H1", "category": "Inbox"}}
+                           "body": "old", "hash": "H1", "folder": LOOSE_DIR}}
     state = {"01B": {"drive_file_id": "F1", "base_rev": "r1", "local_hash": "H1"}}
     hub_files = {"01B": {"id": "F1", "headRevisionId": "r2"}}
     drive = MagicMock()

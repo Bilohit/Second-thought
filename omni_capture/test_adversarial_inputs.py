@@ -38,6 +38,7 @@ from mobile_sync_agent import (
     reconcile_changes,
 )
 from note_model import parse_note, serialize_note
+from projects import LOOSE_DIR
 from reconcile import Note, reconcile
 
 # =============================================================================================
@@ -212,7 +213,7 @@ def test_unreadable_note_degrades_to_skip_not_crash(tmp_path):
 # 3. NAMES / PATHS   (category 2 — bodies — lives in test_fable_s23_sync.py, extended there)
 # =============================================================================================
 
-# (name, note_id, category, guard_rejects, pull_writes_a_file)
+# (name, note_id, project, guard_rejects, pull_writes_a_file)
 #   guard_rejects      → `_safe_path_component` raises on the hostile component (containment fires)
 #   pull_writes_a_file → after pull_new_hub_notes, a .md is expected to exist inside the vault
 # The two differ on purpose in two places, both documented:
@@ -230,16 +231,18 @@ _NAME_CASES = [
     ("forward_slash_id",     "sub/evil",        "Inbox", True,  False),
     ("unc_id",               "\\\\host\\share", "Inbox", True,  False),
     ("empty_id",             "",                "Inbox", True,  True),   # → falls back to hub key
-    ("dotdot_category",      "01A",             "..",    True,  False),
-    ("traversal_category",   "01A",             "../..", True,  False),
-    ("abs_category",         "01A",             "/etc",  True,  False),
-    ("drive_category",       "01A",             "D:\\",  True,  False),
+    # v3.0: a hostile PROJECT name never reaches the filesystem -- `is_valid_project_name`
+    # refuses it, so `resolve_project` returns None and the note is filed in `_loose/`.
+    ("dotdot_project",       "01A",             "..",    True,  True),
+    ("traversal_project",    "01A",             "../..", True,  True),
+    ("abs_project",          "01A",             "/etc",  True,  True),
+    ("drive_project",        "01A",             "D:\\",  True,  True),
     # --- pass the guard: reserved Windows device names ---
     ("reserved_con",         "CON",             "Inbox", False, True),
     ("reserved_nul",         "NUL",             "Inbox", False, True),
     ("reserved_aux",         "aux",             "Inbox", False, True),
     ("reserved_com1",        "COM1",            "Inbox", False, True),
-    ("reserved_category",    "01A",             "CON",   False, True),
+    ("reserved_project",     "01A",             "CON",   False, True),
     # --- pass the guard: trailing dot / space, long names, emoji, exotic-but-contained ---
     ("trailing_dot",         "note.",           "Inbox", False, True),
     ("trailing_space",       "note ",           "Inbox", False, True),
@@ -248,21 +251,21 @@ _NAME_CASES = [
     ("name_255",             "n" * 255,         "Inbox", False, False),  # OS refuses → failed+log
     ("name_300",             "n" * 300,         "Inbox", False, False),  # OS refuses → failed+log
     ("emoji_id",             "note-🚀-🎉",       "Inbox", False, True),
-    ("emoji_category",       "01A",             "📁cat", False, True),
+    ("emoji_project",        "01A",             "📁cat", False, True),
     ("wildcard_id",          "note*?",          "Inbox", False, False),  # OS refuses → failed+log
     ("nul_byte_id",          "no\x00te",        "Inbox", False, False),  # OS refuses → failed+log
 ]
 
 
 @pytest.mark.parametrize(
-    "name,note_id,category,rejects,writes", _NAME_CASES, ids=[c[0] for c in _NAME_CASES]
+    "name,note_id,project,rejects,writes", _NAME_CASES, ids=[c[0] for c in _NAME_CASES]
 )
-def test_safe_path_component_guard_table(name, note_id, category, rejects, writes):
+def test_safe_path_component_guard_table(name, note_id, project, rejects, writes):
     """Locks exactly WHICH hostile components `_safe_path_component` refuses. It is a containment
     guard (separator / traversal / drive-colon), NOT a Windows-name sanitizer — the rows with
     rejects=False are the documented pass-through set (see the module docstring). They are safe
     because the containment oracle below still holds for every one of them."""
-    hostile = note_id if category == "Inbox" else category
+    hostile = note_id if project == "Inbox" else project
     if rejects:
         with pytest.raises(ValueError):
             _safe_path_component(hostile)
@@ -271,10 +274,10 @@ def test_safe_path_component_guard_table(name, note_id, category, rejects, write
 
 
 @pytest.mark.parametrize(
-    "name,note_id,category,rejects,writes", _NAME_CASES, ids=[c[0] for c in _NAME_CASES]
+    "name,note_id,project,rejects,writes", _NAME_CASES, ids=[c[0] for c in _NAME_CASES]
 )
-def test_pull_never_writes_outside_the_vault_root(tmp_path, name, note_id, category, rejects, writes):
-    """Oracle 3 (universal, applies to EVERY row): a hub-supplied id/category can never place a
+def test_pull_never_writes_outside_the_vault_root(tmp_path, name, note_id, project, rejects, writes):
+    """Oracle 3 (universal, applies to EVERY row): a hub-supplied id/project can never place a
     write outside the vault root, and a rejected/undoable one degrades to failed+log — never an
     exception out of the pass, never a partial file elsewhere on the disk.
 
@@ -287,13 +290,15 @@ def test_pull_never_writes_outside_the_vault_root(tmp_path, name, note_id, categ
     outside.mkdir()
     (outside / "canary.txt").write_text("untouched", encoding="utf-8")
 
-    content = f"---\nid: {note_id}\ntitle: T\norigin: note\ncategory: {category}\n---\nphone body\n"
-    # v2.2: placement derives from the HUB FOLDER name (get_hub_notes carries it), not frontmatter —
-    # so the hostile category is now injected via the hub file's `category`, where the containment
-    # guard applies. (Frontmatter category is inert/ignored — a strict improvement.)
+    # v3.0: placement derives from the BODY TAG resolved against the registry — so the hostile
+    # project name is injected where it can actually reach a decision, AND registered, so the
+    # only thing standing between it and the filesystem is `is_valid_project_name`.
+    content = (f"---\nid: {note_id}\ntitle: T\norigin: note\n---\n"
+               f"phone body #project@{project}\n")
     pulled, failed, state = pull_new_hub_notes(
-        {}, {"HUBKEY": {"id": "F1", "headRevisionId": "r1", "category": category}}, {}, None,
-        str(vault), "Scratchpad", download=lambda fid: content,
+        {}, {"HUBKEY": {"id": "F1", "headRevisionId": "r1", "folder": project}}, {}, None,
+        str(vault), download=lambda fid: content,
+        reg={"schema": 1, "projects": {project: {"description": ""}}},
     )
 
     # Never crashes: the note is either pulled or accounted as failed, never both, never neither.
@@ -321,7 +326,7 @@ def test_pull_rejects_traversal_before_any_write(tmp_path):
     writes: list[str] = []
     pulled, failed, _ = pull_new_hub_notes(
         {}, {"K": {"id": "F1", "headRevisionId": "r1"}}, {}, None,
-        str(tmp_path), "Scratchpad",
+        str(tmp_path),
         write_file=lambda p, c: writes.append(p),
         download=lambda fid: "---\nid: ../../evil\norigin: note\n---\nx\n",
     )
@@ -338,7 +343,7 @@ def test_pull_oversized_name_degrades_to_failed_and_leaves_no_partial_file(tmp_p
     content = f"---\nid: {long_id}\norigin: note\ncategory: Inbox\n---\nbody\n"
     pulled, failed, state = pull_new_hub_notes(
         {}, {"K": {"id": "F1", "headRevisionId": "r1"}}, {}, None,
-        str(vault), "Scratchpad", download=lambda fid: content)
+        str(vault), download=lambda fid: content)
     assert (pulled, failed) == (0, 1)
     assert list(vault.rglob("*.md")) == []
     assert state == {}
@@ -353,7 +358,7 @@ def test_pull_emoji_and_reserved_names_land_inside_the_vault(tmp_path):
         content = f"---\nid: {nid}\norigin: note\ncategory: Inbox\n---\nbody\n"
         pulled, failed, _ = pull_new_hub_notes(
             {}, {nid: {"id": "F1", "headRevisionId": "r1"}}, {}, None,
-            str(vault), "Scratchpad", download=lambda fid, c=content: c)
+            str(vault), download=lambda fid, c=content: c)
         assert (pulled, failed) == (1, 0), f"{nid!r} unexpectedly failed to pull"
     for f in vault.rglob("*.md"):
         assert f.resolve().is_relative_to(vault.resolve())
@@ -418,7 +423,9 @@ def test_pull_decision_is_headrevisionid_not_wall_clock(tmp_path, local_mod, rem
     """Oracle 4b (the lock): `headRevisionId` is the ONLY version token. Under ±3 days of peer
     clock skew — in EITHER direction, and with unparseable stamps — a remote whose head advanced
     past our base_rev is still pulled verbatim. No mtime/`modified` comparison gates it."""
-    local_path = tmp_path / "01T.md"
+    # v3.0: every note lives at depth 1; this one is untagged, so `_loose/`.
+    (tmp_path / LOOSE_DIR).mkdir(exist_ok=True)
+    local_path = tmp_path / LOOSE_DIR / "01T.md"
     local_text = f"---\nid: 01T\norigin: note\nmodified: {local_mod}\n---\nlocal body\n"
     local_path.write_text(local_text, encoding="utf-8", newline="")
     remote_text = f"---\nid: 01T\norigin: note\nmodified: {remote_mod}\n---\nremote body\n"
@@ -427,7 +434,7 @@ def test_pull_decision_is_headrevisionid_not_wall_clock(tmp_path, local_mod, rem
     drive.files().get_media().execute.return_value = remote_text.encode("utf-8")
     vault_notes = {"01T": {"id": "01T", "path": str(local_path), "content": local_text,
                            "body": "local body\n", "hash": _sha256(local_text),
-                           "category": None}}
+                           "folder": LOOSE_DIR}}
     state = {"01T": {"drive_file_id": "F1", "base_rev": "r1",
                      "local_hash": _sha256(local_text)}}   # local UNCHANGED since last sync
     hub_files = {"01T": {"id": "F1", "headRevisionId": "r2"}}   # head advanced → pull
@@ -464,11 +471,11 @@ def test_upload_decision_ignores_file_mtime_entirely(tmp_path):
 # =============================================================================================
 
 
-def _vault_note(nid, text, path="/vault/x.md", category=None):
+def _vault_note(nid, text, path="/vault/x.md", folder=LOOSE_DIR):
     # title=nid keeps this fixture's resolved hub filename == "<nid>.md" (title-based naming,
     # Task 2.4) so the existing id-keyed assertions below don't need to track a separate title.
     return {nid: {"id": nid, "path": path, "content": text, "body": "b\n",
-                  "hash": _sha256(text), "category": category, "title": nid, "created": ""}}
+                  "hash": _sha256(text), "folder": folder, "title": nid, "created": ""}}
 
 
 def _n_notes(n):
@@ -566,9 +573,10 @@ def test_truncated_download_cannot_destroy_a_locally_edited_body():
     drive.files().create().execute.return_value = {"id": "F2", "headRevisionId": "r1"}
 
     writes: dict[str, str] = {}
-    vault_notes = {"01A": {"id": "01A", "path": "/vault/01A.md", "content": local_text,
+    loose_01a = str(Path("/vault") / LOOSE_DIR / "01A.md")   # v3.0: every note is at depth 1
+    vault_notes = {"01A": {"id": "01A", "path": loose_01a, "content": local_text,
                            "body": "the full local body\n", "hash": "LOCAL-CHANGED",
-                           "category": None}}
+                           "folder": LOOSE_DIR}}
     state = {"01A": {"drive_file_id": "F1", "base_rev": "r1", "local_hash": "OLD"}}
     hub_files = {"01A": {"id": "F1", "headRevisionId": "r2"}}
 
@@ -578,11 +586,11 @@ def test_truncated_download_cannot_destroy_a_locally_edited_body():
 
     assert (reconciled, conflicts, failed) == (1, 1, 0)
     # the local body is still there, byte-for-byte — the truncation did not eat it
-    assert parse_note(writes["/vault/01A.md"]).body == "the full local body\n"
+    assert parse_note(writes[loose_01a]).body == "the full local body\n"
     # ...and the truncated remote was kept, not silently dropped.
     # s114/x04: conflicted copies are named from their title now, so the fresh id lives in the
     # copy's frontmatter rather than in its filename -- assert on what was written, not the path.
-    copy_text = next(c for p, c in writes.items() if p != "/vault/01A.md")
+    copy_text = next(c for p, c in writes.items() if p != loose_01a)
     assert "id: CC1" in copy_text
 
 

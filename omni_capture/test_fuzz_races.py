@@ -73,6 +73,7 @@ from mobile_sync_agent import (
     save_state,
 )
 from note_model import parse_note, serialize_note
+from projects import LOOSE_DIR
 
 # Reuse the existing suite's note-text builder rather than authoring a second one.
 from test_mobile_sync_agent import _note_text
@@ -529,7 +530,7 @@ class VaultHubMachine(RuleBasedStateMachine):
         hub_files = get_hub_notes(self.hub, "HUB")
         state = load_state(self.state_path)
         pulled, failed, new_state = pull_new_hub_notes(
-            vault_notes, hub_files, state, self.hub, str(self.vault), SCRATCHPAD)
+            vault_notes, hub_files, state, self.hub, str(self.vault))
         save_state(self.state_path, new_state)
         assert failed == 0, "fake hub must never fail a pull — a raise here is a real defect"
         self._post_pass(pre, "pull_pass")
@@ -595,7 +596,7 @@ class VaultHubMachine(RuleBasedStateMachine):
 
     def _run_once(self, **kw):
         run_once(str(self.vault), self.state_path, self.hub,
-                 vault_root=str(self.vault), scratchpad_folder=SCRATCHPAD, **kw)
+                 vault_root=str(self.vault), **kw)
         self._sync_hub_fids()
 
     # ========================== INVARIANTS =================================
@@ -698,11 +699,15 @@ def _sync_note(hub: FakeHub, vault: Path, state_path: str, nid="s01", body="orig
     resolved title-based name (title is always "T" here, via `_note_text`'s default) — and
     Task 2.4 (pull mirrors the hub's own resolved name) means the note lands locally at "T.md",
     not "<nid>.md". Returns the ACTUAL post-migration local path.
+
+    v3.0: the body carries no `#project@` tag (and the legacy `category:` frontmatter line is
+    ignored), so the note is LOOSE and pull places it at `_loose/T.md` — NOT under the hub's
+    `Personal/` parent. The tag is the truth; the hub folder is derived housekeeping.
     """
     fid = hub.put(f"{nid}.md", _note_with_category(nid, body, "Personal"),
                   hub.folder("Personal"), note_id=nid)
-    run_once(str(vault), state_path, hub, vault_root=str(vault), scratchpad_folder=SCRATCHPAD)
-    return fid, str(vault / "Personal" / "T.md")
+    run_once(str(vault), state_path, hub, vault_root=str(vault))
+    return fid, str(vault / LOOSE_DIR / "T.md")
 
 
 def _fresh(tmp_path):
@@ -726,7 +731,7 @@ def test_crash_replay_reuploads_identical_bytes(tmp_path):
     rev_before, content_before = hub.recs[fid]["headRevisionId"], hub.recs[fid]["content"]
 
     os.remove(state_path)                      # crash: derived sidecar lost
-    run_once(str(vault), state_path, hub, vault_root=str(vault), scratchpad_folder=SCRATCHPAD)
+    run_once(str(vault), state_path, hub, vault_root=str(vault))
 
     assert hub.recs[fid]["content"] == content_before          # content is fine...
     assert hub.recs[fid]["headRevisionId"] == rev_before, (
@@ -759,7 +764,7 @@ def test_sidecar_loss_does_not_revert_a_remote_edit(tmp_path):
     hub.overwrite(fid, serialize_note(remote))
 
     os.remove(state_path)                      # crash: derived sidecar lost
-    run_once(str(vault), state_path, hub, vault_root=str(vault), scratchpad_folder=SCRATCHPAD)
+    run_once(str(vault), state_path, hub, vault_root=str(vault))
 
     # The desktop never edited its own BODY (the recovery may merge machine-owned frontmatter
     # into the local file — that is reconcile's normal both-changed write, not a body edit).
@@ -791,7 +796,7 @@ def test_crash_replay_does_not_clobber_advanced_hub_head(tmp_path):
     Path(local_path).write_text(serialize_note(local), encoding="utf-8", newline="")
 
     os.remove(state_path)                      # crash: derived sidecar lost
-    run_once(str(vault), state_path, hub, vault_root=str(vault), scratchpad_folder=SCRATCHPAD)
+    run_once(str(vault), state_path, hub, vault_root=str(vault))
 
     surviving = _bodies_on_disk(vault) | {
         strip_frontmatter(hub.text(r["id"])) for r in hub.all_note_recs()}

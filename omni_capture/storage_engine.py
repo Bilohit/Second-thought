@@ -149,21 +149,6 @@ def _note_dir(output: CaptureOutput, vault_root: Path) -> str:
     return note_dir_for(resolve_project(body, _load_registry(vault_root)))
 
 
-def build_category_descriptions(vault_root: Path, scratchpad_folder: str = "_scratchpad"):
-    """TRANSITIONAL SHIM -- `mobile_sync_agent.py:36` is its only remaining caller, and
-    that file belongs to Task 12 (sync agent), which deletes this call site. Task 10's
-    brief forbids editing it, so the symbol stays alive rather than breaking its import.
-
-    It no longer reads folder names or `.category.toml` (both concepts are gone): it
-    returns the PROJECT REGISTRY, which is exactly the shape `run_llm_engine`'s second
-    parameter now takes, so the untouched call site keeps working correctly.
-
-    ponytail: delete this function and its import in Task 12, in one commit. It has no
-    other caller and nothing in this module uses it.
-    """
-    return _load_registry(vault_root)
-
-
 # The registry's `description` field is the ONE thing that exists nowhere else
 # (contract §13); this caps what an LLM-generated one may write into it.
 PROJECT_DESC_MAX_CHARS = 500

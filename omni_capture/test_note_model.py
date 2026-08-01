@@ -257,3 +257,63 @@ def test_project_omitted_when_no_registry_given():
     # Pre-existing callers (not yet wired to a registry) keep today's behaviour unchanged.
     n = parse_note("---\nid: x\n---\n#project@research\n\nbody\n")
     assert "project:" not in serialize_note(n)
+
+
+# ---------------------------------------------------------------------------
+# v3.1 · the `project:` line is ALWAYS present, so EVERY production serialize
+# path must be wired to a registry (Task 8's deferred half, closed in Task 12).
+# ---------------------------------------------------------------------------
+
+def test_every_production_serialize_note_call_passes_a_registry():
+    """`serialize_note(note)` with no registry emits NO `project:` line, and the contract says the
+    line is always present. That default exists only so Step A could land with zero callers -- so
+    a production call site that forgets the second argument silently strips the line from real
+    notes on disk, and no behavioural test would notice unless it happened to cover that path.
+
+    This scans the source instead: every `serialize_note(...)` CALL in a non-test module must pass
+    a registry, positionally or by keyword. A new call site that forgets fails here, loudly, by
+    name and line -- which is the whole point.
+    """
+    import ast
+    from pathlib import Path as _P
+
+    here = _P(__file__).parent
+    offenders = []
+    for path in sorted(here.glob("*.py")):
+        if path.name.startswith("test_") or path.name == "note_model.py":
+            continue   # tests may exercise the bare form; note_model.py DEFINES it
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+            if name != "serialize_note":
+                continue
+            if len(node.args) >= 2 or any(k.arg == "registry" for k in node.keywords):
+                continue
+            offenders.append(f"{path.name}:{node.lineno}")
+
+    assert offenders == [], (
+        "serialize_note() called without a registry -- these paths silently drop the "
+        f"always-present `project:` frontmatter line: {offenders}"
+    )
+
+
+def test_the_scanner_would_actually_catch_a_missing_registry(tmp_path):
+    """The guard above is only worth having if it fails on a bad call. Prove it does: the same
+    AST rule, run over a one-line module that calls `serialize_note(note)`, must flag it."""
+    import ast
+
+    src = "\n".join([
+        "serialize_note(note)",                 # line 1 — the bad one
+        "serialize_note(note, reg)",
+        "serialize_note(note, registry=reg)",
+    ])
+    tree = ast.parse(src)
+    flagged = [
+        n.lineno for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "serialize_note"
+        and len(n.args) < 2 and not any(k.arg == "registry" for k in n.keywords)
+    ]
+    assert flagged == [1]

@@ -25,7 +25,7 @@ from pathlib import Path
 from frontmatter import strip_frontmatter
 from mobile_sync_agent import run_once
 from note_model import parse_note, serialize_note
-from test_fuzz_races import SCRATCHPAD, _bodies_on_disk, _fresh, _sync_note
+from test_fuzz_races import _bodies_on_disk, _fresh, _sync_note
 
 
 def _hub_bodies(hub) -> set[str]:
@@ -44,7 +44,7 @@ def test_sidecar_loss_with_a_remote_edit_never_reverts_the_hub_head(tmp_path):
     hub.overwrite(fid, serialize_note(remote))
 
     os.remove(state_path)                      # crash: derived sidecar lost
-    run_once(str(vault), state_path, hub, vault_root=str(vault), scratchpad_folder=SCRATCHPAD)
+    run_once(str(vault), state_path, hub, vault_root=str(vault))
 
     # Body-sacred: recovery may merge machine-owned frontmatter into the local file, never a body.
     assert strip_frontmatter(
@@ -71,7 +71,7 @@ def test_sidecar_loss_with_edits_on_both_sides_keeps_both_bodies(tmp_path):
     Path(local_path).write_text(serialize_note(local), encoding="utf-8", newline="")
 
     os.remove(state_path)                      # crash: derived sidecar lost
-    run_once(str(vault), state_path, hub, vault_root=str(vault), scratchpad_folder=SCRATCHPAD)
+    run_once(str(vault), state_path, hub, vault_root=str(vault))
 
     surviving = _bodies_on_disk(vault) | _hub_bodies(hub)
     assert "local body — typed on the desktop\n" in surviving
@@ -90,7 +90,7 @@ def test_sidecar_loss_on_an_unchanged_note_is_a_no_op(tmp_path):
     rev_before, content_before = hub.recs[fid]["headRevisionId"], hub.recs[fid]["content"]
 
     os.remove(state_path)                      # crash: derived sidecar lost
-    run_once(str(vault), state_path, hub, vault_root=str(vault), scratchpad_folder=SCRATCHPAD)
+    run_once(str(vault), state_path, hub, vault_root=str(vault))
 
     assert hub.recs[fid]["content"] == content_before
     assert hub.recs[fid]["headRevisionId"] == rev_before, (
@@ -116,7 +116,7 @@ def test_sidecar_loss_reuses_the_hub_file_instead_of_duplicating(tmp_path):
     Path(local_path).write_text(serialize_note(local), encoding="utf-8", newline="")
 
     os.remove(state_path)                      # crash: derived sidecar lost
-    run_once(str(vault), state_path, hub, vault_root=str(vault), scratchpad_folder=SCRATCHPAD)
+    run_once(str(vault), state_path, hub, vault_root=str(vault))
 
     own = [r["id"] for r in hub.all_note_recs()
            if (r.get("appProperties") or {}).get("noteId") == "s01"]

@@ -40,13 +40,13 @@ def empty_registry() -> Registry:
     return {"schema": SCHEMA, "projects": {}}
 
 
-def load(vault_root: Path) -> Registry:
-    """Read the registry. A missing or malformed file is an empty registry, never an error —
-    the app must keep working with no projects at all."""
-    path = Path(vault_root) / REGISTRY_FILENAME
+def parse(text: str) -> Registry:
+    """Registry from TOML TEXT. Malformed text is an empty registry, never an error — same rule
+    `load` applies to a malformed file. Split out for the sync pass, which holds the hub copy's
+    bytes in memory (downloaded by `headRevisionId`) and never touches a second file."""
     try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        raw = tomllib.loads(text)
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError, AttributeError, TypeError):
         return empty_registry()
 
     schema = raw.get("schema", SCHEMA)
@@ -59,9 +59,19 @@ def load(vault_root: Path) -> Registry:
     return {"schema": schema, "projects": projects}
 
 
-def save(vault_root: Path, reg: Registry) -> None:
-    """Whole-file rewrite. CALLERS MUST HOLD `dedup._vault_lock` (contract §13.2 as corrected in
-    v3.1) — this function does not acquire it, so a caller can merge-then-write atomically."""
+def load(vault_root: Path) -> Registry:
+    """Read the registry. A missing or malformed file is an empty registry, never an error —
+    the app must keep working with no projects at all."""
+    path = Path(vault_root) / REGISTRY_FILENAME
+    try:
+        return parse(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return empty_registry()
+
+
+def dumps(reg: Registry) -> str:
+    """The registry's canonical TOML text. Split out of `save` so the sync pass can upload the
+    exact bytes it wrote without a second read of a file that may not exist on disk."""
     schema = reg.get("schema", SCHEMA)
     if schema != SCHEMA:
         raise UnknownSchemaError(f"registry schema {schema!r} is not readable by this build")
@@ -81,9 +91,15 @@ def save(vault_root: Path, reg: Registry) -> None:
         # the quoted form so a dotted name (`#project@a.b`) can never silently nest a table.
         table[SingleKey(name, t=KeyType.Basic)] = entry
     doc["projects"] = table
+    return tomlkit.dumps(doc)
 
+
+def save(vault_root: Path, reg: Registry) -> None:
+    """Whole-file rewrite. CALLERS MUST HOLD the registry lock (`_registry_lock_path`, obtained
+    through the `dedup._vault_lock(lock_path)` factory — contract §13.2 as corrected in v3.1);
+    this function does not acquire it, so a caller can merge-then-write atomically."""
     path = Path(vault_root) / REGISTRY_FILENAME
-    path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    path.write_text(dumps(reg), encoding="utf-8")
 
 
 def update(vault_root: Path, mutate) -> Registry:

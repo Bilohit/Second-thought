@@ -47,7 +47,6 @@ from note_model import parse_note, serialize_note
 
 # Reuse the §3.1 fake hub + vault helpers; never author a competing fake.
 from test_fuzz_races import (
-    SCRATCHPAD,
     _bodies_on_disk,
     _fresh,
     _note_with_category,
@@ -92,7 +91,7 @@ def _hub_edit(hub, fid: str, body: str) -> None:
 def _recover(vault: Path, state_path: str, hub) -> tuple:
     """The normal startup/sync path, re-run on whatever the crash left on disk."""
     return run_once(str(vault), state_path, hub,
-                    vault_root=str(vault), scratchpad_folder=SCRATCHPAD)
+                    vault_root=str(vault))
 
 
 def _reconcile_pass(vault: Path, state_path: str, hub, write_file=None) -> tuple:
@@ -276,7 +275,7 @@ def test_s3_crash_after_vault_write_before_ledger_update_self_heals(tmp_path):
     vault_notes = read_vault_notes(str(vault))
     hub_files = get_hub_notes(hub, "HUB")
     pulled, failed, new_state = pull_new_hub_notes(
-        vault_notes, hub_files, {}, hub, str(vault), SCRATCHPAD, write_file=_write_then_crash)
+        vault_notes, hub_files, {}, hub, str(vault), write_file=_write_then_crash)
     # This test exercises the pull-crash self-heal window, not Task 3.1's hub-filename migration —
     # p01.md's title ("T", from _note_with_category) legitimately mismatches its legacy filename,
     # which would otherwise make _recover's first run_once pass do a one-time (correct, but
