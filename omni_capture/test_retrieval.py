@@ -604,7 +604,7 @@ def test_purge_orphan_index_entries_removes_missing_files():
         ghost = vault / "Tech" / "gone.md"
         conn = init_db(vault)
         conn.execute(
-            "INSERT INTO captures (timestamp, category, path, hash, filename, body_excerpt) "
+            "INSERT INTO captures (timestamp, project, path, hash, filename, body_excerpt) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             ("2025-01-01T00:00:00", "Tech", str(ghost), "deadbeef", "gone.md", "ghost"),
         )

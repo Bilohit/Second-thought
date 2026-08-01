@@ -165,7 +165,7 @@ class TestLogCaptureDb(unittest.TestCase):
             row   = conn.execute("SELECT * FROM captures").fetchone()
             conn.close()
             self.assertIsNotNone(row)
-            self.assertEqual(row["category"],  "Tech_Notes")
+            self.assertEqual(row["project"],   "Tech_Notes")
             self.assertEqual(row["confidence"], 0.95)
 
     def test_upsert_updates_hash(self):
@@ -271,7 +271,7 @@ class TestSearch(unittest.TestCase):
             results = search("Tech_Notes", vault)
             self.assertTrue(len(results) >= 2)
             for r in results:
-                self.assertEqual(r["category"], "Tech_Notes")
+                self.assertEqual(r["project"], "Tech_Notes")
 
     def test_fts_matches_filename(self):
         with tempfile.TemporaryDirectory() as td:
@@ -287,7 +287,7 @@ class TestSearch(unittest.TestCase):
             self._populate(vault)
             results = search("", vault, category="CRM")
             self.assertEqual(len(results), 1)
-            self.assertEqual(results[0]["category"], "CRM")
+            self.assertEqual(results[0]["project"], "CRM")
 
     def test_limit_respected(self):
         with tempfile.TemporaryDirectory() as td:
@@ -436,7 +436,7 @@ class TestStats(unittest.TestCase):
             vault = _vault(Path(td))
             self._populate(vault)
             s    = stats(vault)
-            cats = {r["category"]: r["count"] for r in s["by_category"]}
+            cats = {r["project"]: r["count"] for r in s["by_project"]}
             self.assertEqual(cats["Tech_Notes"], 2)
             self.assertEqual(cats["CRM"],        1)
 
@@ -445,7 +445,7 @@ class TestStats(unittest.TestCase):
             vault = _vault(Path(td))
             self._populate(vault)
             s    = stats(vault)
-            total_pct = sum(r["pct"] for r in s["by_category"])
+            total_pct = sum(r["pct"] for r in s["by_project"])
             self.assertAlmostEqual(total_pct, 100.0, places=0)
 
     def test_recent_limit(self):
@@ -460,7 +460,44 @@ class TestStats(unittest.TestCase):
             vault = _vault(Path(td))
             s = stats(vault)
             self.assertEqual(s["total"], 0)
-            self.assertEqual(s["by_category"], [])
+            self.assertEqual(s["by_project"], [])
+
+
+class TestProjectColumnAgreesWithFrontmatterCache(unittest.TestCase):
+    """Task 11: the renamed `project` column is written from the note's directory name, and the
+    `project:` frontmatter line is written from resolve_project(body, reg) -- both derived from the
+    SAME `#project@<name>` body tag (contract §1.3), so they must never disagree for one note."""
+
+    def test_db_column_and_frontmatter_cache_agree_for_the_same_note(self):
+        from note_model import parse_note, serialize_note
+        from project_registry import empty_registry
+
+        with tempfile.TemporaryDirectory() as td:
+            vault = _vault(Path(td))
+            reg = empty_registry()
+            reg["projects"]["research"] = {
+                "description": "", "created": "", "modified": "", "device": "",
+            }
+
+            note = parse_note("---\nid: x\n---\n#project@research\n\nsome body\n")
+            serialized = serialize_note(note, reg)
+
+            note_dir = vault / "research"
+            note_dir.mkdir(parents=True)
+            note_path = note_dir / "note.md"
+            note_path.write_text(serialized, encoding="utf-8")
+
+            upsert_capture_from_file(vault, note_path)
+            conn = init_db(vault)
+            row = conn.execute("SELECT project FROM captures WHERE path = ?", (str(note_path),)).fetchone()
+            conn.close()
+
+            from frontmatter import read_all_fields
+            fm_project = read_all_fields(serialized)["project"].strip("[]")
+
+            self.assertEqual(row["project"], "research")
+            self.assertEqual(fm_project, "research")
+            self.assertEqual(row["project"], fm_project)
 
 
 class TestBodyIndexing(unittest.TestCase):
@@ -506,7 +543,7 @@ class TestBodyIndexing(unittest.TestCase):
             # Simulate a pre-body_excerpt row: insert without the column populated.
             conn = init_db(vault)
             conn.execute(
-                "INSERT INTO captures (timestamp, category, path, filename) VALUES (?,?,?,?)",
+                "INSERT INTO captures (timestamp, project, path, filename) VALUES (?,?,?,?)",
                 ("2025-01-01T00:00:00", "Tech_Notes", filepath, "old-note"),
             )
             conn.commit()
@@ -622,7 +659,7 @@ class TestSearchEndpoint(unittest.TestCase):
             client = self._make_client(vault)
             data   = client.get("/search?category=CRM").json()
             for r in data["results"]:
-                self.assertEqual(r["category"], "CRM")
+                self.assertEqual(r["project"], "CRM")
 
     def test_search_limit_capped_at_200(self):
         with tempfile.TemporaryDirectory() as td:
@@ -679,10 +716,10 @@ class TestStatsEndpoint(unittest.TestCase):
             vault.mkdir()
             client = self._make_client(vault)
             data   = client.get("/stats").json()
-            self.assertIn("total",       data)
-            self.assertIn("by_category", data)
-            self.assertIn("by_day",      data)
-            self.assertIn("recent",      data)
+            self.assertIn("total",      data)
+            self.assertIn("by_project", data)
+            self.assertIn("by_day",     data)
+            self.assertIn("recent",     data)
 
     def test_stats_total(self):
         with tempfile.TemporaryDirectory() as td:
@@ -700,7 +737,7 @@ class TestStatsEndpoint(unittest.TestCase):
             self._seed(vault)
             client = self._make_client(vault)
             data   = client.get("/stats").json()
-            cats   = {r["category"]: r["count"] for r in data["by_category"]}
+            cats   = {r["project"]: r["count"] for r in data["by_project"]}
             self.assertEqual(cats["Tech_Notes"], 2)
             self.assertEqual(cats["CRM"],        1)
 
@@ -710,9 +747,9 @@ class TestStatsEndpoint(unittest.TestCase):
             vault.mkdir()
             client = self._make_client(vault)
             data   = client.get("/stats").json()
-            self.assertEqual(data["total"],       0)
-            self.assertEqual(data["by_category"], [])
-            self.assertEqual(data["recent"],      [])
+            self.assertEqual(data["total"],      0)
+            self.assertEqual(data["by_project"], [])
+            self.assertEqual(data["recent"],     [])
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────

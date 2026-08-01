@@ -10,7 +10,9 @@ Schema
 captures
   id            INTEGER PRIMARY KEY AUTOINCREMENT
   timestamp     TEXT NOT NULL          -- ISO-8601 seconds
-  category      TEXT NOT NULL
+  project       TEXT NOT NULL          -- resolved project name, or "_loose" (Projects S1;
+                                        -- column was `category` before 2026-08 -- see
+                                        -- _migrate_schema's RENAME COLUMN step)
   path          TEXT NOT NULL UNIQUE
   hash          TEXT                   -- SHA-256 of written note content
   tags          TEXT DEFAULT '[]'      -- JSON array of strings
@@ -27,7 +29,7 @@ captures
 
 captures_fts   (FTS5 virtual table)
   rowid -> captures.id
-  body  -> category || ' ' || filename || ' ' || source_url || ' ' || tags || ' ' || body_excerpt
+  body  -> project || ' ' || filename || ' ' || source_url || ' ' || tags || ' ' || body_excerpt
   (stored internally — not content=captures, which requires a captures.body column)
 
 Public API
@@ -73,7 +75,7 @@ _DDL = """
 CREATE TABLE IF NOT EXISTS captures (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp     TEXT    NOT NULL,
-    category      TEXT    NOT NULL,
+    project       TEXT    NOT NULL,
     path          TEXT    NOT NULL UNIQUE,
     hash          TEXT,
     tags          TEXT    DEFAULT '[]',
@@ -88,7 +90,7 @@ CREATE TABLE IF NOT EXISTS captures (
 );
 
 CREATE INDEX IF NOT EXISTS idx_captures_timestamp ON captures(timestamp);
-CREATE INDEX IF NOT EXISTS idx_captures_category  ON captures(category);
+CREATE INDEX IF NOT EXISTS idx_captures_project   ON captures(project);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS captures_fts USING fts5(
     body
@@ -115,7 +117,7 @@ CREATE TRIGGER captures_ai AFTER INSERT ON captures BEGIN
     INSERT INTO captures_fts(rowid, body)
     VALUES (
         new.id,
-        COALESCE(new.category,'') || ' ' ||
+        COALESCE(new.project,'') || ' ' ||
         COALESCE(new.filename,'') || ' ' ||
         COALESCE(new.source_url,'') || ' ' ||
         COALESCE(new.tags,'') || ' ' ||
@@ -132,7 +134,7 @@ CREATE TRIGGER captures_au AFTER UPDATE ON captures BEGIN
     INSERT INTO captures_fts(rowid, body)
     VALUES (
         new.id,
-        COALESCE(new.category,'') || ' ' ||
+        COALESCE(new.project,'') || ' ' ||
         COALESCE(new.filename,'') || ' ' ||
         COALESCE(new.source_url,'') || ' ' ||
         COALESCE(new.tags,'') || ' ' ||
@@ -143,14 +145,14 @@ END;
 
 
 def _row_fts_body(
-    category: str | None,
+    project: str | None,
     filename: str | None,
     source_url: str | None,
     tags: str | None,
     body_excerpt: str | None,
 ) -> str:
     return (
-        f"{category or ''} "
+        f"{project or ''} "
         f"{filename or ''} "
         f"{source_url or ''} "
         f"{tags or ''} "
@@ -177,7 +179,7 @@ def _migrate_fts_internal(conn: sqlite3.Connection) -> None:
         return
 
     rows = conn.execute(
-        "SELECT id, category, filename, source_url, tags, body_excerpt FROM captures"
+        "SELECT id, project, filename, source_url, tags, body_excerpt FROM captures"
     ).fetchall()
 
     conn.executescript(
@@ -192,7 +194,7 @@ def _migrate_fts_internal(conn: sqlite3.Connection) -> None:
 
     for r in rows:
         body = _row_fts_body(
-            r["category"], r["filename"], r["source_url"], r["tags"], r["body_excerpt"],
+            r["project"], r["filename"], r["source_url"], r["tags"], r["body_excerpt"],
         )
         conn.execute(
             "INSERT INTO captures_fts(rowid, body) VALUES (?, ?)",
@@ -222,12 +224,12 @@ def _rebuild_fts_once(conn: sqlite3.Connection) -> None:
         return
 
     rows = conn.execute(
-        "SELECT id, category, filename, source_url, tags, body_excerpt FROM captures"
+        "SELECT id, project, filename, source_url, tags, body_excerpt FROM captures"
     ).fetchall()
     conn.execute("DELETE FROM captures_fts")
     for r in rows:
         body = _row_fts_body(
-            r["category"], r["filename"], r["source_url"], r["tags"], r["body_excerpt"],
+            r["project"], r["filename"], r["source_url"], r["tags"], r["body_excerpt"],
         )
         conn.execute(
             "INSERT INTO captures_fts(rowid, body) VALUES (?, ?)",
@@ -238,6 +240,28 @@ def _rebuild_fts_once(conn: sqlite3.Connection) -> None:
         "ON CONFLICT(key) DO UPDATE SET value = '1'"
     )
     print(f"[IndexWriter] rebuilt captures_fts ({len(rows)} rows) after trigger fix", flush=True)
+
+
+def _migrate_category_column_to_project(conn: sqlite3.Connection) -> None:
+    """Projects S1: a database created before the `category`->`project` rename still has a
+    `category` column and no `project` one. RENAME COLUMN (SQLite 3.25+) is the whole migration --
+    every existing value is already either a resolved project name or a loose folder name, so no
+    data transform is needed, only the name.
+
+    Must run BEFORE `_DDL`'s executescript (init_db) -- that script's `CREATE INDEX
+    idx_captures_project ON captures(project)` raises OperationalError on an old table that has no
+    `project` column yet if the rename hasn't happened first.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='captures'"
+    ).fetchone()
+    if not row:
+        return  # fresh db -- _DDL below creates the table with `project` directly
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(captures)").fetchall()}
+    if "category" in cols and "project" not in cols:
+        conn.execute("ALTER TABLE captures RENAME COLUMN category TO project")
+        conn.execute("DROP INDEX IF EXISTS idx_captures_category")
+        conn.commit()
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
@@ -292,6 +316,7 @@ def init_db(vault_root: Path) -> sqlite3.Connection:
 
     key = str(db_path)
     if key not in _INITIALIZED or not _has_schema(conn):
+        _migrate_category_column_to_project(conn)
         conn.executescript(_DDL)
         _migrate_schema(conn)
         _INITIALIZED.add(key)
@@ -401,7 +426,10 @@ def log_capture_db(entry: dict, vault_root: Path) -> None:
     Upsert one capture record.
 
     *entry* mirrors the JSONL schema produced by capture_log.py, plus optional
-    ``tags`` (list[str]) and ``confidence`` (float) keys.
+    ``tags`` (list[str]) and ``confidence`` (float) keys. Its ``category`` key
+    is the caller's field name (Task 14 re-keys the real callers) -- it is
+    written into the renamed `project` column, and already carries the
+    resolved project (or `_loose`) by construction of the write path.
 
     Fails silently — a DB error must never break the capture pipeline.
     """
@@ -414,7 +442,7 @@ def log_capture_db(entry: dict, vault_root: Path) -> None:
         conn.execute(
             """
             INSERT INTO captures
-                (timestamp, category, path, hash, tags, confidence,
+                (timestamp, project, path, hash, tags, confidence,
                  source_url, input_type, model, filename, body_excerpt)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
@@ -536,7 +564,7 @@ def migrate_jsonl(jsonl_path: Path, vault_root: Path) -> int:
             cursor.execute(
                 """
                 INSERT OR IGNORE INTO captures
-                    (timestamp, category, path, hash, tags, confidence,
+                    (timestamp, project, path, hash, tags, confidence,
                      source_url, input_type, model, filename)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -583,7 +611,10 @@ def upsert_capture_from_file(vault_root: Path, abs_path: Path) -> None:
         p = abs_path
         if not p.exists():
             return
-        category   = p.parent.name
+        # The note's directory name IS its resolved project (or `_loose`) -- every
+        # note stays at depth 1 (contract §1.3), so this agrees with
+        # resolve_project(body, reg) by construction, same as the frontmatter cache.
+        project    = p.parent.name
         body       = _read_body_excerpt(str(p))
         h          = _file_hash(str(p))
         # Tags come from the FILE's frontmatter -- the source of truth. This
@@ -601,7 +632,7 @@ def upsert_capture_from_file(vault_root: Path, abs_path: Path) -> None:
         conn = init_db(vault_root)
         conn.execute(
             """
-            INSERT INTO captures (timestamp, category, path, hash, filename, body_excerpt, tags)
+            INSERT INTO captures (timestamp, project, path, hash, filename, body_excerpt, tags)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 hash         = excluded.hash,
@@ -609,7 +640,7 @@ def upsert_capture_from_file(vault_root: Path, abs_path: Path) -> None:
                 timestamp    = excluded.timestamp,
                 tags         = excluded.tags
             """,
-            (timestamp, category, str(p), h, p.name, body, tags),
+            (timestamp, project, str(p), h, p.name, body, tags),
         )
         conn.commit()
         conn.close()
@@ -651,7 +682,7 @@ def upsert_provisional(db: sqlite3.Connection, op_id: str, note_id: str, body: s
     db.execute(
         """
         INSERT INTO captures
-            (timestamp, category, path, tags, confidence,
+            (timestamp, project, path, tags, confidence,
              input_type, filename, body_excerpt, provisional, note_id)
         VALUES (?, ?, ?, '[]', 0.0, 'lan_provisional', ?, ?, 1, ?)
         ON CONFLICT(path) DO UPDATE SET
@@ -706,19 +737,19 @@ def _like_escape(s: str) -> str:
 
 
 def _row_filter_clauses(
-    category: Optional[str],
+    project: Optional[str],
     since: Optional[str],
     tag_paths,
     prefix: str = "",
 ) -> tuple[list[str], list]:
-    """Shared category/since/tag WHERE-clause builder for the three search
+    """Shared project/since/tag WHERE-clause builder for the three search
     passes below. *prefix* is the table alias to qualify columns with (e.g.
     "c." for the FTS-joined queries, "" for the plain-table ones)."""
     clauses: list[str] = []
     params: list = []
-    if category:
-        clauses.append(f"{prefix}category = ?")
-        params.append(category)
+    if project:
+        clauses.append(f"{prefix}project = ?")
+        params.append(project)
     if since:
         clauses.append(f"{prefix}timestamp >= ?")
         params.append(since)
@@ -773,7 +804,9 @@ def search(
     Parameters
     ----------
     query     Free-text query (or blank to browse).
-    category  Optional category filter.
+    category  Optional project filter (matches the `project` column; kept
+              named `category` here so existing callers -- e.g. vault_admin's
+              /search route -- don't need a keyword-argument rename).
     since     ISO-8601 timestamp lower-bound (inclusive).
     limit     Max rows to return.
     tag       F-4: tag filter -- the Library tags browser's "jump to filtered
@@ -870,7 +903,7 @@ def search(
     like_sql = (
         "SELECT * FROM captures WHERE "
         "(body_excerpt LIKE ? ESCAPE '\\' OR filename LIKE ? ESCAPE '\\' "
-        "OR category LIKE ? ESCAPE '\\' OR source_url LIKE ? ESCAPE '\\' "
+        "OR project LIKE ? ESCAPE '\\' OR source_url LIKE ? ESCAPE '\\' "
         "OR tags LIKE ? ESCAPE '\\')"
     )
     like_params: list = [like_val] * 5
@@ -960,7 +993,7 @@ def stats(vault_root: Path) -> dict:
     -----
     {
       "total": int,
-      "by_category": [{"category": str, "count": int, "pct": float}, ...],
+      "by_project": [{"project": str, "count": int, "pct": float}, ...],
       "by_day": [{"date": str, "count": int}, ...],   # last 30 days
       "recent": [<row dict>, ...]                      # last 10
     }
@@ -977,16 +1010,16 @@ def stats(vault_root: Path) -> dict:
         total_row = cursor.execute("SELECT COUNT(*) FROM captures WHERE provisional = 0").fetchone()
         total     = total_row[0] if total_row else 0
 
-        cat_rows = cursor.execute(
-            "SELECT category, COUNT(*) AS cnt FROM captures WHERE provisional = 0 GROUP BY category ORDER BY cnt DESC"
+        proj_rows = cursor.execute(
+            "SELECT project, COUNT(*) AS cnt FROM captures WHERE provisional = 0 GROUP BY project ORDER BY cnt DESC"
         ).fetchall()
-        by_category = [
+        by_project = [
             {
-                "category": r["category"],
-                "count":    r["cnt"],
-                "pct":      round(r["cnt"] / total * 100, 1) if total else 0,
+                "project": r["project"],
+                "count":   r["cnt"],
+                "pct":     round(r["cnt"] / total * 100, 1) if total else 0,
             }
-            for r in cat_rows
+            for r in proj_rows
         ]
 
         day_rows = cursor.execute(
@@ -1009,8 +1042,8 @@ def stats(vault_root: Path) -> dict:
     except sqlite3.DatabaseError as exc:
         print(f"[IndexWriter] Non-fatal DB error (stats): {exc}", file=sys.stderr)
         index_health.record_failure("captures", exc)
-        return {"total": 0, "by_category": [], "by_day": [], "recent": []}
-    return {"total": total, "by_category": by_category, "by_day": by_day, "recent": recent}
+        return {"total": 0, "by_project": [], "by_day": [], "recent": []}
+    return {"total": total, "by_project": by_project, "by_day": by_day, "recent": recent}
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -1026,7 +1059,7 @@ if __name__ == "__main__":
 
     s = sub.add_parser("search", help="Full-text search")
     s.add_argument("query", help="FTS query")
-    s.add_argument("--category", default=None)
+    s.add_argument("--project", default=None)
     s.add_argument("--limit", type=int, default=20)
 
     sub.add_parser("stats", help="Print capture statistics")
@@ -1042,18 +1075,18 @@ if __name__ == "__main__":
         migrate_jsonl(jsonl, cfg.vault.root)
 
     elif args.cmd == "search":
-        results = search(args.query, cfg.vault.root, args.category, limit=args.limit)
+        results = search(args.query, cfg.vault.root, args.project, limit=args.limit)
         if not results:
             print("No results.")
         for r in results:
-            print(f"{r['timestamp'][:19]}  [{r['category']:<20}]  {r['path']}")
+            print(f"{r['timestamp'][:19]}  [{r['project']:<20}]  {r['path']}")
 
     elif args.cmd == "stats":
         s = stats(cfg.vault.root)
         print(f"\nTotal captures: {s['total']}")
-        print(f"\n{'Category':<25}  {'Count':>6}  {'%':>6}")
+        print(f"\n{'Project':<25}  {'Count':>6}  {'%':>6}")
         print("-" * 45)
-        for row in s["by_category"]:
-            print(f"{row['category']:<25}  {row['count']:>6}  {row['pct']:>5.1f}%")
+        for row in s["by_project"]:
+            print(f"{row['project']:<25}  {row['count']:>6}  {row['pct']:>5.1f}%")
     else:
         p.print_help()

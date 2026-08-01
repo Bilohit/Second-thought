@@ -140,14 +140,14 @@ def _index_state(vault: Path) -> dict:
     """The same shape as _oracle(), read back out of captures.db."""
     conn = index_writer.init_db(vault)
     rows = conn.execute(
-        "SELECT path, category, tags FROM captures WHERE provisional = 0"
+        "SELECT path, project, tags FROM captures WHERE provisional = 0"
     ).fetchall()
     conn.close()
     notes: dict[str, dict] = {}
     for r in rows:
         rel = str(Path(r["path"]).relative_to(vault)).replace("\\", "/")
         notes[rel] = {
-            "category": r["category"],
+            "category": r["project"],
             "tags": sorted(json.loads(r["tags"] or "[]")),
         }
     return {

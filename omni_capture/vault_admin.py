@@ -535,7 +535,11 @@ def _extract_tag_filter(q: str) -> tuple[str, Optional[str]]:
 # to also store. Adding a column to captures.db no longer widens the API.
 # P-DSEARCH: `tier` ("exact"|"substring"|"semantic") and `score` (0..1, higher
 # == more relevant) are now part of that published shape -- see index_writer.search.
-_SEARCH_ROW_FIELDS = ("id", "timestamp", "category", "path", "filename",
+# Projects S1: captures.db's `category` column was renamed to `project` -- this
+# projection follows it. `_shape_semantic_row` below keeps its own "category" key
+# unchanged on purpose: it reads vector_store's `embeddings` table, a separate
+# schema this task does not touch.
+_SEARCH_ROW_FIELDS = ("id", "timestamp", "project", "path", "filename",
                       "source_url", "confidence", "tags", "tier", "score")
 
 
