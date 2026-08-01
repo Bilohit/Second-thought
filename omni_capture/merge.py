@@ -6,11 +6,21 @@ into dedup.py / merge.py / scratchpad.py"). Owns the decision of whether a new
 capture should be appended into an existing same-topic note (find_merge_target,
 _is_same_topic) and the mechanics of that append (_append_general).
 
-`_category_str` / `_signals_to_tags` are shared low-level helpers that also
-back storage_engine._build_frontmatter; they stay defined in storage_engine.py
-and are imported here lazily (inside each function) to avoid a circular
-import, since storage_engine.py imports find_merge_target/_is_same_topic/
+`_category_str` is a shared low-level helper that also backs
+storage_engine._build_frontmatter; it stays defined in storage_engine.py and
+is imported here lazily (inside each function) to avoid a circular import,
+since storage_engine.py imports find_merge_target/_is_same_topic/
 _append_general from this module at top level.
+
+Projects S1 (2026-08-01, s125 item 5): storage_engine._signals_to_tags is
+deleted -- key_signals no longer produce tags anywhere in the pipeline (auto
+enrichment writes a project assignment and nothing else). The tag-overlap
+merge heuristic below that used to compare a capture's signal-derived tags
+against a candidate note's frontmatter tags has no signal-derived tag set
+left to compare, so it is now permanently empty (see _is_same_topic /
+find_merge_target). ponytail: Task 10 (write-path owner) decides whether a
+body-tag-based successor replaces this heuristic or the dead branches are
+removed outright.
 """
 from __future__ import annotations
 
@@ -121,8 +131,9 @@ def _is_same_topic(existing_path: Path, new_signals: List[str], min_shared_tags:
     existing_tags = _read_note_tags(existing_path)
     if not existing_tags:
         return True
-    from storage_engine import _signals_to_tags
-    normalised_new = set(_signals_to_tags(new_signals))
+    # _signals_to_tags is deleted (s125 item 5) -- no signal-derived tag set
+    # exists to compare against existing_tags any more, so this never matches.
+    normalised_new: set = set()
     return len(existing_tags & normalised_new) >= min_shared_tags
 
 
@@ -148,10 +159,12 @@ def find_merge_target(
     description sharing exactly one incidental tag with an unrelated note is
     too weak a signal to silently merge a photo into it (d05).
     """
-    from storage_engine import _category_str, _signals_to_tags
+    from storage_engine import _category_str
 
     cat = _category_str(output)
-    new_tags = set(_signals_to_tags(output.key_signals))
+    # _signals_to_tags is deleted (s125 item 5) -- no signal-derived tag set
+    # exists any more, so tag-overlap scoring below never has candidates.
+    new_tags: set = set()
     if not new_tags:
         return None
 

@@ -31,13 +31,16 @@ def test_create_call_receives_configured_timeout():
         input_type="text",
         enriched_text="hello world",
     )
-    category_descriptions = {"notes": "General notes."}
+    # Projects S1 (2026-08-01, s125): run_llm_engine takes the project registry
+    # (project_registry.load()'s return shape) in place of the retired
+    # category_descriptions dict -- see llm_engine.run_llm_engine.
+    registry = {"schema": 1, "projects": {"notes": {"description": "General notes."}}}
 
     stub_client = mock.MagicMock()
     stub_client.chat.completions.create = mock.MagicMock(return_value=mock.MagicMock())
 
     with mock.patch("llm_engine._make_client", return_value=stub_client):
-        run_llm_engine(enriched, category_descriptions)
+        run_llm_engine(enriched, registry)
 
     stub_client.chat.completions.create.assert_called_once()
     kwargs = stub_client.chat.completions.create.call_args.kwargs

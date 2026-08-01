@@ -1,9 +1,12 @@
 """
 models.py - Pydantic schemas for the LLM Decision Engine structured output.
 
-Categories are now dynamic: derived at runtime from the folders in the vault
-root.  Call build_capture_model(categories) to get a CaptureOutput subclass
-whose 'category' field is constrained to exactly the discovered folder names.
+Projects S1 (2026-08-01, s125): the folder-name `category` concept is retired.
+Grouping is now the `#project@<name>` body tag (data-model-and-contracts.md
+v3.1 SS1/SS13) -- project names are never hardcoded and never invented by the
+engine. Call build_capture_model(project_names) to get a CaptureOutput
+subclass whose 'project' field is constrained to exactly the registry's
+EXISTING project names (or null, meaning none fit -- the note stays loose).
 """
 from __future__ import annotations
 
@@ -39,7 +42,14 @@ class CaptureOutput(BaseModel):
     this base class for type hints.
     """
 
-    category: str = Field(description="Which vault folder this content belongs to.")
+    project: Optional[str] = Field(
+        default=None,
+        description=(
+            "Name of an EXISTING project this content belongs to, chosen from the "
+            "available projects, or null when none fit well. Never a new project name "
+            "-- the engine may only pick from projects that already exist."
+        ),
+    )
     suggested_filename: str = Field(
         description="Kebab-case slug, lowercase, MAX 2 meaningful words, ≤40 chars, no extension, no filler words."
     )
@@ -88,35 +98,44 @@ def filter_future_events(events: List[DetectedEvent], now: datetime) -> List[Det
     return kept
 
 
-def build_capture_model(categories: List[str]) -> Type[CaptureOutput]:
+def build_capture_model(project_names: List[str]) -> Type[CaptureOutput]:
     """
-    Return a CaptureOutput subclass whose 'category' field is constrained
-    to exactly the provided list of category names.
+    Return a CaptureOutput subclass whose 'project' field is constrained
+    to exactly the provided list of EXISTING project names, plus null.
 
     The dynamic Enum causes Pydantic (and therefore instructor) to emit a JSON
-    schema with 'enum': [...] for the 'category' field, forcing the LLM to
-    pick only from the vault's actual folders.
+    schema with 'enum': [...] for the 'project' field, forcing the LLM to pick
+    only from the registry's current projects -- it may never invent one.
+
+    An empty project_names list is a normal state (no projects exist yet, or
+    the registry hasn't synced): every capture then has nothing to pick from
+    and CaptureOutput's own unconstrained, nullable `project` field is
+    returned unchanged -- the LLM leaves it null and the note lands loose,
+    never an error (contract's "dangling reads as loose" rule).
     """
-    if not categories:
-        raise ValueError(
-            "build_capture_model() requires at least one category. "
-            "Make sure the vault root contains at least one non-system folder."
-        )
+    if not project_names:
+        return CaptureOutput
 
     # Build a StrEnum-compatible base class that returns the plain value from
-    # __str__, so str(output.category) == "Tech_Notes" everywhere.
-    class _CategoryBase(str, Enum):
+    # __str__, so str(output.project) == "research" everywhere.
+    class _ProjectBase(str, Enum):
         def __str__(self) -> str:
             return self.value
 
-    CategoryEnum = _CategoryBase("CategoryEnum", {c: c for c in categories})
+    ProjectEnum = _ProjectBase("ProjectEnum", {p: p for p in project_names})
 
     DynamicModel: Type[CaptureOutput] = create_model(
         "CaptureOutput",
         __base__=CaptureOutput,
-        category=(
-            CategoryEnum,
-            Field(description="Which vault folder this content belongs to."),
+        project=(
+            Optional[ProjectEnum],
+            Field(
+                default=None,
+                description=(
+                    "Name of an EXISTING project this content belongs to, or "
+                    "null when none fit well. Never invent a project name."
+                ),
+            ),
         ),
     )
     return DynamicModel

@@ -15,7 +15,7 @@ import numpy as np
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
 from models import CaptureOutput, EnrichedPayload
-from storage_engine import _build_frontmatter, _signals_to_tags, write_to_vault
+from storage_engine import _build_frontmatter, write_to_vault
 from link_resolver import build_link_index, inject_wikilinks
 import vector_store as vs
 from vector_store import _cosine_top_k
@@ -75,27 +75,17 @@ def _temp_vault(files: dict):
 
 # ═══════════════════════════════════════════════════════════════════════════════
 class TestTags(unittest.TestCase):
+    """Projects S1 (2026-08-01, s125 item 5): storage_engine._signals_to_tags
+    (key_signals -> arbitrary-tag conversion) is deleted outright -- auto
+    enrichment writes a project assignment and nothing else. The old
+    test_basic_conversion / test_special_chars_stripped / test_empty_signals_skipped
+    / test_slash_preserved_for_nested tested that deleted function directly and
+    are removed; test_frontmatter_tag_list is updated below to assert the new
+    behaviour (frontmatter tags are always empty, regardless of key_signals)."""
 
-    def test_basic_conversion(self):
-        self.assertEqual(_signals_to_tags(["python","async programming","event loop"]),
-                         ["python","async-programming","event-loop"])
-
-    def test_special_chars_stripped(self):
-        for tag in _signals_to_tags(["C++ / systems","ML (NLP)","REST API!"]):
-            self.assertRegex(tag, r"^[\w/\-]+$")
-
-    def test_empty_signals_skipped(self):
-        self.assertEqual(_signals_to_tags(["","  ","valid"]), ["valid"])
-
-    def test_slash_preserved_for_nested(self):
-        self.assertIn("lang/python", _signals_to_tags(["lang/python"]))
-
-    def test_frontmatter_tag_list(self):
-        fm = _build_frontmatter(_out(key_signals=["python","async-io"]), None)
-        self.assertIn("tags:", fm)
-        self.assertIn("  - python", fm)
-        self.assertIn("  - async-io", fm)
-        self.assertNotIn("tags: []", fm)
+    def test_frontmatter_never_derives_tags_from_key_signals(self):
+        fm = _build_frontmatter(_out(key_signals=["python", "async-io"]), None)
+        self.assertIn("tags: []", fm)
 
     def test_frontmatter_empty_gives_empty_list(self):
         self.assertIn("tags: []", _build_frontmatter(_out(key_signals=[]), None))

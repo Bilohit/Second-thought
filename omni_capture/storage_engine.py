@@ -534,26 +534,6 @@ def _unique_file_path(base_path: Path) -> Path:
 # Frontmatter builder  (flat schema — same fields for every category)
 # ---------------------------------------------------------------------------
 
-def _signals_to_tags(key_signals: List[str]) -> List[str]:
-    tags: List[str] = []
-    for signal in key_signals:
-        raw = signal.strip().lower()
-        tag = re.sub(r"[^\w\s/\-]", "", raw)
-        tag = re.sub(r"\s+", "-", tag).strip("-/")
-        if not tag:
-            continue
-        # 2026-07-30 grouping split, s114: `project/` and `@`-action tags are user-assigned ONLY --
-        # no enrichment path may auto-attach them (DECISIONS §5, same-day amendment). s113 enforced
-        # that at both NOTE roots (heuristicEnrich.ts, mobile_sync_agent.enrich_notes) but not here,
-        # the CAPTURE root -- and this is the one fed by an LLM whose output nobody constrains.
-        # The `@` test is on the RAW signal because the sanitizer above already strips "@".
-        # Namespaced MACHINE tags (`sys/vision-failed`, route_failed_*) deliberately still pass.
-        if tag.startswith("project/") or raw.startswith("@"):
-            continue
-        tags.append(tag)
-    return tags
-
-
 def _build_frontmatter(
     output: CaptureOutput,
     source_url: Optional[str],
@@ -573,18 +553,19 @@ def _build_frontmatter(
     source      source URL (when available)
     confidence  LLM self-reported confidence
     rationale   LLM reasoning
-    tags        list derived from key_signals
+    tags        sys/*-prefixed entries of key_signals ONLY -- auto enrichment
+                writes a project assignment and nothing else (Projects S1,
+                2026-08-01, s125 item 5), so LLM-classification key_signals no
+                longer become arbitrary user-facing tags. The sys/ namespace
+                is a distinct, pre-existing mechanism (ISS-019): route_failed_
+                vision/route_failed_llm (scratchpad.py) still need their
+                machine-written sys/vision-failed / sys/llm-failed marker to
+                reach frontmatter for retry_engine to find it, and the Tags
+                browser already filters the whole sys/ namespace out.
     extra_frontmatter  caller-supplied flat string fields (e.g. needs_vision_retry)
     """
     now = datetime.now().isoformat(timespec="seconds")
-    tags = _signals_to_tags(output.key_signals)
-    if vault_root is not None:
-        try:
-            from tag_vocab import load_vocab, normalize_tags
-            from index_writer import get_db_path
-            tags = normalize_tags(tags, load_vocab(get_db_path(vault_root)))
-        except Exception:
-            pass  # vocab normalization is best-effort; raw tags are still valid
+    tags = [s for s in output.key_signals if s.startswith("sys/")]
 
     # v2.2 (2026-07-24, DESKTOP-FIRST): category is NOT written to frontmatter — the folder a
     # capture is filed into IS its category (data-model §1.2). output.category still selects that

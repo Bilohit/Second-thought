@@ -666,25 +666,27 @@ def test_create_voice_note_copies_staged_audio_into_attachments(tmp_path):
 # s114 — grouping-split enforcement at the CAPTURE root, and merge visibility
 # ---------------------------------------------------------------------------
 
-def test_signals_never_auto_attach_a_project_tag():
-    """2026-07-30 grouping split (DECISIONS §5 amendment): `project/` and
-    `@`-action tags are user-assigned ONLY. s113 enforced that at both NOTE
-    roots (heuristicEnrich.ts, mobile_sync_agent.enrich_notes) and missed this
-    one -- the capture root, which is the one fed by unconstrained LLM output."""
-    from storage_engine import _signals_to_tags
+def test_key_signals_never_become_frontmatter_tags():
+    """Projects S1 (2026-08-01, s125 item 5): storage_engine._signals_to_tags
+    (the key_signals -> arbitrary-tag path) is deleted outright -- auto
+    enrichment writes a project assignment and nothing else. This supersedes
+    the old test_signals_never_auto_attach_a_project_tag /
+    test_machine_namespaced_tags_still_pass, which asserted _signals_to_tags'
+    per-signal filtering rules; that function no longer exists. The pipeline's
+    own sys/*-namespaced machine markers (ISS-019, route_failed_vision/
+    route_failed_llm) are a distinct, still-live mechanism and still pass
+    through -- see test_scratchpad_tag_namespace.py."""
+    from storage_engine import _build_frontmatter
+    from models import CaptureOutput
 
-    tags = _signals_to_tags(["project/atlas", "@waiting", "ollama", "Rust Notes"])
-    assert "project/atlas" not in tags
-    assert "waiting" not in tags          # "@waiting" is dropped whole, not de-@-ed
-    assert tags == ["ollama", "rust-notes"]
-
-
-def test_machine_namespaced_tags_still_pass():
-    """The filter must not catch `sys/`: route_failed_vision/route_failed_llm
-    depend on their namespaced marker surviving (ISS-019)."""
-    from storage_engine import _signals_to_tags
-
-    assert _signals_to_tags(["sys/vision-failed"]) == ["sys/vision-failed"]
+    output = CaptureOutput(
+        suggested_filename="test-note", markdown_content="content",
+        key_signals=["project/atlas", "@waiting", "ollama"],
+        confidence=0.9,
+    )
+    fm = _build_frontmatter(output, None)
+    assert "tags: []" in fm
+    assert "ollama" not in fm
 
 
 def test_smart_merge_reports_the_note_it_merged_into(tmp_path):

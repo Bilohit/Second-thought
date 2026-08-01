@@ -1,23 +1,25 @@
 """
 llm_engine.py - Step 3: LLM Decision Engine (Read-Before-Write)
 
-Category-agnostic edition
---------------------------
-The system prompt is now built at call time from the caller-supplied
-category_descriptions dict (a mapping of folder_name -> description).
-This means adding or removing a folder in the vault immediately changes
-what the LLM is allowed to classify into — no code changes required.
+Projects S1 edition (2026-08-01, s125)
+---------------------------------------
+The system prompt is now built at call time from the project registry (see
+project_registry.load()) instead of the retired folder-name category concept.
+Callers pass the loaded Registry dict straight through -- this module stays
+pure/I-O-free, same as before; it just reads {"projects": {name: {description}}}
+instead of a caller-built category_descriptions dict.
 
-The CaptureOutput response model is also built dynamically via
-models.build_capture_model(categories) so that instructor enforces
-only the current vault's folder names in the JSON schema.
+The CaptureOutput response model is built dynamically via
+models.build_capture_model(project_names) so that instructor enforces only
+the registry's EXISTING project names (or null) in the JSON schema. The
+engine may never invent a project.
 """
 from __future__ import annotations
 
 import asyncio
 import os
 import textwrap
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import instructor
 from openai import AsyncOpenAI, OpenAI
@@ -184,23 +186,23 @@ def summarize(
 # ---------------------------------------------------------------------------
 # System prompt template
 # ---------------------------------------------------------------------------
-# {categories} is replaced with a formatted block of "name -> description" lines.
-# {today}      is replaced with today's ISO date.
+# {projects} is replaced with a formatted block of "name -> description" lines
+#            (or a placeholder line when the registry has no projects yet).
+# {today}    is replaced with today's ISO date.
 
 _SYSTEM_PROMPT_TEMPLATE = textwrap.dedent("""
     You are the Decision Engine for a personal Second Brain knowledge system.
     Return a perfectly structured JSON object matching the CaptureOutput schema.
 
-    AVAILABLE CATEGORIES
-{categories}
+    AVAILABLE PROJECTS
+{projects}
 
     ROUTING RULES
-    * Choose the single best-matching category from the list above.
-    * If the content fits none of the categories, choose the closest one and set
-      requires_new_category=true with confidence below 0.6. The note will be
-      placed in a scratchpad folder for manual review rather than being filed
-      under the wrong category.
-    * Never invent a category name — only use the names listed above.
+    * Choose the single best-matching EXISTING project from the list above, or
+      leave `project` null when nothing fits well or the list is empty.
+    * Never invent a project name — only use a name listed above, or null.
+      A note with project=null is simply unfiled ("loose"); that is a normal,
+      safe outcome, not a failure.
 
     FILENAME RULES
     * suggested_filename must be a SPECIFIC, content-derived kebab-case slug
@@ -212,7 +214,7 @@ _SYSTEM_PROMPT_TEMPLATE = textwrap.dedent("""
     * Examples: "asyncio-eventloop", "compose-networking",
       "sourdough-starter".
     * NEVER use generic names like "notes", "article", "entry", or the
-      category name itself.
+      project name itself.
     * Notes with the same filename are merged into one file — only reuse a
       name when this content is a direct continuation of that exact topic.
       Different topics MUST get different filenames.
@@ -220,7 +222,7 @@ _SYSTEM_PROMPT_TEMPLATE = textwrap.dedent("""
     CONTENT RULES
     * Do NOT start with preamble like "Here is...", "In this note...", or
       "The following is...". Lead directly with the substantive content.
-    * Do NOT restate the category name as a heading or opening line.
+    * Do NOT restate the project name as a heading or opening line.
     * No filler transitions ("Additionally,", "It's worth noting that,").
     * Prefer bullet points over prose when listing facts.
     * Omit empty or placeholder sections — only include sections with real content.
@@ -228,12 +230,13 @@ _SYSTEM_PROMPT_TEMPLATE = textwrap.dedent("""
       Obsidian vault.
 
     REASONING FIELDS (always fill these)
-    rationale:    1–2 sentences explaining WHY this category was chosen.
+    rationale:    1–2 sentences explaining WHY this project was chosen (or why
+                  none fit, when project is null).
     key_signals:  Up to 5 short strings naming the specific cues you noticed.
     confidence:   Float 0.0–1.0.
                     0.95+      obvious match
                     0.70–0.94  mild ambiguity
-                    below 0.70 uncertain — consider requires_new_category=true
+                    below 0.70 uncertain — prefer project=null over guessing
 
     TODAY'S DATE: {today}
 
@@ -248,37 +251,39 @@ _SYSTEM_PROMPT_TEMPLATE = textwrap.dedent("""
 _SCRUTINY_PARAGRAPHS = {
     "relaxed": (
         "\n    CLASSIFICATION POSTURE (relaxed)\n"
-        "    * Prefer to make a best-effort categorization even with limited signal.\n"
-        "    * Lean toward assigning a category rather than expressing uncertainty.\n"
+        "    * Prefer to make a best-effort project assignment even with limited signal.\n"
+        "    * Lean toward assigning a project rather than expressing uncertainty.\n"
     ),
     "balanced": "",  # current behavior -- no extra instruction
     "strict": (
         "\n    CLASSIFICATION POSTURE (strict)\n"
         "    * Apply high scrutiny. If the content does not clearly and\n"
-        "      unambiguously fit a single category, assign a low confidence\n"
-        "      score (below the routing threshold) and let it route to the\n"
-        "      inbox for manual review. Do not guess.\n"
+        "      unambiguously fit a single project, leave `project` null\n"
+        "      (or use a low confidence score). Do not guess.\n"
     ),
 }
 
 
 def _build_system_prompt(
-    category_descriptions: Dict[str, str],
+    project_descriptions: Dict[str, str],
     today: str,
     scrutiny: str = "balanced",
 ) -> str:
     """
-    Render the system prompt with the current vault's categories and the
+    Render the system prompt with the registry's current projects and the
     configured classification posture (relaxed / balanced / strict).
 
-    Each entry in category_descriptions is formatted as:
-        Folder_Name    -> Description text
+    Each entry in project_descriptions is formatted as:
+        project_name    -> Description text
     """
-    cat_lines = "\n".join(
-        f"    {name:<25} -> {desc}"
-        for name, desc in category_descriptions.items()
-    )
-    prompt = _SYSTEM_PROMPT_TEMPLATE.format(categories=cat_lines, today=today)
+    if project_descriptions:
+        proj_lines = "\n".join(
+            f"    {name:<25} -> {desc}"
+            for name, desc in project_descriptions.items()
+        )
+    else:
+        proj_lines = "    (no projects exist yet — leave `project` null.)"
+    prompt = _SYSTEM_PROMPT_TEMPLATE.format(projects=proj_lines, today=today)
     prompt += _SCRUTINY_PARAGRAPHS.get(scrutiny, "")
     return prompt
 
@@ -289,7 +294,7 @@ def _build_system_prompt(
 
 def run_llm_engine(
     enriched: "EnrichedPayload",
-    category_descriptions: Dict[str, str],
+    registry: Dict[str, Any],
     existing_context: Optional[str] = None,
     today: Optional[str] = None,
     max_retries: Optional[int] = None,
@@ -301,9 +306,12 @@ def run_llm_engine(
 
     Args:
         enriched:               EnrichedPayload from the enrichment router.
-        category_descriptions:  {folder_name: description} mapping built from
-                                 the vault's current top-level directories.
-                                 Drive this with storage_engine.build_category_descriptions().
+        registry:                The project registry, as returned by
+                                 project_registry.load(vault_root):
+                                 {"schema": 1, "projects": {name: {"description": ..., ...}}}.
+                                 The engine picks only from these EXISTING projects (or
+                                 leaves `project` null) -- it may never invent one. An
+                                 empty/missing registry is a normal state, not an error.
         existing_context:       Optional pre-loaded vault context (from pre_resolver
                                  or a prior read-before-write pass).
         today:                  ISO date string (defaults to today).
@@ -319,17 +327,18 @@ def run_llm_engine(
     today_str = today or date.today().isoformat()
     request_timeout_s = get_config().ollama.request_timeout_s
 
-    if not category_descriptions:
-        raise ValueError(
-            "run_llm_engine() received an empty category_descriptions dict. "
-            "Make sure the vault root contains at least one non-system folder."
-        )
+    projects_ = (registry or {}).get("projects") or {}
+    project_descriptions = {
+        name: ((entry.get("description") or "").strip() or "(no description)")
+        for name, entry in projects_.items()
+    }
 
-    # Build a fresh CaptureOutput model constrained to the current categories.
-    categories = list(category_descriptions.keys())
-    CaptureModel = build_capture_model(categories)
+    # Build a fresh CaptureOutput model constrained to the registry's current
+    # projects. An empty registry is normal (no projects yet) -- build_capture_model
+    # returns the base CaptureOutput unchanged in that case, never an error.
+    CaptureModel = build_capture_model(list(project_descriptions.keys()))
 
-    system = _build_system_prompt(category_descriptions, today_str, scrutiny=scrutiny)
+    system = _build_system_prompt(project_descriptions, today_str, scrutiny=scrutiny)
 
     user_parts = [
         f"INPUT TYPE: {enriched.input_type}",
