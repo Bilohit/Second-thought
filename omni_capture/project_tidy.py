@@ -9,12 +9,14 @@ correctly, because both read the tag. Self-healing, never wrong.
 
 This module is the PURE planner. The applier that touches the filesystem is `apply_tidy` (Task 6).
 """
+import os
 import uuid
 from pathlib import Path
 from typing import Dict, List, NamedTuple
 
+from dedup import _vault_lock
 from project_registry import Registry, resolve_project
-from projects import note_dir_for
+from projects import LOOSE_DIR, note_dir_for
 
 
 class NoteLoc(NamedTuple):
@@ -48,3 +50,53 @@ def plan_tidy(entries: List[NoteLoc], vault_root: Path, reg: Registry) -> List[M
         taken[dst] = taken.get(dst, 0) + 1
         moves.append(Move(entry.path, dst))
     return moves
+
+
+class TidyResult(NamedTuple):
+    moved: int
+    skipped: int
+    removed_dirs: int
+
+
+def _tidy_lock_path(vault_root: Path) -> Path:
+    # Vault-root sidecar, same convention as merge.py's _merge_lock_path (dedup.py itself keeps
+    # its own lock inside .omni_capture/, colocated with dedup_index.json). `dedup._vault_lock` is
+    # a generic FileLock factory keyed to whatever lock path its caller supplies (dedup.py:52) —
+    # it is not vault-root-specific despite the name, so each module defining a lock path for its
+    # own read-modify-write cycle is the existing pattern, not a new one.
+    return vault_root / ".tidy.lock"
+
+
+def apply_tidy(vault_root: Path, moves: List[Move]) -> TidyResult:
+    """Apply planned moves. Serialized under the shared vault write lock (contract §13.2 as
+    corrected in v3.1 — v3.0 named `_LEDGER_FILES`, which is a category->filename map with no lock).
+
+    NEVER edits file content: this moves files and nothing else. `os.replace` is atomic on the same
+    volume; a destination that already exists is SKIPPED, never clobbered, mirroring
+    `mobile_sync_agent._maybe_refile_local` (mobile_sync_agent.py:686).
+    """
+    vault_root = Path(vault_root)
+    moved = skipped = 0
+    source_dirs: set = set()
+
+    with _vault_lock(_tidy_lock_path(vault_root)):
+        for move in moves:
+            if not move.src.exists() or move.dst.exists():
+                skipped += 1
+                continue
+            move.dst.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(move.src, move.dst)
+            source_dirs.add(move.src.parent)
+            moved += 1
+
+        removed_dirs = 0
+        for directory in source_dirs:
+            if directory.name == LOOSE_DIR or directory == vault_root:
+                continue
+            try:
+                directory.rmdir()          # only succeeds when empty
+                removed_dirs += 1
+            except OSError:
+                pass
+
+    return TidyResult(moved, skipped, removed_dirs)
