@@ -121,6 +121,10 @@
   --surface-2:    #404040;
   --border:       #383838;
   --border-2:     #262626;
+  /* Recessed vs raised: inputs sink into --bg; controls (buttons, selects,
+     toggles) sit above it on --ctl-face. */
+  --ctl-face:     #404040;
+  --ctl-face-hover: #4d4d4d;
   --text-1:       #fafafa;
   --text-2:       #a1a1a1;
   --text-3:       #7a7a7a; /* OF-27: AA-for-text 4.5:1 (was #737373 ~4.2:1) */
@@ -147,6 +151,10 @@
   --surface-2:    #cccccc;
   --border:       #c7c7c7;
   --border-2:     #d2d2d2;
+  /* Recessed vs raised: inputs sink into --bg; controls (buttons, selects,
+     toggles) sit above it on --ctl-face. */
+  --ctl-face:     #cccccc;
+  --ctl-face-hover: #bfbfbf;
   --text-1:       #0a0a0a;
   --text-2:       #4f4f4f;
   --text-3:       #636363;

@@ -229,7 +229,9 @@ export interface Stats {
  *  GET /search (see vault_admin.py's _shape_search_row/_shape_semantic_row).
  *  A "semantic" row carries no captures.db metadata, so id/timestamp/
  *  source_url/confidence/tags are optional; a blank-query "browse" result
- *  carries tier/score as null (nothing to rank by relevance). */
+ *  carries tier/score as null (nothing to rank by relevance). `modified` is
+ *  the file's filesystem mtime (epoch seconds, `_note_modified`'s
+ *  `stat().st_mtime`), `null` when the row's path couldn't be stat'ed. */
 export interface SearchResult {
   id?: number | null;
   timestamp?: string | null;
@@ -241,6 +243,7 @@ export interface SearchResult {
   tags?: string | null;
   tier?: "exact" | "substring" | "semantic" | null;
   score?: number | null;
+  modified?: number | null;
 }
 
 export type LlmStatus = "loading" | "ready" | "disconnected";
@@ -619,6 +622,32 @@ export async function deleteProject(name: string): Promise<void> {
   await assertOk(r, "Failed to delete project");
 }
 
+/** A registry entry from GET /vault/projects (vault_admin.py's `list_projects`,
+ *  vault_admin.py:253-270) -- distinct from `VaultFolder`/`GET /vault/folders`,
+ *  which lists what's on disk (including non-project folders like
+ *  `_scratchpad`); this lists what's in `.projects.toml`, the project
+ *  registry itself. `created`/`modified` are ISO timestamp strings written by
+ *  `new_project_entry`/rename+describe (`""` if never recorded);
+ *  `renamed_from` is the prior name a rename left behind, or `null`. */
+export interface ProjectEntry {
+  name: string;
+  description: string | null;
+  renamed_from: string | null;
+  created: string;
+  modified: string;
+  file_count: number;
+}
+
+export async function listProjects(): Promise<{ projects: ProjectEntry[]; vault_root: string }> {
+  const r = await fetch(`${BASE}/vault/projects`, { headers: await authHeaders() });
+  await assertOk(r, "Failed to list projects");
+  const body = await r.json();
+  return {
+    projects: arrayField<ProjectEntry>(body, "projects"),
+    vault_root: typeof body?.vault_root === "string" ? body.vault_root : "",
+  };
+}
+
 export async function getVaultFolderFiles(
   folder: string,
 ): Promise<{ folder: string; files: VaultFile[] }> {
@@ -657,6 +686,37 @@ export async function searchCaptures(
     logger.error("look", "search failed", err);
     throw err;
   }
+}
+
+/** The server's own hard clamp (`limit = min(max(1, limit), 200)` in
+ *  vault_admin.py's `search_captures`) -- the ceiling a note-listing caller
+ *  gets if it doesn't ask for fewer. GET /search's own default (`limit: int =
+ *  25`) is a fine cap for a relevance-ranked query typed by a person, but a
+ *  full project/tag listing must not silently truncate at 25 on a real vault. */
+const NOTE_LIST_LIMIT = 200;
+
+/** Every note filed under `project` (via GET /search?project=<name>), scored
+ *  and tier-labeled like any other search result. Defaults to the server's
+ *  own 200 clamp so a real project isn't silently truncated at the 25-row
+ *  search default; pass `limit` to page a smaller or (up to 200) larger cut. */
+export async function notesForProject(
+  project: string,
+  opts?: { limit?: number },
+): Promise<SearchResult[]> {
+  const { results } = await searchCaptures("", { project, limit: opts?.limit ?? NOTE_LIST_LIMIT });
+  return results;
+}
+
+/** Every note carrying `tag` (via GET /search?q=tag:<name>, the same
+ *  tag:-token the free-text query parses -- see `_extract_tag_filter`).
+ *  Defaults to the server's own 200 clamp for the same reason as
+ *  `notesForProject`. */
+export async function notesForTag(
+  tag: string,
+  opts?: { limit?: number },
+): Promise<SearchResult[]> {
+  const { results } = await searchCaptures(`tag:${tag}`, { limit: opts?.limit ?? NOTE_LIST_LIMIT });
+  return results;
 }
 
 export async function getStats(): Promise<Stats> {
