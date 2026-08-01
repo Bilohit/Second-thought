@@ -76,3 +76,49 @@ def save(vault_root: Path, reg: Registry) -> None:
 
     path = Path(vault_root) / REGISTRY_FILENAME
     path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+
+
+def _merge_entry(local: dict, remote: dict) -> dict:
+    """Per-field: newest entry `modified` wins, exact tie goes to remote (contract §13.2 row 5).
+    `created` is immutable — on divergence take the EARLIER value."""
+    winner, loser = (local, remote) if local.get("modified", "") > remote.get("modified", "") else (remote, local)
+    merged = {**loser, **winner}
+    created = [e.get("created") for e in (local, remote) if e.get("created")]
+    if created:
+        merged["created"] = min(created)
+    return merged
+
+
+def merge(base: Registry, local: Registry, remote: Registry) -> Registry:
+    """Three-way merge, per entry, keyed by project name (contract §13.2).
+
+    NEVER last-writer-wins on the whole file: two devices editing DIFFERENT projects in one batch
+    window write the same file, and a whole-file rule silently discards one of them.
+    """
+    b, l, r = base.get("projects", {}), local.get("projects", {}), remote.get("projects", {})
+    out: Dict[str, dict] = {}
+
+    for name in set(b) | set(l) | set(r):
+        in_base, in_local, in_remote = name in b, name in l, name in r
+
+        if not in_base:
+            if in_local and in_remote:
+                out[name] = _merge_entry(l[name], r[name])          # row 3
+            elif in_local:
+                out[name] = dict(l[name])                            # row 1
+            else:
+                out[name] = dict(r[name])                            # row 2
+            continue
+
+        if in_local and in_remote:
+            out[name] = _merge_entry(l[name], r[name])               # row 5
+        elif in_local:
+            # deleted remotely; local edit beats the delete, an untouched local does not (row 6)
+            if l[name] != b[name]:
+                out[name] = dict(l[name])
+        elif in_remote:
+            if r[name] != b[name]:
+                out[name] = dict(r[name])                            # row 6
+        # deleted on both sides -> gone (row 4 with the delete on either side)
+
+    return {"schema": SCHEMA, "projects": out}
