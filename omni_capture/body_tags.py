@@ -21,8 +21,8 @@ Grammar (kept identical to the phone parser — do not drift the two):
 """
 import re
 
-_FENCED_CODE = re.compile(r"```[\s\S]*?```")
-_INLINE_CODE = re.compile(r"`[^`\n]*`")
+from projects import _FENCED_CODE, _INLINE_CODE, is_structural_tag
+
 _TAG_TOKEN = re.compile(r"(^|\s)#([A-Za-z0-9_@][A-Za-z0-9_/@:-]*)")
 _HEX_COLOR = re.compile(r"^[0-9A-Fa-f]{3}$|^[0-9A-Fa-f]{6}$")
 
@@ -102,7 +102,9 @@ def attachment_ref_text(note_id: str, filename: str, alt: str | None = None) -> 
 
 def extract_body_tags(body: str) -> list[str]:
     """Extract literal `#tag` tokens from a note body. Returns tags in first-seen order, deduped,
-    with the leading `#` stripped."""
+    with the leading `#` stripped. Structural tags (`sys`, `sys/*`, `project@*`) are excluded —
+    they say where a note is FILED, not what it's about, so they never belong in the derived
+    `tags:` cache (contract v3.1 §1, §1.3; see projects.is_structural_tag)."""
     scanned = _FENCED_CODE.sub(" ", body)
     scanned = _INLINE_CODE.sub(" ", scanned)
     seen: set[str] = set()
@@ -110,6 +112,8 @@ def extract_body_tags(body: str) -> list[str]:
     for m in _TAG_TOKEN.finditer(scanned):
         tag = m.group(2)
         if _HEX_COLOR.match(tag):
+            continue
+        if is_structural_tag(tag):
             continue
         if tag not in seen:
             seen.add(tag)

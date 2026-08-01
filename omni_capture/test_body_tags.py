@@ -99,6 +99,28 @@ def test_excludes_mid_word_hash():
     assert extract_body_tags("word#notag") == []
 
 
+# Task 7: structural tags (contract v3.1 §1, §1.3) are excluded from the derived `tags:` cache.
+def test_project_tag_is_excluded_from_the_derived_cache():
+    # `tags:` holds DESCRIPTIVE vocabulary only — what a note is ABOUT. `#project@x` is
+    # STRUCTURAL: it says where the note is FILED.
+    tags = extract_body_tags("#research and #project@cancer-imaging")
+    assert "research" in tags
+    assert not any(t.startswith("project@") for t in tags)
+
+
+def test_sys_tags_are_excluded():
+    assert "sys/llm-failed" not in extract_body_tags("#sys/llm-failed #real")
+
+
+def test_gtd_context_tags_still_survive():
+    # `@` is in the token charset FOR these; the exclusion must not over-reach.
+    assert "@work" in extract_body_tags("call them #@work")
+
+
+def test_a_tag_merely_starting_with_project_is_not_structural():
+    assert "projects" in extract_body_tags("#projects")
+
+
 # v2.2 (data-model §1.2): inline attachment refs → derived `attachments:`. Mirrors the phone's
 # parseBodyAttachmentRefs vectors so the two derivations never drift.
 def test_attachment_ref_extracts_filename():
