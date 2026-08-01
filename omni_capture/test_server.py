@@ -38,7 +38,7 @@ from config import Config
 from models import EnrichedPayload, CaptureOutput
 import llm_engine
 from summarizer import digest_chunks, _ChunkDigest
-from storage_engine import write_to_vault, list_scratchpad, write_category_description
+from storage_engine import write_to_vault, list_scratchpad
 from reminders import (
     create_reminder,
     list_reminders,
@@ -614,6 +614,14 @@ def test_resolve_delete_prompt_unknown_id_404_and_bad_choice_400():
 
 
 class TestApproveAutoDescribe(unittest.TestCase):
+    """Projects S1: approving into a NEW project registers it in `.projects.toml` with a
+    generated description. There is no `.category.toml` and no folder-creation step any
+    more -- a project's directory appears because a note was filed into it."""
+
+    def _projects(self, vault):
+        import project_registry
+        return project_registry.load(vault).get("projects", {})
+
     def test_toggle_on_writes_description(self):
         with tempfile.TemporaryDirectory() as td:
             vault = Path(td) / "vault"
@@ -622,15 +630,16 @@ class TestApproveAutoDescribe(unittest.TestCase):
             client, cfg = _client_inbox(vault, auto_describe=True)
 
             import storage_engine
-            with mock.patch.object(storage_engine, "generate_category_description",
+            with mock.patch.object(storage_engine, "generate_project_description",
                                     lambda *a, **k: "Notes about plants and gardening."), \
                  mock.patch("config.get_config", lambda: cfg):
-                r = client.post(f"/inbox/{note_id}/approve", json={"target_category": "Botany"})
+                r = client.post(f"/inbox/{note_id}/approve", json={"target_project": "Botany"})
             self.assertEqual(r.status_code, 200)
 
-            cat_toml = vault / "Botany" / ".category.toml"
-            self.assertTrue(cat_toml.exists())
-            self.assertIn("Notes about plants", cat_toml.read_text())
+            entry = self._projects(vault)["Botany"]
+            self.assertIn("Notes about plants", entry["description"])
+            # The note landed in the project it was approved into, at depth 1.
+            self.assertEqual(Path(r.json()["path"]).parent.name, "Botany")
 
     def test_toggle_off_does_not_write_description(self):
         with tempfile.TemporaryDirectory() as td:
@@ -640,34 +649,58 @@ class TestApproveAutoDescribe(unittest.TestCase):
             client, cfg = _client_inbox(vault, auto_describe=False)
 
             import storage_engine
-            with mock.patch.object(storage_engine, "generate_category_description",
+            with mock.patch.object(storage_engine, "generate_project_description",
                                     lambda *a, **k: "Should not be written."), \
                  mock.patch("config.get_config", lambda: cfg):
-                r = client.post(f"/inbox/{note_id}/approve", json={"target_category": "Botany"})
+                r = client.post(f"/inbox/{note_id}/approve", json={"target_project": "Botany"})
             self.assertEqual(r.status_code, 200)
 
-            cat_toml = vault / "Botany" / ".category.toml"
-            self.assertFalse(cat_toml.exists())
+            # Registered (the user chose it) but with NO description.
+            self.assertEqual(self._projects(vault)["Botany"]["description"], "")
 
-    def test_approve_into_existing_category_skips_describe_even_if_on(self):
+    def test_approve_into_existing_project_skips_describe_even_if_on(self):
         with tempfile.TemporaryDirectory() as td:
             vault = Path(td) / "vault"
-            (vault / "Botany").mkdir(parents=True)
+            vault.mkdir()
+            import project_registry
+            project_registry.save(vault, {"schema": 1, "projects": {
+                "Botany": {"description": "Already described."},
+            }})
             note_id = _seed_inbox(vault)
             client, cfg = _client_inbox(vault, auto_describe=True)
 
             import storage_engine
-            with mock.patch.object(storage_engine, "generate_category_description",
+            with mock.patch.object(storage_engine, "generate_project_description",
                                     lambda *a, **k: "Should not be written."), \
                  mock.patch("config.get_config", lambda: cfg):
-                r = client.post(f"/inbox/{note_id}/approve", json={"target_category": "Botany"})
+                r = client.post(f"/inbox/{note_id}/approve", json={"target_project": "Botany"})
             self.assertEqual(r.status_code, 200)
+            self.assertEqual(self._projects(vault)["Botany"]["description"], "Already described.")
 
-            cat_toml = vault / "Botany" / ".category.toml"
-            self.assertFalse(cat_toml.exists())
+    def test_approve_with_no_target_lands_loose_and_is_a_success(self):
+        """The whole point of the rework: there is no "no valid destination" failure."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            note_id = _seed_inbox(vault)
+            client, cfg = _client_inbox(vault, auto_describe=False)
+            with mock.patch("config.get_config", lambda: cfg):
+                r = client.post(f"/inbox/{note_id}/approve", json={})
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json()["project"], "_loose")
+
+    def test_approve_rejects_an_ineligible_project_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            note_id = _seed_inbox(vault)
+            client, cfg = _client_inbox(vault, auto_describe=False)
+            with mock.patch("config.get_config", lambda: cfg):
+                r = client.post(f"/inbox/{note_id}/approve", json={"target_project": "../escape"})
+            self.assertEqual(r.status_code, 400)
 
 
-class TestSuggestCategories(unittest.TestCase):
+class TestSuggestProjects(unittest.TestCase):
     def test_suggest_returns_suggestions(self):
         with tempfile.TemporaryDirectory() as td:
             vault = Path(td) / "vault"
@@ -676,9 +709,9 @@ class TestSuggestCategories(unittest.TestCase):
             client, cfg = _client_inbox(vault, auto_describe=False)
 
             import storage_engine
-            with mock.patch.object(storage_engine, "suggest_category_names", lambda *a, **k: ["Botany", "Gardening"]), \
+            with mock.patch.object(storage_engine, "suggest_project_names", lambda *a, **k: ["Botany", "Gardening"]), \
                  mock.patch("config.get_config", lambda: cfg):
-                r = client.get(f"/inbox/{note_id}/suggest-categories")
+                r = client.get(f"/inbox/{note_id}/suggest-projects")
             self.assertEqual(r.status_code, 200)
             self.assertEqual(r.json()["suggestions"], ["Botany", "Gardening"])
 
@@ -688,7 +721,7 @@ class TestSuggestCategories(unittest.TestCase):
             vault.mkdir()
             client, cfg = _client_inbox(vault, auto_describe=False)
             with mock.patch("config.get_config", lambda: cfg):
-                r = client.get("/inbox/does-not-exist/suggest-categories")
+                r = client.get("/inbox/does-not-exist/suggest-projects")
             self.assertEqual(r.status_code, 404)
 
     def test_suggest_llm_failure_returns_empty_list(self):
@@ -702,7 +735,7 @@ class TestSuggestCategories(unittest.TestCase):
             with mock.patch.object(llm_engine, "summarize",
                                     mock.Mock(side_effect=llm_engine.SummarizationError("boom"))), \
                  mock.patch("config.get_config", lambda: cfg):
-                r = client.get(f"/inbox/{note_id}/suggest-categories")
+                r = client.get(f"/inbox/{note_id}/suggest-projects")
             self.assertEqual(r.status_code, 200)
             self.assertEqual(r.json()["suggestions"], [])
 
@@ -710,39 +743,40 @@ class TestSuggestCategories(unittest.TestCase):
 class TestAutoDescribeRealAsyncPath(unittest.TestCase):
     """
     Regression coverage for the "asyncio.run() cannot be called from a
-    running event loop" bug: generate_category_description()'s sync wrapper
+    running event loop" bug: generate_project_description()'s sync wrapper
     (llm_engine.summarize) ends in asyncio.run(), but it used to be invoked
-    directly from inside async routes (create_category, approve_inbox),
+    directly from inside async routes (create_project, approve_inbox),
     which already have a running loop -- asyncio.run() raised RuntimeError,
-    which generate_category_description's bare `except Exception` swallowed,
+    which generate_project_description's bare `except Exception` swallowed,
     so no description was ever written.
 
-    Unlike the tests above (which mock storage_engine.generate_category_description
+    Unlike the tests above (which mock storage_engine.generate_project_description
     directly and so never touch asyncio.run() at all), these mock only
-    llm_engine.summarize_async -- the real generate_category_description()
+    llm_engine.summarize_async -- the real generate_project_description()
     and the real summarize()/asyncio.run() wrapper still execute, through the
     real async route. They fail if that regression reappears.
     """
 
-    def test_create_category_real_async_path_writes_description(self):
+    def test_create_project_real_async_path_writes_description(self):
         with tempfile.TemporaryDirectory() as td:
             vault = Path(td) / "vault"
             vault.mkdir()
             client, cfg = _client_inbox(vault, auto_describe=True)
 
-            import llm_engine
+            import llm_engine, project_registry
 
             async def fake_summarize_async(*_a, **_k):
                 return "Notes about plants and gardening."
 
             with mock.patch.object(llm_engine, "summarize_async", fake_summarize_async), \
                  mock.patch("config.get_config", lambda: cfg):
-                r = client.post("/vault/categories", json={"name": "Botany"})
+                r = client.post("/vault/projects", json={"name": "Botany"})
             self.assertEqual(r.status_code, 200)
-
-            cat_toml = vault / "Botany" / ".category.toml"
-            self.assertTrue(cat_toml.exists())
-            self.assertIn("Notes about plants", cat_toml.read_text())
+            self.assertIn("Notes about plants",
+                          project_registry.load(vault)["projects"]["Botany"]["description"])
+            # Registering a project creates NO directory (contract: the folder appears
+            # when a note is first filed into it).
+            self.assertFalse((vault / "Botany").exists())
 
     def test_approve_inbox_real_async_path_writes_description(self):
         with tempfile.TemporaryDirectory() as td:
@@ -751,37 +785,99 @@ class TestAutoDescribeRealAsyncPath(unittest.TestCase):
             note_id = _seed_inbox(vault)
             client, cfg = _client_inbox(vault, auto_describe=True)
 
-            import llm_engine
+            import llm_engine, project_registry
 
             async def fake_summarize_async(*_a, **_k):
                 return "Notes about plants and gardening."
 
             with mock.patch.object(llm_engine, "summarize_async", fake_summarize_async), \
                  mock.patch("config.get_config", lambda: cfg):
-                r = client.post(f"/inbox/{note_id}/approve", json={"target_category": "Botany"})
+                r = client.post(f"/inbox/{note_id}/approve", json={"target_project": "Botany"})
+            self.assertEqual(r.status_code, 200)
+            self.assertIn("Notes about plants",
+                          project_registry.load(vault)["projects"]["Botany"]["description"])
+
+
+class TestProjectRegistryCrud(unittest.TestCase):
+    """The CRUD half of Task 13: delete never touches a note, rename never rewrites a
+    user-authored body."""
+
+    def _client(self, vault):
+        import server
+        server._get_vault_root = lambda: vault  # type: ignore[attr-defined]
+        return TestClient(server.app, headers=_AUTH)
+
+    def _seed(self, vault, project="Botany"):
+        import project_registry
+        vault.mkdir(parents=True, exist_ok=True)
+        project_registry.save(vault, {"schema": 1, "projects": {project: {"description": "d"}}})
+        d = vault / project
+        d.mkdir(exist_ok=True)
+        return d
+
+    def test_delete_removes_the_entry_only_and_sends_notes_loose(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            d = self._seed(vault)
+            note = d / "n.md"
+            note.write_text("---\ncreated: x\n---\n\nbody\n\ntags: #project@Botany\n", encoding="utf-8")
+            before = note.read_bytes()
+
+            r = self._client(vault).delete("/vault/projects/Botany")
             self.assertEqual(r.status_code, 200)
 
-            cat_toml = vault / "Botany" / ".category.toml"
-            self.assertTrue(cat_toml.exists())
-            self.assertIn("Notes about plants", cat_toml.read_text())
+            moved = vault / "_loose" / "n.md"
+            self.assertTrue(moved.exists(), "a dangling note must go loose, never be deleted")
+            self.assertEqual(moved.read_bytes(), before, "delete must not edit a single byte")
+            self.assertFalse(d.exists(), "the emptied project directory is removed by the tidy pass")
 
-
-class TestWriteCategoryDescription(unittest.TestCase):
-    def test_write_then_clear_preserves_other_keys(self):
+    def test_rename_retags_machine_bodies_and_only_offers_user_notes(self):
         with tempfile.TemporaryDirectory() as td:
-            cat_dir = Path(td) / "Botany"
-            cat_dir.mkdir()
-            (cat_dir / ".category.toml").write_text('format = "custom"\n', encoding="utf-8")
+            vault = Path(td) / "vault"
+            d = self._seed(vault)
+            capture = d / "cap.md"
+            capture.write_text("---\ncreated: x\n---\n\ncap\n\ntags: #project@Botany\n", encoding="utf-8")
+            user_note = d / "mine.md"
+            user_note.write_text("---\norigin: note\nid: 01N\n---\n\nMy own words #project@Botany\n",
+                                 encoding="utf-8")
+            user_before = user_note.read_bytes()
 
-            write_category_description(cat_dir, "Plants and gardening notes.")
-            text = (cat_dir / ".category.toml").read_text()
-            self.assertIn("custom", text)
-            self.assertIn("Plants and gardening", text)
+            r = self._client(vault).patch("/vault/projects/Botany", json={"new_name": "Plants"})
+            self.assertEqual(r.status_code, 200, r.text)
+            body = r.json()
+            self.assertEqual(body["retagged"], 1)
+            self.assertEqual(body["offered"], ["Botany/mine.md"])
 
-            write_category_description(cat_dir, None)
-            text = (cat_dir / ".category.toml").read_text()
-            self.assertIn("custom", text)
-            self.assertNotIn("Plants and gardening", text)
+            import project_registry
+            entry = project_registry.load(vault)["projects"]["Plants"]
+            self.assertEqual(entry["renamed_from"], "Botany")
+
+            # The machine-authored capture followed the rename.
+            self.assertTrue((vault / "Plants" / "cap.md").exists())
+            # The user-authored note is byte-identical and still resolves, via renamed_from.
+            still = vault / "Plants" / "mine.md"
+            self.assertTrue(still.exists())
+            self.assertEqual(still.read_bytes(), user_before,
+                             "a user-authored body must never be rewritten unprompted")
+
+    def test_create_rejects_an_ineligible_name_and_a_duplicate(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            self._seed(vault)
+            client = self._client(vault)
+            self.assertEqual(client.post("/vault/projects", json={"name": "a/b"}).status_code, 400)
+            self.assertEqual(
+                client.post("/vault/projects", json={"name": "Botany", "description": "x"}).status_code, 409)
+
+    def test_description_patch_round_trips_and_404s(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            self._seed(vault)
+            client = self._client(vault)
+            r = client.patch("/vault/projects/Botany/description", json={"description": "  Plants.  "})
+            self.assertEqual(r.json()["description"], "Plants.")
+            self.assertEqual(client.patch("/vault/projects/Nope/description",
+                                          json={"description": "x"}).status_code, 404)
 
 
 # ============================================================================

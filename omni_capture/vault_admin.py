@@ -1,6 +1,6 @@
 """
 vault_admin.py - vault-administration endpoints extracted from server.py:
-category CRUD, full-text search, and capture statistics.
+project-registry CRUD, full-text search, and capture statistics.
 
 Split out of server.py (docs/ROADMAP.md: "Split server.py into jobs.py +
 vault_admin.py"). Mounted into server.app by server.py via
@@ -16,8 +16,8 @@ they did before the split.
 """
 from __future__ import annotations
 import re
-import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +26,8 @@ from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 
 import path_safety
+import project_registry
+import projects
 
 router = APIRouter()
 
@@ -40,13 +42,14 @@ def _srv():
 
 # -- Pydantic models -----------------------------------------------------------
 
-class CategoryCreate(BaseModel):
+class ProjectCreate(BaseModel):
     name: str
+    description: Optional[str] = None
 
-class CategoryRename(BaseModel):
+class ProjectRename(BaseModel):
     new_name: str
 
-class CategoryDescriptionPatch(BaseModel):
+class ProjectDescriptionPatch(BaseModel):
     description: Optional[str] = None  # None = clear description; str = set/update (max 500 chars)
 
 
@@ -58,6 +61,45 @@ class SetupFolder(BaseModel):
 class VaultSetupRequest(BaseModel):
     root: str
     folders: list[SetupFolder] = []
+
+
+# -- Registry helpers -----------------------------------------------------------
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def new_project_entry(description: Optional[str] = None) -> dict:
+    """A fresh registry entry (contract §13.1). `device` is "desktop" -- the same
+    origin vocabulary note frontmatter uses ("phone"/"desktop"/"shared")."""
+    from storage_engine import PROJECT_DESC_MAX_CHARS
+    now = _now_iso()
+    return {
+        "description": (description or "").strip()[:PROJECT_DESC_MAX_CHARS],
+        "created": now,
+        "modified": now,
+        "device": "desktop",
+    }
+
+
+def _require_eligible(name: str) -> str:
+    """Registry-eligible names only (contract §1.3). Anything else would be dangling --
+    i.e. loose -- the instant it were accepted, so it is rejected at the door."""
+    name = (name or "").strip()
+    if not projects.is_valid_project_name(name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name!r} is not a valid project name (letters, digits, '-' and '_'; "
+                   "must start with a letter or digit).",
+        )
+    return name
+
+
+def _project_file_count(root: Path, name: str) -> int:
+    d = root / name
+    if not d.is_dir():
+        return 0
+    return len([f for f in d.iterdir() if f.suffix == ".md"])
 
 
 # -- Vault-path safety helpers --------------------------------------------------
@@ -87,35 +129,36 @@ def _safe_category_dir(root: Path, name: str) -> Path:
 # -- Vault management endpoints -----------------------------------------------
 
 @router.get("/vault/categories")
-async def list_categories():
-    """ISS-014: dot-prefixed folders (`.omni_capture`, `.sync`) are internal
-    pipeline/sync bookkeeping, never user categories -- they must never reach
-    this list at all (no Rename/Delete affordance should exist for them).
+async def list_vault_folders():
+    """The vault's top-level DIRECTORY listing (Library's folder browser), not the
+    project registry -- `GET /vault/projects` is that. Both exist because they answer
+    different questions: this one shows what is on disk (including `_scratchpad` and
+    `_loose`, which are not projects and never appear in the registry).
 
-    Deliberately NOT reusing storage_engine._SYSTEM_FOLDER_PREFIXES ("_", ".")
-    wholesale: that constant also excludes the scratchpad folder by its "_"
-    prefix, which is correct for discover_categories (the LLM must never pick
-    scratchpad as a routing target) but wrong here -- VaultManager's Library
-    view surfaces `_scratchpad` in this same list under a friendlier "Needs
-    review" label, so it must keep coming through this endpoint. Only the
-    dot-prefix half of that exclusion applies to a CRUD listing."""
+    ISS-014: dot-prefixed folders (`.omni_capture`, `.sync`) are internal
+    pipeline/sync bookkeeping and must never reach this list at all.
+
+    ponytail: the route path and response key still say "categories" so the gui keeps
+    typechecking; Task 14 renames both to `/vault/folders` in one gui+server sweep.
+    Descriptions now come from the registry (`.category.toml` is gone), so a folder
+    that is not a registered project simply has none.
+    """
     root = _srv()._get_vault_root()
     if not root.exists():
         return {"categories": [], "vault_root": str(root)}
-    from storage_engine import read_category_config
+    registry = project_registry.load(root).get("projects", {})
     result = []
     for entry in sorted(root.iterdir()):
         if entry.is_dir() and not entry.name.startswith("."):
             md_files = [f for f in entry.iterdir() if f.suffix == ".md"]
-            cfg = read_category_config(entry)
             result.append({
                 "name": entry.name,
                 "file_count": len(md_files),
                 # SRV-24: was `"path": str(entry)` -- an absolute filesystem path
-                # nothing consumed (the GUI addresses categories by `name`) and that
+                # nothing consumed (the GUI addresses folders by `name`) and that
                 # merely restated `vault_root` + `name`. Vault-relative now.
                 "rel_path": entry.name,
-                "description": cfg.get("description", None),
+                "description": (registry.get(entry.name) or {}).get("description") or None,
             })
     return {"categories": result, "vault_root": str(root)}
 
@@ -165,8 +208,9 @@ async def check_vault_setup(root: str):
     p = Path(root).expanduser()
     if not p.exists():
         return {"exists": False, "has_categories": False, "categories": []}
-    from storage_engine import discover_categories
-    cats = discover_categories(p)
+    # "Already set up" now means "has projects registered", not "has folders on disk":
+    # a folder is a consequence of filing a note, never the definition of a project.
+    cats = sorted(project_registry.load(p).get("projects", {}))
     return {"exists": True, "has_categories": len(cats) > 0, "categories": cats}
 
 
@@ -175,102 +219,219 @@ async def setup_vault(body: VaultSetupRequest):
     """First-run vault-setup wizard (ISS-002/P-WIZARD). Sets the vault root
     (same write path as PATCH /config, see _set_vault_root_config above),
     eagerly runs init_vault() so the scratchpad + .omni_capture dirs exist
-    before the very first capture, and creates every chosen starter folder
-    WITH its .category.toml description written at creation time
-    (write_category_description) -- a fresh vault must never ship a
-    description-less folder; ISS-002's root cause was exactly that empty
-    category_descriptions dict reaching the LLM. Vault categories are never
-    hardcoded: this only SEEDS folders on disk, models.py's category enum is
-    still built live from whatever folders actually exist at capture time."""
+    before the very first capture, and REGISTERS every chosen starter project
+    with its description -- a fresh vault must never ship a description-less
+    project; ISS-002's root cause was exactly an empty description set reaching
+    the LLM. No directory is created for a project here: a project's folder
+    appears the first time a note is filed into it."""
     if not Path(body.root).is_absolute():
         raise HTTPException(status_code=400, detail="root must be an absolute path")
     root = Path(body.root).expanduser()
 
     _set_vault_root_config(root)
 
-    from storage_engine import init_vault, write_category_description
+    from storage_engine import init_vault
     init_vault(root)
 
     created = []
     for folder in body.folders:
-        folder_dir = _safe_category_dir(root, folder.name)
-        folder_dir.mkdir(parents=True, exist_ok=True)
-        desc = write_category_description(folder_dir, folder.description)
-        created.append({"name": folder_dir.name, "description": desc})
+        name = _require_eligible(folder.name)
+        project_registry.update(
+            root, lambda r, n=name, d=folder.description: r["projects"].__setitem__(n, new_project_entry(d))
+        )
+        created.append({"name": name, "description": (folder.description or "").strip() or None})
 
     return {"ok": True, "root": str(root), "folders": created}
 
 
-@router.post("/vault/categories")
-async def create_category(body: CategoryCreate):
+# -- Project-registry CRUD ------------------------------------------------------
+#
+# A project EXISTS in `.projects.toml` and nowhere else. Its directory is created the
+# first time a note is filed into it, and removed by the tidy pass when it empties --
+# no endpoint here ever creates or deletes a directory, and none of them ever touches a
+# note's bytes except the rename below, under an explicit provenance gate.
+
+@router.get("/vault/projects")
+async def list_projects():
+    root = _srv()._get_vault_root()
+    reg = project_registry.load(root).get("projects", {})
+    return {
+        "projects": [
+            {
+                "name": name,
+                "description": entry.get("description") or None,
+                "renamed_from": entry.get("renamed_from"),
+                "created": entry.get("created", ""),
+                "modified": entry.get("modified", ""),
+                "file_count": _project_file_count(root, name),
+            }
+            for name, entry in sorted(reg.items())
+        ],
+        "vault_root": str(root),
+    }
+
+
+@router.post("/vault/projects")
+async def create_project(body: ProjectCreate):
     from config import get_config
     root = _srv()._get_vault_root()
-    new_dir = _safe_category_dir(root, body.name)
-    name = new_dir.name
-    if new_dir.exists():
+    name = _require_eligible(body.name)
+
+    reg = project_registry.load(root).get("projects", {})
+    if name in reg:
         raise HTTPException(status_code=409, detail=f"'{name}' already exists.")
-    new_dir.mkdir(parents=True, exist_ok=False)
+    # A `renamed_from` still pointing at this name reserves it (contract §13.3): notes
+    # carrying the old tag would silently join a different project.
+    if any(e.get("renamed_from") == name for e in reg.values()):
+        raise HTTPException(status_code=409, detail=f"'{name}' is reserved by a recent rename.")
 
-    description = None
-    if get_config().capture.auto_describe_new_folders:
-        from storage_engine import generate_category_description, write_category_description
-        # generate_category_description() ends in a blocking asyncio.run(), which
-        # raises if called from a thread that already has a running event loop
-        # (true here -- this is an async route). Run it on a worker thread instead.
-        generated = await anyio.to_thread.run_sync(generate_category_description, name)
-        if generated:
-            description = write_category_description(new_dir, generated)
+    description = body.description
+    if description is None and get_config().capture.auto_describe_new_folders:
+        from storage_engine import generate_project_description
+        # generate_project_description() ends in a blocking asyncio.run(), which raises
+        # from a thread that already has a running event loop (true here -- async route).
+        description = await anyio.to_thread.run_sync(generate_project_description, name)
 
-    return {"ok": True, "name": name, "path": str(new_dir), "description": description}
+    project_registry.update(root, lambda r: r["projects"].__setitem__(name, new_project_entry(description)))
+    return {"ok": True, "name": name, "description": (description or "").strip() or None}
 
-@router.patch("/vault/categories/{name}")
-async def rename_category(name: str, body: CategoryRename):
-    root = _srv()._get_vault_root()
-    src = _safe_category_dir(root, name)
-    if not src.exists():
-        raise HTTPException(status_code=404, detail=f"'{name}' not found.")
-    dst = _safe_category_dir(root, body.new_name)
-    new_name = dst.name
-    if dst.exists():
-        raise HTTPException(status_code=409, detail=f"'{new_name}' already exists.")
-    src.rename(dst)
-    return {"ok": True, "old_name": name, "new_name": new_name}
 
-@router.patch("/vault/categories/{name}/description")
-async def update_category_description(name: str, body: CategoryDescriptionPatch):
-    """
-    Set or clear the LLM routing description for a category folder.
-
-    The description is persisted in <vault>/<category>/.category.toml under
-    the 'description' key.  This file is read by build_category_descriptions()
-    and injected verbatim into the LLM system prompt on every capture so the
-    model can route files more precisely.
+@router.patch("/vault/projects/{name}/description")
+async def update_project_description(name: str, body: ProjectDescriptionPatch):
+    """Set or clear a project's description -- the ONE thing the registry holds that
+    exists nowhere else (contract §13). It is injected verbatim into the LLM system
+    prompt on every capture, so the engine can route into it.
 
     Pass description=null (JSON null) or an empty string to clear it.
-    Maximum length: 500 characters.
     """
-    from storage_engine import write_category_description
+    from storage_engine import PROJECT_DESC_MAX_CHARS
     root = _srv()._get_vault_root()
-    target = _safe_category_dir(root, name)
-    if not target.exists():
+    if name not in project_registry.load(root).get("projects", {}):
         raise HTTPException(status_code=404, detail=f"'{name}' not found.")
 
-    desc = write_category_description(target, body.description)
-    return {"ok": True, "name": name, "description": desc}
+    desc = (body.description or "").strip()[:PROJECT_DESC_MAX_CHARS]
+
+    def _set(reg):
+        entry = reg["projects"][name]
+        entry["description"] = desc
+        entry["modified"] = _now_iso()
+
+    project_registry.update(root, _set)
+    return {"ok": True, "name": name, "description": desc or None}
 
 
-@router.delete("/vault/categories/{name}")
-async def delete_category(name: str, force: bool = False):
+def _is_user_authored(text: str) -> bool:
+    """`origin: note` marks a body the USER wrote in an editor (desktop or phone) --
+    sacred, never machine-rewritten. Everything else in the vault is a pipeline capture
+    whose body this device authored end to end."""
+    m = re.match(r"\A---\n(.*?)\n---", text, re.DOTALL)
+    return bool(re.search(r"^origin:[ \t]*note[ \t]*$", m.group(1) if m else text[:500], re.MULTILINE))
+
+
+@router.patch("/vault/projects/{name}")
+async def rename_project(name: str, body: ProjectRename):
+    """Rename a project.
+
+    The entry keeps `renamed_from: <old>` so every note still carrying the OLD body tag
+    keeps resolving to this project while the retag rolls out (contract §13.3) -- no note
+    is ever loose mid-rename, and nothing depends on the peer being reachable.
+
+    Bodies are then retagged UNDER THE PROVENANCE GATE: machine-authored captures are
+    rewritten with no prompt (this device authored every byte of them), user-authored
+    notes (`origin: note`) are only OFFERED back to the caller in `offered`. A
+    user-authored body is NEVER rewritten here.
+    """
     root = _srv()._get_vault_root()
-    target = _safe_category_dir(root, name)
-    if not target.exists():
+    new_name = _require_eligible(body.new_name)
+
+    reg = project_registry.load(root).get("projects", {})
+    if name not in reg:
         raise HTTPException(status_code=404, detail=f"'{name}' not found.")
-    files = [f for f in target.iterdir() if f.is_file()]
-    if files and not force:
-        raise HTTPException(status_code=409,
-            detail=f"'{name}' contains {len(files)} file(s). Pass force=true to delete anyway.")
-    shutil.rmtree(target)
-    return {"ok": True, "deleted": name}
+    if new_name != name and new_name in reg:
+        raise HTTPException(status_code=409, detail=f"'{new_name}' already exists.")
+    if new_name == name:
+        return {"ok": True, "old_name": name, "new_name": name, "retagged": 0, "offered": []}
+
+    def _rename(r):
+        entry = dict(r["projects"].pop(name))
+        entry["renamed_from"] = name
+        entry["modified"] = _now_iso()
+        r["projects"][new_name] = entry
+
+    project_registry.update(root, _rename)
+
+    retagged = 0
+    offered: list[str] = []
+    old_tag, new_tag = f"#project@{name}", f"#project@{new_name}"
+    for path in _filed_notes(root):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if projects.parse_project_tag(text) != name:
+            continue
+        rel = str(path.relative_to(root)).replace("\\", "/")
+        if _is_user_authored(text):
+            offered.append(rel)
+            continue
+        path.write_text(text.replace(old_tag, new_tag), encoding="utf-8")
+        retagged += 1
+
+    _tidy(root)
+    return {"ok": True, "old_name": name, "new_name": new_name,
+            "retagged": retagged, "offered": offered}
+
+
+@router.delete("/vault/projects/{name}")
+async def delete_project(name: str):
+    """Remove a project from the REGISTRY ONLY (contract §1.3).
+
+    It never deletes, trashes, moves or edits a note. Every note still tagged with the
+    removed name is now dangling, which reads as LOOSE by the one resolution rule, and
+    the tidy pass below moves those notes into `_loose/` and removes the emptied
+    directory. Nothing is lost and nothing is unreachable: retagging is a body edit the
+    user makes, or re-creating the project restores every note to it.
+    """
+    root = _srv()._get_vault_root()
+    if name not in project_registry.load(root).get("projects", {}):
+        raise HTTPException(status_code=404, detail=f"'{name}' not found.")
+
+    project_registry.update(root, lambda r: r["projects"].pop(name, None))
+    result = _tidy(root)
+    return {"ok": True, "deleted": name, "went_loose": result.moved}
+
+
+# Top-level folders the tidy pass must never touch. A note in the review inbox, the
+# trash or the phone's drop box is NOT mis-filed -- it is exactly where it belongs, and
+# moving it into `_loose/` on a project delete would silently un-trash or un-inbox it.
+# `_loose` itself IS tidyable (a note can move out of it when its project appears).
+_TIDY_EXEMPT = {"_scratchpad", "_trash", "_attachments", "_mobile_inbox"}
+
+
+def _filed_notes(root: Path):
+    """Every note the tidy pass owns: `<dir>/<note>.md` at depth 1, excluding the
+    exempt folders and any dot-prefixed bookkeeping directory."""
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir() or entry.name.startswith(".") or entry.name in _TIDY_EXEMPT:
+            continue
+        for path in sorted(entry.iterdir()):
+            if path.is_file() and path.suffix == ".md":
+                yield path
+
+
+def _tidy(root: Path):
+    """Re-file every note into the directory its tag now implies, and drop directories
+    the move emptied. Desktop alone re-paths a file (project_tidy.py's whole premise)."""
+    import project_tidy
+    entries = []
+    for path in _filed_notes(root):
+        try:
+            entries.append(project_tidy.NoteLoc(path, path.read_text(encoding="utf-8")))
+        except (OSError, UnicodeDecodeError):
+            continue
+    reg = project_registry.load(root)
+    return project_tidy.apply_tidy(root, project_tidy.plan_tidy(entries, root, reg))
+
 
 @router.get("/vault/categories/{name}/files")
 async def list_category_files(name: str):

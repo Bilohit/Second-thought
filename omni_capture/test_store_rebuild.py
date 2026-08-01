@@ -776,15 +776,27 @@ def test_deleting_captures_db_in_process_heals_init_db(vault: Path):
 # the ledger's interaction with the OTHER stores and the startup path.
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _finance_capture(content: str, filename: str) -> CaptureOutput:
-    return CaptureOutput(
-        category="Finance",
+def _finance_capture(content: str, filename: str = "expenses") -> CaptureOutput:
+    """A capture filed into the `Finance` PROJECT. `_LEDGER_FILES` (the hardcoded
+    `{"Finance": "Expenses.md"}` map) is deleted in Projects S1; the N->1 shape these
+    tests need now comes from the ordinary same-file append path, which is what a real
+    running ledger looks like under projects."""
+    out = CaptureOutput(
         suggested_filename=filename,
         markdown_content=content,
         key_signals=["expense"],
         confidence=0.95,
         requires_new_category=False,
     )
+    out.project = "Finance"
+    return out
+
+
+def _register_finance(vault: Path) -> None:
+    import project_registry
+    reg = project_registry.load(vault)
+    reg["projects"]["Finance"] = {"description": ""}
+    project_registry.save(vault, reg)
 
 
 def test_dedup_ledger_is_auto_rebuilt_by_the_diff_sync_path(vault: Path):
@@ -862,10 +874,11 @@ def test_dedup_ledger_keys_are_recovered_from_the_vault_files(vault: Path):
         (storage_engine.py:944/980/1006/1052) — NOT the bytes that land in the
         .md. The written body goes through _try_inject_wikilinks +
         _postprocess_content first, and frontmatter is added on top.
-      * Ledger categories (storage_engine.py:515 _LEDGER_FILES = {"Finance":
-        "Expenses.md"}) and smart-merge append MANY captures into ONE file, so the
-        mapping is N hashes -> 1 path. A file scan sees 1 file and can never
-        recover the N distinct source texts that produced it.
+      * The same-file append path and smart-merge fold MANY captures into ONE file,
+        so the mapping is N hashes -> 1 path. A file scan sees 1 file and can never
+        recover the N distinct source texts that produced it. (Pre-projects this was
+        also forced by `_LEDGER_FILES = {"Finance": "Expenses.md"}`, deleted in s125
+        item 5 -- the N->1 shape it created is reproduced here without it.)
 
     So the fix is not to re-key but to PERSIST the key into the note's
     `capture_keys` frontmatter (data-model §1.1) at register time. This test pins
@@ -873,18 +886,18 @@ def test_dedup_ledger_keys_are_recovered_from_the_vault_files(vault: Path):
     the vault alone now regenerates the ledger — including the N->1 case that no
     re-keying scheme could have satisfied.
     """
-    (vault / "Finance").mkdir(parents=True, exist_ok=True)
+    _register_finance(vault)
 
-    p1 = se.write_to_vault(_finance_capture("Coffee 4.50 at the corner place", "coffee"),
+    p1 = se.write_to_vault(_finance_capture("Coffee 4.50 at the corner place"),
                            vault_root=vault)
-    p2 = se.write_to_vault(_finance_capture("Train ticket 12.00 to the coast", "train"),
+    p2 = se.write_to_vault(_finance_capture("Train ticket 12.00 to the coast"),
                            vault_root=vault)
 
     # N captures -> 1 ledger file.
-    assert p1 == p2 == vault / "Finance" / "Expenses.md"
+    assert p1 == p2 == vault / "Finance" / "expenses.md"
 
     ledger = json.loads(_store_paths(vault)["dedup_index.json"].read_text(encoding="utf-8"))
-    finance_keys = [k for k, v in ledger.items() if v.endswith("Expenses.md")]
+    finance_keys = [k for k, v in ledger.items() if v.endswith("expenses.md")]
     assert len(finance_keys) == 2, "two captures must hold two distinct dedup keys"
 
     # Half 1: the key is still NOT recomputable from the file's bytes. This is the
@@ -905,10 +918,10 @@ def test_dedup_ledger_keys_are_recovered_from_the_vault_files(vault: Path):
     _store_paths(vault)["dedup_index.json"].unlink()
     assert dedup.rebuild_dedup_index(vault) >= 2
     assert dedup.check_duplicate("Coffee 4.50 at the corner place", None, vault) == str(
-        Path("Finance") / "Expenses.md"
+        Path("Finance") / "expenses.md"
     )
     assert dedup.check_duplicate("Train ticket 12.00 to the coast", None, vault) == str(
-        Path("Finance") / "Expenses.md"
+        Path("Finance") / "expenses.md"
     )
 
 
@@ -917,8 +930,8 @@ def test_dedup_ledger_loss_is_non_destructive_to_the_vault(vault: Path):
     never a byte of user content. storage_engine also re-validates a dedup hit
     against the file's real current category before trusting it (dedup.py:9-12),
     so the ledger is correctly non-authoritative."""
-    (vault / "Finance").mkdir(parents=True, exist_ok=True)
-    se.write_to_vault(_finance_capture("Coffee 4.50", "coffee"), vault_root=vault)
+    _register_finance(vault)
+    se.write_to_vault(_finance_capture("Coffee 4.50"), vault_root=vault)
     before = _snapshot_vault(vault)
 
     _store_paths(vault)["dedup_index.json"].unlink()

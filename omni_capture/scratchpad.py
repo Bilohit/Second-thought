@@ -21,7 +21,7 @@ import re
 import sys
 import uuid
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from models import CaptureOutput
 from frontmatter import strip_frontmatter
@@ -84,15 +84,14 @@ def route_failed_vision(
     body = "\n\n".join(body_lines) + "\n"
 
     placeholder = CaptureOutput(
-        category="Unprocessed_Images",
         suggested_filename="unprocessed-image",
         markdown_content=body,
         rationale=reason,
         # ISS-019: namespaced under sys/ so this machine-written marker
         # never masquerades as a user content tag in the Tags browser --
-        # _signals_to_tags (storage_engine.py) passes "/" through untouched,
-        # so this becomes frontmatter tag "sys/vision-failed" and the
-        # Tags browser (TagsView.tsx) filters the whole sys/ namespace out.
+        # storage_engine._build_frontmatter passes sys/*-prefixed key_signals
+        # through untouched, so this becomes frontmatter tag "sys/vision-failed",
+        # and the Tags browser (TagsView.tsx) filters the whole sys/ namespace out.
         key_signals=["sys/vision-failed"],
         confidence=0.0,
         requires_new_category=False,
@@ -125,7 +124,7 @@ def route_failed_llm(
 
     Deliberately bypasses the classifier and semantic retrieval entirely --
     same rationale as route_failed_vision: the failure must never be
-    laundered into a confident (and wrong) category, and the raw captured
+    laundered into a confident (and wrong) project, and the raw captured
     text must not be lost.
     """
     from storage_engine import init_vault, _safe_stem, _write_new_file
@@ -138,7 +137,6 @@ def route_failed_llm(
     body = f"> [!warning] LLM enrichment failed\n> {reason}\n\n{enriched_text}\n"
 
     placeholder = CaptureOutput(
-        category="Unprocessed_Captures",
         suggested_filename="unprocessed-capture",
         markdown_content=body,
         rationale=reason,
@@ -228,44 +226,44 @@ def approve_scratchpad_item(
     note_id: str,
     vault_root: Path,
     scratchpad_folder: str = "_scratchpad",
-    target_category: Optional[str] = None,
+    target_project: Optional[str] = None,
 ) -> Path:
     """
-    Move a scratchpad note to its final category directory.
-    Strips status: needs_review and note_id fields.
+    File a scratchpad note into a project, or into `_loose` when no project is chosen.
+    Strips status: needs_review and note_id fields, and stamps the chosen project as
+    the note's `#project@<name>` body tag so every derived cache agrees with the move.
+
+    `target_project` is the user's choice; it is resolved through the SAME rule as every
+    other surface (project_registry.resolve_project), so an unregistered or ineligible
+    name is dangling and the note goes loose. That is a success, not an error -- there
+    is no longer any way for an approve to fail on "no such destination".
     """
-    from storage_engine import init_vault, _unique_file_path
+    from storage_engine import init_vault, _unique_file_path, _stamp_project_tag
+    from projects import note_dir_for, parse_project_tag
+    from project_registry import load as load_registry, resolve_project
 
     item = _find_scratchpad_item(note_id, vault_root, scratchpad_folder)
     if item is None:
         raise FileNotFoundError(f"Scratchpad item {note_id!r} not found.")
 
     text = item.read_text(encoding="utf-8", errors="ignore")
-    raw_category = target_category or _extract_frontmatter_field(text, "category") or "Uncategorised"
 
-    # SRV-03: this join is reached by TWO untrusted values -- the caller's
-    # `target_category`, and the note's own `category` frontmatter, which arrives from
-    # the Drive hub. Sanitizing only at the server route (server.py:1481) left this
-    # second source wide open and left every non-HTTP caller unguarded, so the guard
-    # belongs here, where all paths converge.
-    try:
-        dest_dir = safe_subdir(vault_root, raw_category)
-    except ValueError:
-        dest_dir = safe_subdir(vault_root, "Uncategorised")
-    category = dest_dir.name
+    # An explicit `target_project` is the user filing this item BY HAND, so it wins over
+    # whatever tag the capture happens to carry -- retagging a machine-authored capture
+    # body is exactly what approving means. With no target, any existing tag stands.
+    body = strip_frontmatter(text)
+    front = text[: len(text) - len(body)]   # strip_frontmatter only removes a LEADING block
+    current = parse_project_tag(body)
+    if target_project and current and current != target_project:
+        stamped_body = body.replace(f"#project@{current}", f"#project@{target_project}")
+    else:
+        stamped_body = _stamp_project_tag(body, target_project)
+    project = resolve_project(stamped_body, load_registry(vault_root))
 
-    # s114/d07 (P0): approving INTO the scratchpad is a dead loop, not a no-op. The old code
-    # happily "moved" the file into the folder it already sat in: it stripped status:needs_review
-    # and note_id, renamed the file, and left it in the scratchpad -- so list_scratchpad (which
-    # lists the folder, not the status) surfaced it again on every refresh, forever, while the GUI
-    # showed a success transition. Reachable because list_scratchpad reports every item's category
-    # as its PARENT FOLDER and /vault/categories deliberately includes the scratchpad, so the GUI's
-    # dropdown defaulted here. The guard belongs at this join, not at the HTTP route: every caller
-    # (server, CLI, tests, any future one) converges on this function.
-    if dest_dir.resolve() == _scratchpad_path(vault_root, scratchpad_folder).resolve():
-        raise ValueError(
-            f"{category!r} is the review folder -- approving needs a real destination category."
-        )
+    # SRV-03: safe_subdir stays on the join even though `note_dir_for` can only return a
+    # registry-eligible name or `_loose` -- defence in depth at the one place every caller
+    # (server, CLI, tests) converges, since this used to be reached by hub-supplied data.
+    dest_dir = safe_subdir(vault_root, note_dir_for(project))
 
     init_vault(vault_root, scratchpad_folder)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -275,7 +273,7 @@ def approve_scratchpad_item(
     if dest_path.exists():
         dest_path = _unique_file_path(dest_path)
 
-    updated = _rewrite_frontmatter_for_approval(text, category)
+    updated = _rewrite_frontmatter_for_approval(front + stamped_body)
     dest_path.write_text(updated, encoding="utf-8")
     item.unlink()
     print(f"[StorageEngine] scratchpad approved {note_id} -> {dest_path}")
@@ -354,32 +352,22 @@ def _extract_frontmatter_field(text: str, field: str) -> Optional[str]:
     return None
 
 
-# Per-category status a note should carry once approved out of the
-# scratchpad, in place of the needs_review flag it had while pending.
-# Watch_Later items track read/unread state rather than review state.
-_CATEGORY_DEFAULT_STATUS: Dict[str, str] = {"Watch_Later": "unread"}
-
-
-def _rewrite_frontmatter_for_approval(text: str, category: str) -> str:
+def _rewrite_frontmatter_for_approval(text: str) -> str:
     """
     Remove status: needs_review and note_id from frontmatter.
-    If the target category defines a default post-approval status (see
-    _CATEGORY_DEFAULT_STATUS), insert it in place of the dropped status line.
+
+    Projects S1 (s125 item 5): the per-category default-status map
+    (`_CATEGORY_DEFAULT_STATUS = {"Watch_Later": "unread"}`) is deleted — it encoded a
+    fixed taxonomy that user-named projects replace, and it already contradicted "vault
+    categories are never hardcoded".
     """
-    default_status = _CATEGORY_DEFAULT_STATUS.get(category)
     out = []
-    inserted = False
     for line in text.split("\n"):
         if re.match(r"^status:\s*needs_review", line):
             continue  # drop
         if re.match(r"^note_id:\s*", line):
             continue  # drop
         out.append(line)
-        # v2.2: captures no longer carry a `category:` frontmatter line, so anchor the default
-        # post-approval status on `created:` (always the first frontmatter field a capture writes).
-        if default_status and not inserted and re.match(r"^created:\s*", line):
-            out.append(f"status: {default_status}")
-            inserted = True
     return "\n".join(out)
 
 
@@ -395,7 +383,7 @@ if __name__ == "__main__":
 
         # T1: route_to_scratchpad writes status: needs_review + a unique note_id.
         t1 = CaptureOutput(
-            category="Tech_Notes", suggested_filename="mystery-thing",
+            suggested_filename="mystery-thing",
             markdown_content="I have no idea what this is.",
             key_signals=["unknown"], confidence=0.4,
             requires_new_category=False,
@@ -437,7 +425,7 @@ if __name__ == "__main__":
         items = list_scratchpad(vault, SP)
         assert len(items) == 3
         note_id_1 = _extract_frontmatter_field(p1.read_text(encoding="utf-8"), "note_id")
-        approved = approve_scratchpad_item(note_id_1, vault, SP, target_category="Tech_Notes")
+        approved = approve_scratchpad_item(note_id_1, vault, SP, target_project="Tech_Notes")
         assert approved.exists()
         assert SP not in str(approved)
         assert "needs_review" not in approved.read_text(encoding="utf-8")

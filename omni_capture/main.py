@@ -179,7 +179,8 @@ def run_pipeline(
     from interceptor       import read_clipboard, InputPayload, ClipboardEmpty, ClipboardError
     from enrichment_router import route_and_enrich
     from llm_engine        import run_llm_engine
-    from storage_engine    import write_to_vault, read_existing_context, build_category_descriptions
+    from storage_engine    import write_to_vault, read_existing_context
+    from project_registry  import load as load_registry
     from notifier          import notify_capture_success, notify_capture_error
     from capture_log       import log_capture, log_capture_failure
     from pre_resolver      import pre_resolve
@@ -191,10 +192,10 @@ def run_pipeline(
     vault = cfg.vault.root
     scratchpad_folder = cfg.vault.scratchpad_folder
 
-    # Discover categories from the vault's current folder structure.
-    # This runs on every pipeline invocation so folder additions/removals
-    # are picked up without restarting the process.
-    category_descriptions = build_category_descriptions(vault, scratchpad_folder)
+    # The project registry, re-read on every pipeline invocation so a project the user
+    # just created (or the phone just synced) is available without restarting. The engine
+    # may only pick from these EXISTING projects; it may never invent one.
+    registry = load_registry(vault)
 
     # -- Stage 1: Intercept ----------------------------------------------------
     if text:
@@ -236,9 +237,9 @@ def run_pipeline(
         # Vision failed at capture time. The placeholder enriched_text carries
         # no real content -- classifying or semantically retrieving against
         # it would only launder the failure into a confident (and wrong)
-        # category. Route straight to scratchpad instead, flagged for retry.
+        # project. Route straight to scratchpad instead, flagged for retry.
         from storage_engine import route_failed_vision
-        result: dict = {"category": "Unprocessed_Images", "vision_available": False}
+        result: dict = {"project": None, "vision_available": False}
         if dry_run:
             print("\n[Dry Run] Vision failed -- would route to scratchpad for retry.")
             result["_written_to"] = None
@@ -340,7 +341,7 @@ def run_pipeline(
 
     if verbose:
         print(f"\n[Stage 2.5 -- Context Assembly]  ({(t_res1 - t_res0) * 1000:.1f} ms)")
-        print(f"  resolver hint    : {resolved.category_hint}  certainty={resolved.certainty}")
+        print(f"  resolver certainty: {resolved.certainty}")
         print(f"  resolver ctx     : {len(resolved.existing_context or '')} chars")
         print(f"  semantic snippets: {len(semantic_snippets)}")
         print(f"  total ctx chars  : {len(existing_context or '')}")
@@ -350,7 +351,7 @@ def run_pipeline(
         with timer.stage("llm"):
             output = run_llm_engine(
                 enriched,
-                category_descriptions=category_descriptions,
+                registry=registry,
                 existing_context=existing_context,
                 max_retries=cfg.capture.llm_max_retries,
                 temperature=cfg.capture.llm_temperature,
@@ -358,15 +359,18 @@ def run_pipeline(
             )
 
             # Two-pass fallback: the pre-resolver was uncertain, but now that the LLM
-            # has picked a category we can check for an existing CRM/Finance file and
-            # re-run with that context loaded.
+            # has picked a project we can load the note that project would append to
+            # and re-run with that context. The old gate keyed on the hardcoded
+            # "CRM"/"Finance" folder names (deleted, s125 item 5); the general
+            # condition -- "uncertain, but the engine landed on a real project" -- is
+            # what those two names were standing in for.
             pass_count = 1
-            if resolved.certainty == "low" and output.category in ("CRM", "Finance"):
+            if resolved.certainty == "low" and getattr(output, "project", None):
                 fallback_context = read_existing_context(output, vault_root=vault)
                 if fallback_context:
                     output = run_llm_engine(
                         enriched,
-                        category_descriptions=category_descriptions,
+                        registry=registry,
                         existing_context=fallback_context,
                         max_retries=cfg.capture.llm_max_retries,
                         temperature=cfg.capture.llm_temperature,
@@ -383,7 +387,7 @@ def run_pipeline(
         # be handled here rather than in the __main__ top-level catch.
         from storage_engine import route_failed_llm
         print(f"\n[Second Thought] LLM enrichment failed: {exc}", file=sys.stderr)
-        result = {"category": "Unprocessed_Captures", "llm_failed": True}
+        result = {"project": None, "llm_failed": True}
         if dry_run:
             print("[Dry Run] LLM failed -- would route to scratchpad for retry.")
             result["_written_to"] = None
@@ -400,7 +404,7 @@ def run_pipeline(
                     source_url=enriched.source_url,
                 )
             result["_written_to"] = str(written_path)
-            log_capture_failure(str(exc), enriched, str(written_path), cfg.ollama.model, "Unprocessed_Captures")
+            log_capture_failure(str(exc), enriched, str(written_path), cfg.ollama.model, scratchpad_folder)
             print(f"LLM enrichment failed -- saved for retry -> {written_path}")
             if notify and cfg.notifications.enabled:
                 notify_capture_error(
@@ -413,13 +417,13 @@ def run_pipeline(
 
     if verbose:
         print(f"\n[Stage 3 -- LLM Decision Engine]")
-        print(f"  category          : {output.category}")
+        print(f"  project           : {getattr(output, 'project', None)}")
         print(f"  suggested_filename: {output.suggested_filename}")
         print(f"  requires_new_cat  : {output.requires_new_category}")
         print(f"  key_signals       : {output.key_signals}")
         print(f"  markdown_content  :\n{output.markdown_content[:300]}")
         print(f"  timing            : {(t_llm1 - t_llm0) * 1000:.0f} ms  [{pass_count}-pass]")
-        print(f"  active categories : {list(category_descriptions.keys())}")
+        print(f"  active projects   : {sorted((registry.get('projects') or {}).keys())}")
 
     if _large_text_original is not None:
         from index_writer import get_db_path
@@ -519,7 +523,10 @@ def run_pipeline(
         if notify and cfg.notifications.enabled:
             with timer.stage("notify"):
                 notify_capture_success(
-                    category=output.category,
+                    # The destination folder IS the note's project (or `_loose`) --
+                    # read it off the written path so the toast can never disagree
+                    # with where the file actually landed.
+                    category=Path(written_path).parent.name,
                     filepath=str(written_path),
                     title_prefix=cfg.notifications.title_prefix,
                 )

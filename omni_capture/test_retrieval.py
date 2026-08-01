@@ -27,25 +27,40 @@ from vault_sync import purge_orphan_index_entries, sync_vault_indexes
 
 # ── helpers (from test_obsidian_network.py) ────────────────────────────────────
 
+_PROJECTS = ["Tech_Notes", "CRM", "Finance", "Watch_Later",
+             "Recipes", "Journal", "Design_Inspiration"]
+
+
+def _register(vault) -> None:
+    """Projects S1: a capture files into its RESOLVED project. A project lives in
+    `.projects.toml`; its directory appears when a note is first filed into it."""
+    import project_registry
+    project_registry.save(vault, {"schema": 1,
+                                  "projects": {n: {"description": ""} for n in _PROJECTS}})
+
+
 def _out(**kw) -> CaptureOutput:
     base = dict(category="Tech_Notes", suggested_filename="test-note",
                 markdown_content="Some content.", rationale="Test.",
                 key_signals=["python","async-io"], confidence=0.9,
                 requires_new_category=False)
     base.update(kw)
-    return CaptureOutput(**base)
+    project = base.pop("category")
+    out = CaptureOutput(**base)
+    # The engine's pick. The `#project@` body tag is stamped by the WRITE path.
+    out.project = project
+    return out
 
 def _ep(text: str) -> EnrichedPayload:
     return EnrichedPayload(raw_input=text, input_type="text", enriched_text=text)
 
 class TV:
-    """Context manager: temp vault with all category dirs."""
+    """Context manager: temp vault with every test project registered."""
     def __enter__(self):
         self._d = tempfile.TemporaryDirectory()
         v = pathlib.Path(self._d.name)
-        for c in ["Tech_Notes","CRM","Finance","Watch_Later",
-                  "Recipes","Journal","Design_Inspiration","_scratchpad"]:
-            (v / c).mkdir()
+        (v / "_scratchpad").mkdir()
+        _register(v)
         return v
     def __exit__(self, *_): self._d.cleanup()
 
@@ -90,16 +105,20 @@ class TestTags(unittest.TestCase):
     def test_frontmatter_empty_gives_empty_list(self):
         self.assertIn("tags: []", _build_frontmatter(_out(key_signals=[]), None))
 
-    def test_tags_written_to_file(self):
+    def test_written_file_carries_no_signal_derived_tags(self):
+        """The written note's `tags:` stays empty however many key_signals the engine
+        emitted -- the leftover half of s125 item 5. What the write path DOES persist
+        is the project assignment, as the `#project@` body tag."""
         with TV() as vault:
             path = write_to_vault(
                 _out(suggested_filename="asyncio-notes",
                      markdown_content="Notes.",
                      key_signals=["asyncio","python-concurrency"]),
                 vault_root=vault)
-            content = path.read_text()
-        self.assertIn("  - asyncio", content)
-        self.assertIn("  - python-concurrency", content)
+            content = path.read_text(encoding="utf-8")
+        self.assertIn("tags: []", content)
+        self.assertNotIn("  - asyncio", content)
+        self.assertIn("tags: #project@Tech_Notes", content)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -158,6 +177,9 @@ class TestLinkResolver(unittest.TestCase):
 
     def test_write_to_vault_injects_wikilinks(self):
         with TV() as vault:
+            # A project's directory exists because a note is in it, not because the
+            # project is registered -- so this fixture creates it.
+            (vault/"CRM").mkdir(parents=True, exist_ok=True)
             (vault/"CRM"/"alice-chen.md").write_text("# Alice Chen\n")
             path = write_to_vault(
                 _out(suggested_filename="project-update",
@@ -263,9 +285,8 @@ class TestIntegration(unittest.TestCase):
     def setUp(self):
         self._d = tempfile.TemporaryDirectory()
         self.vault = pathlib.Path(self._d.name)
-        for c in ["CRM","Tech_Notes","Finance","Watch_Later",
-                  "Recipes","Journal","Design_Inspiration","_scratchpad"]:
-            (self.vault/c).mkdir()
+        (self.vault / "_scratchpad").mkdir()
+        _register(self.vault)
         self._p = mock.patch("vector_store._embed", side_effect=_fake_embed_obsidian)
         self._p.start()
 
@@ -321,9 +342,9 @@ class TestIntegration(unittest.TestCase):
         self.assertIn("[[CRM/alice-chen|Alice Chen]]", content_c,
                       f"Missing wikilink in C:\n{content_c}")
 
-        # 2. Tags from key_signals
-        self.assertIn("  - asyncio", content_c)
-        self.assertIn("  - architecture", content_c)
+        # 2. No signal-derived tags (s125 item 5) -- the project tag is what is written
+        self.assertIn("tags: []", content_c)
+        self.assertIn("tags: #project@Tech_Notes", content_c)
 
         # 3. All three notes indexed
         self.assertGreaterEqual(vs.count(self.vault), 2)

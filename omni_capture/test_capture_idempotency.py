@@ -145,7 +145,6 @@ def test_terminal_event_recorded_even_when_consumer_never_drains_queue(tmp_path)
     server._capture_results.clear()
 
     fake_out = CaptureOutput(
-        category="Tech_Notes",
         suggested_filename="never-drained-note",
         markdown_content="## Never drained\n\nContent.",
         key_signals=[],
@@ -174,7 +173,7 @@ def test_terminal_event_recorded_even_when_consumer_never_drains_queue(tmp_path)
         "and writes a duplicate note"
     )
     assert recorded["event"] == "done"
-    assert recorded["payload"]["category"] == "Tech_Notes"
+    assert recorded["payload"]["project"] == "_loose"
 
 
 if __name__ == "__main__":

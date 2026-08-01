@@ -6,24 +6,25 @@ into dedup.py / merge.py / scratchpad.py"). Owns the decision of whether a new
 capture should be appended into an existing same-topic note (find_merge_target,
 _is_same_topic) and the mechanics of that append (_append_general).
 
-`_category_str` is a shared low-level helper that also backs
-storage_engine._build_frontmatter; it stays defined in storage_engine.py and
-is imported here lazily (inside each function) to avoid a circular import,
-since storage_engine.py imports find_merge_target/_is_same_topic/
-_append_general from this module at top level.
+`storage_engine._note_dir` resolves which directory a capture belongs to (its
+project, or `_loose`); it stays defined in storage_engine.py and is imported
+here lazily (inside each function) to avoid a circular import, since
+storage_engine.py imports find_merge_target/_is_same_topic/_append_general
+from this module at top level.
 
 Projects S1 (2026-08-01, s125 item 5): storage_engine._signals_to_tags is
-deleted -- key_signals no longer produce tags anywhere in the pipeline (auto
+deleted -- key_signals no longer become FRONTMATTER tags anywhere (auto
 enrichment writes a project assignment and nothing else). The tag-overlap
-merge heuristic below that used to compare a capture's signal-derived tags
-against a candidate note's frontmatter tags has no signal-derived tag set
-left to compare, so it is now permanently empty (see _is_same_topic /
-find_merge_target). ponytail: Task 10 (write-path owner) decides whether a
-body-tag-based successor replaces this heuristic or the dead branches are
-removed outright.
+merge heuristic still needs a comparable key set for the incoming capture, so
+_signals_to_keys below is that normalizer, kept private to this module and
+NEVER written to a file: it exists only to compare an in-memory capture
+against a candidate note's existing tags. Task 9 handed this decision to Task
+10 as the write-path owner; keeping the heuristic (rather than deleting
+smart-merge) is that decision.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -116,6 +117,26 @@ def _is_synced_note(path: Path) -> bool:
     return False
 
 
+def _signals_to_keys(key_signals: List[str]) -> set:
+    """Normalize a capture's `key_signals` into comparable keys for the tag-overlap
+    heuristic below. IN-MEMORY ONLY -- these are never written to a note's frontmatter
+    or body (that is exactly what s125 item 5 deleted); they exist to answer "is this
+    capture about the same thing as that note" and nothing else.
+
+    `project/`-namespaced and `@`-action signals are dropped: those are user-assigned
+    grouping vocabulary, never machine-derived (DECISIONS §5, 2026-07-30 s114).
+    """
+    keys: set = set()
+    for signal in key_signals or []:
+        raw = signal.strip().lower()
+        key = re.sub(r"[^\w\s/\-]", "", raw)
+        key = re.sub(r"\s+", "-", key).strip("-/")
+        if not key or key.startswith("project/") or raw.startswith("@"):
+            continue
+        keys.add(key)
+    return keys
+
+
 def _is_same_topic(existing_path: Path, new_signals: List[str], min_shared_tags: int = 1) -> bool:
     """
     min_shared_tags raises the bar above the default single-shared-tag match.
@@ -131,10 +152,7 @@ def _is_same_topic(existing_path: Path, new_signals: List[str], min_shared_tags:
     existing_tags = _read_note_tags(existing_path)
     if not existing_tags:
         return True
-    # _signals_to_tags is deleted (s125 item 5) -- no signal-derived tag set
-    # exists to compare against existing_tags any more, so this never matches.
-    normalised_new: set = set()
-    return len(existing_tags & normalised_new) >= min_shared_tags
+    return len(existing_tags & _signals_to_keys(new_signals)) >= min_shared_tags
 
 
 # ---------------------------------------------------------------------------
@@ -150,21 +168,19 @@ def find_merge_target(
     min_shared_tags: int = 1,
 ) -> Optional[Path]:
     """
-    Locate an existing note in the capture's category that this content
-    should be merged into, even when the LLM proposes a different filename.
-    Returns None to create a new file.
+    Locate an existing note in the directory this capture files into (its resolved
+    project, or `_loose`) that this content should be merged into, even when the LLM
+    proposes a different filename. Returns None to create a new file.
 
     min_shared_tags raises the bar on the semantic-match branch (see below) —
     used for image captures, same as _is_same_topic's own param: a vision
     description sharing exactly one incidental tag with an unrelated note is
     too weak a signal to silently merge a photo into it (d05).
     """
-    from storage_engine import _category_str
+    from storage_engine import _note_dir
 
-    cat = _category_str(output)
-    # _signals_to_tags is deleted (s125 item 5) -- no signal-derived tag set
-    # exists any more, so tag-overlap scoring below never has candidates.
-    new_tags: set = set()
+    cat = _note_dir(output, vault_root)
+    new_tags = _signals_to_keys(output.key_signals)
     if not new_tags:
         return None
 

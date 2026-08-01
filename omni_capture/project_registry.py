@@ -86,6 +86,25 @@ def save(vault_root: Path, reg: Registry) -> None:
     path.write_text(tomlkit.dumps(doc), encoding="utf-8")
 
 
+def update(vault_root: Path, mutate) -> Registry:
+    """Locked load -> mutate -> save cycle, the ONLY way a CRUD caller should write.
+
+    `save()` deliberately does not take the lock (so a sync pass can merge-then-write
+    atomically); this holds it across the ENTIRE cycle, per contract §13.2 and
+    `dedup._vault_lock`'s own contract. `mutate` is handed the loaded Registry and
+    edits it in place.
+    """
+    from dedup import _vault_lock
+
+    vault_root = Path(vault_root)
+    vault_root.mkdir(parents=True, exist_ok=True)
+    with _vault_lock(_registry_lock_path(vault_root)):
+        reg = load(vault_root)
+        mutate(reg)
+        save(vault_root, reg)
+        return reg
+
+
 def _merge_entry(local: dict, remote: dict) -> dict:
     """Per-field: newest entry `modified` wins, exact tie goes to remote (contract §13.2 row 5).
     `created` is immutable — on divergence take the EARLIER value."""

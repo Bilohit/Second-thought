@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from config import get_config
 from index_writer import log_capture_db, search, stats
@@ -45,7 +46,10 @@ def log_capture(
 
     entry = {
         "timestamp":    datetime.now().isoformat(timespec="seconds"),
-        "category":     output.category,
+        # Projects S1: CaptureOutput.category is deleted. The directory the note actually
+        # landed in IS its project (or `_loose`) -- read it off `filepath` so the log can
+        # never disagree with the vault. Task 11 renames this column to `project`.
+        "category":     Path(filepath).parent.name,
         "filename":     output.suggested_filename,
         "filepath":     filepath,
         "input_type":   enriched.input_type,

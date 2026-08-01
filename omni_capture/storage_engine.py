@@ -1,19 +1,21 @@
 """
 storage_engine.py  -- Step 4: Storage Engine
 
-Dynamic category edition
-------------------------
-Categories are no longer hardcoded.  Any top-level directory in the vault
-root (except system folders that start with '_' and the configured scratchpad
-folder) is treated as a valid category.  Each category folder may contain an
-optional '.category.toml' file with a 'description' field used to build the
-LLM system prompt.
+Projects edition (Projects S1, 2026-08-01, s125)
+------------------------------------------------
+The folder-name `category` concept is retired.  A note's grouping is the
+`#project@<name>` BODY tag (data-model-and-contracts.md v3.1 §1.3), resolved
+once through `project_registry.resolve_project`.  The directory a capture
+lands in is `projects.note_dir_for(resolved)` -- the project's own folder when
+the tag resolves, `_loose/` when it does not.  Landing in `_loose/` is a
+SUCCESS, not a failure: a dangling, invalid, absent or not-yet-synced project
+name all read as loose, and the note is still written, still at depth 1.
 
 Flat frontmatter schema
 -----------------------
-All notes share the same base frontmatter fields regardless of category.
-Per-category YAML schema fields have been removed in favour of a single
-consistent structure that Dataview can query uniformly.
+All notes share the same base frontmatter fields.  Per-project YAML schema
+fields do not exist -- one consistent structure that Dataview can query
+uniformly.
 
 Scratchpad routing
 ------------------
@@ -25,7 +27,6 @@ from __future__ import annotations
 
 import logging
 import re
-import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,9 @@ from typing import Dict, List, Optional
 
 from models import CaptureOutput
 from config import DEFAULT_VAULT_ROOT, get_config
+from machine_tags import apply_trailing_tags_line
+from projects import note_dir_for, parse_project_tag
+from project_registry import load as _load_registry, resolve_project
 
 # dedup.py / merge.py / scratchpad.py extraction (see docs/ROADMAP.md "Split
 # storage_engine.py into dedup.py / merge.py / scratchpad.py"). storage_engine.py
@@ -62,7 +66,6 @@ from merge import (  # noqa: F401  (re-exported for backward-compatible imports)
     find_merge_target,
 )
 from scratchpad import (  # noqa: F401  (re-exported for backward-compatible imports)
-    _CATEGORY_DEFAULT_STATUS,
     _extract_frontmatter_field,
     _find_scratchpad_item,
     _rewrite_frontmatter_for_approval,
@@ -95,10 +98,6 @@ def _confidence_threshold() -> float:
     except Exception:
         return SCRATCHPAD_CONFIDENCE_THRESHOLD
 
-# Folders that are ALWAYS excluded from the category list, regardless of name.
-# (The configured scratchpad folder is also excluded at runtime.)
-_SYSTEM_FOLDER_PREFIXES = ("_", ".")
-
 # Filler/stop words dropped when shortening LLM-suggested filenames.
 _FILENAME_STOPWORDS: frozenset = frozenset({
     "a", "an", "the", "of", "to", "for", "with", "and", "or", "but", "in",
@@ -108,132 +107,72 @@ _FILENAME_STOPWORDS: frozenset = frozenset({
 
 
 # ---------------------------------------------------------------------------
-# Category discovery
+# Project resolution  (the single grouping rule)
 # ---------------------------------------------------------------------------
 
-def discover_categories(
-    vault_root: Path,
-    scratchpad_folder: str = "_scratchpad",
-) -> List[str]:
+def _project_str(output: CaptureOutput) -> Optional[str]:
+    """The engine's project choice as a plain string, or None. build_capture_model
+    constrains `project` to a str-Enum of the registry's current names, so unwrap
+    .value the same way the retired _category_str did."""
+    project = getattr(output, "project", None)
+    if project is None:
+        return None
+    name = project.value if hasattr(project, "value") else str(project)
+    return name or None
+
+
+def _stamp_project_tag(body: str, project: Optional[str]) -> str:
+    """Materialise the engine's project choice as the note's `#project@<name>` BODY tag --
+    the ONE truth every derived cache (the `project:` frontmatter line, the index column,
+    the directory) is computed from (contract v3.1 §1.3).
+
+    Written as ISS-051's machine trailing `tags:` line, which is the only body region a
+    machine may write and only on content this device authored -- every caller here is a
+    desktop-originated capture the pipeline just produced. A body that already carries a
+    project tag is returned byte-identical, so this is idempotent and never overrides a
+    tag the user typed.
     """
-    Return the names of all valid category folders in vault_root.
+    if not project or parse_project_tag(body):
+        return body
+    return apply_trailing_tags_line(body, ["project@" + project])
 
-    A folder is a valid category when:
-      * It is a direct child of vault_root.
-      * Its name does NOT start with '_' (system folders).
-      * Its name is NOT the configured scratchpad folder.
 
-    Returns a sorted list so that category order is deterministic.
+def _note_dir(output: CaptureOutput, vault_root: Path) -> str:
+    """The vault-relative directory a capture files into: its resolved project, else
+    `_loose`. Single chokepoint -- merge.find_merge_target resolves through this too, so
+    the merge search and the write can never disagree about where a capture belongs.
+
+    An unresolvable project (no tag, invalid name, unregistered, registry not synced yet)
+    is LOOSE and is a SUCCESS: the note is still written, still at depth 1.
     """
-    if not vault_root.exists():
-        return []
-    return sorted(
-        d.name
-        for d in vault_root.iterdir()
-        if d.is_dir()
-        and not any(d.name.startswith(p) for p in _SYSTEM_FOLDER_PREFIXES)
-        and d.name != scratchpad_folder
-    )
+    body = _stamp_project_tag(output.markdown_content, _project_str(output))
+    return note_dir_for(resolve_project(body, _load_registry(vault_root)))
 
 
-def read_category_config(cat_dir: Path) -> dict:
+def build_category_descriptions(vault_root: Path, scratchpad_folder: str = "_scratchpad"):
+    """TRANSITIONAL SHIM -- `mobile_sync_agent.py:36` is its only remaining caller, and
+    that file belongs to Task 12 (sync agent), which deletes this call site. Task 10's
+    brief forbids editing it, so the symbol stays alive rather than breaking its import.
+
+    It no longer reads folder names or `.category.toml` (both concepts are gone): it
+    returns the PROJECT REGISTRY, which is exactly the shape `run_llm_engine`'s second
+    parameter now takes, so the untouched call site keeps working correctly.
+
+    ponytail: delete this function and its import in Task 12, in one commit. It has no
+    other caller and nothing in this module uses it.
     """
-    Read the optional '.category.toml' from a category folder.
-
-    Supported keys
-    --------------
-    description : str
-        Plain-English description of what this category stores.
-        Used verbatim in the LLM system prompt.
-    format : str   (optional, future use)
-        Hint for content formatting, e.g. 'finance_table', 'crm_interaction'.
-
-    Returns an empty dict if the file is absent or unreadable.
-    """
-    config_file = cat_dir / ".category.toml"
-    if not config_file.exists():
-        return {}
-    try:
-        if sys.version_info >= (3, 11):
-            import tomllib
-        else:
-            try:
-                import tomli as tomllib  # type: ignore[no-redef]
-            except ImportError:
-                return {}
-        with open(config_file, "rb") as f:
-            return tomllib.load(f)
-    except Exception:
-        return {}
+    return _load_registry(vault_root)
 
 
-def build_category_descriptions(
-    vault_root: Path,
-    scratchpad_folder: str = "_scratchpad",
-) -> Dict[str, str]:
-    """
-    Return a mapping of {category_name: description} for every discovered
-    category folder.
-
-    If a folder has no '.category.toml' (or no 'description' key inside it),
-    a sensible default description is generated from the folder name.
-    """
-    categories = discover_categories(vault_root, scratchpad_folder)
-    result: Dict[str, str] = {}
-    for cat in categories:
-        cat_dir = vault_root / cat
-        cfg = read_category_config(cat_dir)
-        desc = cfg.get(
-            "description",
-            f"Content related to {cat.replace('_', ' ')}.",
-        )
-        result[cat] = desc
-    return result
+# The registry's `description` field is the ONE thing that exists nowhere else
+# (contract §13); this caps what an LLM-generated one may write into it.
+PROJECT_DESC_MAX_CHARS = 500
 
 
-# ---------------------------------------------------------------------------
-# Category description generation (LLM-backed, fail-soft)
-# ---------------------------------------------------------------------------
-
-_CATEGORY_DESC_MAX_CHARS = 500
-
-
-def write_category_description(cat_dir: Path, description: Optional[str]) -> Optional[str]:
-    """
-    Merge a 'description' value into <cat_dir>/.category.toml, preserving any
-    other keys already in that file. Pass None or "" to clear the key.
-
-    Shared by the manual description-edit endpoint and the auto-describe
-    path so both write through the same toml read/merge/write logic.
-    Returns the value actually stored (None if cleared).
-    """
-    import tomlkit
-
-    desc = description.strip()[:_CATEGORY_DESC_MAX_CHARS] if description else None
-
-    config_file = cat_dir / ".category.toml"
-    existing: dict = read_category_config(cat_dir) if config_file.exists() else {}
-
-    if not desc:
-        existing.pop("description", None)
-    else:
-        existing["description"] = desc
-
-    if existing:
-        doc = tomlkit.document()
-        for k, v in existing.items():
-            doc.add(k, v)  # type: ignore[arg-type]
-        config_file.write_text(tomlkit.dumps(doc), encoding="utf-8")
-    elif config_file.exists():
-        config_file.unlink()
-
-    return desc
-
-
-def generate_category_description(name: str, sample_text: Optional[str] = None) -> Optional[str]:
+def generate_project_description(name: str, sample_text: Optional[str] = None) -> Optional[str]:
     """
     Ask the local LLM for a single concise (<=120 char) routing description
-    for a folder called `name`, optionally grounded in `sample_text`.
+    for a project called `name`, optionally grounded in `sample_text`.
 
     Fail-soft: any error (Ollama down, timeout, bad output) returns None
     rather than raising, so callers can just skip writing a description.
@@ -244,12 +183,12 @@ def generate_category_description(name: str, sample_text: Optional[str] = None) 
 
         cfg = get_config()
         instruction = (
-            "You are naming the routing rule for a folder in a personal note vault. "
+            "You are naming the routing rule for a project in a personal note vault. "
             f"Write ONE concise sentence (under 120 characters) describing what kind of "
-            f"content belongs in a folder called '{name}'. "
+            f"content belongs in a project called '{name}'. "
             "No preamble, no quotes, just the sentence."
         )
-        text = sample_text.strip()[:1500] if sample_text else f"Folder name: {name}"
+        text = sample_text.strip()[:1500] if sample_text else f"Project name: {name}"
 
         result = summarize(
             text,
@@ -260,30 +199,37 @@ def generate_category_description(name: str, sample_text: Optional[str] = None) 
             max_retries=1,
         )
         result = result.strip().strip('"').strip("'")
-        return result[:_CATEGORY_DESC_MAX_CHARS] if result else None
+        return result[:PROJECT_DESC_MAX_CHARS] if result else None
     except Exception:
-        logger.warning("generate_category_description('%s') failed", name, exc_info=True)
+        logger.warning("generate_project_description('%s') failed", name, exc_info=True)
         return None
 
 
-def suggest_category_names(sample_text: str, existing_names: List[str]) -> List[str]:
+def suggest_project_names(sample_text: str, existing_names: List[str]) -> List[str]:
     """
-    Ask the local LLM for 2-3 generalized, reusable folder names suited to
+    Ask the local LLM for 2-3 generalized, reusable project names suited to
     `sample_text`, excluding anything already in `existing_names`.
+
+    A suggestion the registry could not hold is dropped rather than offered: the name
+    is simultaneously a tag, a TOML key and a directory name (contract §1.3), so an
+    ineligible one would be dangling -- i.e. loose -- the moment the user accepted it.
 
     Fail-soft: any error returns [].
     """
     try:
         from config import get_config
         from llm_engine import summarize
+        from projects import is_valid_project_name
 
         cfg = get_config()
         existing_str = ", ".join(existing_names) if existing_names else "(none yet)"
         instruction = (
-            "Suggest 2-3 short, general, reusable folder names for organizing notes "
+            "Suggest 2-3 short, general, reusable project names for organizing notes "
             "in a personal knowledge vault, based on the content below. "
-            f"Do NOT reuse any of these existing folder names: {existing_str}. "
-            "Respond with ONLY the folder names, one per line, no numbering, "
+            "Each name must be letters, digits, '-' or '_' only, starting with a "
+            "letter or digit, with NO spaces. "
+            f"Do NOT reuse any of these existing project names: {existing_str}. "
+            "Respond with ONLY the project names, one per line, no numbering, "
             "no punctuation, no explanation."
         )
         text = sample_text.strip()[:1500]
@@ -304,7 +250,7 @@ def suggest_category_names(sample_text: str, existing_names: List[str]) -> List[
         suggestions: List[str] = []
         for line in result.splitlines():
             cand = line.strip().strip("-*•").strip().strip('"').strip("'").strip()
-            if not cand or len(cand) > 40:
+            if not cand or len(cand) > 40 or not is_valid_project_name(cand):
                 continue
             key = cand.lower()
             if key in existing_lower or key in seen:
@@ -342,13 +288,6 @@ def init_vault(
 # ---------------------------------------------------------------------------
 # File path helpers
 # ---------------------------------------------------------------------------
-
-def _category_str(output: CaptureOutput) -> str:
-    """Return category as a plain string (handles str-Enum members safely)."""
-    cat = output.category
-    # Enum members created with type=str have .value; plain str passes through.
-    return cat.value if hasattr(cat, 'value') else str(cat)
-
 
 def _truncate_slug(slug: str, max_chars: int) -> str:
     """Cut a kebab-case slug down to max_chars, preferring a '-' boundary so
@@ -507,19 +446,10 @@ def _trim_content(text: str) -> str:
     return "\n".join(out) + "\n"
 
 
-# Categories that are a single running ledger rather than one-note-per-topic.
-# pre_resolver.py documents Finance as always targeting Finance/Expenses.md;
-# this mirrors that here so write_to_vault honours it even when called
-# without going through pre_resolve first (e.g. the LLM's suggested_filename
-# is irrelevant for a ledger -- every entry is a row in the same file).
-_LEDGER_FILES: Dict[str, str] = {"Finance": "Expenses.md"}
-
-
 def _resolve_file_path(output: CaptureOutput, vault_root: Path) -> Path:
-    cat = _category_str(output)
-    ledger_file = _LEDGER_FILES.get(cat)
-    filename = ledger_file if ledger_file else _safe_stem(output.suggested_filename) + ".md"
-    return vault_root / cat / filename
+    """`<resolved project>/<slug>.md`, or `_loose/<slug>.md`. Always depth 1, so a body's
+    `![alt](../_attachments/<id>/<file>)` ref stays valid wherever the note is filed."""
+    return vault_root / _note_dir(output, vault_root) / (_safe_stem(output.suggested_filename) + ".md")
 
 
 def _unique_file_path(base_path: Path) -> Path:
@@ -692,29 +622,6 @@ def _try_inject_wikilinks(
         return output.markdown_content
 
 
-# ---------------------------------------------------------------------------
-# Forced-category routing  (used by background jobs, e.g. YouTube)
-# ---------------------------------------------------------------------------
-
-def ensure_category(vault_root: Path, name: str, description: str) -> Path:
-    """
-    Create vault_root/name if absent and write a '.category.toml' with the
-    given description if no config file already exists. Never overwrites a
-    user-edited '.category.toml'.
-    """
-    cat_dir = vault_root / name
-    cat_dir.mkdir(parents=True, exist_ok=True)
-
-    config_file = cat_dir / ".category.toml"
-    if not config_file.exists():
-        import tomlkit
-        doc = tomlkit.document()
-        doc.add("description", description)
-        config_file.write_text(tomlkit.dumps(doc), encoding="utf-8")
-
-    return cat_dir
-
-
 # Stable sentinel marking the summary region of a YouTube note for in-place
 # replacement in finalize_youtube_note. Match on this comment, never on the
 # human-readable placeholder text, since postprocessing could alter the latter.
@@ -744,25 +651,19 @@ def create_youtube_note(
 
     This guarantees the raw transcript is never lost even if summarization
     later fails or times out.
+
+    `youtube_cfg.folder_name` is now a PROJECT NAME, not a folder to create: the note is
+    stamped with `#project@<folder_name>` and filed wherever that resolves. If the user
+    has no such project registered the note is loose -- correct, and still written.
     """
-    ensure_category(vault_root, youtube_cfg.folder_name, youtube_cfg.description)
     init_vault(vault_root, scratchpad_folder)
 
     from config import get_config
     stem = _youtube_title_stem(title, max_chars=get_config().capture.youtube_filename_max_chars)
-    base_path = vault_root / youtube_cfg.folder_name / (stem + ".md")
-    path = _unique_file_path(base_path)
 
     now = datetime.now().isoformat(timespec="seconds")
     heading = title or "YouTube Video"
-    content = (
-        "---\n"
-        f"created: {now}\n"
-        f"category: {youtube_cfg.folder_name}\n"
-        f"source: {url}\n"
-        "status: summarizing\n"
-        "tags: []\n"
-        "---\n\n"
+    body = (
         f"# {heading}\n\n"
         "> [!info] Source\n"
         f"> {url}\n\n"
@@ -772,6 +673,20 @@ def create_youtube_note(
         f"{_YOUTUBE_TRANSCRIPT_SENTINEL}\n"
         "## Transcript\n"
         f"{transcript_md}\n"
+    )
+    body = _stamp_project_tag(body, youtube_cfg.folder_name)
+    note_dir = note_dir_for(resolve_project(body, _load_registry(vault_root)))
+    (vault_root / note_dir).mkdir(parents=True, exist_ok=True)
+    path = _unique_file_path(vault_root / note_dir / (stem + ".md"))
+
+    content = (
+        "---\n"
+        f"created: {now}\n"
+        f"source: {url}\n"
+        "status: summarizing\n"
+        "tags: []\n"
+        "---\n\n"
+        f"{body}"
     )
     path.write_text(content, encoding="utf-8")
     return path
@@ -814,7 +729,7 @@ def create_voice_note(
     call, with a placeholder summary region marked by
     _YOUTUBE_SUMMARY_SENTINEL so finalize_youtube_note can be reused as-is.
 
-    Voice notes have no dedicated category config (unlike YouTube's
+    Voice notes have no project of their own (unlike YouTube's
     youtube_cfg.folder_name), so they land in the scratchpad like other
     fail-soft placeholder routes (see route_failed_vision).
     """
@@ -831,7 +746,6 @@ def create_voice_note(
         "---\n"
         f"id: {note_id}\n"
         f"created: {now}\n"
-        f"category: {scratchpad_folder}\n"
         "status: summarizing\n"
         "tags: []\n"
         "---\n\n"
@@ -898,42 +812,6 @@ def finalize_youtube_note(
     path.write_text(new_text, encoding="utf-8")
 
 
-def write_to_named_category(
-    output: CaptureOutput,
-    category: str,
-    vault_root: Path,
-    source_url: Optional[str] = None,
-    description: str = "",
-    scratchpad_folder: str = "_scratchpad",
-    enable_semantic_merge: bool = False,
-    embed_base_url: Optional[str] = None,
-    embed_model: str = "nomic-embed-text",
-) -> Path:
-    """
-    Force-route a capture into a named category, bypassing scratchpad
-    diversion. Intended for content whose destination is already known from
-    user intent (e.g. a YouTube URL), where low model confidence should not
-    divert it to manual review.
-    """
-    ensure_category(vault_root, category, description)
-
-    output.category = category
-    output.requires_new_category = False
-    floor = _confidence_threshold()
-    if output.confidence < floor:
-        output.confidence = max(output.confidence, floor)
-
-    return write_to_vault(
-        output,
-        source_url=source_url,
-        vault_root=vault_root,
-        scratchpad_folder=scratchpad_folder,
-        enable_semantic_merge=enable_semantic_merge,
-        embed_base_url=embed_base_url,
-        embed_model=embed_model,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Main public entry point
 # ---------------------------------------------------------------------------
@@ -955,10 +833,11 @@ def write_to_vault(
     Routing
     -------
     1. Dedup check        — skip only when an exact duplicate already exists in
-                            the *same* category the engine just decided.
+                            the *same* project directory this capture resolves to.
     2. Scratchpad routing — low confidence or requires_new_category → scratchpad.
     3. Smart merge        — append into an existing same-topic note when tags match.
-    4. Normal write       — per-category append or new file with collision-safe name.
+    4. Normal write       — append or new file with collision-safe name, in the
+                            resolved project's folder or `_loose/`.
 
     source_metadata, when passed (e.g. an image capture's EnrichedPayload.source_metadata),
     may carry deterministic artifacts (image_embed, transcribed_text) that are
@@ -970,29 +849,30 @@ def write_to_vault(
     if source_metadata and source_metadata.get("source_type"):
         extra_fm = {"source_type": source_metadata["source_type"]}
 
-    decided_category = _category_str(output)
+    project = _project_str(output)
+    decided_dir = _note_dir(output, vault_root)
 
     # 1. Deduplication
     #
     # The dedup index is keyed purely on content, so a re-captured note whose
-    # decision has changed category (e.g. the engine now says CRM but an older
-    # copy was filed under Tech_Notes) used to be silently short-circuited back
-    # to the stale location — the GUI showed one category while the file landed
-    # in another. Only honour a dedup hit when the indexed note still lives in
-    # the category the engine just decided; otherwise fall through and write to
-    # the correct place, refreshing the index pointer afterwards.
+    # decision has changed project (e.g. the engine now says `research` but an
+    # older copy was filed under `_loose`) used to be silently short-circuited
+    # back to the stale location — the GUI showed one destination while the file
+    # lived in another. Only honour a dedup hit when the indexed note still lives
+    # in the directory this capture resolves to; otherwise fall through and write
+    # to the correct place, refreshing the index pointer afterwards.
     dup_path = check_duplicate(output.markdown_content, source_url, vault_root)
     if dup_path:
         existing = vault_root / dup_path
-        existing_category = Path(dup_path).parts[0] if Path(dup_path).parts else ""
-        if existing.exists() and existing_category == decided_category:
+        existing_dir = Path(dup_path).parts[0] if Path(dup_path).parts else ""
+        if existing.exists() and existing_dir == decided_dir:
             print(f"[StorageEngine] DUPLICATE -- already at {dup_path}. Skipping.")
             return existing
         if existing.exists():
             print(
-                f"[StorageEngine] dedup hit at {dup_path} is in category "
-                f"'{existing_category}', but this capture was decided as "
-                f"'{decided_category}'. Re-filing to the decided category."
+                f"[StorageEngine] dedup hit at {dup_path} is in "
+                f"'{existing_dir}', but this capture resolves to "
+                f"'{decided_dir}'. Re-filing to the resolved destination."
             )
         else:
             print(
@@ -1020,17 +900,21 @@ def write_to_vault(
         register_in_dedup_index(output.markdown_content, source_url, vault_root, path)
         return path
 
-    # Ensure the category folder exists (user may have created it after startup)
-    cat = _category_str(output)
+    # The project folder (or `_loose/`) may not exist yet — a project's directory is
+    # created the first time a note is filed into it, never by registering it.
+    cat = decided_dir
     (vault_root / cat).mkdir(parents=True, exist_ok=True)
 
     # 3. Normal write
-    base_path = _resolve_file_path(output, vault_root)
+    base_path = vault_root / cat / (_safe_stem(output.suggested_filename) + ".md")
     path = base_path
 
     linked_content = _postprocess_content(_try_inject_wikilinks(output, path, vault_root))
     if deterministic_append:
         linked_content = linked_content + "\n\n" + deterministic_append
+    # The `#project@` body tag is stamped LAST, after every other body transform, so the
+    # machine trailing line stays the final line of the note (ISS-051 §3).
+    linked_content = _stamp_project_tag(linked_content, project)
 
     # Voice notes: every recording is its own note. The LLM reuses slugs for
     # similar recordings (observed: tomorrow-reminder.md created twice then
@@ -1050,16 +934,13 @@ def write_to_vault(
         register_in_dedup_index(output.markdown_content, source_url, vault_root, path)
         return path
 
-    is_ledger = cat in _LEDGER_FILES
-
     if not path.exists():
-        # Smart merge: look for a different existing note in the same category
-        # that is confidently about the same topic. Ledger categories skip this
-        # — there's only ever one file, created below. Image captures require
+        # Smart merge: look for a different existing note in the same directory
+        # that is confidently about the same topic. Image captures require
         # 2+ shared tags on the semantic-match branch too (d05) — matches the
         # existing-file path's own guard below.
         is_image = bool(source_metadata and (source_metadata.get("image_embed") or source_metadata.get("vision_model")))
-        merge_target = None if is_ledger else find_merge_target(
+        merge_target = find_merge_target(
             output, vault_root,
             enable_semantic_merge=enable_semantic_merge,
             embed_base_url=embed_base_url,
@@ -1083,15 +964,13 @@ def write_to_vault(
                             extra_frontmatter=extra_fm, vault_root=vault_root)
             action = "created"
     else:
-        # File already exists — append when it's the same topic, or
-        # unconditionally for ledger categories (every entry is a new row
-        # in the same running file, regardless of topic). Image captures
+        # File already exists — append when it's the same topic. Image captures
         # require 2+ shared tags, not just 1: a vision description sharing a
         # single incidental tag with an unrelated note is too weak a signal
         # to silently merge a photo into it.
         is_image = bool(source_metadata and (source_metadata.get("image_embed") or source_metadata.get("vision_model")))
         min_shared = 2 if is_image else 1
-        if is_ledger or _is_same_topic(base_path, output.key_signals, min_shared_tags=min_shared):
+        if _is_same_topic(base_path, output.key_signals, min_shared_tags=min_shared):
             _append_general(path, linked_content, vault_root)
             action = "appended (general)"
         else:
@@ -1119,96 +998,95 @@ if __name__ == "__main__":
         vault = pathlib.Path(tmp)
         SP = "_scratchpad"
 
-        # Create some user-defined category folders
-        (vault / "Tech_Notes").mkdir()
-        (vault / "Journal").mkdir()
-        (vault / "Recipes").mkdir()
+        # A registry with one real project. The project's DIRECTORY is not created here:
+        # it appears the first time a note is filed into it.
+        import project_registry as _reg
+        _reg.save(vault, {"schema": 1, "projects": {
+            "Tech": {"description": "Code, tools, and engineering notes."},
+        }})
 
-        # T1: discover_categories ignores system folders
-        cats = discover_categories(vault, scratchpad_folder=SP)
-        assert "Tech_Notes" in cats
-        assert "Journal" in cats
-        assert SP not in cats
-        print(f"[T1] discover_categories: {cats}  PASS")
+        from models import build_capture_model, CaptureOutput as BaseCaptureOutput
 
-        # T2: read_category_config returns empty dict when no file
-        cfg_empty = read_category_config(vault / "Tech_Notes")
-        assert cfg_empty == {}
-        print("[T2] read_category_config (no file)  PASS")
+        def _cap(project=None, **kw):
+            kw.setdefault("key_signals", [])
+            kw.setdefault("confidence", 0.9)
+            kw.setdefault("requires_new_category", False)
+            out = BaseCaptureOutput(**kw)
+            out.project = project
+            return out
 
-        # T3: read_category_config reads description
-        (vault / "Tech_Notes" / ".category.toml").write_text(
-            'description = "Code, tools, and engineering notes."\n',
-            encoding="utf-8",
-        )
-        cfg_loaded = read_category_config(vault / "Tech_Notes")
-        assert cfg_loaded["description"] == "Code, tools, and engineering notes."
-        print("[T3] read_category_config (with file)  PASS")
+        # T1: _note_dir -- a registered project resolves to its own folder
+        assert _note_dir(_cap("Tech", suggested_filename="x", markdown_content="body"), vault) == "Tech"
 
-        # T4: build_category_descriptions uses file description + auto-generates fallback
-        descs = build_category_descriptions(vault, scratchpad_folder=SP)
-        assert descs["Tech_Notes"] == "Code, tools, and engineering notes."
-        assert "Journal" in descs
-        assert "related to Journal" in descs["Journal"]
-        print(f"[T4] build_category_descriptions: {descs}  PASS")
+        # T2: an UNREGISTERED project name is dangling -> loose, never an error
+        assert _note_dir(_cap("Nope", suggested_filename="x", markdown_content="body"), vault) == "_loose"
+
+        # T3: no project at all -> loose
+        assert _note_dir(_cap(None, suggested_filename="x", markdown_content="body"), vault) == "_loose"
+
+        # T4: a project tag ALREADY in the body wins, and stamping is idempotent
+        already = "notes\n\ntags: #project@Tech\n"
+        assert _stamp_project_tag(already, "Other") == already
+        print("[T1-T4] project resolution + tag stamping  PASS")
 
         # T5: build_capture_model from models
-        from models import build_capture_model, CaptureOutput as BaseCaptureOutput
-        Model = build_capture_model(list(descs.keys()))
+        Model = build_capture_model(["Tech"])
         assert hasattr(Model, "model_fields")
         print(f"[T5] build_capture_model  PASS  (fields: {list(Model.model_fields)})")
 
-        # T6: write note to a discovered category
-        t6 = BaseCaptureOutput(
-            category="Tech_Notes", suggested_filename="asyncio-notes",
-            markdown_content="async def main(): ...",
-            key_signals=["python", "async"], confidence=0.92,
-            requires_new_category=False,
-        )
+        # T6: write a note into a resolved project; the body carries the tag
+        t6 = _cap("Tech", suggested_filename="asyncio-notes",
+                  markdown_content="async def main(): ...",
+                  key_signals=["python", "async"], confidence=0.92)
         p6 = write_to_vault(t6, vault_root=vault, scratchpad_folder=SP)
         assert p6.exists()
-        assert "Tech_Notes" in str(p6)
-        txt6 = p6.read_text()
-        assert "category: Tech_Notes" in txt6
+        assert p6.parent.name == "Tech", p6
+        txt6 = p6.read_text(encoding="utf-8")
+        assert "tags: #project@Tech" in txt6
         assert "CATEGORY_SCHEMA" not in txt6  # flat schema check
         print(f"[T6] write_to_vault (new note)  PASS  -> {p6.name}")
 
+        # T6b: a capture whose project does not resolve lands in _loose/ and that is a
+        # SUCCESS -- the whole point of the projects rework (OF-6's failure class is gone).
+        t6b = _cap("Unregistered", suggested_filename="drifting-note",
+                   markdown_content="Content for a project nobody registered.",
+                   confidence=0.92)
+        p6b = write_to_vault(t6b, vault_root=vault, scratchpad_folder=SP)
+        assert p6b.exists() and p6b.parent.name == "_loose", p6b
+        print(f"[T6b] unresolved project -> _loose  PASS  -> {p6b.name}")
+
         # T7: deduplication
-        p6b = write_to_vault(t6, vault_root=vault, scratchpad_folder=SP)
-        assert str(p6) == str(p6b)
+        p6c = write_to_vault(t6, vault_root=vault, scratchpad_folder=SP)
+        assert str(p6) == str(p6c)
         print("[T7] deduplication  PASS")
 
         # T8: low confidence -> scratchpad
-        t8 = BaseCaptureOutput(
-            category="Tech_Notes", suggested_filename="mystery-thing",
-            markdown_content="I have no idea what this is unique abc.",
-            key_signals=["unknown"], confidence=0.4,
-            requires_new_category=False,
-        )
+        t8 = _cap("Tech", suggested_filename="mystery-thing",
+                  markdown_content="I have no idea what this is unique abc.",
+                  key_signals=["unknown"], confidence=0.4)
         p8 = write_to_vault(t8, vault_root=vault, scratchpad_folder=SP)
         assert SP in str(p8)
-        assert "status: needs_review" in p8.read_text()
+        assert "status: needs_review" in p8.read_text(encoding="utf-8")
         print(f"[T8] scratchpad routing (low confidence)  PASS  -> {p8.name}")
 
         # T9: requires_new_category -> scratchpad
-        t9 = BaseCaptureOutput(
-            category="Tech_Notes", suggested_filename="new-thing-unique",
-            markdown_content="This is a new category entirely unique xyz.",
-            key_signals=[], confidence=0.8,
-            requires_new_category=True,
-        )
+        t9 = _cap("Tech", suggested_filename="new-thing-unique",
+                  markdown_content="This is a brand new topic entirely unique xyz.",
+                  confidence=0.8)
+        t9.requires_new_category = True
         p9 = write_to_vault(t9, vault_root=vault, scratchpad_folder=SP)
         assert SP in str(p9)
         print("[T9] scratchpad routing (requires_new_category)  PASS")
 
-        # T10: list_scratchpad and approve
+        # T10: list_scratchpad and approve into a project
         items = list_scratchpad(vault, SP)
         assert len(items) >= 2
         note_id_8 = items[0]["note_id"]
-        approved = approve_scratchpad_item(note_id_8, vault, SP, target_category="Tech_Notes")
+        approved = approve_scratchpad_item(note_id_8, vault, SP, target_project="Tech")
         assert approved.exists()
-        assert SP not in str(approved)
-        assert "needs_review" not in approved.read_text()
+        assert approved.parent.name == "Tech", approved
+        assert "needs_review" not in approved.read_text(encoding="utf-8")
+        assert "tags: #project@Tech" in approved.read_text(encoding="utf-8")
         print(f"[T10] approve_scratchpad_item  PASS  -> {approved.name}")
 
         # T11: discard
@@ -1218,11 +1096,12 @@ if __name__ == "__main__":
         assert all(i["note_id"] != note_id_9 for i in list_scratchpad(vault, SP))
         print("[T11] discard_scratchpad_item  PASS")
 
-        # T12: adding a new folder at runtime is immediately discovered
-        (vault / "Fitness_Log").mkdir()
-        cats2 = discover_categories(vault, scratchpad_folder=SP)
-        assert "Fitness_Log" in cats2
-        print(f"[T12] runtime folder discovery  PASS  (cats: {cats2})")
+        # T12: approving with no target lands the note in _loose/, never at the vault root
+        items12 = list_scratchpad(vault, SP)
+        if items12:
+            approved12 = approve_scratchpad_item(items12[0]["note_id"], vault, SP)
+            assert approved12.parent.name == "_loose", approved12
+            print("[T12] approve with no project -> _loose  PASS")
 
         # T13: _shorten_filename drops stop words and caps at max_words (now 2)
         assert _shorten_filename("how-to-set-up-docker-compose-networking-guide") == "set-up"
@@ -1312,32 +1191,6 @@ if __name__ == "__main__":
         assert "# Here is a summary: should stay inside the fence" in stripped
         print("[T14b] _strip_padding  PASS")
 
-        # T15: ensure_category creates folder + .category.toml, never overwrites
-        yt_dir = ensure_category(vault, "YouTube", "Summaries from YouTube videos.")
-        assert yt_dir.exists()
-        assert (yt_dir / ".category.toml").exists()
-        assert "YouTube" in discover_categories(vault, scratchpad_folder=SP)
-        ensure_category(vault, "YouTube", "DIFFERENT — should not overwrite")
-        assert "Summaries from YouTube videos." in (yt_dir / ".category.toml").read_text()
-        print("[T15] ensure_category  PASS")
-
-        # T16: write_to_named_category forces category + floors low confidence
-        t16 = BaseCaptureOutput(
-            category="Tech_Notes",  # LLM's original guess -- should be overridden
-            suggested_filename="rust-async-talk",
-            markdown_content="Notes from a conference talk on async Rust.",
-            key_signals=["rust", "async"], confidence=0.3,
-            requires_new_category=False,
-        )
-        p16 = write_to_named_category(
-            t16, category="YouTube", vault_root=vault,
-            description="Summaries from YouTube videos.",
-            scratchpad_folder=SP,
-        )
-        assert "YouTube" in str(p16)
-        assert SP not in str(p16)
-        print(f"[T16] write_to_named_category  PASS  -> {p16}")
-
         # T17: create_youtube_note writes sentinel + full transcript, status: summarizing
         from config import YouTubeConfig
         yt_cfg = YouTubeConfig(folder_name="YouTube", description="Summaries from YouTube videos.")
@@ -1376,8 +1229,8 @@ if __name__ == "__main__":
         print("[T18] finalize_youtube_note  PASS")
 
         # T19: finalize_youtube_note degrades gracefully when sentinel is missing
-        p19 = vault / "YouTube" / "no-sentinel.md"
-        p19.write_text("---\ncategory: YouTube\nstatus: summarizing\ntags: []\n---\n\n# Title\n\nNo sentinel here.\n", encoding="utf-8")
+        p19 = p17.parent / "no-sentinel.md"
+        p19.write_text("---\nstatus: summarizing\ntags: []\n---\n\n# Title\n\nNo sentinel here.\n", encoding="utf-8")
         finalize_youtube_note(p19, "Recovered summary.", vault)
         text19 = p19.read_text(encoding="utf-8")
         assert "## Summary" in text19
@@ -1386,12 +1239,9 @@ if __name__ == "__main__":
 
         # T20: write_to_vault appends deterministic image_embed/transcribed_text
         # verbatim after the LLM-generated markdown_content (H3/A1 seam).
-        t20 = BaseCaptureOutput(
-            category="Tech_Notes", suggested_filename="screenshot-note",
-            markdown_content="The LLM's paraphrased description of the screenshot.",
-            key_signals=["screenshot"], confidence=0.9,
-            requires_new_category=False,
-        )
+        t20 = _cap("Tech", suggested_filename="screenshot-note",
+                   markdown_content="The LLM's paraphrased description of the screenshot.",
+                   key_signals=["screenshot"])
         p20 = write_to_vault(
             t20, vault_root=vault, scratchpad_folder=SP,
             source_metadata={
@@ -1408,20 +1258,21 @@ if __name__ == "__main__":
         # T20b: image captures require >=2 shared tags to auto-append into an
         # existing note -- one incidental shared tag (e.g. "ollama") must
         # create a new file instead of merging an unrelated photo into it.
-        existing = BaseCaptureOutput(
-            category="Tech_Notes", suggested_filename="ollama-native",
-            markdown_content="Notes about Ollama's native tokenize endpoint.",
-            key_signals=["ollama", "tokenize"], confidence=0.9,
-            requires_new_category=False,
+        # The target is hand-written WITH its tags: since s125 item 5, a pipeline
+        # capture no longer persists key_signals as frontmatter tags, so a note the
+        # write path produced has none for a later capture to be judged against
+        # (and an untagged target is deliberately permissive -- _is_same_topic).
+        p_existing = vault / "Tech" / "ollama-native.md"
+        p_existing.parent.mkdir(parents=True, exist_ok=True)
+        p_existing.write_text(
+            "---\ncreated: 2026-08-01T10:00:00\ntags:\n  - ollama\n  - tokenize\n---\n"
+            "Notes about Ollama's native tokenize endpoint.\n",
+            encoding="utf-8",
         )
-        p_existing = write_to_vault(existing, vault_root=vault, scratchpad_folder=SP)
 
-        image_capture = BaseCaptureOutput(
-            category="Tech_Notes", suggested_filename="ollama-native",
-            markdown_content="A golden retriever puppy standing on grass.",
-            key_signals=["ollama"], confidence=0.9,
-            requires_new_category=False,
-        )
+        image_capture = _cap("Tech", suggested_filename="ollama-native",
+                             markdown_content="A golden retriever puppy standing on grass.",
+                             key_signals=["ollama"])
         p_image = write_to_vault(
             image_capture, vault_root=vault, scratchpad_folder=SP,
             source_metadata={"image_embed": "![[img-dog.png]]", "vision_model": "llava"},

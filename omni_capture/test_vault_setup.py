@@ -56,10 +56,12 @@ def test_setup_writes_vault_root_and_eager_inits(tmp_path):
     assert Path(str(doc["vault"]["root"])) == vault
 
 
-def test_setup_creates_every_chosen_folder_with_its_category_toml(tmp_path):
-    """The user's explicit requirement (P-WIZARD): a fresh vault must never
-    ship a description-less folder -- every seeded folder gets .category.toml
-    written AT CREATION, using the catalog's pre-written routing description."""
+def test_setup_registers_every_chosen_project_with_its_description(tmp_path):
+    """The user's explicit requirement (P-WIZARD): a fresh vault must never ship a
+    description-less project. Projects S1 moves that description from a per-folder
+    `.category.toml` into the one `.projects.toml` registry, and setup no longer
+    creates a directory at all -- a project's folder appears the first time a note is
+    filed into it."""
     cfg = tmp_path / "config.toml"
     cfg.write_text("", encoding="utf-8")
     vault = tmp_path / "Vault2"
@@ -76,18 +78,22 @@ def test_setup_creates_every_chosen_folder_with_its_category_toml(tmp_path):
     returned = {f["name"]: f["description"] for f in r.json()["folders"]}
     assert returned == {f["name"]: f["description"] for f in folders}
 
-    from storage_engine import read_category_config
+    import project_registry
+    reg = project_registry.load(vault)["projects"]
+    assert set(reg) == {"Work", "Personal"}
     for f in folders:
-        folder_dir = vault / f["name"]
-        assert folder_dir.is_dir()
-        toml_path = folder_dir / ".category.toml"
-        assert toml_path.exists(), f"{f['name']}/.category.toml must exist at creation"
-        assert read_category_config(folder_dir)["description"] == f["description"]
+        assert reg[f["name"]]["description"] == f["description"]
+        assert not (vault / f["name"]).exists(), "registering a project must not create a directory"
 
-    # models.py's category enum is built live from folders — setup never
-    # hardcodes an enum, it only seeds directories + descriptions on disk.
-    from storage_engine import discover_categories
-    assert set(discover_categories(vault)) == {"Work", "Personal"}
+
+def test_setup_rejects_an_ineligible_project_name(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("", encoding="utf-8")
+    client, srv = _client(cfg)
+    with mock.patch.object(srv, "reload_config", lambda *a, **k: None):
+        r = client.post("/vault/setup", json={"root": str(tmp_path / "V3"),
+                                              "folders": [{"name": "a/b", "description": "x"}]})
+    assert r.status_code == 400
 
 
 def test_setup_rejects_relative_root():
@@ -108,11 +114,14 @@ def test_check_reports_fresh_when_path_does_not_exist(tmp_path):
     assert body == {"exists": False, "has_categories": False, "categories": []}
 
 
-def test_check_detects_existing_vault_with_user_categories(tmp_path):
+def test_check_detects_existing_vault_with_user_projects(tmp_path):
+    """"Already set up" now means "has projects registered", not "has folders on
+    disk" -- a folder is a consequence of filing a note, never the definition."""
+    import project_registry
     client, srv = _client(tmp_path / "config.toml")
     candidate = tmp_path / "ExistingVault"
-    (candidate / "Tech_Notes").mkdir(parents=True)
-    (candidate / ".omni_capture").mkdir()
+    (candidate / ".omni_capture").mkdir(parents=True)
+    project_registry.save(candidate, {"schema": 1, "projects": {"Tech_Notes": {"description": ""}}})
 
     r = client.get("/vault/setup/check", params={"root": str(candidate)})
     assert r.status_code == 200

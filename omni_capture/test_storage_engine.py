@@ -49,8 +49,31 @@ from storage_engine import (
 
 # ── Shared fixture ────────────────────────────────────────────────────────────
 
+# Projects S1: a capture files into its RESOLVED project (or `_loose`). Resolution reads
+# the `#project@` body tag against `.projects.toml`, so these fixtures register the names
+# the tests below file into, and `_with_project` stamps the matching body tag. An
+# unregistered name is dangling -> loose, which is a success, not a failure.
+_TEST_PROJECTS = ("Tech_Notes", "Journal", "Watch_Later", "Finance", "CRM", "Notes")
+
+
+def _register_projects(root: Path, names=_TEST_PROJECTS) -> None:
+    import project_registry
+    root.mkdir(parents=True, exist_ok=True)
+    project_registry.save(root, {"schema": 1,
+                                 "projects": {n: {"description": ""} for n in names}})
+
+
+def _with_project(out: CaptureOutput, project, content: str) -> CaptureOutput:
+    """The engine's project pick. `markdown_content` is deliberately left BARE: the
+    write path stamps the `#project@` body tag itself, after every other body transform,
+    and the dedup key is hashed from this unstamped text."""
+    out.project = project
+    return out
+
+
 @pytest.fixture()
 def vault(tmp_path: Path) -> Path:
+    _register_projects(tmp_path)
     return tmp_path
 
 
@@ -66,14 +89,13 @@ def _make_dedup(
     requires_new=False,
     new_cat=None,
 ) -> CaptureOutput:
-    return CaptureOutput(
-        category=category,
+    return _with_project(CaptureOutput(
         suggested_filename=filename,
         markdown_content=content,
         key_signals=[],
         confidence=confidence,
         requires_new_category=requires_new,
-    )
+    ), category, content)
 
 
 # ── Deduplication ─────────────────────────────────────────────────────────────
@@ -120,17 +142,22 @@ class TestDedup:
         result = check_duplicate("some text", None, vault)
         assert result is not None
 
-    def test_finance_dedup_prevents_duplicate_row(self, vault):
+    def test_repeated_capture_writes_one_row_not_two(self, vault):
+        """Projects S1 (s125 item 5): `_LEDGER_FILES = {"Finance": "Expenses.md"}` is
+        DELETED -- a hardcoded taxonomy that user-named projects replace. A Finance-shaped
+        capture is now an ordinary note in the `Finance` project, and dedup (not the
+        ledger special case) is what stops the second write."""
         t = _make_dedup(
             category="Finance",
             content="| 2026-06-17 | Coffee | 3.50 | USD | food |",
             confidence=0.95,
         )
-        write_to_vault(t, vault_root=vault)
-        write_to_vault(t, vault_root=vault)  # duplicate — should be skipped
-        expenses = vault / "Finance" / "Expenses.md"
-        rows = [l for l in expenses.read_text().splitlines() if "Coffee" in l]
-        assert len(rows) == 1, f"Duplicate Finance row was written: {rows}"
+        first = write_to_vault(t, vault_root=vault)
+        second = write_to_vault(t, vault_root=vault)  # duplicate -- should be skipped
+        assert first == second
+        assert first.parent.name == "Finance"
+        rows = [l for l in first.read_text(encoding="utf-8").splitlines() if "Coffee" in l]
+        assert len(rows) == 1, f"Duplicate row was written: {rows}"
 
 
 # ── Filename collisions ────────────────────────────────────────────────────────
@@ -172,7 +199,7 @@ class TestFilenameCollision:
         items = list_scratchpad(vault)
         note_id = items[0]["note_id"]
 
-        dest = approve_scratchpad_item(note_id, vault, target_category="Tech_Notes")
+        dest = approve_scratchpad_item(note_id, vault, target_project="Tech_Notes")
         original = vault / "Tech_Notes" / "slug-x.md"
         assert original.exists(), "Original should not be overwritten"
         assert dest.exists()
@@ -283,26 +310,31 @@ class TestApproveInbox:
 
     def test_approve_with_target_category_override(self, vault):
         note_id = self._seed_inbox(vault, category="Tech_Notes")
-        dest = approve_scratchpad_item(note_id, vault, target_category="Journal")
+        dest = approve_scratchpad_item(note_id, vault, target_project="Journal")
         assert "Journal" in str(dest)
 
     def test_approve_nonexistent_raises(self, vault):
         with pytest.raises(FileNotFoundError):
             approve_scratchpad_item("nonexistent_id", vault)
 
-    def test_approve_sets_watch_later_status_to_unread(self, vault):
+    def test_approve_drops_the_review_markers_and_adds_no_status(self, vault):
+        """Projects S1 (s125 item 5): `_CATEGORY_DEFAULT_STATUS = {"Watch_Later":
+        "unread"}` is DELETED -- another hardcoded taxonomy. Approving now only strips
+        the review markers; it invents no per-destination status."""
         note_id = self._seed_inbox(vault, category="Watch_Later",
                                    content="Watch this video later unique www.")
-        dest = approve_scratchpad_item(note_id, vault, target_category="Watch_Later")
-        text = dest.read_text()
-        assert "status: unread" in text
+        dest = approve_scratchpad_item(note_id, vault, target_project="Watch_Later")
+        text = dest.read_text(encoding="utf-8")
+        assert "status:" not in text
+        assert "note_id:" not in text
+        assert dest.parent.name == "Watch_Later"
 
     def test_approve_collision_safe(self, vault):
         existing = _make_dedup(content="Existing vault note.", filename="test-note",
                          category="Tech_Notes", confidence=0.9)
         write_to_vault(existing, vault_root=vault)
         note_id = self._seed_inbox(vault, content="Inbox note, same slug.")
-        dest = approve_scratchpad_item(note_id, vault, target_category="Tech_Notes")
+        dest = approve_scratchpad_item(note_id, vault, target_project="Tech_Notes")
         # "note" is a filename stopword (see storage_engine._FILENAME_STOPWORDS),
         # so "test-note" is shortened to "test" before being written.
         original = vault / "Tech_Notes" / "test.md"
@@ -340,14 +372,13 @@ class TestDiscardInbox:
 
 def _make_routing(category="Tech_Notes", filename="note", content="content",
           signals=None, confidence=0.9):
-    return CaptureOutput(
-        category=category,
+    return _with_project(CaptureOutput(
         suggested_filename=filename,
         markdown_content=content,
         key_signals=signals or [],
         confidence=confidence,
         requires_new_category=False,
-    )
+    ), category, content)
 
 
 # -- Bug fix: a URL must not collapse distinct content -----------------------
@@ -419,18 +450,28 @@ class TestRoutingBugFix:
 
 class TestSmartMerge:
     def test_confident_merge_same_topic_different_filename(self, vault):
-        """Two gaming-mice captures with different filenames but strong shared
-        tags should merge into one file."""
-        day1 = _make_routing(filename="logitech-g502-review",
-                     content="The G502 has great sensors.",
-                     signals=["gaming-mice", "logitech", "hardware"])
+        """A capture with strong shared tags merges into an existing same-topic note in
+        the same project, even under a different filename.
+
+        The existing note is written with its tags here rather than produced by a prior
+        write_to_vault call: Projects S1 (s125 item 5) stopped auto-enrichment from
+        writing key_signals into frontmatter, so a pipeline capture no longer persists
+        any topic vocabulary for a LATER capture to match against. Merging still works
+        against a note that HAS tags (user-written, phone-synced, or hand-tagged), which
+        is what this pins."""
+        target = vault / "Tech_Notes" / "logitech-g502-review.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            "---\ncreated: 2026-07-30T10:00:00\ntags:\n  - gaming-mice\n  - logitech\n"
+            "  - hardware\n---\nThe G502 has great sensors.\n",
+            encoding="utf-8",
+        )
         day2 = _make_routing(filename="razer-deathadder-notes",
                      content="The DeathAdder is comfortable.",
                      signals=["gaming-mice", "razer", "hardware"])
-        p1 = write_to_vault(day1, vault_root=vault)
         p2 = write_to_vault(day2, vault_root=vault)
-        assert p1 == p2, "Same-topic captures should merge into one file"
-        body = p1.read_text()
+        assert p2 == target, "Same-topic capture should merge into the tagged note"
+        body = p2.read_text(encoding="utf-8")
         assert "G502" in body and "DeathAdder" in body
 
     def test_distinct_topics_stay_separate(self, vault):
@@ -529,11 +570,12 @@ class TestEmbeddingFallback:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _out_conf(conf):
-    return CaptureOutput(
-        category="Tech_Notes", suggested_filename="topic-x",
-        markdown_content="Some unique content " + str(conf),
+    content = "Some unique content " + str(conf)
+    return _with_project(CaptureOutput(
+        suggested_filename="topic-x",
+        markdown_content=content,
         key_signals=["x"], confidence=conf, requires_new_category=False,
-    )
+    ), "Tech_Notes", content)
 
 
 def _cfg(threshold):
@@ -546,7 +588,7 @@ def _cfg(threshold):
 def test_high_threshold_routes_mid_confidence_to_scratchpad():
     with tempfile.TemporaryDirectory() as tmp:
         vault = Path(tmp)
-        (vault / "Tech_Notes").mkdir()
+        _register_projects(vault)
         with mock.patch("config.get_config", return_value=_cfg(0.8)):
             p = se.write_to_vault(_out_conf(0.7), vault_root=vault, scratchpad_folder="_scratchpad")
         assert "_scratchpad" in str(p)   # 0.7 < 0.8 -> inbox
@@ -555,7 +597,7 @@ def test_high_threshold_routes_mid_confidence_to_scratchpad():
 def test_low_threshold_files_same_capture():
     with tempfile.TemporaryDirectory() as tmp:
         vault = Path(tmp)
-        (vault / "Tech_Notes").mkdir()
+        _register_projects(vault)
         with mock.patch("config.get_config", return_value=_cfg(0.5)):
             p = se.write_to_vault(_out_conf(0.7), vault_root=vault, scratchpad_folder="_scratchpad")
         assert "_scratchpad" not in str(p)  # 0.7 >= 0.5 -> filed
@@ -569,13 +611,13 @@ def test_low_threshold_files_same_capture():
 def test_ocr_fastpath_note_has_extracted_text_and_source_type():
     with tempfile.TemporaryDirectory() as tmp:
         vault = Path(tmp)
-        (vault / "Tech_Notes").mkdir()
-        out = CaptureOutput(
-            category="Tech_Notes", suggested_filename="api-handler",
+        _register_projects(vault)
+        out = _with_project(CaptureOutput(
+            suggested_filename="api-handler",
             markdown_content="Notes on a request handler from a screenshot.",
             key_signals=["python", "handler"], confidence=0.9,
             requires_new_category=False,
-        )
+        ), "Tech_Notes", "Notes on a request handler from a screenshot.")
         p = write_to_vault(
             out, vault_root=vault, scratchpad_folder="_scratchpad",
             source_metadata={
@@ -595,11 +637,11 @@ def test_ocr_fastpath_note_has_extracted_text_and_source_type():
 def test_vision_ocr_note_still_uses_transcribed_text():
     with tempfile.TemporaryDirectory() as tmp:
         vault = Path(tmp)
-        (vault / "Tech_Notes").mkdir()
-        out = CaptureOutput(
-            category="Tech_Notes", suggested_filename="cat-photo",
+        _register_projects(vault)
+        out = _with_project(CaptureOutput(
+            suggested_filename="cat-photo",
             markdown_content="A description.", key_signals=["cat"], confidence=0.9,
-        )
+        ), "Tech_Notes", "A description.")
         p = write_to_vault(
             out, vault_root=vault, scratchpad_folder="_scratchpad",
             source_metadata={"transcribed_text": "incidental ocr", "vision_model": "llava"},
@@ -614,12 +656,11 @@ def test_vision_ocr_note_still_uses_transcribed_text():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _out_voice(text):
-    return CaptureOutput(
-        category="Notes",
+    return _with_project(CaptureOutput(
         suggested_filename="voice-note",
         markdown_content=text,
         confidence=0.95,
-    )
+    ), "Notes", text)
 
 
 def test_voice_capture_always_new_timestamped_file(tmp_path):
@@ -697,6 +738,7 @@ def test_smart_merge_reports_the_note_it_merged_into(tmp_path):
     from storage_engine import write_to_vault
 
     vault = tmp_path / "vault"
+    _register_projects(vault)
     (vault / "Tech_Notes").mkdir(parents=True)
     existing = vault / "Tech_Notes" / "ollama-setup.md"
     existing.write_text(
@@ -704,14 +746,13 @@ def test_smart_merge_reports_the_note_it_merged_into(tmp_path):
         encoding="utf-8",
     )
 
-    out = CaptureOutput(
-        category="Tech_Notes",
+    out = _with_project(CaptureOutput(
         suggested_filename="a-different-name",
         markdown_content="second capture about the same thing",
         key_signals=["ollama", "llm"],
         confidence=0.9,
         requires_new_category=False,
-    )
+    ), "Tech_Notes", "second capture about the same thing")
     merge_info: dict = {}
     path = write_to_vault(out, vault_root=vault, merge_info=merge_info)
 
@@ -725,15 +766,14 @@ def test_a_plain_new_capture_reports_no_merge(tmp_path):
     from storage_engine import write_to_vault
 
     vault = tmp_path / "vault"
-    (vault / "Tech_Notes").mkdir(parents=True)
-    out = CaptureOutput(
-        category="Tech_Notes",
+    _register_projects(vault)
+    out = _with_project(CaptureOutput(
         suggested_filename="brand-new-thing",
         markdown_content="nothing like anything else here",
         key_signals=["kayaking"],
         confidence=0.9,
         requires_new_category=False,
-    )
+    ), "Tech_Notes", "nothing like anything else here")
     merge_info: dict = {}
     write_to_vault(out, vault_root=vault, merge_info=merge_info)
     assert merge_info == {}

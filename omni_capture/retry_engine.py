@@ -4,7 +4,7 @@ retry_engine.py -- enrichment retry engine for needs_llm_retry scratchpad placeh
 route_failed_llm() has always flagged a failed capture `needs_llm_retry: true` and
 preserved the raw text -- but nothing has ever consumed that flag. retry_pending()
 is the consumer: it re-runs the LLM decision stage over each flagged placeholder
-still in _scratchpad and re-files it into a real category, like a fresh capture.
+still in _scratchpad and re-files it into its project (or `_loose`), like a fresh capture.
 
 SAFETY GATE (this module's whole safety argument): a placeholder is repaired ONLY
 when is_retryable() AND placeholder_matches() both hold. The flag alone is not proof
@@ -27,7 +27,7 @@ A body that fails either check is skipped and left byte-identical, forever.
 ponytail: skipped placeholders are resolvable only by hand (Inbox Approve, which
 moves + embeds without rewriting the body). If that ever proves too blunt, the
 upgrade is a conservative repair mode -- strip the verified banner, keep every
-remaining byte verbatim, use the LLM for category/title/tags only.
+remaining byte verbatim, use the LLM for the project assignment and title only.
 """
 from __future__ import annotations
 
@@ -129,11 +129,14 @@ def retry_pending(
     the scratchpad, BOUNDED to `max_items` repairs per call (s104 precedent: an
     unbounded retry loop produced repeated failures with no ceiling).
 
-    Preconditions, checked once before touching any file:
-      * >=1 real category folder exists -- run_llm_engine() hard-refuses an empty
-        category_descriptions dict (llm_engine.py:322-326), and a retry must never
-        CREATE a category folder to satisfy it.
+    Precondition, checked once before touching any file:
       * Ollama is reachable.
+
+    That is the WHOLE precondition now (Projects S1, s125). The old ">=1 category folder
+    exists" gate was correct against the pre-projects engine, which hard-refused an empty
+    category set; under projects a retry can ALWAYS succeed, because an empty registry is
+    a normal state and the worst case is that the repaired note lands in `_loose/`.
+    Keeping the gate would have permanently disabled retries on a vault with no projects.
 
     Failures are contained PER NOTE: one bad placeholder is logged and left exactly
     as it was (still needs_llm_retry: true) for the next call -- never aborts the pass.
@@ -147,16 +150,12 @@ def retry_pending(
     if not sp.exists():
         return summary
 
-    from storage_engine import discover_categories
-    if not discover_categories(vault, scratchpad_folder):
-        print("[RetryEngine] no category folders yet -- skipping retry pass.", flush=True)
-        return summary
-
     if not is_ollama_reachable():
         print("[RetryEngine] Ollama unreachable -- skipping retry pass.", flush=True)
         return summary
 
-    from storage_engine import build_category_descriptions, write_to_vault as _default_write_to_vault
+    from storage_engine import write_to_vault as _default_write_to_vault
+    from project_registry import load as load_registry
     from llm_engine import run_llm_engine as _default_run_llm_engine
     from vector_store import index_note as _default_index_note, remove_from_index
     from index_writer import remove_capture_by_path
@@ -170,7 +169,7 @@ def retry_pending(
     log_capture = deps.get("log_capture", _default_log_capture)
 
     cfg = get_config()
-    category_descriptions = build_category_descriptions(vault, scratchpad_folder)
+    registry = load_registry(vault)
 
     for f in sorted(sp.iterdir()):
         if summary["attempted"] >= max_items:
@@ -201,7 +200,7 @@ def retry_pending(
 
             output = run_llm_engine(
                 enriched,
-                category_descriptions=category_descriptions,
+                registry=registry,
                 max_retries=cfg.capture.llm_max_retries,
                 temperature=cfg.capture.llm_temperature,
                 scrutiny=cfg.capture.llm_scrutiny,
@@ -224,7 +223,7 @@ def retry_pending(
                 except Exception as index_exc:
                     print(f"[RetryEngine] index write failed (note still saved): {index_exc}", file=sys.stderr)
 
-            # write_to_vault picked a fresh path in the real category -- the OLD
+            # write_to_vault picked a fresh path outside the scratchpad -- the OLD
             # placeholder is a different file and needs its own cleanup, mirroring
             # discard_scratchpad_item's cleanup (scratchpad.py).
             try:

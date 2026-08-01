@@ -5,7 +5,7 @@ Owns: FastAPI app wiring, the capture SSE endpoint, and `_run_pipeline_blocking`
 (kept here per CLAUDE.md hard rule -- hand-duplicated alongside
 main.py:run_pipeline(), never moved into a shared module). Background-job
 machinery (registry, workers, `/jobs/{id}` polling) lives in `jobs.py`;
-vault-admin-only endpoints (category CRUD, search, stats) live in
+vault-admin-only endpoints (project-registry CRUD, search, stats) live in
 `vault_admin.py` -- both are mounted below via `app.include_router(...)` so
 the route table is unchanged.
 
@@ -15,13 +15,15 @@ Endpoints
   POST /share                          Browser-extension / OS share-target (no clipboard)
   GET  /config
   PATCH /config
-  GET  /vault/categories
-  POST /vault/categories
-  PATCH /vault/categories/{name}
-  DELETE /vault/categories/{name}
+  GET  /vault/categories                    vault folder listing (Library browser)
   GET  /vault/categories/{name}/files
+  GET  /vault/projects                      project registry (.projects.toml)
+  POST /vault/projects
+  PATCH /vault/projects/{name}              rename (writes renamed_from)
+  PATCH /vault/projects/{name}/description
+  DELETE /vault/projects/{name}             registry entry ONLY -- never a note
   GET  /search?q=&category=&since=&limit=   FTS search (SQLite)
-  GET  /stats                               category + time statistics (SQLite)
+  GET  /stats                               project + time statistics (SQLite)
   GET  /inbox
   POST /inbox/{note_id}/approve
   DELETE /inbox/{note_id}
@@ -45,11 +47,11 @@ SSE events emitted by /look/chat:
 
 SSE events emitted by /capture and /share:
   step     {"step": "intercept|enrich|decide|write", "status": "active|done|error"}
-  thinking {"rationale": "...", "key_signals": [...], "confidence": 0.95, "category": "CRM"}
+  thinking {"rationale": "...", "key_signals": [...], "confidence": 0.95, "project": "research"}
   reminder_offer {"events": [{"when_iso": "...", "label": "..."}], "note_path": "..."} -- emitted
            after write, before done, only when the capture contains concrete future
            dates/times; GUI offers to create reminders via POST /reminders.
-  done     {"path": "/vault/Category/file.md", "category": "Tech_Notes"}
+  done     {"path": "/vault/research/file.md", "project": "research"}
   error    {"message": "..."}
   job      {"job_id": "...", "kind": "youtube"|"voice", "status": "queued"} -- hand-off to a
            background job; the stream closes after this event and the GUI polls
@@ -553,8 +555,8 @@ def _require_secret(x_omni_secret: Optional[str] = Header(default=None)) -> None
 
     SRV-01: fails CLOSED. An unset/empty OMNI_GUI_SECRET is a misconfiguration,
     not a development convenience -- degrading to "no auth" would leave every
-    route (incl. DELETE /vault/categories/{name}?force=true, a shutil.rmtree,
-    and PUT /note) open to any local process. Same shape as
+    route (incl. DELETE /vault/projects/{name} and PUT /note) open to any
+    local process. Same shape as
     lan_sync._check_secret, which has always refused to degrade.
 
     SRV-21: read via os.getenv on EVERY call, not once at import, so a rotated
@@ -574,6 +576,8 @@ def _require_secret(x_omni_secret: Optional[str] = Header(default=None)) -> None
 # enforces, applied once here at include-time rather than per-route, so auth
 # coverage is identical to before the split.
 import jobs
+import project_registry
+import projects
 import vault_admin
 
 app.include_router(jobs.router, dependencies=[Depends(_require_secret)])
@@ -624,7 +628,9 @@ class ConfigPatch(BaseModel):
     sync_mirror_captures: Optional[bool] = None
 
 class InboxApprove(BaseModel):
-    target_category: Optional[str] = None
+    # The project to file into. Absent/empty -> `_loose`, which is a success, not an
+    # error: there is no longer any such thing as "no valid destination".
+    target_project: Optional[str] = None
 
 class ReminderCreate(BaseModel):
     note_path: str
@@ -722,7 +728,8 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
         from interceptor import InputPayload
         from enrichment_router import route_and_enrich, _YOUTUBE_RE
         from llm_engine import run_llm_engine
-        from storage_engine import write_to_vault, read_existing_context, build_category_descriptions
+        from storage_engine import write_to_vault, read_existing_context
+        from project_registry import load as load_registry
         from pre_resolver import pre_resolve
         from vector_store import retrieve_related, index_note
 
@@ -856,7 +863,7 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
             # Vision failed at capture time. The placeholder enriched_text
             # carries no real content -- classifying or semantically
             # retrieving against it would only launder the failure into a
-            # confident (and wrong) category. Route straight to scratchpad
+            # confident (and wrong) project. Route straight to scratchpad
             # instead, flagged for a vision retry.
             from storage_engine import route_failed_vision
             emit("step", step="decide", status="done")
@@ -868,7 +875,7 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                     scratchpad_folder=cfg.vault.scratchpad_folder,
                 )
             emit("step", step="write", status="done")
-            emit("done", path=str(written_path), category="Unprocessed_Images")
+            emit("done", path=str(written_path), project=None)
             try:
                 from notifier import notify_capture_error
                 if cfg.notifications.enabled:
@@ -904,7 +911,9 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                 )
             existing_context = "\n\n---\n\n".join(ctx_parts) if ctx_parts else None
 
-        category_descriptions = build_category_descriptions(cfg.vault.root, cfg.vault.scratchpad_folder)
+        # The project registry, re-read per capture so a just-created (or just-synced)
+        # project is available without a restart. Mirrors main.py:run_pipeline by hand.
+        registry = load_registry(cfg.vault.root)
         # NARROW scope: only an LLM-stage failure is fail-soft-to-scratchpad
         # (mirrors main.py:run_pipeline). A later write/index failure is a real
         # error, NOT a fail-soft case -- letting the broad outer except catch it
@@ -914,7 +923,7 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
             with timer.stage("llm"):
                 output = run_llm_engine(
                     enriched,
-                    category_descriptions=category_descriptions,
+                    registry=registry,
                     existing_context=existing_context,
                     max_retries=cfg.capture.llm_max_retries,
                     temperature=cfg.capture.llm_temperature,
@@ -922,14 +931,15 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                 )
 
                 # Two-pass fallback: the pre-resolver was uncertain, but now that the
-                # LLM has picked a category we can check for an existing CRM/Finance
-                # file and re-run with that context loaded.
-                if resolved.certainty == "low" and output.category in ("CRM", "Finance"):
+                # LLM has landed on a real project we can load the note that project
+                # would append to and re-run with that context. The old gate keyed on
+                # the hardcoded "CRM"/"Finance" folder names (deleted, s125 item 5).
+                if resolved.certainty == "low" and getattr(output, "project", None):
                     fallback_context = read_existing_context(output, vault_root=cfg.vault.root)
                     if fallback_context:
                         output = run_llm_engine(
                             enriched,
-                            category_descriptions=category_descriptions,
+                            registry=registry,
                             existing_context=fallback_context,
                             max_retries=cfg.capture.llm_max_retries,
                             temperature=cfg.capture.llm_temperature,
@@ -956,9 +966,10 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                     scratchpad_folder=cfg.vault.scratchpad_folder,
                     source_url=enriched.source_url,
                 )
-            log_capture_failure(str(llm_exc), enriched, str(written_path), cfg.ollama.model, "Unprocessed_Captures")
+            log_capture_failure(str(llm_exc), enriched, str(written_path), cfg.ollama.model,
+                                cfg.vault.scratchpad_folder)
             emit("step", step="write", status="done")
-            emit("done", path=str(written_path), category="Unprocessed_Captures")
+            emit("done", path=str(written_path), project=None)
             try:
                 from notifier import notify_capture_error
                 if cfg.notifications.enabled:
@@ -991,7 +1002,7 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
              rationale=output.rationale or "",
              key_signals=output.key_signals or [],
              confidence=round(output.confidence, 2),
-             category=output.category)
+             project=getattr(output, "project", None))
         emit("step", step="decide", status="done")
 
         output.markdown_content = _append_transcript(output.markdown_content, enriched)
@@ -1038,7 +1049,9 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                  events=[{"when_iso": e.when_iso, "label": e.label} for e in future],
                  note_path=str(written_path))
 
-        emit("done", path=str(written_path), category=output.category,
+        # The destination folder IS the note's project (or `_loose`) -- read it off the
+        # written path so the event can never disagree with where the file landed.
+        emit("done", path=str(written_path), project=Path(written_path).parent.name,
              merged_into=merge_info.get("merged_into"))
 
         with timer.stage("notify"):
@@ -1046,7 +1059,7 @@ def _run_pipeline_blocking(content_type, content, q, loop, run_id=None):
                 from notifier import notify_capture_success
                 from capture_log import log_capture
                 if cfg.notifications.enabled:
-                    notify_capture_success(category=output.category,
+                    notify_capture_success(category=Path(written_path).parent.name,
                                            filepath=str(written_path),
                                            title_prefix=cfg.notifications.title_prefix)
                 log_capture(output, enriched, str(written_path), cfg.ollama.model)
@@ -1680,31 +1693,49 @@ async def approve_inbox(
     body: InboxApprove = InboxApprove(),
     _: None = Depends(_require_secret),
 ):
-    """Move a scratchpad note to its final category."""
+    """File a scratchpad note into a project, or into `_loose` when none is chosen.
+
+    A `target_project` that is not yet in the registry is CREATED here (this is the
+    Inbox's "approve the suggestion" arm — the capture engine itself may never invent a
+    project). Registration happens before the move so `approve_scratchpad_item`'s
+    resolution sees it and the note lands in the project rather than loose.
+    """
     from config import get_config
     from storage_engine import approve_scratchpad_item, get_scratchpad_item_text
 
     root = _get_vault_root()
     cfg = get_config()
 
-    # SRV-03: the guard's RETURN VALUE is the sanitized name -- calling it only for
-    # its raising side effect and then passing the raw `body.target_category` on to
-    # approve_scratchpad_item let a traversal segment through to the join site.
-    target_category = body.target_category
-    if target_category:
-        target_category = vault_admin._safe_category_dir(root, target_category).name
+    target_project = (body.target_project or "").strip() or None
+    if target_project and not projects.is_valid_project_name(target_project):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{target_project!r} is not a registry-eligible project name.",
+        )
 
-    is_new = bool(target_category) and not (root / target_category).exists()
+    is_new = bool(target_project) and target_project not in project_registry.load(root).get("projects", {})
     sample_text = get_scratchpad_item_text(note_id, root, cfg.vault.scratchpad_folder) if is_new else None
 
+    description = None
+    if is_new and cfg.capture.auto_describe_new_folders:
+        from storage_engine import generate_project_description
+        # generate_project_description() ends in a blocking asyncio.run(), which raises
+        # from a thread that already has a running loop (true here). Worker thread it is;
+        # run_sync takes positional args only, hence the partial for sample_text.
+        from functools import partial
+        description = await anyio.to_thread.run_sync(
+            partial(generate_project_description, target_project, sample_text=sample_text)
+        )
+
+    if is_new:
+        project_registry.update(root, lambda reg: reg["projects"].__setitem__(
+            target_project, vault_admin.new_project_entry(description)))
+
     try:
-        dest = approve_scratchpad_item(note_id, root, cfg.vault.scratchpad_folder, target_category=target_category)
+        dest = approve_scratchpad_item(note_id, root, cfg.vault.scratchpad_folder,
+                                       target_project=target_project)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        # s114/d07: the scratchpad itself as a destination (the dead-loop guard in
-        # approve_scratchpad_item). A bad destination is the caller's input, not a server fault.
-        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         from index_writer import upsert_capture_from_file
@@ -1716,26 +1747,14 @@ async def approve_inbox(
     except Exception as _exc:
         print(f"[server] approve re-index failed (non-fatal): {_exc}", flush=True)
 
-    if is_new and cfg.capture.auto_describe_new_folders:
-        from storage_engine import generate_category_description, write_category_description
-        # Same asyncio.run()-in-a-running-loop hazard as create_category() above --
-        # offload to a worker thread. run_sync takes positional args only, hence
-        # the partial for the sample_text kwarg.
-        from functools import partial
-        generated = await anyio.to_thread.run_sync(
-            partial(generate_category_description, target_category, sample_text=sample_text)
-        )
-        if generated:
-            write_category_description(root / target_category, generated)
-
-    return {"ok": True, "note_id": note_id, "path": str(dest)}
+    return {"ok": True, "note_id": note_id, "path": str(dest), "project": dest.parent.name}
 
 
-@app.get("/inbox/{note_id}/suggest-categories")
-async def suggest_inbox_categories(note_id: str, _: None = Depends(_require_secret)):
-    """Suggest 2-3 generalized, reusable folder names for a scratchpad item."""
+@app.get("/inbox/{note_id}/suggest-projects")
+async def suggest_inbox_projects(note_id: str, _: None = Depends(_require_secret)):
+    """Suggest 2-3 generalized, reusable project names for a scratchpad item."""
     from config import get_config
-    from storage_engine import discover_categories, get_scratchpad_item_text, suggest_category_names
+    from storage_engine import get_scratchpad_item_text, suggest_project_names
 
     root = _get_vault_root()
     cfg = get_config()
@@ -1743,8 +1762,8 @@ async def suggest_inbox_categories(note_id: str, _: None = Depends(_require_secr
     if text is None:
         raise HTTPException(status_code=404, detail=f"Scratchpad item {note_id!r} not found.")
 
-    existing = discover_categories(root, cfg.vault.scratchpad_folder)
-    suggestions = suggest_category_names(text, existing)
+    existing = sorted(project_registry.load(root).get("projects", {}))
+    suggestions = suggest_project_names(text, existing)
     return {"suggestions": suggestions}
 
 

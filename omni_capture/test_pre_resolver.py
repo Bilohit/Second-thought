@@ -50,13 +50,13 @@ class TempVault:
 
 class TestAlwaysDefers(unittest.TestCase):
     """No fast path remains; every input, regardless of shape, returns the
-    same low-certainty, no-hint, no-context result."""
+    same low-certainty, no-context result. `category_hint` is gone with the
+    category concept itself (Projects S1, Task 13)."""
 
     def _assert_defers(self, text: str, input_type: str = "text") -> None:
         with TempVault() as vault:
             r = pre_resolve(_ep(text, input_type), vault)
         self.assertEqual(r.certainty, "low")
-        self.assertIsNone(r.category_hint)
         self.assertIsNone(r.existing_context)
         self.assertIsNone(r.path)
 
@@ -64,11 +64,11 @@ class TestAlwaysDefers(unittest.TestCase):
         self._assert_defers("Here's how to use Python asyncio for concurrent tasks.")
 
     def test_finance_shaped_text_no_longer_fast_pathed(self):
-        # Previously asserted category_hint == "Finance" -- that fast path is deleted.
+        # Previously asserted a "Finance" hint -- that fast path is deleted.
         self._assert_defers("Paid $42.99 for the AWS invoice.")
 
     def test_crm_shaped_text_no_longer_fast_pathed(self):
-        # Previously asserted category_hint == "CRM" -- that fast path is deleted.
+        # Previously asserted a "CRM" hint -- that fast path is deleted.
         self._assert_defers("email from John Smith about the Q3 proposal")
 
     def test_watch_later_url(self):

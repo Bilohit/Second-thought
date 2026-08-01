@@ -56,12 +56,21 @@ def _make_cfg(vault_root: Path) -> Config:
     return cfg
 
 
-def _good_output(filename: str = "recovered-note") -> CaptureOutput:
-    return CaptureOutput(
-        category="Tech_Notes", suggested_filename=filename,
+def _good_output(filename: str = "recovered-note", project: str | None = "Tech_Notes") -> CaptureOutput:
+    out = CaptureOutput(
+        suggested_filename=filename,
         markdown_content="# Recovered\n\nrepaired body", rationale="ok",
         key_signals=["k"], confidence=0.9, requires_new_category=False,
     )
+    out.project = project
+    return out
+
+
+def _register(vault: Path, name: str = "Tech_Notes") -> None:
+    """A project exists in `.projects.toml`, not on disk -- its folder appears the
+    first time a note is filed into it."""
+    import project_registry
+    project_registry.save(vault, {"schema": 1, "projects": {name: {"description": ""}}})
 
 
 # --------------------------------------------------------------------------
@@ -142,16 +151,30 @@ def test_retry_pending_noop_when_scratchpad_missing(tmp_path: Path):
     assert summary == {"attempted": 0, "recovered": 0, "skipped": 0, "failed": 0}
 
 
-def test_retry_pending_skips_pass_when_no_categories_exist(tmp_path: Path):
-    """Vault categories are never hardcoded, and the retry must never CREATE one --
-    so with zero category folders there is nothing safe to retry into."""
-    _place(tmp_path)
-    summary = retry_pending(tmp_path, deps={"is_ollama_reachable": lambda: True})
-    assert summary["attempted"] == 0
+def test_retry_pending_runs_with_no_projects_at_all(tmp_path: Path):
+    """Projects S1 (Task 13): the old ">=1 category folder" precondition is DELETED.
+    A retry can always succeed now -- worst case the repaired note lands in `_loose/`
+    -- so an empty registry must no longer disable the pass. The old test asserted the
+    opposite; keeping it would have permanently disabled retries on a fresh vault."""
+    _place(tmp_path, "the raw captured text that must not be lost")
+
+    import config as config_module
+    with mock.patch.object(config_module, "get_config", lambda: _make_cfg(tmp_path)):
+        summary = retry_pending(
+            tmp_path,
+            deps={
+                "is_ollama_reachable": lambda: True,
+                "run_llm_engine": mock.Mock(return_value=_good_output(project=None)),
+            },
+        )
+
+    assert summary == {"attempted": 1, "recovered": 1, "skipped": 0, "failed": 0}
+    written = list((tmp_path / "_loose").glob("*.md"))
+    assert len(written) == 1, f"expected one recovered note in _loose, got {written}"
 
 
 def test_retry_pending_skips_pass_when_ollama_unreachable(tmp_path: Path):
-    (tmp_path / "Tech_Notes").mkdir()
+    _register(tmp_path)
     _place(tmp_path)
     summary = retry_pending(tmp_path, deps={"is_ollama_reachable": lambda: False})
     assert summary["attempted"] == 0
@@ -162,7 +185,7 @@ def test_retry_pending_skips_pass_when_ollama_unreachable(tmp_path: Path):
 # --------------------------------------------------------------------------
 
 def test_retry_pending_repairs_a_matching_placeholder(tmp_path: Path):
-    (tmp_path / "Tech_Notes").mkdir()
+    _register(tmp_path)
     placeholder_path = _place(tmp_path, "the raw captured text that must not be lost")
 
     import config as config_module
@@ -178,7 +201,7 @@ def test_retry_pending_repairs_a_matching_placeholder(tmp_path: Path):
     assert summary == {"attempted": 1, "recovered": 1, "skipped": 0, "failed": 0}
     assert not placeholder_path.exists(), "the old placeholder must be removed after repair"
     # write_to_vault derives the filename from the note's title (s55), so the
-    # suggested_filename is a hint, not the path -- assert on the category folder.
+    # suggested_filename is a hint, not the path -- assert on the project folder.
     written = list((tmp_path / "Tech_Notes").glob("*.md"))
     assert len(written) == 1, f"expected one recovered note, got {written}"
     text = written[0].read_text(encoding="utf-8")
@@ -188,7 +211,7 @@ def test_retry_pending_repairs_a_matching_placeholder(tmp_path: Path):
 
 def test_retry_pending_feeds_the_raw_text_back_to_the_llm(tmp_path: Path):
     """The banner must not reach the model -- it would be classified as content."""
-    (tmp_path / "Tech_Notes").mkdir()
+    _register(tmp_path)
     _place(tmp_path, "kubernetes ingress notes")
     llm = mock.Mock(return_value=_good_output())
 
@@ -204,7 +227,7 @@ def test_retry_pending_feeds_the_raw_text_back_to_the_llm(tmp_path: Path):
 def test_retry_pending_never_touches_a_hand_edited_placeholder(tmp_path: Path):
     """SAFETY GATE end-to-end: a hand-edited body is skipped and left byte-identical,
     even though needs_llm_retry: true is still set."""
-    (tmp_path / "Tech_Notes").mkdir()
+    _register(tmp_path)
     placeholder_path = _place(tmp_path)
     edited = placeholder_path.read_text(encoding="utf-8") + "\nmy own edit\n"
     placeholder_path.write_text(edited, encoding="utf-8")
@@ -229,7 +252,7 @@ def test_retry_pending_never_touches_a_hand_edited_placeholder(tmp_path: Path):
 # --------------------------------------------------------------------------
 
 def test_retry_pending_is_bounded_per_run(tmp_path: Path):
-    (tmp_path / "Tech_Notes").mkdir()
+    _register(tmp_path)
     for i in range(3):
         _place(tmp_path, f"raw text {i}")
 
@@ -253,7 +276,7 @@ def test_retry_pending_is_bounded_per_run(tmp_path: Path):
 def test_retry_pending_contains_a_per_item_failure(tmp_path: Path):
     """One bad capture must not abort the pass -- the other eligible item in the
     same run still gets repaired."""
-    (tmp_path / "Tech_Notes").mkdir()
+    _register(tmp_path)
     _place(tmp_path, "bad raw text")
     _place(tmp_path, "good raw text")
 

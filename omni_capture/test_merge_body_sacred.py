@@ -30,15 +30,25 @@ from models import CaptureOutput
 _CAPTURE_TAGS = "---\ntags: [docker, networking]\n---\n# Cap\n\nbody\n"
 
 
-def _out(signals, category="Tech_Notes", filename="new-note", content="new content"):
-    return CaptureOutput(
-        category=category,
+# Projects S1: a capture's merge candidates are the notes in the directory it will
+# FILE INTO -- its resolved project, or `_loose`. So the fixture has to make the
+# capture resolve to `Tech_Notes`: register the project, and carry the `#project@`
+# body tag that is the single truth every surface resolves from.
+def _reg(vault, name="Tech_Notes"):
+    import project_registry
+    project_registry.save(vault, {"schema": 1, "projects": {name: {"description": ""}}})
+
+
+def _out(signals, project="Tech_Notes", filename="new-note", content="new content"):
+    out = CaptureOutput(
         suggested_filename=filename,
         markdown_content=content,
         key_signals=signals,
         confidence=0.9,
         requires_new_category=False,
     )
+    out.project = project
+    return out
 
 
 # -- _is_synced_note: the two positive arms (merge.py:94 / merge.py:96) -----
@@ -92,6 +102,7 @@ def test_find_merge_target_excludes_a_synced_note_despite_strong_tag_match(tmp_p
     """The core B-1 case: a phone note filed under a category folder shares
     tags with a same-topic capture. Merging would append capture text into the
     note's sacred body. Must return None (write a new file instead)."""
+    _reg(tmp_path)
     cat = tmp_path / "Tech_Notes"
     cat.mkdir()
     note = cat / "docker-notes.md"
@@ -112,6 +123,7 @@ def test_find_merge_target_control_same_tags_on_a_capture_does_merge(tmp_path):
     """Control for the test above: identical tag overlap on a plain capture
     DOES resolve to a merge target. Without this, the B-1 test could pass for
     the wrong reason (e.g. thresholds never met)."""
+    _reg(tmp_path)
     cat = tmp_path / "Tech_Notes"
     cat.mkdir()
     cap = cat / "docker-capture.md"
@@ -125,6 +137,7 @@ def test_find_merge_target_control_same_tags_on_a_capture_does_merge(tmp_path):
 def test_find_merge_target_picks_the_capture_and_skips_the_note(tmp_path):
     """Mixed folder: both files match on tags. The capture must win and the
     synced note must never even be a candidate."""
+    _reg(tmp_path)
     cat = tmp_path / "Tech_Notes"
     cat.mkdir()
     note = cat / "docker-notes.md"
@@ -192,6 +205,7 @@ def test_semantic_merge_failure_degrades_to_tag_matching(tmp_path, monkeypatch):
     back to tags, not propagate the exception into the capture write."""
     import vector_store
 
+    _reg(tmp_path)
     cat = tmp_path / "Tech_Notes"
     cat.mkdir()
     cap = cat / "docker-capture.md"
@@ -216,6 +230,7 @@ def test_semantic_confirmation_can_merge_on_a_single_shared_tag(tmp_path, monkey
     may confirm the merge on its own."""
     import vector_store
 
+    _reg(tmp_path)
     cat = tmp_path / "Tech_Notes"
     cat.mkdir()
     cap = cat / "docker-capture.md"
@@ -242,6 +257,7 @@ def test_image_min_shared_tags_blocks_semantic_confirmation_on_one_tag(tmp_path,
     _is_same_topic already enforces for the existing-file append path."""
     import vector_store
 
+    _reg(tmp_path)
     cat = tmp_path / "Tech_Notes"
     cat.mkdir()
     cap = cat / "docker-capture.md"
@@ -264,6 +280,7 @@ def test_semantic_confirmation_never_overrides_the_body_sacred_guard(tmp_path, m
     select it."""
     import vector_store
 
+    _reg(tmp_path)
     cat = tmp_path / "Tech_Notes"
     cat.mkdir()
     note = cat / "docker-notes.md"

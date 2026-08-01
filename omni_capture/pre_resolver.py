@@ -33,11 +33,6 @@ from models import EnrichedPayload
 class ResolverResult(NamedTuple):
     path: Optional[Path]            # resolved target .md file, or None
     existing_context: Optional[str] # pre-loaded vault content for the LLM, or None
-    # ponytail: category_hint is vestigial now that the Finance/CRM fast paths
-    # are gone -- always None. Kept only because main.py/server.py's verbose
-    # logging still reads resolved.category_hint; drop the field once Task 13
-    # rewires those call sites.
-    category_hint: Optional[str]
     certainty: str                  # "high" | "low" -- always "low" post rip-out
 
 
@@ -52,7 +47,7 @@ def pre_resolve(
     defers to the LLM -- callers fall back to their normal
     read_existing_context / semantic-retrieval path unconditionally.
     """
-    return ResolverResult(path=None, existing_context=None, category_hint=None, certainty="low")
+    return ResolverResult(path=None, existing_context=None, certainty="low")
 
 
 # ── Smoke tests ───────────────────────────────────────────────────────────────
@@ -63,7 +58,6 @@ if __name__ == "__main__":
         Path("."),
     )
     assert r.certainty == "low"
-    assert r.category_hint is None
     assert r.path is None
     assert r.existing_context is None
     print("[T1] pre_resolve always defers to the LLM (no Finance/CRM fast path)  PASS")

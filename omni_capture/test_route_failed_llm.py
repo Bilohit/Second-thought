@@ -157,7 +157,6 @@ def test_server_index_failure_does_not_double_write(tmp_path: Path):
         return real_note
 
     good_output = CaptureOutput(
-        category="Notes",
         suggested_filename="real-capture",
         markdown_content="real note body",
         rationale="test",
@@ -180,7 +179,9 @@ def test_server_index_failure_does_not_double_write(tmp_path: Path):
     assert not error_events, f"index failure must not surface as error: {error_events}"
     done_events = [e for e in events if e.get("event") == "done"]
     assert done_events, f"expected 'done' event, got: {events}"
-    assert done_events[-1]["category"] == "Notes", "must report the real category, not scratchpad"
+    # The `done` event reports the note's PROJECT, read off the directory the file
+    # actually landed in -- so it can never disagree with the write (Projects S1).
+    assert done_events[-1]["project"] == "Notes", "must report the real project, not scratchpad"
     scratch = tmp_path / "_scratchpad"
     scratch_files = list(scratch.glob("*.md")) if scratch.exists() else []
     assert not scratch_files, f"index failure must not double-write to scratchpad: {scratch_files}"
