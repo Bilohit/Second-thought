@@ -355,3 +355,26 @@ export function PlusIcon({ size = 14 }: { size?: number }): JSX.Element {
     </svg>
   );
 }
+
+/** Three-line list glyph — sub-project 3's rail toggle "Tags" position
+ *  (paired with DashboardIcon's tile glyph for "Projects"). */
+export function ListIcon({ size = 14 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <line x1="4" y1="6" x2="20" y2="6" />
+      <line x1="4" y1="12" x2="20" y2="12" />
+      <line x1="4" y1="18" x2="20" y2="18" />
+    </svg>
+  );
+}
+
+/** Pencil glyph — rename affordances (sub-project 3's Inbox-suggestion
+ *  Rename button). */
+export function PencilIcon({ size = 14 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+    </svg>
+  );
+}
