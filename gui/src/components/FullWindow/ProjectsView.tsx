@@ -76,20 +76,43 @@ export default function ProjectsView({ visible, onOpenNote }: Props) {
   // disagree). `keepSelection` is false only on first load, where the
   // board's own default (§ below) should apply instead of preserving a
   // (nonexistent yet) prior selection.
-  const refresh = useCallback(() => {
+  //
+  // FR-05 fix: `opts.rename` lets a rename's new identity land in the SAME
+  // setState batch as the refreshed `projects` array, instead of the old
+  // onRenamed handler calling setSelectedId(newName) synchronously and
+  // refresh() separately — which left selectedId pointing at newName for
+  // one or more renders while `projects` still only had the pre-refresh
+  // (oldName) entry, so ProjectsPane's `selected` lookup came back null and
+  // its description effect (deliberately keyed on [selectedId, mode], never
+  // on [projects]/[selected] — see that effect's comment — to avoid
+  // clobbering an in-progress edit on every unrelated refetch) synced
+  // descDraft to "" and never re-ran once the real data landed. Resolving
+  // the rename inside this same .then, against the freshest `prev` (via the
+  // functional updater), means selectedId only ever flips to newName in the
+  // exact render where `projects` already contains it — no null tick, and
+  // the anti-clobber property is untouched because the effect's deps are
+  // unchanged.
+  const refresh = useCallback((opts?: { rename?: { oldName: string; newName: string } }) => {
     let cancelled = false;
 
     listProjects().then(({ projects: rows }) => {
       if (cancelled) return;
       setProjects(rows);
-      // First open only (never overwrites a live selection): the first
-      // project, or the loose bucket when the vault has none yet. Inferred
-      // from the board's own mount() default (`sel: empty ? "__loose" :
-      // "research"`) — the spec does not state an explicit rule for the
-      // Projects half the way §5.2 does for Tags ("switching to Tags
-      // selects the first tag"), so this is a judgment call, not a spec'd
-      // behavior. Flagged in this task's report.
-      setSelectedId((prev) => prev ?? (rows[0]?.name ?? LOOSE_PROJECT_ID));
+      setSelectedId((prev) => {
+        // A rename of the CURRENTLY selected project: move the selection to
+        // its new name in lockstep with the `projects` update above. If the
+        // user has since selected something else, leave that alone —
+        // renaming never steals a selection out from under a later click.
+        if (opts?.rename && prev === opts.rename.oldName) return opts.rename.newName;
+        // First open only (never overwrites a live selection): the first
+        // project, or the loose bucket when the vault has none yet. Inferred
+        // from the board's own mount() default (`sel: empty ? "__loose" :
+        // "research"`) — the spec does not state an explicit rule for the
+        // Projects half the way §5.2 does for Tags ("switching to Tags
+        // selects the first tag"), so this is a judgment call, not a spec'd
+        // behavior. Flagged in this task's report.
+        return prev ?? (rows[0]?.name ?? LOOSE_PROJECT_ID);
+      });
     }).catch(() => { if (!cancelled) setProjects([]); });
 
     getStats().then((stats) => {
@@ -164,8 +187,9 @@ export default function ProjectsView({ visible, onOpenNote }: Props) {
         selectedTag={selectedTag}
         onOpenNote={onOpenNote}
         onRenamed={(oldName, newName) => {
-          setSelectedId((prev) => (prev === oldName ? newName : prev));
-          refresh();
+          // FR-05: no direct setSelectedId here — see refresh()'s comment.
+          // The rename lands together with the refreshed `projects` array.
+          refresh({ rename: { oldName, newName } });
         }}
         onDeleted={(name) => {
           setSelectedId((prev) => (prev === name ? LOOSE_PROJECT_ID : prev));

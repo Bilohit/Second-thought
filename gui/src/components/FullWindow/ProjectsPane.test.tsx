@@ -193,6 +193,35 @@ describe("ProjectsPane — the description field (spec §4.6: no gauge, saves as
   });
 });
 
+describe("ProjectsPane — FR-05: descDraft anti-clobber (effect deliberately keyed on [selectedId, mode] only)", () => {
+  it("a `projects` refresh that leaves selectedId/mode unchanged does not clobber an in-progress edit", async () => {
+    const { rerender } = renderPane({
+      projects: [project({ name: "research", description: "Original." })],
+      selectedId: "research",
+    });
+    const textarea = (await screen.findByLabelText("Project description")) as HTMLTextAreaElement;
+    expect(textarea.value).toBe("Original.");
+
+    fireEvent.change(textarea, { target: { value: "Original. Still typing..." } });
+    expect(textarea.value).toBe("Original. Still typing...");
+
+    // A refresh lands (new `projects` array reference/content) while the
+    // selection itself hasn't moved -- must not reset descDraft to the
+    // server value and wipe what the user is mid-typing.
+    rerender(
+      <ProjectsPane
+        mode="projects"
+        projects={[project({ name: "research", description: "Original." })]}
+        selectedId="research"
+        selectedTag={null}
+      />,
+    );
+    expect((screen.getByLabelText("Project description") as HTMLTextAreaElement).value).toBe(
+      "Original. Still typing...",
+    );
+  });
+});
+
 describe("ProjectsPane — rename", () => {
   it("clicking rename swaps the name for an editable field, prefilled with the current name", async () => {
     renderPane({ projects: [project({ name: "onboarding-v2" })], selectedId: "onboarding-v2" });

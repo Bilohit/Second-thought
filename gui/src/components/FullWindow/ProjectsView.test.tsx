@@ -33,6 +33,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     getTagTree: vi.fn(),
     notesForProject: vi.fn(),
     notesForTag: vi.fn(),
+    renameProject: vi.fn(),
   };
 });
 
@@ -51,6 +52,7 @@ beforeEach(() => {
   vi.mocked(api.getTagTree).mockResolvedValue({ tags: [] });
   vi.mocked(api.notesForProject).mockResolvedValue([]);
   vi.mocked(api.notesForTag).mockResolvedValue([]);
+  vi.mocked(api.renameProject).mockResolvedValue(undefined);
 });
 
 describe("ProjectsView — auto-select the first tag on switching to Tags (spec §5.2)", () => {
@@ -115,6 +117,81 @@ describe("ProjectsView — each surface renders its own correctly-sourced count 
     const option = await screen.findByRole("option", { name: /reading/ });
     expect(option.textContent).toContain("11");
     expect(await screen.findByText("11 notes across your vault")).toBeTruthy();
+  });
+});
+
+describe("ProjectsView — FR-05: rename lands its new identity together with the refreshed list", () => {
+  it("the description keeps showing continuously through a rename -- no empty flash, no yellow warning", async () => {
+    vi.mocked(api.listProjects)
+      .mockResolvedValueOnce({
+        projects: [{ name: "old-name", description: "Keep this description.", renamed_from: null, created: "", modified: "", file_count: 0 }],
+        vault_root: "",
+      })
+      .mockResolvedValueOnce({
+        projects: [{ name: "new-name", description: "Keep this description.", renamed_from: "old-name", created: "", modified: "", file_count: 0 }],
+        vault_root: "",
+      });
+
+    render(<ProjectsView visible />);
+    const textarea = (await screen.findByLabelText("Project description")) as HTMLTextAreaElement;
+    expect(textarea.value).toBe("Keep this description.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename project" }));
+    fireEvent.change(screen.getByLabelText("New project name"), { target: { value: "new-name" } });
+    fireEvent.keyDown(screen.getByLabelText("New project name"), { key: "Enter" });
+
+    await vi.waitFor(() => expect(api.renameProject).toHaveBeenCalledWith("old-name", "new-name"));
+    // The old bug: selectedId flipped to "new-name" a tick before `projects`
+    // did, so `selected` came back null and descDraft reset to "" -- the
+    // yellow "Empty." warning fired and never re-synced. Both must now be
+    // absent once the rename + refresh have settled.
+    await vi.waitFor(() =>
+      expect((screen.getByLabelText("Project description") as HTMLTextAreaElement).value).toBe(
+        "Keep this description.",
+      ),
+    );
+    expect(screen.queryByText(/Empty\. Your phone has nothing/)).toBeNull();
+  });
+
+  it("switching the selection away mid-rename is not overridden once the rename resolves", async () => {
+    vi.mocked(api.listProjects)
+      .mockResolvedValueOnce({
+        projects: [
+          { name: "alpha", description: "Alpha desc.", renamed_from: null, created: "", modified: "", file_count: 0 },
+          { name: "beta", description: "Beta desc.", renamed_from: null, created: "", modified: "", file_count: 0 },
+        ],
+        vault_root: "",
+      })
+      .mockResolvedValueOnce({
+        projects: [
+          { name: "alpha-renamed", description: "Alpha desc.", renamed_from: "alpha", created: "", modified: "", file_count: 0 },
+          { name: "beta", description: "Beta desc.", renamed_from: null, created: "", modified: "", file_count: 0 },
+        ],
+        vault_root: "",
+      });
+    let resolveRename: () => void = () => {};
+    vi.mocked(api.renameProject).mockImplementation(
+      () => new Promise((resolve) => { resolveRename = () => resolve(undefined); }),
+    );
+
+    render(<ProjectsView visible />);
+    await screen.findByRole("option", { name: /alpha/ }); // first project auto-selected
+    fireEvent.click(screen.getByRole("button", { name: "Rename project" }));
+    fireEvent.change(screen.getByLabelText("New project name"), { target: { value: "alpha-renamed" } });
+    fireEvent.keyDown(screen.getByLabelText("New project name"), { key: "Enter" });
+
+    // Rename is still in flight -- the user clicks over to "beta" before it settles.
+    fireEvent.click(screen.getByRole("option", { name: /beta/ }));
+    await vi.waitFor(() =>
+      expect((screen.getByLabelText("Project description") as HTMLTextAreaElement).value).toBe("Beta desc."),
+    );
+
+    resolveRename();
+    await vi.waitFor(() => expect(api.renameProject).toHaveBeenCalledWith("alpha", "alpha-renamed"));
+    // "beta" is still selected -- the rename's completion must not steal
+    // the selection back to its own (now-renamed) project.
+    expect(screen.getByRole("option", { name: /beta/ }).getAttribute("aria-selected")).toBe("true");
+    expect((screen.getByLabelText("Project description") as HTMLTextAreaElement).value).toBe("Beta desc.");
   });
 });
 

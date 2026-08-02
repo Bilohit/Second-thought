@@ -660,7 +660,22 @@ const sortBtnStyle: CSSProperties = {
   color: "var(--text-1)", background: "var(--ctl-face)", border: "1px solid var(--border)", padding: "4px 7px 4px 6px", cursor: "pointer",
 };
 const sortIconSlotStyle: CSSProperties = { display: "flex", color: "var(--text-1)" };
-const sortLabelStyle: CSSProperties = { minWidth: 96, textAlign: "left" };
+// FR-17 fix: was `minWidth: 96` — a fixed floor that never shrank, so at
+// the 480px window floor (tauri.conf.json's real minimum, not a phantom —
+// the rail alone is a fixed 260px, leaving this pane roughly 220px) the
+// sort button was forced 96px+ wide regardless of how little room was
+// left, pushing its right edge past the viewport. "Newest"/"Oldest"/
+// "Recently edited" are each a single unbreakable word, so their own
+// min-content width already prevents mid-word wrapping without a manual
+// floor — removing it lets the button (and the note-row titles squeezed
+// beside it) shrink to what the 480px floor actually has to offer instead
+// of forcing an overflow. Needs a live CDP re-measure at 480px: expect the
+// sort button's right edge to land at/near the pane's own right edge
+// (no longer past `innerWidth`), and note-row titles to reclaim some of
+// the width the button was hoarding (still legitimately ellipsis-truncated
+// at this width — that's the flex:1/minWidth:0/textOverflow:ellipsis on
+// noteRowTitleStyle working as designed, not a bug).
+const sortLabelStyle: CSSProperties = { textAlign: "left" };
 const sortCycleSlotStyle: CSSProperties = { display: "flex", color: "var(--text-2)" };
 
 const notesScrollStyle: CSSProperties = { flex: "1 1 auto", minHeight: 0, overflowY: "auto", scrollbarGutter: "stable" };
