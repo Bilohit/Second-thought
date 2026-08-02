@@ -20,6 +20,7 @@ import {
   type ConflictResolveAction,
 } from "../lib/api";
 import { applyMarkdownFormat, parseOutline, parseWikilinks, type FormatKind } from "../lib/noteFormat";
+import { displayProject } from "../lib/projectsView";
 import { parseAttachments } from "../lib/attachments";
 import { isSaveRetry, saveRetryDelayMs } from "../lib/saveRetry";
 import { logger } from "../lib/logger";
@@ -942,7 +943,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
               <div key="meta" className="fw-view-panel" style={drawerInnerStyle}>
                 <div style={drawerHeadStyle}>METADATA</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "8px 14px", fontSize: 11.5, color: "var(--text-3)" }}>
-                  <span>project: <b style={{ color: "var(--text-2)" }}>{note.project}</b></span>
+                  <span>project: <b style={{ color: "var(--text-2)" }}>{displayProject(note.project)}</b></span>
                   <span>status: <b style={{ color: "var(--text-2)" }}>{note.status ?? "—"}</b></span>
                   {note.tags.length > 0 && (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -959,7 +960,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
             )}
             {drawerOpen && activeDrawer === "conn" && (
               <div key="conn" className="fw-view-panel" style={{ width: "100%", height: "100%" }}>
-                <ConnectionsDrawer body={body} mentions={mentions} onJump={scrollToLine} />
+                <ConnectionsDrawer body={body} mentions={mentions} onJump={scrollToLine} onOpenExternal={onOpenExternal} />
               </div>
             )}
             {drawerOpen && activeDrawer === "history" && (
@@ -1245,7 +1246,7 @@ function ConflictResolverOverlay({
   );
 }
 
-function ConnectionsDrawer({ body, mentions, onJump }: { body: string; mentions: SearchResult[] | null; onJump: (line: number) => void }) {
+function ConnectionsDrawer({ body, mentions, onJump, onOpenExternal }: { body: string; mentions: SearchResult[] | null; onJump: (line: number) => void; onOpenExternal: (path: string) => void }) {
   const links = parseWikilinks(body);
   const outline = parseOutline(body);
   const rowStyle: CSSProperties = {
@@ -1253,6 +1254,12 @@ function ConnectionsDrawer({ body, mentions, onJump }: { body: string; mentions:
     color: "var(--text-2)", cursor: "pointer", border: "none", background: "none", font: "inherit",
     width: "100%", textAlign: "left",
   };
+  // FR-14: [[wikilink]] targets are bare strings (parseWikilinks) with no path
+  // resolution anywhere in the app -- Markdown.tsx renders the same targets
+  // inline as inert underlined text too, never a click target. No real
+  // navigation destination exists for a Connections row, so it gets the
+  // "loose" cursor of a plain row instead of the false pointer affordance.
+  const inertRowStyle: CSSProperties = { ...rowStyle, cursor: "default" };
   const groupStyle: CSSProperties = { fontSize: 10.5, letterSpacing: "0.08em", color: "var(--text-3)", padding: "10px 14px 4px", textTransform: "uppercase" };
   return (
     <div style={{ width: 236, height: "100%", overflowY: "auto", paddingBottom: 14 }}>
@@ -1260,7 +1267,7 @@ function ConnectionsDrawer({ body, mentions, onJump }: { body: string; mentions:
         CONNECTIONS
       </div>
       {links.length === 0 && <div style={{ padding: "6px 14px", fontSize: 11.5, color: "var(--text-3)" }}>No linked notes yet.</div>}
-      {links.map((l) => <div key={l} style={rowStyle}>{l}</div>)}
+      {links.map((l) => <div key={l} style={inertRowStyle}>{l}</div>)}
 
       {/* ponytail: unlinked-mention "LINK" one-click action (in the approved
           mock) would need a backend endpoint that mutates the *mentioning*
@@ -1271,10 +1278,18 @@ function ConnectionsDrawer({ body, mentions, onJump }: { body: string; mentions:
       {mentions !== null && mentions.length > 0 && (
         <>
           <div style={groupStyle}>MENTIONS</div>
+          {/* FR-14: a mention IS a real vault file (m.path, from /search) -- unlike
+              wikilinks above, a genuine target exists. NoteEditor has no in-app
+              cross-note jump (only onJump, which scrolls within THIS note's own
+              body), so this reuses the toolbar's existing "open in external
+              editor" action -- the one real, already-wired way this component can
+              act on another note's path -- rather than leaving the row inert or
+              inventing new plumbing. Real <button> (not a div) for the same
+              keyboard reachability and a11y Outline's rows already have below. */}
           {mentions.map((m) => (
-            <div key={m.path} style={rowStyle} title={m.path}>
+            <button key={m.path} type="button" style={rowStyle} title={m.path} onClick={() => onOpenExternal(m.path)}>
               <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.filename ?? m.path}</span>
-            </div>
+            </button>
           ))}
         </>
       )}

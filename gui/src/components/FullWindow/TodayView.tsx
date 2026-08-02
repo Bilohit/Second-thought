@@ -100,7 +100,7 @@ export default function TodayView({ visible, onOpenNote }: TodayViewProps) {
                 {data.daily_note.title}
               </span>
               <span style={{ fontSize: 10, color: "var(--text-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {data.daily_note.path}
+                {basename(data.daily_note.path)}
               </span>
             </button>
           ) : (
@@ -171,6 +171,21 @@ function SheafIcon() {
       <path d="M4 6h16M4 12h16M4 18h10" />
     </svg>
   );
+}
+
+/** FR-08: `daily_note.path` is the server's absolute OS path (e.g.
+ *  "C:\Users\<name>\...\Daily\2026-08-02.md") -- doctrine bans ever
+ *  presenting a path as the source of truth, and the title right above this
+ *  line already identifies the note. This keeps the line (still useful: the
+ *  exact filename, distinct from the human title) while dropping everything
+ *  that leaks the user's OS directory tree. Handles both \ and / separators
+ *  since the path comes from a Windows server. No reveal-in-folder affordance
+ *  exists in this view to hand the real path to instead (tauri.ts's
+ *  revealItemInDir is used only for the log file, in Settings) -- worth
+ *  wiring here later, not built now. */
+function basename(path: string): string {
+  const idx = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return idx === -1 ? path : path.slice(idx + 1);
 }
 
 /** "date" comes back as an ISO calendar day (YYYY-MM-DD); format like the

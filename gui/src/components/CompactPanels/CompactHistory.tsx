@@ -13,6 +13,7 @@
 import { useEffect, useState } from "react";
 import { ProjectBar, DaySparkline } from "../StatsPanel";
 import { getStats, openFilePath, type Stats } from "../../lib/api";
+import { displayProject } from "../../lib/projectsView";
 
 interface Props {
   onOpenFile?: (path: string) => void;
@@ -60,7 +61,7 @@ export default function CompactHistory({ onOpenFile }: Props) {
                 {row.filename ?? row.path}
               </span>
               <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 0 }}>
-                <span style={{ fontSize: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "1px 5px", color: "var(--text-3)", display: "inline-block", maxWidth: 108, whiteSpace: "normal", wordBreak: "break-word", textAlign: "right", lineHeight: 1.25 }}>{row.project}</span>
+                <span style={{ fontSize: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "1px 5px", color: "var(--text-3)", display: "inline-block", maxWidth: 108, whiteSpace: "normal", wordBreak: "break-word", textAlign: "right", lineHeight: 1.25 }}>{displayProject(row.project)}</span>
                 <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap" }}>{row.timestamp}</span>
               </span>
             </button>
@@ -84,7 +85,7 @@ export default function CompactHistory({ onOpenFile }: Props) {
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {(stats?.by_project ?? []).map((c) => (
-            <ProjectBar key={c.project} project={c.project} count={c.count} pct={c.pct} />
+            <ProjectBar key={c.project} project={displayProject(c.project)} count={c.count} pct={c.pct} />
           ))}
           {(!stats || stats.by_project.length === 0) && (
             <span style={{ fontSize: 11, color: "var(--text-3)" }}>No captures yet.</span>

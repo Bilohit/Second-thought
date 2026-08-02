@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import { searchCaptures, openFilePath, syncVaultIndex, checkHealth, type SearchResult } from "../lib/api";
 import { slideDirection } from "../lib/segmentedToggle";
 import { parseCitations } from "../lib/citations";
+import { displayProject } from "../lib/projectsView";
 import type { ChatMessage } from "../hooks/useLookChat";
 import type { LookChatPersist } from "../App";
 import { logger } from "../lib/logger";
@@ -477,7 +478,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                         whiteSpace: "nowrap",
                       }}
                     >
-                      {r.project}
+                      {displayProject(r.project)}
                     </span>
                     <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {resultSnippet(r)}
@@ -575,7 +576,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                           return (
                             <button
                               key={j}
-                              title={src ? `${src.project}/${src.filename}` : `Source ${seg.cite}`}
+                              title={src ? `${displayProject(src.project)}/${src.filename}` : `Source ${seg.cite}`}
                               disabled={!src}
                               onClick={() => src && openFilePath(src.path)}
                               style={{
@@ -660,7 +661,7 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                               animationDelay: `${Math.min(si, 8) * 45}ms`,
                             }}
                           >
-                            [{src.n}] {src.project}/{src.filename}
+                            [{src.n}] {displayProject(src.project)}/{src.filename}
                           </button>
                         ))}
                       </div>

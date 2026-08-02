@@ -212,6 +212,61 @@ describe("NoteEditor — toolbar peek chevron", () => {
   });
 });
 
+describe("NoteEditor — metadata drawer project sentinel guard (FR-02)", () => {
+  it("renders a loose note's project as 'loose', never the raw _loose sentinel", async () => {
+    const user = userEvent.setup({ delay: null });
+    vi.mocked(api.getNoteContent).mockResolvedValue({ ...noteFixture, project: "_loose" });
+    renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: "Metadata" }));
+
+    expect(await screen.findByText("loose")).toBeTruthy();
+    expect(screen.queryByText("_loose")).toBeNull();
+  });
+});
+
+describe("NoteEditor — Connections/Mentions rows (FR-14)", () => {
+  it("wires a Mentions row to onOpenExternal(m.path) -- a real vault file is a real target", async () => {
+    const user = userEvent.setup({ delay: null });
+    vi.mocked(api.searchCaptures).mockResolvedValue({
+      results: [
+        { project: "Test", path: "Test/other.md", filename: "other.md", timestamp: null, source_url: null, confidence: null, tags: null, tier: null, score: null, modified: null },
+      ],
+      count: 1,
+      query: "Test Note",
+    });
+    const { onOpenExternal } = renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: "Connections" }));
+
+    const mentionRow = await screen.findByRole("button", { name: "other.md" });
+    expect(onOpenExternal).not.toHaveBeenCalled();
+    await user.click(mentionRow);
+    expect(onOpenExternal).toHaveBeenCalledWith("Test/other.md");
+  });
+
+  it("renders a wikilink Connections row as inert -- no button role, no click handler (no resolvable target exists)", async () => {
+    const user = userEvent.setup({ delay: null });
+    vi.mocked(api.getNoteContent).mockResolvedValue({
+      ...noteFixture,
+      body: "See [[some-other-note]] for context.",
+    });
+    vi.mocked(api.searchCaptures).mockResolvedValue({ results: [], count: 0, query: "Test Note" });
+    const { onOpenExternal } = renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: "Connections" }));
+
+    const linkRow = await screen.findByText("some-other-note");
+    expect(linkRow.tagName).toBe("DIV");
+    expect(linkRow.closest("button")).toBeNull();
+    expect((linkRow as HTMLElement).style.cursor).toBe("default");
+    expect(onOpenExternal).not.toHaveBeenCalled();
+  });
+});
+
 describe("NoteEditor — autosave debounce + backoff", () => {
   it("debounces the save, and backs off to 2x the base delay after a failure", async () => {
     renderEditor();

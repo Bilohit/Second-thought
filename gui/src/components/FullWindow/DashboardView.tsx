@@ -14,6 +14,7 @@ import { fileKind } from "../../lib/fileIngest";
 import { logger } from "../../lib/logger";
 import { formatWhen } from "../../lib/reminderFormat";
 import { formatHotkey, DEFAULT_HOTKEY } from "../../lib/hotkey";
+import { displayProject } from "../../lib/projectsView";
 import type { CaptureState, CaptureStep } from "../../hooks/useCapture";
 import type { VoicePhase } from "../../hooks/useVoiceRecording";
 import type { LlmStatus } from "../../lib/api";
@@ -272,7 +273,7 @@ function renderCaptureCard(
       {last?.path && (
         <div style={{ marginTop: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 10, background: "var(--glass-bg)" }}>
           <div style={{ fontSize: 12, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{last.path}</div>
-          {last.project && <div style={{ fontSize: 11, color: "var(--text-2)", marginTop: 4 }}>Routed to <b>{last.project}</b></div>}
+          {last.project && <div style={{ fontSize: 11, color: "var(--text-2)", marginTop: 4 }}>Routed to <b>{displayProject(last.project)}</b></div>}
         </div>
       )}
     </div>
@@ -327,7 +328,7 @@ function renderRecentCard(stats: Stats | null, onOpenFile: (path: string) => voi
             {/* Shrinkable (minWidth 0) so the filename's 120px floor wins on
                 narrow windows — the project chip ellipsizes first. */}
             <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 1, minWidth: 0 }}>
-              <span style={{ fontSize: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "0 5px", color: "var(--text-3)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{row.project}</span>
+              <span style={{ fontSize: 10, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "0 5px", color: "var(--text-3)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{displayProject(row.project)}</span>
               <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{row.timestamp}</span>
             </span>
           </button>
@@ -391,7 +392,19 @@ function renderInboxCard(
   const pending = inbox.length + conflicts.length;
   return (
     <div style={cardStyle(true)}>
-      <div style={CLABEL}>{headerLink("Review", onHeader)}<span style={{ flex: 1 }} />{pending > 0 && <span style={chipStyle(false)}>{pending} need{pending === 1 ? "s" : ""} review</span>}</div>
+      {/* FR-11: the header link only opens Inbox (InboxPanel calls getInbox(), never
+          /vault/conflicts), so a single combined "N need review" count over-promised what
+          the link delivers -- a conflict-only case showed "1 needs review" and the Inbox
+          screen said "Nothing needs review." Split the chip in two: the review-link count now
+          matches inbox.length exactly (what clicking Review actually shows), and conflicts get
+          their own red indicator -- true semantic-state red, not decoration -- since they stay
+          real and resolvable right here via the inline Resolve button below, never hidden. */}
+      <div style={CLABEL}>
+        {headerLink("Review", onHeader)}
+        <span style={{ flex: 1 }} />
+        {conflicts.length > 0 && <span style={chipStyle(true, "var(--red)")}>{conflicts.length} conflict{conflicts.length === 1 ? "" : "s"}</span>}
+        {inbox.length > 0 && <span style={chipStyle(false)}>{inbox.length} need{inbox.length === 1 ? "s" : ""} review</span>}
+      </div>
       <div style={{ overflowY: "auto", overflowX: "hidden", flex: 1, minWidth: 0 }}>
         {/* s114/x04: conflicts first — they are the only thing here with a data consequence, and
             they were previously invisible outside the note itself. The sync summary above this
