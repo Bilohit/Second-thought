@@ -1,28 +1,29 @@
 /**
- * ProjectsView.tsx — sub-project 3 Task 4: the full-window Projects
+ * ProjectsView.tsx — sub-project 3 Task 4/5: the full-window Projects
  * screen's container. Owns the listProjects() fetch, the selected
  * project/loose bucket, and the rail's projects|tags view mode. Renders
- * <ProjectsRail/> on the left (260px, spec §3) and, on the right, a
- * clearly-marked placeholder for the pane.
+ * <ProjectsRail/> on the left (260px, spec §3) and <ProjectsPane/> on the
+ * right (Task 5: head, rename/delete, description editor, notes-head count
+ * + sort instrument, note rows, delete-confirm strip).
  *
- * Task 5 owns the pane (head, rename/delete, description editor, notes-head
- * count + sort instrument, note rows, delete-confirm strip) — it is NOT
- * built here. Task 8 owns wiring this component into LibraryView/FullWindow
- * in place of the current `vault` section.
+ * Task 8 owns wiring this component into LibraryView/FullWindow in place of
+ * the current `vault` section — not built here.
  *
  * Board: gui/mocks/2026-08-01-projects-fullwindow-v3.html. Spec: docs/
  * superpowers/specs/2026-08-02-projects-s3-fullwindow-design.md.
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import ProjectsRail, { LOOSE_PROJECT_ID, type RailMode } from "./ProjectsRail";
+import ProjectsPane from "./ProjectsPane";
 import { listProjects, getStats, type ProjectEntry } from "../../lib/api";
 
 interface Props {
   visible: boolean;
+  onOpenNote?: (path: string) => void;
 }
 
-export default function ProjectsView({ visible }: Props) {
+export default function ProjectsView({ visible, onOpenNote }: Props) {
   const [mode, setMode] = useState<RailMode>("projects");
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
   // Every tile's count (loose included, under LOOSE_PROJECT_ID) comes from
@@ -38,8 +39,13 @@ export default function ProjectsView({ visible }: Props) {
   const [projectCounts, setProjectCounts] = useState<Record<string, number>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!visible) return;
+  // Shared by first-load and the rename/delete refetch (spec: "the rail's
+  // tiles and counts are stale" after either succeeds — refetch BOTH
+  // listProjects() and getStats() rather than letting the two surfaces
+  // disagree). `keepSelection` is false only on first load, where the
+  // board's own default (§ below) should apply instead of preserving a
+  // (nonexistent yet) prior selection.
+  const refresh = useCallback(() => {
     let cancelled = false;
 
     listProjects().then(({ projects: rows }) => {
@@ -66,7 +72,12 @@ export default function ProjectsView({ visible }: Props) {
     }).catch(() => { if (!cancelled) setProjectCounts({}); });
 
     return () => { cancelled = true; };
-  }, [visible]);
+  }, []);
+
+  useEffect(() => {
+    if (!visible) return;
+    return refresh();
+  }, [visible, refresh]);
 
   if (!visible) return null;
 
@@ -88,15 +99,28 @@ export default function ProjectsView({ visible }: Props) {
         suggestion={null}
         onNewProject={() => { /* Task 5/8: create-project flow — no modal exists on the board either. */ }}
       />
-      {/* Task 5 owns this pane. Placeholder only, so this task does not ship
-          anything that could be mistaken for finished work. */}
-      <div style={paneSeamStyle}>Pane (Task 5)</div>
+      <ProjectsPane
+        projects={projects}
+        selectedId={selectedId}
+        onOpenNote={onOpenNote}
+        onRenamed={(oldName, newName) => {
+          setSelectedId((prev) => (prev === oldName ? newName : prev));
+          refresh();
+        }}
+        onDeleted={(name) => {
+          setSelectedId((prev) => (prev === name ? LOOSE_PROJECT_ID : prev));
+          refresh();
+        }}
+        onDescriptionSaved={(name, description) => {
+          // The description save itself doesn't change any COUNT (getStats
+          // is untouched by it), only the registry's `description` field —
+          // patch that field in place rather than a full listProjects()
+          // round trip on every debounced keystroke-save.
+          setProjects((prev) => prev.map((p) => (p.name === name ? { ...p, description } : p)));
+        }}
+      />
     </div>
   );
 }
 
 const containerStyle: CSSProperties = { flex: 1, minHeight: 0, display: "flex", overflow: "hidden" };
-const paneSeamStyle: CSSProperties = {
-  flex: 1, minWidth: 0, display: "flex", alignItems: "center", justifyContent: "center",
-  color: "var(--text-3)", fontSize: 12,
-};

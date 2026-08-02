@@ -378,3 +378,68 @@ export function PencilIcon({ size = 14 }: { size?: number }): JSX.Element {
     </svg>
   );
 }
+
+// ── Sub-project 3 Task 5: the projects pane's note rows + sort instrument.
+// Board (mock 2026-08-01-projects-fullwindow-v3.html) draws these inline;
+// hoisted here per the repo's icon rule (never a one-off inline SVG when an
+// export exists). Paths transcribed 1:1 from the board's `I` icon map.
+
+/** File-with-folded-corner glyph — a note row's leading icon. */
+export function FileIcon({ size = 12 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z" />
+      <polyline points="14 3 14 7 18 7" />
+    </svg>
+  );
+}
+
+/** Descending stack with a down-arrow — the "newest first" sort arrangement.
+ *  One of three DISTINCT silhouettes (spec §4.5): not one glyph rotated. */
+export function SortNewestIcon({ size = 13 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 4v15" />
+      <path d="M3 16l3 3 3-3" />
+      <line x1="12" y1="6" x2="21" y2="6" />
+      <line x1="12" y1="12" x2="18" y2="12" />
+      <line x1="12" y1="18" x2="15" y2="18" />
+    </svg>
+  );
+}
+
+/** Hourglass-with-bars silhouette — the "oldest first" sort arrangement. */
+export function SortOldestIcon({ size = 13 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 3h12" />
+      <path d="M6 21h12" />
+      <path d="M7 3v3.2a3 3 0 0 0 1.1 2.3L12 12l-3.9 3.5A3 3 0 0 0 7 17.8V21" />
+      <path d="M17 3v3.2a3 3 0 0 1-1.1 2.3L12 12l3.9 3.5a3 3 0 0 1 1.1 2.3V21" />
+    </svg>
+  );
+}
+
+/** Pencil-on-a-line silhouette — the "recently edited" sort arrangement. */
+export function SortEditedIcon({ size = 13 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 20h18" />
+      <path d="M5 16.4V13l8.2-8.2a1.8 1.8 0 0 1 2.6 0l1.4 1.4a1.8 1.8 0 0 1 0 2.6L9 17H5.6a.6.6 0 0 1-.6-.6z" />
+    </svg>
+  );
+}
+
+/** Two-headed cycle-arrow glyph — the sort button's "click to change"
+ *  acknowledgement mark. Distinct from `RefreshIcon` (single-headed,
+ *  reserved for vault-index refresh actions). */
+export function CycleIcon({ size = 11 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 10a8 8 0 0 1 13.3-3.3L20 9" />
+      <polyline points="20 4 20 9 15 9" />
+      <path d="M20 14a8 8 0 0 1-13.3 3.3L4 15" />
+      <polyline points="4 20 4 15 9 15" />
+    </svg>
+  );
+}

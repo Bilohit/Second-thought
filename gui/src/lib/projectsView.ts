@@ -120,3 +120,60 @@ export function pageOf(total: number, page: number, size: number = DEFAULT_PAGE_
   const end = Math.min(start + size, total);
   return { pageCount, page: clamped, start, end };
 }
+
+/** The server's synthetic path prefix for LAN-provisional overlay rows
+ *  (contract §11). `index_writer._provisional_path` (index_writer.py:699-700)
+ *  keys them as `__lan_provisional__/<op_id>` instead of a real vault path.
+ *  `GET /search` deliberately does NOT exclude provisional=1 rows
+ *  (index_writer.py:686-697's docstring: "Plain index_writer.search()
+ *  intentionally does NOT exclude provisional -- that is precisely where the
+ *  LAN overlay is meant to surface"), while `GET /stats` DOES exclude them
+ *  (same comment: "stats()/reindex_bodies() DO exclude provisional=1").
+ *  A project/tag note list built from `/search` without filtering these out
+ *  would therefore (a) outnumber the rail tile's stats-derived count (the
+ *  "5 of 11" divergence spec §5.6 exists to prevent) and (b) render rows
+ *  with no real file behind them, which can never be opened. */
+export const PROVISIONAL_PATH_PREFIX = "__lan_provisional__/";
+
+/** True for a row published by the LAN-provisional overlay rather than a
+ *  real vault file — see `PROVISIONAL_PATH_PREFIX`'s comment. */
+export function isProvisionalRow(row: { path: string }): boolean {
+  return row.path.startsWith(PROVISIONAL_PATH_PREFIX);
+}
+
+/** Drops every LAN-provisional overlay row. Call this on every `/search`
+ *  response used to populate a project or tag note list, before counting or
+ *  rendering rows — see `PROVISIONAL_PATH_PREFIX`'s comment for why. */
+export function excludeProvisional<T extends { path: string }>(rows: readonly T[]): T[] {
+  return rows.filter((row) => !isProvisionalRow(row));
+}
+
+/** Formats an elapsed duration from `epochMs` to `now` (default: the real
+ *  clock) the way the approved board's mock does: "today" / "yesterday" /
+ *  "Nd ago" (2-6 days) / "1w ago" (7-13 days) / "Nw ago" (14+ days, floored).
+ *  A negative delta (a future timestamp, e.g. clock skew) clamps to 0 rather
+ *  than printing a negative day count. */
+export function formatAgo(epochMs: number, now: number = Date.now()): string {
+  const days = Math.max(0, Math.floor((now - epochMs) / 86_400_000));
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days}d ago`;
+  if (days < 14) return "1w ago";
+  return `${Math.floor(days / 7)}w ago`;
+}
+
+/** The epoch-millisecond value a note row is actually sorted/displayed on
+ *  for `mode` — "edited" reads `modified` (filesystem mtime, epoch SECONDS,
+ *  converted to ms), the two timestamp modes read `timestamp` (ISO string).
+ *  `null` when the row carries no usable value for `mode`, so the row's meta
+ *  column can fall back to a plain label instead of "NaN ago". */
+export function metaEpochMs(row: SortableNote, mode: SortMode): number | null {
+  if (mode === "edited") {
+    const m = row.modified;
+    return typeof m === "number" && isFinite(m) ? m * 1000 : null;
+  }
+  const t = row.timestamp;
+  if (!t) return null;
+  const ms = new Date(t).getTime();
+  return isNaN(ms) ? null : ms;
+}

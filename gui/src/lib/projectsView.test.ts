@@ -7,6 +7,11 @@ import {
   nextSortMode,
   SORT_MODE_CYCLE,
   SORT_MODE_META_VERB,
+  isProvisionalRow,
+  excludeProvisional,
+  PROVISIONAL_PATH_PREFIX,
+  formatAgo,
+  metaEpochMs,
   type SortableNote,
 } from "./projectsView";
 
@@ -224,5 +229,88 @@ describe("pageOf", () => {
     expect(info.pageCount).toBe(1);
     expect(info.start).toBe(0);
     expect(info.end).toBe(0);
+  });
+});
+
+describe("isProvisionalRow / excludeProvisional (LAN overlay guard, index_writer.py:686-700)", () => {
+  it("flags a row keyed by the synthetic provisional path", () => {
+    expect(isProvisionalRow({ path: `${PROVISIONAL_PATH_PREFIX}abc123` })).toBe(true);
+  });
+
+  it("does not flag a real vault path", () => {
+    expect(isProvisionalRow({ path: "research/Q3 lit review.md" })).toBe(false);
+  });
+
+  it("does not flag a real path that merely contains the prefix mid-string", () => {
+    // Guards against a substring match instead of a prefix match.
+    expect(isProvisionalRow({ path: `notes/${PROVISIONAL_PATH_PREFIX}not-actually.md` })).toBe(false);
+  });
+
+  it("excludeProvisional drops a provisional row and keeps a real one, feeding both in", () => {
+    const rows = [
+      { path: `${PROVISIONAL_PATH_PREFIX}op-1`, title: "staged" },
+      { path: "research/real-note.md", title: "real" },
+    ];
+    const kept = excludeProvisional(rows);
+    expect(kept.length).toBe(1);
+    expect(kept[0].title).toBe("real");
+  });
+
+  it("excludeProvisional is a no-op over an all-real list", () => {
+    const rows = [{ path: "a.md" }, { path: "b.md" }];
+    expect(excludeProvisional(rows)).toEqual(rows);
+  });
+
+  it("excludeProvisional does not mutate the input array", () => {
+    const rows = [{ path: `${PROVISIONAL_PATH_PREFIX}op-1` }, { path: "a.md" }];
+    const snapshot = [...rows];
+    excludeProvisional(rows);
+    expect(rows).toEqual(snapshot);
+  });
+});
+
+describe("formatAgo", () => {
+  const NOW = Date.parse("2026-08-02T12:00:00Z");
+  const DAY = 86_400_000;
+
+  it("today", () => expect(formatAgo(NOW, NOW)).toBe("today"));
+  it("yesterday", () => expect(formatAgo(NOW - DAY, NOW)).toBe("yesterday"));
+  it("2-6 days ago prints Nd ago", () => {
+    expect(formatAgo(NOW - 2 * DAY, NOW)).toBe("2d ago");
+    expect(formatAgo(NOW - 6 * DAY, NOW)).toBe("6d ago");
+  });
+  it("7-13 days ago prints 1w ago", () => {
+    expect(formatAgo(NOW - 7 * DAY, NOW)).toBe("1w ago");
+    expect(formatAgo(NOW - 13 * DAY, NOW)).toBe("1w ago");
+  });
+  it("14+ days ago prints the floored week count", () => {
+    expect(formatAgo(NOW - 14 * DAY, NOW)).toBe("2w ago");
+    expect(formatAgo(NOW - 20 * DAY, NOW)).toBe("2w ago");
+    expect(formatAgo(NOW - 21 * DAY, NOW)).toBe("3w ago");
+  });
+  it("a future timestamp (clock skew) clamps to today rather than a negative count", () => {
+    expect(formatAgo(NOW + DAY, NOW)).toBe("today");
+  });
+});
+
+describe("metaEpochMs", () => {
+  it("newest/oldest read the ISO timestamp as ms", () => {
+    const row: SortableNote = { timestamp: "2026-01-01T00:00:00Z", modified: 999 };
+    expect(metaEpochMs(row, "newest")).toBe(Date.parse("2026-01-01T00:00:00Z"));
+    expect(metaEpochMs(row, "oldest")).toBe(Date.parse("2026-01-01T00:00:00Z"));
+  });
+
+  it("edited reads modified (epoch SECONDS) converted to ms", () => {
+    const row: SortableNote = { timestamp: "2026-01-01T00:00:00Z", modified: 1_700_000_000 };
+    expect(metaEpochMs(row, "edited")).toBe(1_700_000_000 * 1000);
+  });
+
+  it("null when the mode's field is missing", () => {
+    expect(metaEpochMs({ timestamp: null, modified: null }, "newest")).toBeNull();
+    expect(metaEpochMs({ timestamp: null, modified: null }, "edited")).toBeNull();
+  });
+
+  it("null for an unparseable timestamp", () => {
+    expect(metaEpochMs({ timestamp: "not-a-date" }, "newest")).toBeNull();
   });
 });
