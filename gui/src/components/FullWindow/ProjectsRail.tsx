@@ -187,8 +187,7 @@ export default function ProjectsRail({
     <div style={railStyle}>
       {/* Pseudo-class states an inline style object cannot express
           (:hover/:focus-visible/:active). Scoped by the `pr-` prefix so
-          nothing here can collide with another mounted view's classNames —
-          the same pattern TagsView.tsx already uses in this directory.
+          nothing here can collide with another mounted view's classNames.
           Uses var(--hover-ease-out) rather than the equivalent
           cubic-bezier(0.16,1,0.3,1) literal (index.css:79) so this curve's
           value lives in exactly one place. */}

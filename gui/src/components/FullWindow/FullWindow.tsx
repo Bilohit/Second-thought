@@ -33,15 +33,15 @@ type MainView = "dashboard" | "today" | "look" | "library";
 type RailView = MainView | "settings" | "inbox";
 const MAIN_VIEWS: MainView[] = ["dashboard", "today", "look", "library"];
 // ISS-022: the folder-panel nav label is "Vault" everywhere — was "Library"
-// here vs "Vault" in Capsule/Minimal mode. The container still holds the
-// Vault/Tags/Trash sub-tabs (segmented toggle below); its own "Vault"
-// sub-tab was renamed to "Folders" so the title bar and the tab directly
-// under it don't repeat the same word.
+// here vs "Vault" in Capsule/Minimal mode. SP3 Task 8: the container's
+// sub-tabs are now Projects/Trash (the standalone Tags page and the old
+// folders/stats grid are gone — ProjectsView is the "vault" sub-tab, spec
+// docs/superpowers/specs/2026-08-02-projects-s3-fullwindow-design.md §1).
 const TITLES: Record<RailView, [string, string]> = {
   dashboard: ["Dashboard", "capture · recent · inbox"],
   today:     ["Today", "agenda · daily note"],
   look:      ["Look", "search · chat over vault"],
-  library:   ["Vault", "folders · project · rhythm"],
+  library:   ["Vault", "projects · tags · notes"],
   settings:  ["Settings", ""],
   inbox:     ["Inbox", "review · reminders"],
 };
@@ -104,7 +104,7 @@ export default function FullWindow(props: FullWindowProps) {
     if (props.initialView) setView(props.initialView);
   }, [props.initialView]);
   const [inboxTab, setInboxTab] = useState<InboxTab>("inbox");
-  const [librarySection, setLibrarySection] = useState<"vault" | "tags" | "trash">("vault");
+  const [librarySection, setLibrarySection] = useState<"vault" | "trash">("vault");
   const [healthOpen, setHealthOpen] = useState(false);
   const [healthVault, setHealthVault] = useState<number | null>(null);
   const [healthInbox, setHealthInbox] = useState<number | null>(null);
@@ -297,8 +297,7 @@ export default function FullWindow(props: FullWindowProps) {
               <SegmentedToggle
                 ariaLabel="Vault section"
                 options={[
-                  { key: "vault" as const, label: "Folders" },
-                  { key: "tags" as const, label: "Tags" },
+                  { key: "vault" as const, label: "Projects" },
                   { key: "trash" as const, label: "Trash" },
                 ]}
                 value={librarySection}
