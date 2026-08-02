@@ -1,10 +1,17 @@
 /**
- * ProjectsView.tsx — sub-project 3 Task 4/5: the full-window Projects
- * screen's container. Owns the listProjects() fetch, the selected
- * project/loose bucket, and the rail's projects|tags view mode. Renders
- * <ProjectsRail/> on the left (260px, spec §3) and <ProjectsPane/> on the
- * right (Task 5: head, rename/delete, description editor, notes-head count
- * + sort instrument, note rows, delete-confirm strip).
+ * ProjectsView.tsx — sub-project 3 Task 4/5/7: the full-window Projects
+ * screen's container. Owns the listProjects()/getTagTree() fetches, the
+ * selected project/loose bucket/tag, and the rail's projects|tags view
+ * mode. Renders <ProjectsRail/> on the left (260px, spec §3) and
+ * <ProjectsPane/> on the right (head, rename/delete, description editor,
+ * notes-head count + sort instrument, note rows, delete-confirm strip; Task
+ * 7 added the tag-head variant).
+ *
+ * Task 7 (spec §5) also owns: fetching + machine-tag-filtering (ISS-019,
+ * lib/projectsView.ts's filterMachineTags, moved here from the doomed
+ * TagsView.tsx) + flattening (flattenTagTree) the tag tree once per visible
+ * mount, and auto-selecting the first tag whenever the toggle lands on
+ * Tags with nothing selected yet (spec §5.2) — never leaving the pane dead.
  *
  * Task 8 owns wiring this component into LibraryView/FullWindow in place of
  * the current `vault` section — not built here.
@@ -16,7 +23,8 @@ import { useCallback, useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import ProjectsRail, { LOOSE_PROJECT_ID, type RailMode } from "./ProjectsRail";
 import ProjectsPane from "./ProjectsPane";
-import { listProjects, getStats, type ProjectEntry } from "../../lib/api";
+import { listProjects, getStats, getTagTree, type ProjectEntry } from "../../lib/api";
+import { filterMachineTags, flattenTagTree, type FlatTag } from "../../lib/projectsView";
 
 interface Props {
   visible: boolean;
@@ -38,6 +46,29 @@ export default function ProjectsView({ visible, onOpenNote }: Props) {
   // source beside a list from another).
   const [projectCounts, setProjectCounts] = useState<Record<string, number>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // The flat, machine-tag-filtered tag list (spec §5) and the currently
+  // selected tag's RAW value (trailing slash preserved for a namespace
+  // parent — see lib/projectsView.ts's flattenTagTree).
+  //
+  // GET /tags and GET /search?q=tag:<x> agree on MEMBERSHIP, not necessarily
+  // on cardinality. Both resolve which paths carry the tag from the same
+  // vault file scan (vault_admin.py:722-733 -> tag_index.scan_tag_paths /
+  // resolve_paths) — that's the invariant spec §5.6 and the /tags docstring
+  // exist to guarantee, and neither surface here invents its own number.
+  // But GET /search only returns captures.db ROWS whose path is in that
+  // resolved set (index_writer.py:840-852's docstring, enforced at :856's
+  // `resolve_paths` + the `path IN (...)` filter) — it does not synthesize a
+  // row for a file the scan found but the DB hasn't indexed yet. A note
+  // freshly saved by the editor, or just synced in from Drive, can carry
+  // the tag on disk before its next index pass reaches it: the rail (file
+  // scan) counts it, the pane's fetched rows (DB) don't yet, and the rail
+  // reads one higher than the pane until that pass runs. No gui/ change
+  // closes that gap — ProjectsPane.tsx deliberately shows rows.length (what
+  // it actually holds), not the rail's number, which is the honest choice
+  // spec §5.6 itself asks for ("derive the displayed count from the rows it
+  // holds, never a count from one source beside a list from another").
+  const [tags, setTags] = useState<FlatTag[]>([]);
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
 
   // Shared by first-load and the rename/delete refetch (spec: "the rail's
   // tiles and counts are stale" after either succeeds — refetch BOTH
@@ -79,6 +110,30 @@ export default function ProjectsView({ visible, onOpenNote }: Props) {
     return refresh();
   }, [visible, refresh]);
 
+  // Tag list: fetched once per visible mount, filtered (ISS-019) then
+  // flattened before it ever reaches ProjectsRail — the rail renders what
+  // it is given, it does not know about the tree shape or the machine-tag
+  // filter (spec's trap 1).
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    getTagTree().then((r) => {
+      if (cancelled) return;
+      setTags(flattenTagTree(filterMachineTags(r.tags)));
+    }).catch(() => { if (!cancelled) setTags([]); });
+    return () => { cancelled = true; };
+  }, [visible]);
+
+  // Switching to Tags (or the tag list finishing its fetch while already on
+  // Tags) auto-selects the first tag (spec §5.2) — flipping the toggle must
+  // never hand back a dead right-hand pane that needs a second click before
+  // the screen says anything. Never overwrites a live selection.
+  useEffect(() => {
+    if (mode === "tags" && !selectedTag && tags.length > 0) {
+      setSelectedTag(tags[0].tag);
+    }
+  }, [mode, tags, selectedTag]);
+
   if (!visible) return null;
 
   return (
@@ -91,6 +146,9 @@ export default function ProjectsView({ visible, onOpenNote }: Props) {
         looseCount={projectCounts[LOOSE_PROJECT_ID] ?? 0}
         selectedId={selectedId}
         onSelect={setSelectedId}
+        tags={tags}
+        selectedTag={selectedTag}
+        onSelectTag={setSelectedTag}
         // Presentational only (see ProjectsRail.tsx's file header) — Task 4
         // does not call GET /inbox/{note_id}/suggest-projects or invent
         // which note_id this screen's "one Inbox suggestion" (spec §1) is
@@ -100,8 +158,10 @@ export default function ProjectsView({ visible, onOpenNote }: Props) {
         onNewProject={() => { /* Task 5/8: create-project flow — no modal exists on the board either. */ }}
       />
       <ProjectsPane
+        mode={mode}
         projects={projects}
         selectedId={selectedId}
+        selectedTag={selectedTag}
         onOpenNote={onOpenNote}
         onRenamed={(oldName, newName) => {
           setSelectedId((prev) => (prev === oldName ? newName : prev));

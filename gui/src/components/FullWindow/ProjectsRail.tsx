@@ -18,9 +18,12 @@
  *    is the one place this file's visuals diverge from a literal className
  *    port of the board's CSS, in favor of using the unmodified shared
  *    component exactly as its one other real caller (FullWindow.tsx) does.
- *  - The Tags half of the toggle switches the band correctly; the actual
- *    tag LIST (role=listbox/option, per-row project chip, first-tag-auto-
- *    select) is Task 7 — left as an explicitly commented seam below.
+ *  - The Tags half of the toggle (Task 7) renders the real flat tag list:
+ *    role="listbox"/"option", the SAME selected-state visual language as a
+ *    project tile (accent wash + 2px accent edge, spec §5.1) — not a second
+ *    pattern. Per-row project chips and first-tag-auto-select live in
+ *    ProjectsPane.tsx / ProjectsView.tsx respectively (this file only owns
+ *    the tag list itself and reporting a click via `onSelectTag`).
  *  - The suggestion box is presentational only, driven entirely by props.
  *    It is not wired to GET /inbox/{note_id}/suggest-projects here — see
  *    ProjectsView.tsx's file header for why.
@@ -44,7 +47,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { ProjectEntry } from "../../lib/api";
-import { displayProject } from "../../lib/projectsView";
+import { displayProject, tagDisplayLabel, type FlatTag } from "../../lib/projectsView";
 import { slideDirection } from "../../lib/segmentedToggle";
 import SegmentedToggle from "../ui/SegmentedToggle";
 import { DashboardIcon, ListIcon, PlusIcon, MenuIcon, CheckIcon, PencilIcon, CloseIcon } from "../PillMenu/icons";
@@ -102,6 +105,16 @@ interface ProjectsRailProps {
    *  loaded / been selected yet. */
   selectedId: string | null;
   onSelect: (id: string) => void;
+  /** The flattened tag list (lib/projectsView.ts's `flattenTagTree`, already
+   *  run through `filterMachineTags` by the caller — ISS-019, spec's trap 1).
+   *  Each `tag` is the RAW value from `GET /tags`, trailing slash and all
+   *  for a namespace parent — see `flattenTagTree`'s comment for why that
+   *  must survive unstripped into `onSelectTag`. */
+  tags: FlatTag[];
+  /** The currently selected tag's raw value, or null before the first tag
+   *  has auto-selected (spec §5.2) / when there are no tags at all. */
+  selectedTag: string | null;
+  onSelectTag: (tag: string) => void;
   /** null/undefined = nothing pending, so the box does not render.
    *  Presentational only — see the file header. */
   suggestion?: ProjectsRailSuggestion | null;
@@ -119,6 +132,9 @@ export default function ProjectsRail({
   looseCount,
   selectedId,
   onSelect,
+  tags,
+  selectedTag,
+  onSelectTag,
   suggestion,
   onSuggestionCreate,
   onSuggestionRename,
@@ -193,6 +209,9 @@ export default function ProjectsRail({
         .pr-sg-dismiss:hover, .pr-sg-dismiss:focus-visible { color: var(--red); border-color: var(--red); background: rgba(255,100,103,0.12); box-shadow: 0 0 0 3px rgba(255,100,103,0.10); outline: none; }
         .pr-sg-dismiss:hover svg, .pr-sg-dismiss:focus-visible svg { animation: xPulse 340ms var(--hover-ease-out); }
         .pr-sg-dismiss:active { transform: scale(0.92); }
+        .pr-tagrow { transition: background 160ms var(--hover-ease-out), color 160ms var(--hover-ease-out); }
+        .pr-tagrow:hover { background: var(--surface-2); color: var(--text-1); }
+        .pr-tagrow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
       `}</style>
 
       {/* band 1 — the toggle. Never scrolls, never moves. */}
@@ -290,17 +309,43 @@ export default function ProjectsRail({
             </button>
           </div>
         ) : (
-          // Task 7 seam: the flat tag list (role="listbox"/"option", the
-          // per-row project chip via displayProject(), first-tag-auto-
-          // select on switch — spec §5) is deliberately NOT built here.
-          // This placeholder proves the toggle actually switches band 2
-          // without inventing tag rows or fake data.
+          // The flat tag list (spec §5.1): role="listbox"/"option", same
+          // selected-state visual language as a project tile (accent wash +
+          // 2px accent edge) — "this is what the right side is showing"
+          // must not mean two different affordances on the two halves of
+          // one toggle. Tags are pre-flattened + pre-filtered by the caller
+          // (lib/projectsView.ts's flattenTagTree + filterMachineTags —
+          // ISS-019); this component only renders what it is given.
           <div
             key="tags"
             className="seg-swap-panel"
-            style={{ ...tagSeamStyle, ["--swap-dir" as unknown as string]: swapDir } as CSSProperties}
+            style={{ ...tagListStyle, ["--swap-dir" as unknown as string]: swapDir } as CSSProperties}
+            role="listbox"
+            aria-label="Tags"
           >
-            Tags (Task 7)
+            {tags.length === 0 ? (
+              <div style={tagEmptyStyle}>No tags yet.</div>
+            ) : (
+              tags.map((t) => {
+                const on = selectedTag === t.tag;
+                return (
+                  <button
+                    key={t.tag}
+                    role="option"
+                    className="pr-tagrow"
+                    aria-selected={on}
+                    onClick={() => onSelectTag(t.tag)}
+                    style={on ? tagRowSelectedStyle : tagRowStyle}
+                  >
+                    <span style={tagRowLabelStyle}>
+                      <span style={tagHashStyle}>#</span>
+                      {tagDisplayLabel(t.tag)}
+                    </span>
+                    <span style={on ? tagRowCountSelectedStyle : tagRowCountStyle}>{t.count}</span>
+                  </button>
+                );
+              })
+            )}
           </div>
         )}
       </div>
@@ -391,7 +436,24 @@ const tileCountStyle: CSSProperties = { fontSize: 9, color: "var(--text-3)", fon
 const tileWarnStyle: CSSProperties = { fontSize: 8.5, color: "var(--yellow)" };
 const looseDotStyle: CSSProperties = { width: 5, height: 5, border: "1px dashed currentColor", borderRadius: "50%", flex: "0 0 auto" };
 
-const tagSeamStyle: CSSProperties = { padding: "20px 16px", fontSize: 10.5, color: "var(--text-3)", lineHeight: 1.6 };
+// ── tag list (spec §5.1) — same selected-state language as a project tile:
+// accent wash + 2px accent left edge, board's .tagrow (mock lines 144-154).
+const tagListStyle: CSSProperties = { display: "block" };
+const tagEmptyStyle: CSSProperties = { padding: "20px 16px", fontSize: 10.5, color: "var(--text-3)", lineHeight: 1.6 };
+const tagRowBase: CSSProperties = {
+  width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+  padding: "6px 10px 6px 8px", fontSize: 11, textAlign: "left", fontFamily: "inherit",
+  color: "var(--text-2)", background: "var(--surface)", border: "none", borderLeft: "2px solid transparent",
+  borderBottom: "1px solid var(--border-2)", cursor: "pointer",
+};
+const tagRowStyle: CSSProperties = tagRowBase;
+const tagRowSelectedStyle: CSSProperties = {
+  ...tagRowBase, background: "var(--accent-d)", borderLeftColor: "var(--accent)", color: "var(--text-1)",
+};
+const tagRowLabelStyle: CSSProperties = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const tagHashStyle: CSSProperties = { color: "var(--text-3)" };
+const tagRowCountStyle: CSSProperties = { fontSize: 9.5, color: "var(--text-3)", fontVariantNumeric: "tabular-nums", flex: "0 0 auto" };
+const tagRowCountSelectedStyle: CSSProperties = { ...tagRowCountStyle, color: "var(--text-2)" };
 
 const suggWrapStyle: CSSProperties = { flex: "0 0 auto", padding: 8 };
 const suggBoxStyle: CSSProperties = {

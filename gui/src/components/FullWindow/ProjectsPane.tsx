@@ -23,10 +23,17 @@
  *     component): a project's tile count and this pane's list length must
  *     never be able to disagree by construction.
  *
+ * Task 7 added the tag-view variant (`mode="tags"`): fetches via
+ * `notesForTag(selectedTag, { limit: 200 })` instead of `notesForProject`,
+ * renders the tag head (spec §5.4: name + vault-wide count, no description
+ * editor, no rename, no delete — a tag is body-authoritative, so this panel
+ * cannot write one and must not imply it can), and adds a per-row project
+ * chip (spec §5.3: text + border, not a coloured pill — colour there would
+ * be decoration) via `displayProject()`, the same sentinel guard used
+ * everywhere else. The sort instrument, FLIP re-order, and provisional-row
+ * filtering are unchanged and apply identically to both modes.
+ *
  * Scope boundaries (binding, this task's brief):
- *  - Tag-view rendering is Task 7 — this component only ever renders a
- *    project's or the loose bucket's notes, selected via `selectedId`
- *    (a project `name` or `ProjectsRail.LOOSE_PROJECT_ID`).
  *  - No pager (spec §5.5.1 — Task 9's, and unreachable at <=200 notes).
  *
  * Task 6 (motion pass, spec §8) added: the note-row FLIP re-order and the
@@ -42,6 +49,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
   notesForProject,
+  notesForTag,
   renameProject,
   deleteProject,
   updateProjectDescription,
@@ -56,11 +64,12 @@ import {
   metaEpochMs,
   nextSortMode,
   sortNotes,
+  tagDisplayLabel,
   SORT_MODE_LABEL,
   SORT_MODE_META_VERB,
   type SortMode,
 } from "../../lib/projectsView";
-import { LOOSE_PROJECT_ID } from "./ProjectsRail";
+import { LOOSE_PROJECT_ID, type RailMode } from "./ProjectsRail";
 import {
   PencilIcon, TrashIcon, CheckIcon, CloseIcon, FileIcon, ChevronRightIcon,
   SortNewestIcon, SortOldestIcon, SortEditedIcon, CycleIcon,
@@ -93,13 +102,22 @@ function prefersReducedMotion(): boolean {
 }
 
 interface ProjectsPaneProps {
+  /** Which half of the rail toggle is active (spec §5). Governs which head
+   *  variant renders and which fetch (`notesForProject`/`notesForTag`)
+   *  drives the note list — everything else (sort, FLIP, provisional
+   *  filtering) is shared. */
+  mode: RailMode;
   /** Registry entries — used to look up the selected project's identity
    *  (name/description) by `selectedId`. Same array ProjectsRail renders,
    *  so the two surfaces agree on what a project IS. */
   projects: ProjectEntry[];
   /** A project's `name`, `LOOSE_PROJECT_ID`, or null before the first list
-   *  has loaded. */
+   *  has loaded. Only consulted when `mode === "projects"`. */
   selectedId: string | null;
+  /** The selected tag's RAW value (trailing slash preserved for a namespace
+   *  parent — see lib/projectsView.ts's `flattenTagTree`), or null. Only
+   *  consulted when `mode === "tags"`. */
+  selectedTag: string | null;
   onOpenNote?: (path: string) => void;
   /** Fired after a successful rename. The rail's tiles go stale on a
    *  rename — the caller is expected to refetch `listProjects()` +
@@ -116,16 +134,25 @@ interface ProjectsPaneProps {
 }
 
 export default function ProjectsPane({
+  mode,
   projects,
   selectedId,
+  selectedTag,
   onOpenNote,
   onRenamed,
   onDeleted,
   onDescriptionSaved,
 }: ProjectsPaneProps) {
-  const isLoose = selectedId === LOOSE_PROJECT_ID;
-  const isEmptyVault = projects.length === 0;
-  const selected = selectedId && !isLoose ? projects.find((p) => p.name === selectedId) ?? null : null;
+  const isTagMode = mode === "tags";
+  // Every project-only affordance (description editor, rename, delete, the
+  // calm empty-vault head) is gated on mode === "projects" so a stale
+  // selectedId left over from before the toggle flipped can never leak a
+  // project-only control into the tag view (spec §5.4: "a tag head is not
+  // a project head").
+  const isLoose = !isTagMode && selectedId === LOOSE_PROJECT_ID;
+  const isEmptyVault = !isTagMode && projects.length === 0;
+  const selected = !isTagMode && selectedId && !isLoose ? projects.find((p) => p.name === selectedId) ?? null : null;
+  const activeKey = isTagMode ? selectedTag : selectedId;
 
   // ── notes: this pane's OWN fetch (spec §5.5's "the implementation trap") ──
   const [rows, setRows] = useState<SearchResult[]>([]);
@@ -133,10 +160,11 @@ export default function ProjectsPane({
   const [sortMode, setSortMode] = useState<SortMode>("newest");
 
   useEffect(() => {
-    if (!selectedId) { setRows([]); return; }
+    if (!activeKey) { setRows([]); return; }
     let cancelled = false;
     setNotesLoading(true);
-    notesForProject(selectedId, { limit: 200 })
+    const fetchRows = isTagMode ? notesForTag(activeKey, { limit: 200 }) : notesForProject(activeKey, { limit: 200 });
+    fetchRows
       .then((results) => {
         if (cancelled) return;
         // Rule 1: drop LAN-provisional overlay rows before this pane counts
@@ -146,7 +174,7 @@ export default function ProjectsPane({
       .catch(() => { if (!cancelled) setRows([]); })
       .finally(() => { if (!cancelled) setNotesLoading(false); });
     return () => { cancelled = true; };
-  }, [selectedId]);
+  }, [isTagMode, activeKey]);
 
   // Memoized so identity only changes when `rows`/`sortMode` actually do —
   // the FLIP effect below is keyed on this reference, and re-sorting on
@@ -160,7 +188,13 @@ export default function ProjectsPane({
   // clamp), so above 200 notes this count AND the delete-confirm's "Its N
   // notes" both understate the true total. Not a bug — Task 9's pager
   // upgrades both to GET /stats's by_project total when it lands; today's
-  // real vault (17 notes) never gets near the ceiling.
+  // real vault (17 notes) never gets near the ceiling. The tag head's
+  // "{noteCount} notes across your vault" wording (below) makes this worse
+  // than a silent under-report at >200: "across your vault" asserts a
+  // vault-wide total, so past the cap it states a specific falsehood rather
+  // than just showing a smaller-than-true number the way the project head's
+  // plain "{noteCount} notes" does. Task 9's pager needs to fix this
+  // string, not just the fetch.
   const noteCount = rows.length;
 
   // ── note re-order FLIP (spec §8) ────────────────────────────────────────
@@ -251,7 +285,7 @@ export default function ProjectsPane({
     setConfirmingDelete(false);
     setMutationError(null);
     setDescDraft(selected?.description ?? "");
-  }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps -- `selected` is derived FROM selectedId; re-running on every `projects` identity change would clobber an in-progress edit on every unrelated refetch.
+  }, [selectedId, mode]); // eslint-disable-line react-hooks/exhaustive-deps -- `selected` is derived FROM selectedId/mode; re-running on every `projects` identity change would clobber an in-progress edit on every unrelated refetch. `mode` is included so leaving Projects mid-rename and coming back doesn't resurrect a stale rename/delete-confirm box (spec §5.4: a tag head must never look like a project head).
 
   // Flush an in-flight debounced description save immediately when the
   // selection moves on (or the pane unmounts), rather than letting a save
@@ -316,7 +350,7 @@ export default function ProjectsPane({
     setSortMode((m) => nextSortMode(m));
   }
 
-  if (!selectedId) return <div style={paneStyle} />;
+  if (!activeKey) return <div style={paneStyle} />;
 
   const SortIcon = SORT_ICON[sortMode];
   const metaVerb = SORT_MODE_META_VERB[sortMode];
@@ -345,7 +379,22 @@ export default function ProjectsPane({
         .pp-ghost:hover { color: var(--text-1); border-color: var(--accent); }
       `}</style>
 
-      {isEmptyVault ? (
+      {isTagMode ? (
+        // Spec §5.4: a tag head is NOT a project head. No description
+        // editor, no rename, no delete — tags are body-authoritative
+        // (recomputed from the body's #hashtags on save, a workspace
+        // lock), so this panel cannot write one and must not imply it
+        // can. Just the name and its vault-wide count. The explainer
+        // paragraph drafted for this head was cut by the user in round 3
+        // (spec §5.4) — deliberately not reintroduced here.
+        <div style={tagHeadStyle}>
+          <span style={tagHeadNameStyle}>
+            <span style={tagHeadHashStyle}>#</span>
+            {tagDisplayLabel(selectedTag ?? "")}
+          </span>
+          <span style={tagHeadCountStyle}>{noteCount} notes across your vault</span>
+        </div>
+      ) : isEmptyVault ? (
         <div style={calmHeadStyle}>
           <h3 style={calmHeadingStyle}>No projects yet</h3>
           <p style={calmParaStyle}>
@@ -485,6 +534,28 @@ export default function ProjectsPane({
             >
               <span style={noteRowFileIconStyle}><FileIcon size={12} /></span>
               <span style={noteRowTitleStyle}>{title}</span>
+              {/* Spec §5.3: only the tag view renders this — a tag cuts
+                  ACROSS projects, so it's the one view that has to answer
+                  "where does this note actually live". Text + border, not a
+                  coloured pill (colour there would be decoration).
+                  displayProject() is the one sanctioned `_loose` guard
+                  (spec §2.2) — never reimplemented inline. Trap 3
+                  (task brief): this row's `project` always comes from the
+                  FTS tier's captures.db `project` column (s127-fixed,
+                  resolved against .projects.toml), never the semantic
+                  tier's pre-s127 directory-derived one — notesForTag/
+                  notesForProject (api.ts) both call searchCaptures() with
+                  an EMPTY free-text query (just a project filter or a
+                  stripped `tag:` token), and vault_admin.search_captures
+                  only runs the semantic branch when `free_q.strip()` is
+                  truthy, so a semantic-tier row (tier: "semantic") can
+                  never appear in a row this pane fetches — verified at
+                  source, not assumed. */}
+              {isTagMode && (
+                <span style={row.project && row.project !== LOOSE_PROJECT_ID ? pjChipStyle : pjChipLooseStyle}>
+                  {displayProject(row.project)}
+                </span>
+              )}
               <span style={noteRowMetaStyle}>{meta}</span>
               <span style={noteRowChevStyle}><ChevronRightIcon size={11} /></span>
             </div>
@@ -520,6 +591,17 @@ const looseHeadDotStyle: CSSProperties = {
 };
 const looseHeadNameStyle: CSSProperties = { fontSize: 14, fontWeight: 600, color: "var(--text-1)" };
 const looseHeadSubStyle: CSSProperties = { fontSize: 10, color: "var(--text-3)" };
+
+// Tag head (spec §5.4) — deliberately NOT a project head: no rename/delete
+// icon row, no description editor. Padding matches looseHeadStyle, the
+// other head with no editor under it (board mock lines 839-843).
+const tagHeadStyle: CSSProperties = {
+  flex: "0 0 auto", borderBottom: "1px solid var(--border)", padding: "14px 16px",
+  display: "flex", alignItems: "baseline", gap: 9,
+};
+const tagHeadNameStyle: CSSProperties = { fontSize: 15, fontWeight: 600, color: "var(--text-1)" };
+const tagHeadHashStyle: CSSProperties = { color: "var(--text-3)" };
+const tagHeadCountStyle: CSSProperties = { fontSize: 10, color: "var(--text-3)" };
 
 const projectHeadStyle: CSSProperties = {
   flex: "0 0 auto", borderBottom: "1px solid var(--border)", padding: "13px 16px 12px",
@@ -590,6 +672,15 @@ const noteRowStyle: CSSProperties = {
 };
 const noteRowFileIconStyle: CSSProperties = { color: "var(--text-3)", flex: "0 0 auto", display: "flex" };
 const noteRowTitleStyle: CSSProperties = { flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+// Per-row project chip, tag view only (spec §5.3): text + border, never a
+// coloured pill (colour there would be decoration). Dashed border for
+// loose, same visual cue the loose tile/head already use.
+const pjChipBase: CSSProperties = {
+  fontSize: 9, color: "var(--text-3)", flex: "0 0 auto", border: "1px solid var(--border)",
+  padding: "1px 5px", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+};
+const pjChipStyle: CSSProperties = pjChipBase;
+const pjChipLooseStyle: CSSProperties = { ...pjChipBase, borderStyle: "dashed" };
 const noteRowMetaStyle: CSSProperties = { fontSize: 9.5, color: "var(--text-3)", flex: "0 0 auto", fontVariantNumeric: "tabular-nums" };
 const noteRowChevStyle: CSSProperties = { color: "var(--text-3)", flex: "0 0 auto", display: "flex" };
 

@@ -19,6 +19,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
   return {
     ...actual,
     notesForProject: vi.fn(),
+    notesForTag: vi.fn(),
     renameProject: vi.fn(),
     deleteProject: vi.fn(),
     updateProjectDescription: vi.fn(),
@@ -49,6 +50,7 @@ afterEach(() => {
 
 beforeEach(() => {
   vi.mocked(api.notesForProject).mockResolvedValue([]);
+  vi.mocked(api.notesForTag).mockResolvedValue([]);
   vi.mocked(api.renameProject).mockResolvedValue(undefined);
   vi.mocked(api.deleteProject).mockResolvedValue(undefined);
   vi.mocked(api.updateProjectDescription).mockResolvedValue(undefined);
@@ -57,8 +59,10 @@ beforeEach(() => {
 function renderPane(props: Partial<React.ComponentProps<typeof ProjectsPane>> = {}) {
   return render(
     <ProjectsPane
+      mode="projects"
       projects={[project({})]}
       selectedId="research"
+      selectedTag={null}
       {...props}
     />,
   );
@@ -73,7 +77,7 @@ describe("ProjectsPane — fetch (spec §5.5: explicit limit, no silent 25-row d
   it("refetches when the selection changes", async () => {
     const { rerender } = renderPane({ selectedId: "research" });
     await vi.waitFor(() => expect(api.notesForProject).toHaveBeenCalledWith("research", { limit: 200 }));
-    rerender(<ProjectsPane projects={[project({})]} selectedId={LOOSE_PROJECT_ID} />);
+    rerender(<ProjectsPane mode="projects" projects={[project({})]} selectedId={LOOSE_PROJECT_ID} selectedTag={null} />);
     await vi.waitFor(() => expect(api.notesForProject).toHaveBeenCalledWith(LOOSE_PROJECT_ID, { limit: 200 }));
   });
 });
@@ -304,5 +308,101 @@ describe("ProjectsPane — the loose overflow line (spec §4.8)", () => {
     renderPane({ projects: [project({})], selectedId: "research" });
     await screen.findByText("research", { selector: "span" });
     expect(screen.queryByText("Loose is normal and permanent, not a queue.")).toBeNull();
+  });
+});
+
+describe("ProjectsPane — tag mode (spec §5): fetch (trap 5, explicit limit)", () => {
+  it("calls notesForTag with an explicit limit of 200, not notesForProject", async () => {
+    renderPane({ mode: "tags", selectedId: null, selectedTag: "reading" });
+    await vi.waitFor(() => expect(api.notesForTag).toHaveBeenCalledWith("reading", { limit: 200 }));
+    expect(api.notesForProject).not.toHaveBeenCalled();
+  });
+
+  it("refetches when the selected tag changes", async () => {
+    const { rerender } = renderPane({ mode: "tags", selectedId: null, selectedTag: "reading" });
+    await vi.waitFor(() => expect(api.notesForTag).toHaveBeenCalledWith("reading", { limit: 200 }));
+    rerender(<ProjectsPane mode="tags" projects={[project({})]} selectedId={null} selectedTag="invoice" />);
+    await vi.waitFor(() => expect(api.notesForTag).toHaveBeenCalledWith("invoice", { limit: 200 }));
+  });
+
+  it("a namespace parent's trailing slash survives unstripped into the fetch call", async () => {
+    renderPane({ mode: "tags", selectedId: null, selectedTag: "project/" });
+    await vi.waitFor(() => expect(api.notesForTag).toHaveBeenCalledWith("project/", { limit: 200 }));
+  });
+});
+
+describe("ProjectsPane — tag head (spec §5.4): not a project head", () => {
+  it("shows the tag name and vault-wide count, no rename/delete/description editor", async () => {
+    vi.mocked(api.notesForTag).mockResolvedValue([row({}), row({ path: "b.md", filename: "b.md" })]);
+    renderPane({ mode: "tags", selectedId: null, selectedTag: "reading" });
+    expect(await screen.findByText("2 notes across your vault")).toBeTruthy();
+    expect(screen.getByText("reading")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Rename project" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete project" })).toBeNull();
+    expect(screen.queryByLabelText("Project description")).toBeNull();
+  });
+
+  it("strips a namespace parent's trailing slash for display", async () => {
+    renderPane({ mode: "tags", selectedId: null, selectedTag: "project/" });
+    expect(await screen.findByText("project")).toBeTruthy();
+    expect(screen.queryByText("project/")).toBeNull();
+  });
+
+  it("the head's count and the notes-head label both read rows.length -- this pane's own internal agreement (trap 2's pane-side half)", async () => {
+    // This is the guarantee the gui/ code actually owns: BOTH numbers on
+    // this pane come from the same in-memory `rows` state, so they cannot
+    // disagree with EACH OTHER. It is not a claim that this number matches
+    // the rail's /tags-derived count -- it can legitimately run one behind
+    // for a note whose index pass hasn't caught up with a just-saved tag
+    // (GET /search only returns captures.db rows filtered by the file
+    // scan's membership, per index_writer.py:840-852 -- see
+    // ProjectsView.tsx's tags-state comment). The pane deliberately shows
+    // what it actually holds rather than echoing a sibling source.
+    vi.mocked(api.notesForTag).mockResolvedValue([
+      row({ path: "a.md", filename: "a.md" }),
+      row({ path: "b.md", filename: "b.md" }),
+      row({ path: "c.md", filename: "c.md" }),
+    ]);
+    renderPane({ mode: "tags", selectedId: null, selectedTag: "reading" });
+    expect(await screen.findByText("3 notes across your vault")).toBeTruthy();
+    expect(screen.getByText("3 notes")).toBeTruthy(); // the notes-head label, same number
+  });
+});
+
+describe("ProjectsPane — tag mode per-row project chip (spec §5.3)", () => {
+  it("shows the note's project as a chip, text + border (not rendered for project mode)", async () => {
+    vi.mocked(api.notesForTag).mockResolvedValue([row({ path: "a.md", filename: "a.md", project: "kitchen-remodel" })]);
+    renderPane({ mode: "tags", selectedId: null, selectedTag: "quote" });
+    expect(await screen.findByText("kitchen-remodel")).toBeTruthy();
+  });
+
+  it("a loose note's chip reads 'loose', never the raw _loose sentinel (spec §2.2)", async () => {
+    vi.mocked(api.notesForTag).mockResolvedValue([row({ path: "a.md", filename: "a.md", project: LOOSE_PROJECT_ID })]);
+    renderPane({ mode: "tags", selectedId: null, selectedTag: "reading" });
+    expect(await screen.findByText("loose")).toBeTruthy();
+    expect(document.body.textContent).not.toContain(LOOSE_PROJECT_ID);
+  });
+
+  it("a null project also reads 'loose'", async () => {
+    vi.mocked(api.notesForTag).mockResolvedValue([row({ path: "a.md", filename: "a.md", project: null })]);
+    renderPane({ mode: "tags", selectedId: null, selectedTag: "reading" });
+    expect(await screen.findByText("loose")).toBeTruthy();
+  });
+
+  it("project mode never renders a project chip on note rows", async () => {
+    vi.mocked(api.notesForProject).mockResolvedValue([row({ path: "a.md", filename: "a.md", project: "research" })]);
+    renderPane({ mode: "projects", selectedId: "research" });
+    await screen.findByText("a.md");
+    // "research" appears once, as the head name -- not a second time as a chip.
+    expect(screen.getAllByText("research").length).toBe(1);
+  });
+});
+
+describe("ProjectsPane — mode gating (spec §5.4): stale selectedId can't leak project UI into tag mode", () => {
+  it("no description/rename/delete render in tag mode even when selectedId still names a real project", async () => {
+    renderPane({ mode: "tags", projects: [project({ name: "research" })], selectedId: "research", selectedTag: "reading" });
+    await vi.waitFor(() => expect(api.notesForTag).toHaveBeenCalled());
+    expect(screen.queryByLabelText("Project description")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Rename project" })).toBeNull();
   });
 });

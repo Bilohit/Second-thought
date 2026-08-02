@@ -13,8 +13,13 @@ import {
   formatAgo,
   metaEpochMs,
   flipStaggerDelayMs,
+  isMachineTag,
+  filterMachineTags,
+  flattenTagTree,
+  tagDisplayLabel,
   type SortableNote,
 } from "./projectsView";
+import type { TagNode } from "./api";
 
 function note(timestamp: string | null | undefined, modified?: number | null): SortableNote {
   return { timestamp, modified };
@@ -312,6 +317,77 @@ describe("flipStaggerDelayMs (spec §8: 14ms/row, capped at 110ms)", () => {
   });
   it("a negative index (defensive) never returns a negative delay", () => {
     expect(flipStaggerDelayMs(-3)).toBe(0);
+  });
+});
+
+describe("isMachineTag / filterMachineTags — moved here verbatim from FullWindow/TagsView.tsx (SP3 Task 7, trap 1)", () => {
+  it("flags the sys/ namespace and known bare legacy machine tags", () => {
+    expect(isMachineTag("sys/")).toBe(true);
+    expect(isMachineTag("sys/llm-failed")).toBe(true);
+    expect(isMachineTag("llm-failed")).toBe(true);
+    expect(isMachineTag("winerror_2")).toBe(true);
+  });
+
+  it("never flags ordinary user content tags", () => {
+    expect(isMachineTag("reading")).toBe(false);
+    expect(isMachineTag("systems-design")).toBe(false);
+  });
+
+  it("filterMachineTags drops the whole sys/ node, including children, and keeps everything else", () => {
+    const tags: TagNode[] = [
+      { tag: "sys/", count: 2, recent: [], children: [{ tag: "sys/llm-failed", count: 2, recent: [], children: [] }] },
+      { tag: "reading", count: 3, recent: [], children: [] },
+    ];
+    expect(filterMachineTags(tags).map((n) => n.tag)).toEqual(["reading"]);
+  });
+});
+
+describe("flattenTagTree (spec §5: getTagTree() returns a tree, the tag rail wants a flat list)", () => {
+  it("emits a bare top-level tag as a single row", () => {
+    const tags: TagNode[] = [{ tag: "reading", count: 4, recent: [], children: [] }];
+    expect(flattenTagTree(tags)).toEqual([{ tag: "reading", count: 4 }]);
+  });
+
+  it("depth-first: a namespace parent is emitted, immediately followed by its children", () => {
+    const tags: TagNode[] = [
+      {
+        tag: "project/", count: 3, recent: [],
+        children: [
+          { tag: "project/alpha", count: 2, recent: [], children: [] },
+          { tag: "project/beta", count: 1, recent: [], children: [] },
+        ],
+      },
+      { tag: "reading", count: 4, recent: [], children: [] },
+    ];
+    expect(flattenTagTree(tags)).toEqual([
+      { tag: "project/", count: 3 },
+      { tag: "project/alpha", count: 2 },
+      { tag: "project/beta", count: 1 },
+      { tag: "reading", count: 4 },
+    ]);
+  });
+
+  it("keeps a namespace parent's trailing slash — resolve_paths (tag_index.py) reads it as a prefix marker", () => {
+    const tags: TagNode[] = [{ tag: "sys/", count: 1, recent: [], children: [] }];
+    expect(flattenTagTree(tags)[0].tag).toBe("sys/");
+  });
+
+  it("an empty tree flattens to an empty list", () => {
+    expect(flattenTagTree([])).toEqual([]);
+  });
+});
+
+describe("tagDisplayLabel — trailing slash stripped for display, never for the selection/fetch value", () => {
+  it("strips exactly one trailing slash", () => {
+    expect(tagDisplayLabel("project/")).toBe("project");
+  });
+
+  it("a bare tag is unchanged", () => {
+    expect(tagDisplayLabel("reading")).toBe("reading");
+  });
+
+  it("a slash in the middle (a real leaf tag) is untouched", () => {
+    expect(tagDisplayLabel("project/alpha")).toBe("project/alpha");
   });
 });
 

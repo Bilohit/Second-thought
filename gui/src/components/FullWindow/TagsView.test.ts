@@ -3,7 +3,12 @@
 // appear in the Tags browser's tree, whether namespaced (fresh vaults) or
 // bare (existing vaults that already have unnamespaced notes on disk).
 import { describe, expect, it } from "vitest";
-import { filterMachineTags, isMachineTag, splitProjects } from "./TagsView";
+// isMachineTag/filterMachineTags moved to lib/projectsView.ts (SP3 Task 7,
+// TagsView.tsx is deleted in Task 8) — repointed here at their new home.
+// splitProjects is legacy project/ namespace handling that dies with
+// TagsView.tsx in Task 8, so it stays tested against this file.
+import { filterMachineTags, isMachineTag } from "../../lib/projectsView";
+import { splitProjects } from "./TagsView";
 import type { TagNode } from "../../lib/api";
 
 describe("isMachineTag", () => {

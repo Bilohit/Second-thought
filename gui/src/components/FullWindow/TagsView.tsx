@@ -12,40 +12,17 @@
  */
 import { useEffect, useState } from "react";
 import { getTagTree, searchCaptures, type TagNode, type SearchResult } from "../../lib/api";
+// ISS-019 machine-tag filtering moved to lib/projectsView.ts (SP3 Task 7):
+// this file is deleted in Task 8, and the new Projects-screen tag rail
+// (ProjectsRail.tsx, via ProjectsView.tsx) needs the same filter, so it now
+// lives in the shared lib module both sides import from. Re-imported here,
+// unchanged, so this file still compiles and still filters its own tag tree
+// the same way it always did.
+import { filterMachineTags } from "../../lib/projectsView";
 
 interface Props {
   visible: boolean;
   onOpenNote?: (path: string) => void;
-}
-
-/**
- * ISS-019: machine-written failure markers (scratchpad.py's route_failed_vision
- * /route_failed_llm) are namespaced "sys/..." at the write site so they land
- * in their own "sys/" tree node here -- filter that whole node out rather
- * than showing bookkeeping as if it were the user's tag taxonomy. Also
- * matches bare legacy names (pre-namespacing notes already on disk, or any
- * tag the pipeline never routed through the sys/ prefix) so existing vaults
- * get the same clean view without a migration.
- */
-const SYS_TAG_NAMESPACE = "sys";
-const LEGACY_MACHINE_TAGS = new Set([
-  "llm-failed",
-  "vision-failed",
-  "transcription_failure",
-  "whisper_model_error",
-  "winerror_2",
-]);
-
-export function isMachineTag(tag: string): boolean {
-  const bare = tag.replace(/\/$/, "");
-  if (bare === SYS_TAG_NAMESPACE || bare.startsWith(`${SYS_TAG_NAMESPACE}/`)) return true;
-  return LEGACY_MACHINE_TAGS.has(bare.toLowerCase());
-}
-
-export function filterMachineTags(tags: TagNode[]): TagNode[] {
-  return tags
-    .filter((node) => !isMachineTag(node.tag))
-    .map((node) => ({ ...node, children: node.children.filter((c) => !isMachineTag(c.tag)) }));
 }
 
 /**

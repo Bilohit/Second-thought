@@ -1,6 +1,7 @@
 /**
- * projectsView.ts — pure sorting/paging/label helpers for the Projects view
- * (Search results grouped by project). No side effects, no fetch.
+ * projectsView.ts — pure sorting/paging/label/tag-tree helpers for the
+ * Projects view (Search results grouped by project or tag). No side
+ * effects, no fetch.
  *
  * `SortableNote` is a narrow structural subset of `SearchResult` (api.ts) —
  * defined locally rather than imported so this module never forces an
@@ -8,6 +9,7 @@
  * including rows carrying the server's `modified` (filesystem mtime, epoch
  * seconds) field once it lands there.
  */
+import type { TagNode } from "./api";
 
 /** The two fields a row needs to be sortable: `timestamp` is the note's
  *  ADDED time (ISO string); `modified` is filesystem mtime, epoch seconds. */
@@ -185,4 +187,89 @@ export function metaEpochMs(row: SortableNote, mode: SortMode): number | null {
   if (!t) return null;
   const ms = new Date(t).getTime();
   return isNaN(ms) ? null : ms;
+}
+
+// ── moved verbatim from FullWindow/TagsView.tsx (SP3 Task 7) ───────────────
+// TagsView.tsx is deleted in Task 8; this filter has to keep working after
+// that, and the new Projects-screen tag rail (ProjectsRail.tsx) needs it
+// too, so it lives in the shared lib module both sides already import from
+// rather than in the file that is about to disappear. Logic unchanged.
+
+/**
+ * ISS-019: machine-written failure markers (scratchpad.py's route_failed_vision
+ * /route_failed_llm) are namespaced "sys/..." at the write site so they land
+ * in their own "sys/" tree node here -- filter that whole node out rather
+ * than showing bookkeeping as if it were the user's tag taxonomy. Also
+ * matches bare legacy names (pre-namespacing notes already on disk, or any
+ * tag the pipeline never routed through the sys/ prefix) so existing vaults
+ * get the same clean view without a migration.
+ */
+const SYS_TAG_NAMESPACE = "sys";
+const LEGACY_MACHINE_TAGS = new Set([
+  "llm-failed",
+  "vision-failed",
+  "transcription_failure",
+  "whisper_model_error",
+  "winerror_2",
+]);
+
+export function isMachineTag(tag: string): boolean {
+  const bare = tag.replace(/\/$/, "");
+  if (bare === SYS_TAG_NAMESPACE || bare.startsWith(`${SYS_TAG_NAMESPACE}/`)) return true;
+  return LEGACY_MACHINE_TAGS.has(bare.toLowerCase());
+}
+
+export function filterMachineTags(tags: TagNode[]): TagNode[] {
+  return tags
+    .filter((node) => !isMachineTag(node.tag))
+    .map((node) => ({ ...node, children: node.children.filter((c) => !isMachineTag(c.tag)) }));
+}
+
+// ── tag-tree flattening (SP3 Task 7, spec §5) ───────────────────────────────
+
+/** One row of the flat tag rail: the raw tag value (see below for why it
+ *  must stay raw) and its note count from GET /tags. */
+export interface FlatTag {
+  tag: string;
+  count: number;
+}
+
+/** Flattens the two-level tree `GET /tags` returns (tag_index.py's
+ *  `_build_tag_tree`: namespace parents like `"project/"` with leaf children
+ *  like `"project/alpha"`; a bare tag with no `/` has no children) into the
+ *  single flat list spec §5 wants. Depth-first: each top-level node is
+ *  emitted as its own row, immediately followed by its children.
+ *
+ *  A namespace parent's `tag` field is emitted UNCHANGED, trailing slash and
+ *  all — `tag_index.resolve_paths` reads that trailing slash as "match by
+ *  prefix, union every child", which is exactly how the parent's own `count`
+ *  was built (spec §5.6). Stripping the slash before calling
+ *  `notesForTag()`/`GET /search?q=tag:<x>` would turn a namespace click into
+ *  an exact-match lookup for a tag that (almost always) has zero notes of
+ *  its own, breaking trap 2's rail-vs-pane count agreement. Callers that
+ *  render the tag strip a trailing slash for display only, never for the
+ *  value used to select/fetch.
+ *
+ *  The board (gui/mocks/2026-08-01-projects-fullwindow-v3.html) has no
+ *  namespaced tags in its TAGS array, so it does not show how a namespace
+ *  parent should render — including it in the flat list is a judgment call,
+ *  made because spec §5.6 explicitly discusses a namespace parent's unioned
+ *  count and its `/search?q=tag:<ns>/` prefix listing as part of the same
+ *  agreement rule the rest of this list has to honor. */
+export function flattenTagTree(tags: readonly TagNode[]): FlatTag[] {
+  const flat: FlatTag[] = [];
+  for (const node of tags) {
+    flat.push({ tag: node.tag, count: node.count });
+    for (const child of node.children) {
+      flat.push({ tag: child.tag, count: child.count });
+    }
+  }
+  return flat;
+}
+
+/** Strips a namespace parent's trailing slash for DISPLAY ONLY — never use
+ *  this on the value passed to `onSelectTag`/`notesForTag`, see
+ *  `flattenTagTree`'s comment. */
+export function tagDisplayLabel(tag: string): string {
+  return tag.replace(/\/$/, "");
 }

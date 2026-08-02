@@ -10,8 +10,8 @@
  * not something this file can measure in pixels; a real-browser/CDP pass
  * (spec §9.5) is the only place that can confirm the pixels themselves.
  */
-import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import ProjectsRail, { LOOSE_PROJECT_ID, type ProjectsRailSuggestion } from "./ProjectsRail";
 import type { ProjectEntry } from "../../lib/api";
 
@@ -37,6 +37,9 @@ function renderRail(props: Partial<React.ComponentProps<typeof ProjectsRail>> = 
       looseCount={0}
       selectedId={null}
       onSelect={NOOP}
+      tags={[]}
+      selectedTag={null}
+      onSelectTag={NOOP}
       onNewProject={NOOP}
       {...props}
     />,
@@ -248,8 +251,65 @@ describe("ProjectsRail — the toggle is the real SegmentedToggle", () => {
     expect(tabs[1].getAttribute("aria-selected")).toBe("false");
   });
 
-  it("switching to tags shows the Task 7 seam, not a fake tag list", () => {
-    renderRail({ mode: "tags" });
-    expect(screen.getByText("Tags (Task 7)")).toBeTruthy();
+});
+
+describe("ProjectsRail — the tag list (spec §5.1)", () => {
+  it("renders a listbox of options, one per tag, wired to onSelectTag", () => {
+    const onSelectTag = vi.fn();
+    renderRail({
+      mode: "tags",
+      tags: [{ tag: "reading", count: 4 }, { tag: "invoice", count: 2 }],
+      onSelectTag,
+    });
+    const listbox = screen.getByRole("listbox", { name: "Tags" });
+    const options = screen.getAllByRole("option");
+    expect(options.length).toBe(2);
+    expect(listbox.contains(options[0])).toBe(true);
+    fireEvent.click(screen.getByText("reading"));
+    expect(onSelectTag).toHaveBeenCalledWith("reading");
+  });
+
+  it("shows each tag's count from the flattened tag list, not a separate source (spec §5.6)", () => {
+    renderRail({ mode: "tags", tags: [{ tag: "reading", count: 11 }] });
+    expect(screen.getByText("11")).toBeTruthy();
+  });
+
+  it("the selected tag uses the SAME visual language as a selected project tile: accent wash + 2px accent left edge (spec §5.1)", () => {
+    renderRail({
+      mode: "tags",
+      tags: [{ tag: "reading", count: 4 }, { tag: "invoice", count: 2 }],
+      selectedTag: "invoice",
+    });
+    const options = screen.getAllByRole("option");
+    const selected = options.find((o) => o.getAttribute("aria-selected") === "true")!;
+    expect(selected.textContent).toContain("invoice");
+    expect((selected as HTMLElement).style.background).toBe("var(--accent-d)");
+    expect((selected as HTMLElement).style.borderLeftColor).toBe("var(--accent)");
+    const unselected = options.find((o) => o.getAttribute("aria-selected") === "false")!;
+    expect((unselected as HTMLElement).style.background).not.toBe("var(--accent-d)");
+  });
+
+  it("exactly one option is aria-selected at a time", () => {
+    renderRail({
+      mode: "tags",
+      tags: [{ tag: "reading", count: 4 }, { tag: "invoice", count: 2 }],
+      selectedTag: "reading",
+    });
+    const selected = screen.getAllByRole("option").filter((o) => o.getAttribute("aria-selected") === "true");
+    expect(selected.length).toBe(1);
+  });
+
+  it("a namespace parent's trailing slash is stripped for DISPLAY but preserved for the click value (flattenTagTree/tagDisplayLabel contract)", () => {
+    const onSelectTag = vi.fn();
+    renderRail({ mode: "tags", tags: [{ tag: "project/", count: 3 }], onSelectTag });
+    expect(screen.getByText("project")).toBeTruthy(); // displayed without the slash
+    expect(screen.queryByText("project/")).toBeNull();
+    fireEvent.click(screen.getByText("project"));
+    expect(onSelectTag).toHaveBeenCalledWith("project/"); // called WITH the slash
+  });
+
+  it("shows a calm empty state, not a blank panel, when there are no tags", () => {
+    renderRail({ mode: "tags", tags: [] });
+    expect(screen.getByText("No tags yet.")).toBeTruthy();
   });
 });
