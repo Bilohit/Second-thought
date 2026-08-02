@@ -101,11 +101,20 @@ const logFormat: "text" | "json" = initialFormat();
 // and not evidence of anything wrong, so it must not log at the same level
 // as a genuine, ongoing outage (or a real crash gets lost in cold-launch
 // noise — the exact failure mode a past session hit with log-level
-// flooring). `bootTime` is set once, from initLogger() ("call once at app
-// boot"); STARTUP_GRACE_MS is a standalone allowance for a couple of retries
-// and is deliberately not coupled to any one poller's interval.
+// flooring). `bootTime` is set once, from initLogger() ("call once at app boot").
+//
+// The end of startup is signalled by the FIRST SUCCESSFUL health check
+// (noteStartupComplete), not by a clock. An earlier version of this used a
+// 10s wall-clock grace alone; live QA on a release build caught that the
+// Python child actually takes 12-28s to come up on this machine, so every
+// genuine boot race escalated to ERROR anyway. The unit tests passed because
+// they never waited that long — a clock-calibrated constant is exactly the
+// kind of thing a fast test cannot falsify.
 let bootTime = Date.now();
-const STARTUP_GRACE_MS = 10_000;
+let sawSuccess = false;
+// Backstop ONLY, for a backend that never comes up at all — not an estimate of
+// boot time, and deliberately far past it so it never pre-empts the real signal.
+const STARTUP_GRACE_MS = 90_000;
 
 /** Correlation ID for the in-flight capture run, if any (see useCapture). */
 let currentRunId: string | null = null;
@@ -289,8 +298,21 @@ export const logger = {
    * surfaces clearly (FR-15).
    */
   errorUnlessStartup(scope: string, msg: string, data?: unknown) {
-    const level = Date.now() - bootTime < STARTUP_GRACE_MS ? LogLevel.WARN : LogLevel.ERROR;
-    emit(level, scope, msg, data);
+    // The signal that startup is OVER is not a clock, it is the first success:
+    // once the backend has answered once, any later failure is a real outage
+    // and must be ERROR immediately. Before that first success the failures are
+    // the expected spawn race. The elapsed ceiling is only a backstop for a
+    // backend that NEVER comes up, so it must sit well past real boot time --
+    // measured at 12-28s on this machine, so a 10s clock-only grace escalated
+    // every genuine boot race to ERROR (found by live QA on the release build,
+    // 2026-08-02; the unit tests passed because they never waited that long).
+    const startingUp = !sawSuccess && Date.now() - bootTime < STARTUP_GRACE_MS;
+    emit(startingUp ? LogLevel.WARN : LogLevel.ERROR, scope, msg, data);
+  },
+
+  /** Called by the health poll on its first success — see errorUnlessStartup. */
+  noteStartupComplete() {
+    sawSuccess = true;
   },
 
   /**
@@ -360,6 +382,7 @@ function installGlobalHandlers() {
 /** Call once at app boot. Installs global handlers and logs the startup banner. */
 export function initLogger() {
   bootTime = Date.now();
+  sawSuccess = false;
   installGlobalHandlers();
   // Forced: at OFF (or a stored level above INFO) this would otherwise be
   // silenced, and a log file with zero frontend lines needs to unambiguously

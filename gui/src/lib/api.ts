@@ -268,6 +268,9 @@ export async function checkHealth(): Promise<{ serverOk: boolean; llmStatus: Llm
     // records fine and fails at transcription -- AFTER the user has spoken. Defaults to TRUE when
     // the field is absent (older server) or the probe failed: never block recording on a signal
     // we could not read, only on one that came back explicitly false.
+    // FR-15: first successful answer ends the startup window for good --
+    // any failure after this is a real outage, not the spawn race.
+    logger.noteStartupComplete();
     return { serverOk: true, llmStatus, ffmpeg: body.ffmpeg !== false };
   } catch (err) {
     stop({ failed: true });

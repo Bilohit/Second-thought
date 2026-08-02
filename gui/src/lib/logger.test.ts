@@ -115,7 +115,7 @@ describe("errorUnlessStartup()", () => {
     }
   });
 
-  it("escalates to ERROR once the grace window has passed — a real outage is never silenced", async () => {
+  it("escalates to ERROR once the never-came-up backstop has passed — a real outage is never silenced", async () => {
     const { logger, initLogger, LogLevel } = await import("./logger");
     logger.setLevel(LogLevel.INFO); // undo any level a prior test left behind
     vi.setSystemTime(0);
@@ -123,10 +123,51 @@ describe("errorUnlessStartup()", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      vi.setSystemTime(11_000); // past the 10s grace window
+      vi.setSystemTime(91_000); // past the never-came-up backstop
       logger.errorUnlessStartup("api", "health check failed — server unreachable");
       expect(errorSpy).toHaveBeenCalled();
       expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  // The signal that startup is over is the first SUCCESS, not the clock. A
+  // release-build QA pass found a clock-only grace escalated every genuine boot
+  // race to ERROR, because the Python child takes 12-28s to come up while the
+  // grace was 10s. This pins the behaviour that actually matters.
+  it("escalates to ERROR immediately after the first successful health check, however early", async () => {
+    const { logger, initLogger, LogLevel } = await import("./logger");
+    logger.setLevel(LogLevel.INFO);
+    vi.setSystemTime(0);
+    initLogger();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      vi.setSystemTime(2000);
+      logger.noteStartupComplete();       // backend answered once
+      logger.errorUnlessStartup("api", "health check failed — server unreachable");
+      expect(errorSpy).toHaveBeenCalled();  // now a real outage, not the spawn race
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("stays at WARN through a long boot that has not answered yet", async () => {
+    const { logger, initLogger, LogLevel } = await import("./logger");
+    logger.setLevel(LogLevel.INFO);
+    vi.setSystemTime(0);
+    initLogger();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      vi.setSystemTime(25_000);           // real measured boot range, 12-28s
+      logger.errorUnlessStartup("api", "health check failed — server unreachable");
+      expect(warnSpy).toHaveBeenCalled();
+      expect(errorSpy).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
       errorSpy.mockRestore();
