@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { SENSITIVE_KEY_RE } from "./logger";
 
 // GUI-XX: the "OFF" log level silenced the window error/unhandledrejection
@@ -80,6 +80,56 @@ describe("forced emit vs. the level gate", () => {
       expect(debugSpy).not.toHaveBeenCalled();
     } finally {
       debugSpy.mockRestore();
+    }
+  });
+});
+
+// FR-15: cold launch's health-check poll can race the Python child's own
+// boot and fail once, self-correcting on the next 3s poll — that's expected
+// and must not log at the same level as a real, ongoing outage (see
+// lib/api.ts's checkHealth, the sole caller of errorUnlessStartup).
+describe("errorUnlessStartup()", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("logs at WARN inside the post-boot grace window", async () => {
+    const { logger, initLogger, LogLevel } = await import("./logger");
+    logger.setLevel(LogLevel.INFO); // undo any level a prior test left behind
+    vi.setSystemTime(0);
+    initLogger(); // sets bootTime = now (0)
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      vi.setSystemTime(2000); // 2s after boot — still within the grace window
+      logger.errorUnlessStartup("api", "health check failed — server unreachable");
+      expect(warnSpy).toHaveBeenCalled();
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("escalates to ERROR once the grace window has passed — a real outage is never silenced", async () => {
+    const { logger, initLogger, LogLevel } = await import("./logger");
+    logger.setLevel(LogLevel.INFO); // undo any level a prior test left behind
+    vi.setSystemTime(0);
+    initLogger(); // sets bootTime = now (0)
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      vi.setSystemTime(11_000); // past the 10s grace window
+      logger.errorUnlessStartup("api", "health check failed — server unreachable");
+      expect(errorSpy).toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
     }
   });
 });

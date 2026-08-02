@@ -358,12 +358,13 @@
 
 /* ── Custom (Wave 3 T9, user-authored via Settings › Appearance) ──────────
    Color-only, per lib/themeDerive.ts's deriveCustom(). The real values are
-   injected at runtime by App.tsx as a `[data-theme="custom"]` override
-   <style> tag (id="omni-custom-theme-vars"); this block only supplies Void
-   defaults so a half-applied custom theme (e.g. before the injected style
-   tag lands, or if it's ever removed) never flashes unstyled. Shape, type,
-   and motion stay locked — no radius or font override here, same as every
-   other theme. */
+   applied at runtime by App.tsx as inline custom properties on
+   documentElement (FR-03: a <style> tag is silently dropped by the
+   production CSP, which has no 'unsafe-inline'/nonce for style-src); this
+   block only supplies Void defaults so a half-applied custom theme (e.g.
+   before the inline properties land, or after they're removed) never
+   flashes unstyled. Shape, type, and motion stay locked — no radius or font
+   override here, same as every other theme. */
 [data-theme="custom"] {
   color-scheme: dark;
   --bg:           #0a0a0a;

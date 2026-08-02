@@ -271,7 +271,9 @@ export async function checkHealth(): Promise<{ serverOk: boolean; llmStatus: Llm
     return { serverOk: true, llmStatus, ffmpeg: body.ffmpeg !== false };
   } catch (err) {
     stop({ failed: true });
-    logger.error("api", "health check failed — server unreachable at " + BASE, err);
+    // FR-15: the first poll(s) can race the Python child's own boot and are
+    // expected to self-correct — see logger.errorUnlessStartup.
+    logger.errorUnlessStartup("api", "health check failed — server unreachable at " + BASE, err);
     return { serverOk: false, llmStatus: "disconnected", ffmpeg: true };
   }
 }

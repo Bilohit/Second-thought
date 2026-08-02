@@ -95,6 +95,18 @@ function initialFormat(): "text" | "json" {
 let currentLevel: LogLevel = initialLevel();
 const logFormat: "text" | "json" = initialFormat();
 
+// FR-15: cold launch races the frontend against the Python child process —
+// the first health-check poll can land before the server has finished
+// spawning, fail, and self-correct on the very next poll. That's expected
+// and not evidence of anything wrong, so it must not log at the same level
+// as a genuine, ongoing outage (or a real crash gets lost in cold-launch
+// noise — the exact failure mode a past session hit with log-level
+// flooring). `bootTime` is set once, from initLogger() ("call once at app
+// boot"); STARTUP_GRACE_MS is a standalone allowance for a couple of retries
+// and is deliberately not coupled to any one poller's interval.
+let bootTime = Date.now();
+const STARTUP_GRACE_MS = 10_000;
+
 /** Correlation ID for the in-flight capture run, if any (see useCapture). */
 let currentRunId: string | null = null;
 export function setRunId(id: string | null) {
@@ -269,6 +281,19 @@ export const logger = {
   error(scope: string, msg: string, data?: unknown) { emit(LogLevel.ERROR, scope, msg, data); },
 
   /**
+   * For failures that are expected and self-correcting within a short window
+   * after boot (e.g. a health-check probe racing a backend that's still
+   * spawning) but are a real problem once that window has passed. Logs at
+   * WARN inside STARTUP_GRACE_MS of initLogger(), ERROR after — never
+   * silenced outright, so a backend that genuinely never comes up still
+   * surfaces clearly (FR-15).
+   */
+  errorUnlessStartup(scope: string, msg: string, data?: unknown) {
+    const level = Date.now() - bootTime < STARTUP_GRACE_MS ? LogLevel.WARN : LogLevel.ERROR;
+    emit(level, scope, msg, data);
+  },
+
+  /**
    * Start a performance timer. Call the returned fn to log the elapsed time;
    * durations over SLOW_MS are flagged as bottlenecks at WARN.
    */
@@ -334,6 +359,7 @@ function installGlobalHandlers() {
 
 /** Call once at app boot. Installs global handlers and logs the startup banner. */
 export function initLogger() {
+  bootTime = Date.now();
   installGlobalHandlers();
   // Forced: at OFF (or a stored level above INFO) this would otherwise be
   // silenced, and a log file with zero frontend lines needs to unambiguously

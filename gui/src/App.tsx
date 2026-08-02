@@ -69,6 +69,7 @@ import ToastHost from "./components/ToastHost";
 import DeletePromptModal from "./components/DeletePromptModal";
 import { EDITABLE_ORDER, type EditableSlot } from "./lib/themeCode";
 import { deriveCustom } from "./lib/themeDerive";
+import { applyCustomThemeVars, removeCustomThemeVars } from "./lib/customThemeVars";
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 
@@ -102,7 +103,6 @@ const STORAGE_KEY = "omni-theme";
 // see lib/themeDerive.ts) persisted independently of STORAGE_KEY so picking
 // a preset and coming back to "custom" later doesn't lose the user's work.
 export const CUSTOM_THEME_KEY = "omni-custom-theme";
-const CUSTOM_STYLE_ELEMENT_ID = "omni-custom-theme-vars";
 
 export const CUSTOM_THEME_DEFAULTS: Record<EditableSlot, string> = {
   bg: "#0a0a0a", surface: "#262626", surface2: "#404040", border: "#383838",
@@ -123,31 +123,10 @@ export function getInitialCustomTheme(): Record<EditableSlot, string> {
   return { ...CUSTOM_THEME_DEFAULTS };
 }
 
-// Injects/refreshes a <style> tag overriding the `[data-theme="custom"]`
-// vars declared in index.css (Void-default fallbacks live there so a
-// half-applied custom theme never flashes unstyled). Removed on theme
-// change away from "custom" so switching presets stays clean.
-function applyCustomThemeVars(slots: Record<EditableSlot, string>) {
-  const p = deriveCustom(slots);
-  let el = document.getElementById(CUSTOM_STYLE_ELEMENT_ID) as HTMLStyleElement | null;
-  if (!el) {
-    el = document.createElement("style");
-    el.id = CUSTOM_STYLE_ELEMENT_ID;
-    document.head.appendChild(el);
-  }
-  el.textContent = `[data-theme="custom"] {
-  --bg: ${p.bg}; --surface: ${p.surface}; --surface-2: ${p.surface2};
-  --border: ${p.border}; --border-2: ${p.border2};
-  --text-1: ${p.text1}; --text-2: ${p.text2}; --text-3: ${p.text3};
-  --accent: ${p.accent}; --accent-d: ${p.accentDim}; --accent-glow: ${p.accentGlow};
-  --on-accent: ${p.onAccent}; --palette-bg: ${p.paletteBg};
-  --recording: ${p.recording}; --green: ${p.green}; --yellow: ${p.yellow}; --red: ${p.red};
-  --glass-bg: ${p.glassBg}; --glass-border: ${p.glassBorder}; --scrim: ${p.scrim};
-}`;
-}
-
-function removeCustomThemeVars() {
-  document.getElementById(CUSTOM_STYLE_ELEMENT_ID)?.remove();
+// Palette → inline CSS vars on documentElement (FR-03: never a <style> tag —
+// see lib/customThemeVars.ts for why and the apply/remove implementation).
+function applyCustomTheme(slots: Record<EditableSlot, string>) {
+  applyCustomThemeVars(deriveCustom(slots));
 }
 
 const LOOK_MODE_KEY = "omni-look-mode";
@@ -701,7 +680,7 @@ export default function App() {
   // "custom" is the active theme; remove it otherwise so switching away is
   // clean and never leaves stale vars behind for the next custom edit.
   useEffect(() => {
-    if (theme === "custom") applyCustomThemeVars(customTheme);
+    if (theme === "custom") applyCustomTheme(customTheme);
     else removeCustomThemeVars();
   }, [theme, customTheme]);
   useEffect(() => {
@@ -985,8 +964,24 @@ export default function App() {
           pillTriggerRef.current?.focus();
           return;
         }
-        if (view === "look")    { setView("capture"); return; }
-        if (view !== "capture"){ setView("capture"); return; }
+        // FR-09: `view` here and FullWindow's own local rail `view` are two
+        // independent stores that drift the moment a rail click or a second
+        // shortcut happens without going through this `view`. In full-window
+        // mode, FullWindow's local view is authoritative (rail clicks write
+        // straight to it, never up to here) and every panel it hosts already
+        // closes on Escape by itself (NoteEditor, LookPanel's search input,
+        // InboxPanel, SettingsPanel — see their own onClose/Escape handling).
+        // Resetting this `view` to "capture" while full-window is open only
+        // ever fed FullWindow.initialView a *new* value (dashboard), which
+        // its useEffect then applied, silently overwriting whatever the user
+        // had actually navigated to. This `view` stays authoritative only
+        // where it always was: pill/capsule/minimal mode, where compactPanel
+        // (checked above) and the pill's own capture/look toggle are the
+        // real display.
+        if (displayMode !== "full") {
+          if (view === "look")    { setView("capture"); return; }
+          if (view !== "capture"){ setView("capture"); return; }
+        }
       }
     };
     window.addEventListener("keydown", handler);
