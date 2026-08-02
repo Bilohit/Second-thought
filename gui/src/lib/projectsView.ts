@@ -162,6 +162,15 @@ export function formatAgo(epochMs: number, now: number = Date.now()): string {
   return `${Math.floor(days / 7)}w ago`;
 }
 
+/** FLIP re-order stagger delay for row `index` in the newly-sorted list
+ *  (spec §8: "380ms `--ease-travel`, stagger 14ms/row capped at 110ms").
+ *  Pure so the cap-binding row (index 8: 8*14=112, clamped to 110) has a
+ *  regression test independent of any DOM/geometry work, which happy-dom
+ *  cannot perform (no layout engine). */
+export function flipStaggerDelayMs(index: number): number {
+  return Math.min(Math.max(0, index) * 14, 110);
+}
+
 /** The epoch-millisecond value a note row is actually sorted/displayed on
  *  for `mode` — "edited" reads `modified` (filesystem mtime, epoch SECONDS,
  *  converted to ms), the two timestamp modes read `timestamp` (ISO string).

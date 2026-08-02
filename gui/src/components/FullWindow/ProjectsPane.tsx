@@ -27,13 +27,18 @@
  *  - Tag-view rendering is Task 7 — this component only ever renders a
  *    project's or the loose bucket's notes, selected via `selectedId`
  *    (a project `name` or `ProjectsRail.LOOSE_PROJECT_ID`).
- *  - FLIP re-order, the sort-icon swap/spin, and the delete-strip/suggestion
- *    motion are Task 6. Rows ARE keyed by `path` (not array index) so a
- *    future FLIP pass can re-parent the existing nodes instead of
- *    recreating them — but no transition/animation is added here.
  *  - No pager (spec §5.5.1 — Task 9's, and unreachable at <=200 notes).
+ *
+ * Task 6 (motion pass, spec §8) added: the note-row FLIP re-order and the
+ * sort button's icon-swap/cycle-spin. Rows are keyed by `path` (not array
+ * index), so the FLIP re-parent below moves the SAME DOM nodes React
+ * already reconciles for a keyed list — hover/focus survive the reorder by
+ * construction, nothing here re-creates a row. `--menu-travel-ease` /
+ * `--hover-ease-out` are this repo's names for the spec's `--ease-travel` /
+ * `--ease-settle` (see index.css's "PROJECTS full-window motion pass"
+ * comment block) — reused, not reinvented.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
   notesForProject,
@@ -46,6 +51,7 @@ import {
 import {
   displayProject,
   excludeProvisional,
+  flipStaggerDelayMs,
   formatAgo,
   metaEpochMs,
   nextSortMode,
@@ -71,6 +77,20 @@ const SORT_ICON: Record<SortMode, (props: { size?: number }) => JSX.Element> = {
   oldest: SortOldestIcon,
   edited: SortEditedIcon,
 };
+
+/** Note re-order FLIP travel duration (spec §8: "380ms `--ease-travel`").
+ *  Mirrored in JS so the invert/play code below and index.css's
+ *  `.pp-sort-icon-pop`/icPop timing (260ms, a different row of the same
+ *  table) never drift independently of the sort button's icon swap. */
+const FLIP_TRAVEL_MS = 380;
+/** Cleanup delay after the last possible stagger release (110ms cap) +
+ *  travel duration, with slack for the frame the invert itself consumes —
+ *  mirrors the board's own 560ms cleanup timeout (mock line 964). */
+const FLIP_CLEANUP_MS = 560;
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
 
 interface ProjectsPaneProps {
   /** Registry entries — used to look up the selected project's identity
@@ -128,10 +148,95 @@ export default function ProjectsPane({
     return () => { cancelled = true; };
   }, [selectedId]);
 
-  const sortedRows = sortNotes(rows, sortMode);
+  // Memoized so identity only changes when `rows`/`sortMode` actually do —
+  // the FLIP effect below is keyed on this reference, and re-sorting on
+  // every unrelated render (e.g. a description keystroke) would fire it for
+  // no reason (harmless, since it no-ops without a pending measurement, but
+  // pointless work all the same).
+  const sortedRows = useMemo(() => sortNotes(rows, sortMode), [rows, sortMode]);
   // Rule 2: the ONLY count this pane ever shows — derived from the rows it
   // just fetched and filtered, never from a sibling source (spec §5.6).
+  // ponytail: this pane fetches with limit:200 (spec §5.5.1's server hard
+  // clamp), so above 200 notes this count AND the delete-confirm's "Its N
+  // notes" both understate the true total. Not a bug — Task 9's pager
+  // upgrades both to GET /stats's by_project total when it lands; today's
+  // real vault (17 notes) never gets near the ceiling.
   const noteCount = rows.length;
+
+  // ── note re-order FLIP (spec §8) ────────────────────────────────────────
+  // Measure (First) happens synchronously in handleSortClick, BEFORE
+  // setSortMode — reading the still-current DOM via rowRefs. React then
+  // re-parents the SAME row nodes into sortedRows' new order (Last); rows
+  // are keyed by `path`, so nothing is destroyed/recreated. This effect
+  // Inverts each row by the delta it just jumped and Plays the release on
+  // the next frame, staggered per lib/projectsView.ts's flipStaggerDelayMs.
+  // Skipped entirely under reduced motion: handleSortClick never populates
+  // prevTopsRef there, so the guard below exits immediately and the DOM
+  // simply sits in the new order (spec §8's last row).
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const prevTopsRef = useRef<Map<string, number> | null>(null);
+  const flipTimersRef = useRef<{ raf: number; timeout: ReturnType<typeof setTimeout> } | null>(null);
+
+  function setRowRef(path: string, el: HTMLDivElement | null) {
+    if (el) rowRefs.current.set(path, el);
+    else rowRefs.current.delete(path);
+  }
+
+  useLayoutEffect(() => {
+    const prevTops = prevTopsRef.current;
+    prevTopsRef.current = null;
+    if (!prevTops) return;
+
+    if (flipTimersRef.current) {
+      cancelAnimationFrame(flipTimersRef.current.raf);
+      clearTimeout(flipTimersRef.current.timeout);
+      flipTimersRef.current = null;
+    }
+
+    const moved: { el: HTMLDivElement; delay: number }[] = [];
+    sortedRows.forEach((row, index) => {
+      const el = rowRefs.current.get(row.path);
+      const prevTop = prevTops.get(row.path);
+      if (!el || prevTop === undefined) return;
+      const delta = prevTop - el.getBoundingClientRect().top;
+      if (Math.abs(delta) < 0.5) return; // didn't actually move — nothing to invert
+      el.style.transition = "none";
+      el.style.transform = `translateY(${delta}px)`;
+      moved.push({ el, delay: flipStaggerDelayMs(index) });
+    });
+    if (moved.length === 0) return;
+
+    // Flush the inverted frame before releasing it (the board's own `void
+    // box.offsetHeight`, mock line 956) — otherwise the browser coalesces
+    // the invert and the release into one paint and nothing animates.
+    moved[0].el.getBoundingClientRect();
+
+    const raf = requestAnimationFrame(() => {
+      moved.forEach(({ el, delay }) => {
+        el.style.transitionDelay = `${delay}ms`;
+        el.style.transition = `transform ${FLIP_TRAVEL_MS}ms var(--menu-travel-ease)`;
+        el.style.transform = "";
+      });
+    });
+    const timeout = setTimeout(() => {
+      moved.forEach(({ el }) => {
+        el.style.transition = "";
+        el.style.transitionDelay = "";
+        el.style.transform = "";
+      });
+      flipTimersRef.current = null;
+    }, FLIP_CLEANUP_MS);
+    flipTimersRef.current = { raf, timeout };
+  }, [sortedRows]);
+
+  useEffect(() => {
+    return () => {
+      if (flipTimersRef.current) {
+        cancelAnimationFrame(flipTimersRef.current.raf);
+        clearTimeout(flipTimersRef.current.timeout);
+      }
+    };
+  }, []);
 
   // ── head interaction state, reset whenever the selection changes ────────
   const [renaming, setRenaming] = useState(false);
@@ -203,6 +308,11 @@ export default function ProjectsPane({
   }
 
   function handleSortClick() {
+    if (!prefersReducedMotion()) {
+      const tops = new Map<string, number>();
+      rowRefs.current.forEach((el, path) => tops.set(path, el.getBoundingClientRect().top));
+      prevTopsRef.current = tops;
+    }
     setSortMode((m) => nextSortMode(m));
   }
 
@@ -214,21 +324,24 @@ export default function ProjectsPane({
   return (
     <div style={paneStyle}>
       {/* Pseudo-class states an inline style object cannot express, same
-          scoping pattern as ProjectsRail.tsx's `pr-` prefix. */}
+          scoping pattern as ProjectsRail.tsx's `pr-` prefix. Uses
+          var(--hover-ease-out) rather than the equivalent
+          cubic-bezier(0.16,1,0.3,1) literal (index.css:79), same cleanup as
+          ProjectsRail.tsx's scoped <style> block. */}
       <style>{`
-        .pp-iconbtn { transition: color 160ms cubic-bezier(0.16,1,0.3,1), background 160ms cubic-bezier(0.16,1,0.3,1); }
+        .pp-iconbtn { transition: color 160ms var(--hover-ease-out), background 160ms var(--hover-ease-out); }
         .pp-iconbtn:hover { color: var(--text-1); background: var(--surface-2); }
         .pp-iconbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
         .pp-iconbtn.pp-danger { color: var(--red); opacity: 0.82; }
         .pp-iconbtn.pp-danger:hover { opacity: 1; background: rgba(255,100,103,0.12); }
         .pp-desc-area:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-        .pp-sortbtn { transition: color 160ms cubic-bezier(0.16,1,0.3,1), border-color 160ms cubic-bezier(0.16,1,0.3,1), background 160ms cubic-bezier(0.16,1,0.3,1); }
+        .pp-sortbtn { transition: color 160ms var(--hover-ease-out), border-color 160ms var(--hover-ease-out), background 160ms var(--hover-ease-out); }
         .pp-sortbtn:hover { border-color: var(--accent); background: var(--ctl-face-hover); }
         .pp-sortbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-        .pp-noterow { transition: background 160ms cubic-bezier(0.16,1,0.3,1), color 160ms cubic-bezier(0.16,1,0.3,1); }
+        .pp-noterow { transition: background 160ms var(--hover-ease-out), color 160ms var(--hover-ease-out); }
         .pp-noterow:hover { background: var(--surface-2); color: var(--text-1); }
         .pp-noterow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-        .pp-ghost { transition: color 160ms cubic-bezier(0.16,1,0.3,1), border-color 160ms cubic-bezier(0.16,1,0.3,1); }
+        .pp-ghost { transition: color 160ms var(--hover-ease-out), border-color 160ms var(--hover-ease-out); }
         .pp-ghost:hover { color: var(--text-1); border-color: var(--accent); }
       `}</style>
 
@@ -302,9 +415,9 @@ export default function ProjectsPane({
           />
           <div style={descFootStyle}>
             {descDraft.trim() ? (
-              <span style={qmeterStyle}>This is what your phone matches new notes against.</span>
+              <span style={descNoteStyle}>This is what your phone matches new notes against.</span>
             ) : (
-              <span style={{ ...qmeterStyle, color: "var(--yellow)" }}>
+              <span style={{ ...descNoteStyle, color: "var(--yellow)" }}>
                 Empty. Your phone has nothing to match new notes against yet.
               </span>
             )}
@@ -339,9 +452,14 @@ export default function ProjectsPane({
           onClick={handleSortClick}
           aria-label={`Arrangement: ${SORT_MODE_LABEL[sortMode]}. Click to change.`}
         >
-          <span style={sortIconSlotStyle}><SortIcon size={13} /></span>
+          {/* Sort icon swap + cycle-glyph turn (spec §8): keyed on sortMode
+              so each click REMOUNTS these two spans, replaying icPop/
+              icCycleSpin (index.css) — the same entrance-only keyed pattern
+              as ProjectsRail.tsx's .seg-swap-panel, not a class-toggle +
+              forced-reflow hack. */}
+          <span key={`icon-${sortMode}`} className="pp-sort-icon-pop" style={sortIconSlotStyle}><SortIcon size={13} /></span>
           <span style={sortLabelStyle}>{SORT_MODE_LABEL[sortMode]}</span>
-          <span style={sortCycleSlotStyle}><CycleIcon size={11} /></span>
+          <span key={`cycle-${sortMode}`} className="pp-sort-cycle-spin" style={sortCycleSlotStyle}><CycleIcon size={11} /></span>
         </button>
       </div>
 
@@ -355,6 +473,7 @@ export default function ProjectsPane({
           return (
             <div
               key={row.path}
+              ref={(el) => setRowRef(row.path, el)}
               className="pp-noterow"
               role="button"
               tabIndex={0}
@@ -425,7 +544,12 @@ const descAreaStyle: CSSProperties = {
   fontFamily: "inherit", fontSize: 11.5, lineHeight: 1.6, padding: "9px 11px", resize: "none", boxSizing: "border-box",
 };
 const descFootStyle: CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14 };
-const qmeterStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 7, fontSize: 9.5, color: "var(--text-3)" };
+// Named descNoteStyle, not qmeterStyle: the quality GAUGE this line replaced
+// was deleted in round 3 (spec §4.6) — it scored a character count as three
+// bands of match quality, a measurement this product cannot make. What
+// remains is one honest line stating the field's purpose (or, in yellow,
+// that it's empty), not a meter of anything.
+const descNoteStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 7, fontSize: 9.5, color: "var(--text-3)" };
 const savesAsYouTypeStyle: CSSProperties = { fontSize: 9, color: "var(--text-3)", flex: "0 0 auto" };
 
 const mutationErrorStyle: CSSProperties = {

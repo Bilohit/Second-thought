@@ -12,6 +12,7 @@ import {
   PROVISIONAL_PATH_PREFIX,
   formatAgo,
   metaEpochMs,
+  flipStaggerDelayMs,
   type SortableNote,
 } from "./projectsView";
 
@@ -290,6 +291,27 @@ describe("formatAgo", () => {
   });
   it("a future timestamp (clock skew) clamps to today rather than a negative count", () => {
     expect(formatAgo(NOW + DAY, NOW)).toBe("today");
+  });
+});
+
+describe("flipStaggerDelayMs (spec §8: 14ms/row, capped at 110ms)", () => {
+  it("row 0 has no delay", () => expect(flipStaggerDelayMs(0)).toBe(0));
+  it("scales linearly below the cap", () => {
+    expect(flipStaggerDelayMs(1)).toBe(14);
+    expect(flipStaggerDelayMs(5)).toBe(70);
+  });
+  it("the last row below the cap: 7 * 14 = 98, still under 110", () => {
+    expect(flipStaggerDelayMs(7)).toBe(98);
+  });
+  it("the row where the cap actually binds: 8 * 14 = 112, clamped to 110", () => {
+    expect(flipStaggerDelayMs(8)).toBe(110);
+  });
+  it("stays capped at 110 for every row past the binding point", () => {
+    expect(flipStaggerDelayMs(9)).toBe(110);
+    expect(flipStaggerDelayMs(50)).toBe(110);
+  });
+  it("a negative index (defensive) never returns a negative delay", () => {
+    expect(flipStaggerDelayMs(-3)).toBe(0);
   });
 });
 
