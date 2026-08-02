@@ -125,6 +125,11 @@ def list_trash(vault_root: Path) -> list[dict]:
     trash_dir = _trash_dir(vault_root)
     if not trash_dir.is_dir():
         return []
+    # FR-16: read the same origin the restore reads (s114/d18) so the list's
+    # "will restore to" label matches where restore_from_trash actually puts it,
+    # instead of falling straight to the frontmatter `category` (which v2.2
+    # stopped writing, so it always missed and every note showed Uncategorized).
+    origins = _load_origins(vault_root)
     out: list[dict] = []
     for f in trash_dir.glob("*.md"):
         try:
@@ -136,7 +141,7 @@ def list_trash(vault_root: Path) -> list[dict]:
         out.append({
             "filename": f.name,
             "title": fields.get("title") or f.stem,
-            "category": fields.get("category") or "Uncategorized",
+            "category": origins.get(f.name) or fields.get("category") or "Uncategorized",
             "deleted_at": deleted_at,
             "purge_at": deleted_at + _PURGE_AFTER_SECONDS,
         })

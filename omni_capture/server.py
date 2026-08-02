@@ -1393,7 +1393,11 @@ async def drive_auth_connect(_: None = Depends(_require_secret)):
         # an open browser window can never starve a capture.
         await asyncio.to_thread(load_credentials)
     except Exception as exc:  # consent declined/closed, bad client file, network -- never 500
-        raise HTTPException(status_code=502, detail=f"Drive connect failed: {exc}")
+        # FR-19: log the OAuth exception detail server-side only -- interpolating it into
+        # the client response risked leaking exception internals (paths, tokens, library
+        # traces) into the GUI. The client gets a message it can act on instead.
+        print(f"[DriveAuth] connect failed: {exc}", flush=True)
+        raise HTTPException(status_code=502, detail="Drive connect failed -- check your network connection and Google client setup, then try again.")
     finally:
         _drive_connect_flight.release()
     return {"connected": True}
@@ -1458,7 +1462,12 @@ async def patch_config(patch: ConfigPatch, _: None = Depends(_require_secret)):
         # SRV-15: a relative root resolves against whatever CWD uvicorn happens to
         # have been launched from, which silently points the whole pipeline at a
         # different (or nonexistent) tree. Absolute only.
-        if not Path(patch.vault_root).is_absolute():
+        # FR-01: expand ~ before the check, mirroring config.py:_resolve_path --
+        # ~/second-thought-storage is the shipped portable default (config.toml's
+        # own comment), not a CWD-relative path, so it must not trip this guard.
+        # The stored value keeps the tilde form (not the expanded one) so the
+        # config file stays portable across users/machines, same as the default.
+        if not Path(patch.vault_root).expanduser().is_absolute():
             raise HTTPException(status_code=400, detail="vault_root must be an absolute path")
         _set("vault", "root", patch.vault_root)
     if patch.ollama_model is not None:

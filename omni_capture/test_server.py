@@ -208,6 +208,36 @@ def test_patch_rejects_negative_ocr_text_min_chars():
         assert r.status_code == 400
 
 
+def test_patch_accepts_tilde_vault_root():
+    """FR-01: `~/...` is the shipped portable default (config.toml's own comment)
+    and must not be rejected as a relative path -- Path.is_absolute() alone
+    judges it relative because pathlib never expands `~`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / "config.toml"
+        cfg.write_text('[vault]\nroot = "' + tmp.replace("\\", "/") + '"\n', encoding="utf-8")
+        client, server = _client_config(cfg)
+        with mock.patch.object(server, "reload_config", lambda *a, **k: None):
+            r = client.patch("/config", json={"vault_root": "~/second-thought-storage"})
+        assert r.status_code == 200
+        import tomlkit
+        doc = tomlkit.loads(cfg.read_text(encoding="utf-8"))
+        # stored value stays in tilde form -- portable, matches the shipped default;
+        # expanding it here would silently bake in one user's home directory.
+        assert str(doc["vault"]["root"]) == "~/second-thought-storage"
+
+
+def test_patch_rejects_relative_vault_root():
+    """FR-01 companion: a genuinely relative root (no `~`) must still 400 --
+    the tilde fix must not weaken the SRV-15 guard it was added to preserve."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / "config.toml"
+        cfg.write_text('[vault]\nroot = "' + tmp.replace("\\", "/") + '"\n', encoding="utf-8")
+        client, server = _client_config(cfg)
+        with mock.patch.object(server, "reload_config", lambda *a, **k: None):
+            r = client.patch("/config", json={"vault_root": "some/relative/path"})
+        assert r.status_code == 400
+
+
 def test_patch_survives_a_real_reload_from_disk():
     """
     Round-trip regression: PATCH /config, then load the config from a *fresh*
@@ -952,6 +982,19 @@ def test_drive_auth_connect_502s_and_releases_the_flight_on_failure():
     assert r2.status_code == 200 and r2.json() == {"connected": True}
 
 
+def test_drive_auth_connect_502_does_not_leak_the_raw_exception_text(capsys):
+    """FR-19: the raw OAuth exception must not be interpolated into the client
+    response -- it goes to the server-side log only."""
+    client, _ = _drive_client()
+    secret_looking_detail = "invalid_grant: refresh token abc123SECRET revoked"
+    with patch("drive_auth.client_secret_present", return_value=True), \
+         patch("drive_auth.load_credentials", side_effect=RuntimeError(secret_looking_detail)):
+        r = client.post("/drive/auth/connect")
+    assert r.status_code == 502
+    assert secret_looking_detail not in r.json()["detail"]
+    assert secret_looking_detail in capsys.readouterr().out, "detail should still be logged server-side"
+
+
 def test_drive_auth_disconnect_forgets_the_token():
     client, _ = _drive_client()
     with patch("drive_auth.forget_credentials", return_value=True) as forget:
@@ -1156,6 +1199,32 @@ def test_sniff_audio_suffix_wav():
 
 def test_sniff_audio_suffix_unknown_defaults_to_wav():
     assert server._sniff_audio_suffix(b"not a real audio header") == ".wav"
+
+
+def test_attach_to_capture_origin_note_returns_clean_400_not_raw_exception():
+    """FR-10: a capture-origin .md has no frontmatter `id`, so note_editor.add_attachment
+    raises ValueError at note_editor.py:301-302. POST /note/attachment must turn that into
+    a clean, client-presentable 4xx (existing except ValueError -> HTTPException(400, ...)
+    at server.py:1934-1935) -- never let the raw exception reach the client."""
+    import base64
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp)
+        cat = vault / "Tech_Notes"
+        cat.mkdir()
+        note = cat / "capture1.md"
+        note.write_text("---\ncategory: Tech_Notes\n---\nSome capture body\n", encoding="utf-8")
+        with mock.patch.object(server, "_get_vault_root", lambda: vault):
+            client = TestClient(server.app, headers=_AUTH)
+            r = client.post("/note/attachment", json={
+                "path": "Tech_Notes/capture1.md",
+                "filename": "x.png",
+                "data_b64": base64.b64encode(b"hi").decode(),
+                "expected_mtime": note.stat().st_mtime,
+            })
+        assert r.status_code == 400
+        detail = r.json()["detail"]
+        assert "Traceback" not in detail
+        assert "id" in detail.lower()
 
 
 # ============================================================================

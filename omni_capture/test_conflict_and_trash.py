@@ -464,6 +464,25 @@ def test_restore_returns_a_note_to_its_original_folder(tmp_path):
     assert not (vault / "Uncategorized").exists()
 
 
+def test_list_trash_category_matches_the_origin_restore_will_use(tmp_path):
+    """FR-16: list_trash must read the same .origins.json sidecar restore_from_trash
+    reads (s114/d18), not the frontmatter `category` field v2.2 removed -- otherwise
+    the list tells the user a note will be restored somewhere other than where it
+    actually goes."""
+    from trash import list_trash, move_to_trash
+
+    vault = tmp_path
+    (vault / "Personal").mkdir()
+    note = vault / "Personal" / "grocery run.md"
+    note.write_text("---\nid: n1\norigin: note\n---\nmilk\n", encoding="utf-8")
+
+    trashed = move_to_trash(vault, note)
+
+    items = list_trash(vault)
+    assert len(items) == 1
+    assert items[0]["category"] == "Personal"
+
+
 def test_restore_round_trip_leaves_the_file_byte_identical(tmp_path):
     """The origin is recorded in a sidecar precisely so the delete stays a pure
     filesystem move -- body AND frontmatter unchanged through the round trip."""
