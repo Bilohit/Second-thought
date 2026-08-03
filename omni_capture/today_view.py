@@ -7,10 +7,13 @@ and the day's daily note found by S1 title-match. The aggregation (`build_today`
 it NEVER writes a note file or a reminder. Files are the source of truth; every input here
 (reminders table, vault scan) is a derived read.
 
-The ONE sanctioned writer is `create_daily_note` (find-or-create on demand, mirroring the phone's
-"Start today's note" tap) — the first and only path by which the DESKTOP originates a `note`. It is
-invoked ONLY from the explicit POST `/today/daily-note`, never as a side-effect of the GET. It is
-idempotent and never clobbers an existing note (body sacred).
+There are TWO sanctioned desktop note-origination writers, both sharing the `_write_note_file`
+write path so they emit the identical frontmatter key set (contract:
+`Second Thought - Android App/data-model-and-contracts.md`): `create_daily_note` (find-or-create
+on demand, mirroring the phone's "Start today's note" tap, invoked ONLY from the explicit POST
+`/today/daily-note`, never as a side-effect of the GET; idempotent and never clobbers an existing
+note — body sacred) and `create_note` (always-new, invoked from POST `/note`, lands at the vault
+root rather than `Daily/`).
 
 Cross-peer parity note: overdue = reminders whose local day is BEFORE the viewed day and whose
 fire time has passed; due-today = reminders whose local day IS the viewed day (soonest-first);
@@ -87,43 +90,74 @@ def find_daily_note(vault_root: Path, day_iso: str) -> Optional[dict]:
 _DAILY_BODY = "# {day}\n\n## Intentions\n- [ ] \n\n## Log\n"
 
 
+def _write_note_file(vault_root: Path, folder: str, title: str, body: str,
+                      filename_stem: Optional[str] = None,
+                      now_iso: Optional[str] = None) -> dict:
+    """Shared desktop note-origination write path — the ONE place that mints a note id, builds the
+    `Note`, and writes it atomically. `create_daily_note` and `create_note` both call this rather
+    than each re-authoring their own write, so the two routes stay locked to the identical
+    frontmatter key set (contract: `Second Thought - Android App/data-model-and-contracts.md`).
+
+    `filename_stem` defaults to the freshly-minted id; `create_daily_note` overrides it to
+    `day_iso` so the file stays discoverable by the S1 title-match convention. `folder=""` writes
+    to the vault root. Returns {"id", "path", "title"}. `now_iso` is injectable for tests."""
+    from mobile_sync_agent import _atomic_write_note, _mint_capture_id
+    from note_model import serialize_note
+    from project_registry import load as load_registry
+    from reconcile import Note
+
+    ts = now_iso or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())  # UTC-Z, desktop convention
+    note = Note(
+        id=_mint_capture_id(), created=ts, origin="note", title=title,
+        aliases=[], tags=[], remind_at=None,
+        origin_device="desktop", enriched=False, enrich_source=None,
+        modified=ts, device="desktop", attachments=[], extra={},
+        body=body,
+    )
+    stem = filename_stem if filename_stem is not None else note.id
+    dest = Path(vault_root) / folder if folder else Path(vault_root)
+    path = dest / f"{stem}.md"
+    dest.mkdir(parents=True, exist_ok=True)
+    # v3.1: the registry is what turns the body's `#project@` tag into the `project:` frontmatter
+    # cache — the line is ALWAYS present (`[-]` for a loose note, which a fresh note is).
+    _atomic_write_note(str(path), serialize_note(note, load_registry(vault_root)))   # atomic: never torn
+    return {"id": note.id, "path": str(path), "title": title}
+
+
 def create_daily_note(vault_root: Path, day_iso: str, folder: str = "Daily",
                        now_iso: Optional[str] = None) -> dict:
     """Find-or-create the daily note for `day_iso` under `<vault>/<folder>/`.
 
-    The ONLY path by which the desktop ORIGINATES a note (origin:note, origin_device:desktop). Body
-    sacred + idempotent: if a note already matches this day (S1 title-match anywhere in the vault) or
-    a file already occupies the target path, that existing note is returned UNTOUCHED — this never
+    One of the two desktop note-origination paths (the other is `create_note`, always-new at the
+    vault root — see server.py's POST /note docstring for what distinguishes them). Body sacred +
+    idempotent: if a note already matches this day (S1 title-match anywhere in the vault) or a file
+    already occupies the target path, that existing note is returned UNTOUCHED — this never
     overwrites user bytes. Returns {"id", "path", "title"}. `now_iso` is injectable for tests."""
     existing = find_daily_note(vault_root, day_iso)
     if existing:
         return existing
 
-    from mobile_sync_agent import _atomic_write_note, _mint_capture_id
-    from note_model import parse_note, serialize_note
-    from project_registry import load as load_registry
-    from reconcile import Note
-
     dest = Path(vault_root) / folder
     path = dest / f"{day_iso}.md"
     if path.exists():
         # Target file exists but its title did not match (e.g. user renamed it) — never clobber it.
+        from note_model import parse_note
         note = parse_note(path.read_text(encoding="utf-8", newline=""))
         return {"id": note.id, "path": str(path), "title": note.title}
 
-    ts = now_iso or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())  # UTC-Z, desktop convention
-    note = Note(
-        id=_mint_capture_id(), created=ts, origin="note", title=day_iso,
-        aliases=[], tags=[], remind_at=None,
-        origin_device="desktop", enriched=False, enrich_source=None,
-        modified=ts, device="desktop", attachments=[], extra={},
-        body=_DAILY_BODY.format(day=day_iso),
-    )
-    dest.mkdir(parents=True, exist_ok=True)
-    # v3.1: the registry is what turns the body's `#project@` tag into the `project:` frontmatter
-    # cache — the line is ALWAYS present (`[-]` for a loose note, which a fresh daily note is).
-    _atomic_write_note(str(path), serialize_note(note, load_registry(vault_root)))   # atomic: never torn
-    return {"id": note.id, "path": str(path), "title": day_iso}
+    return _write_note_file(vault_root, folder, day_iso, _DAILY_BODY.format(day=day_iso),
+                             filename_stem=day_iso, now_iso=now_iso)
+
+
+def create_note(vault_root: Path, title: Optional[str] = None, now_iso: Optional[str] = None) -> dict:
+    """Always-new generic note origination — the desktop's SECOND note-origination path, alongside
+    `create_daily_note`. Unlike the daily note this is never find-or-create: every call mints a
+    fresh note, filed at the vault root (never `Daily/`). Invoked from POST `/note`. Reuses
+    `_write_note_file`, `create_daily_note`'s own write path, rather than re-authoring one, so both
+    routes emit the identical frontmatter key set — a second, differently-shaped write path would
+    fork the contract owned by `Second Thought - Android App/data-model-and-contracts.md`. Returns
+    {"id", "path", "title"}."""
+    return _write_note_file(vault_root, "", title or "", "", now_iso=now_iso)
 
 
 def build_today(

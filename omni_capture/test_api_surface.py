@@ -199,6 +199,7 @@ GUI_ROUTES: list[tuple[str, str, dict]] = [
     ("DELETE", "/reminders/1",                    {}),
     ("GET",    "/today",                          {}),
     ("POST",   "/today/daily-note",               {}),
+    ("POST",   "/note",                           {"json": {"title": "t"}}),
     ("GET",    "/note",                           {"params": {"path": "Notes/a.md"}}),
     ("PUT",    "/note",                           {"json": {"path": "Notes/a.md", "body": "b",
                                                             "expected_mtime": 0.0}}),

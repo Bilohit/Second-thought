@@ -1281,3 +1281,61 @@ def test_successful_capture_triggers_a_retry_pass():
         server._run_pipeline_blocking("text", "some capture text", _FakeQueue(), _FakeLoop(), run_id="rp1")
 
     m.assert_called_once()
+
+
+# ============================================================================
+# Shell rework Task 1: POST /note -- generic desktop note origination.
+# Must reuse create_daily_note's write path and emit the identical frontmatter key set
+# (contract owned by Second Thought - Android App/data-model-and-contracts.md).
+# ============================================================================
+def _note_client(vault: Path):
+    cfg = Config()
+    cfg.vault.root = vault
+    client = TestClient(server.app, headers=_AUTH)
+    return client, cfg
+
+
+def _read_frontmatter_keys(path: Path) -> set:
+    """Raw frontmatter key set as written to disk. Unlike note_model.parse_note's `Note` (whose
+    dataclass fields all exist regardless of what was actually serialized), this reflects exactly
+    what landed between the `---` fences."""
+    text = path.read_text(encoding="utf-8", newline="")
+    fm = text.split("---", 2)[1]
+    keys = set()
+    for line in fm.splitlines():
+        if line and not line[0].isspace() and ":" in line:
+            keys.add(line.split(":", 1)[0])
+    return keys
+
+
+def test_post_note_creates_note_with_daily_note_frontmatter_shape(tmp_path: Path):
+    """POST /note must emit the SAME frontmatter keys as POST /today/daily-note.
+    A second origination path with a different shape is a contract fork."""
+    client, cfg = _note_client(tmp_path)
+    from note_model import parse_note
+
+    with mock.patch("config.get_config", lambda: cfg):
+        daily = client.post("/today/daily-note")
+        assert daily.status_code == 200, daily.text
+        daily_path = Path(daily.json()["path"])
+        daily_keys = _read_frontmatter_keys(daily_path)
+
+        made = client.post("/note", json={"title": "scratch thought"})
+        assert made.status_code == 200, made.text
+        note_path = Path(made.json()["path"])
+        assert note_path.exists()
+
+    assert _read_frontmatter_keys(note_path) == daily_keys
+    assert parse_note(note_path.read_text(encoding="utf-8", newline="")).origin == "note"
+    # generic notes do NOT go in Daily/
+    assert note_path.parent != daily_path.parent
+
+
+def test_post_note_twice_creates_two_distinct_notes(tmp_path: Path):
+    """Unlike the daily note, /note is not find-or-create. Two calls, two files."""
+    client, cfg = _note_client(tmp_path)
+    with mock.patch("config.get_config", lambda: cfg):
+        a = client.post("/note", json={"title": "one"}).json()["path"]
+        b = client.post("/note", json={"title": "one"}).json()["path"]
+    assert a != b
+    assert Path(a).exists() and Path(b).exists()

@@ -644,6 +644,9 @@ class NoteBodyUpdate(BaseModel):
     body: str
     expected_mtime: float
 
+class NoteCreate(BaseModel):
+    title: Optional[str] = None
+
 class NoteAttachmentCreate(BaseModel):
     path: str
     filename: str
@@ -1870,15 +1873,29 @@ async def get_today(day: Optional[str] = None, _: None = Depends(_require_secret
 @app.post("/today/daily-note")
 async def create_today_daily_note(day: Optional[str] = None, _: None = Depends(_require_secret)):
     """Find-or-create the daily note for `day` (YYYY-MM-DD, default local today) into the vault's
-    `Daily/` folder. The ONLY action by which the desktop originates a note (origin:note,
-    origin_device:desktop). Idempotent + body-sacred: returns the existing note UNTOUCHED if one
-    already matches. An explicit POST — never a side-effect of GET /today. Returns {id,path,title}."""
+    `Daily/` folder. One of TWO actions by which the desktop originates a note (origin:note,
+    origin_device:desktop) — the other is POST /note below. This one is find-or-create + idempotent
+    + body-sacred: returns the existing note UNTOUCHED if one already matches. An explicit POST —
+    never a side-effect of GET /today. Returns {id,path,title}."""
     from datetime import datetime
     from config import get_config
     from today_view import create_daily_note
     cfg = get_config()
     day_iso = day or datetime.now().strftime("%Y-%m-%d")
     return create_daily_note(Path(cfg.vault.root), day_iso)
+
+
+@app.post("/note")
+async def create_note_route(body: NoteCreate, _: None = Depends(_require_secret)):
+    """Always-create a new generic note at the vault root. The desktop's SECOND note-origination
+    action, alongside POST /today/daily-note above — unlike that route this is never
+    find-or-create (two calls make two distinct notes) and never lands in `Daily/`. Reuses
+    `create_daily_note`'s write path (`today_view._write_note_file`), so it emits the identical
+    frontmatter key set (origin:note, origin_device:desktop, ...). Returns {id,path,title}."""
+    from config import get_config
+    from today_view import create_note
+    cfg = get_config()
+    return create_note(Path(cfg.vault.root), body.title)
 
 
 # -- Full-window note editor (F-7) ---------------------------------------------
