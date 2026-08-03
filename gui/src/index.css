@@ -1845,3 +1845,62 @@ html, body, #root {
     transition: none;
   }
 }
+
+/* ── Quick pad (CompactQuickNote, s135 Task 7) ───────────────────────────
+   B2 layout: one band of chrome, all in CompactShell's headerActions (see
+   PillOverlay.tsx). The body below is just this textarea. Every :hover/
+   :focus-visible/pressed rule lives here — a component-local <style> block
+   works in dev (devCsp) and is silently dead under the production CSP
+   (style-src 'self'), the exact defect that shipped twice already (FR-03,
+   FR-24). */
+.quickpad-textarea {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  resize: none;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: var(--space-3);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-1);
+}
+.quickpad-textarea::placeholder {
+  color: var(--text-3);
+}
+.quickpad-textarea:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent-glow);
+}
+.quickpad-textarea:disabled {
+  color: var(--text-3);
+}
+
+/* Thin divider between the create/format cluster and the pin/discard
+   cluster inside headerActions — border-based separation, not a shadow. */
+.quickpad-header-divider {
+  width: 1px;
+  height: 14px;
+  background: var(--border);
+  flex: 0 0 auto;
+  margin: 0 2px;
+}
+
+/* Pin reflects always-on-top state — accent like NoteEditor's toolbar-lock
+   button (lockBtnStyle), the app's existing "pinned" affordance language. */
+.quickpad-pin-btn[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-d);
+}
+.quickpad-pin-btn[aria-pressed="true"]:hover {
+  color: var(--accent);
+}
+
+.quickpad-conflict {
+  flex: 0 0 auto;
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border-2);
+  font-size: 10.5px;
+  color: var(--red);
+}

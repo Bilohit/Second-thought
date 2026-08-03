@@ -37,6 +37,7 @@ import CompactInbox from "./CompactPanels/CompactInbox";
 import CompactSettings from "./CompactPanels/CompactSettings";
 import CompactVault from "./CompactPanels/CompactVault";
 import CompactHistory from "./CompactPanels/CompactHistory";
+import CompactQuickNote from "./CompactPanels/CompactQuickNote";
 import type { PanelExtrudeZone } from "../lib/compactPanel";
 import type { useLookChat } from "../hooks/useLookChat";
 import type { LookChatPersist } from "../App";
@@ -259,6 +260,8 @@ export default function PillOverlay({
         <CompactVault onHeaderActionsChange={setPanelHeaderActions} />
       ) : target === "stats" ? (
         <CompactHistory onOpenFile={onOpenFile} />
+      ) : target === "newnote" ? (
+        <CompactQuickNote onHeaderActionsChange={setPanelHeaderActions} />
       ) : (
         /* Placeholder fallback — reached only if a target's required props
            (e.g. settingsProps) weren't supplied by the caller. */
