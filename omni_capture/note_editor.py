@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -203,7 +204,27 @@ def write_note_body(vault_root: Path, path_str: str, new_body: str, expected_mti
     body = body if body.endswith("\n") else body + "\n"
     fm_block = _bump_modified(fm_block)
     _write_verbatim(path, _apply_newlines(fm_block + body, newline))
+    _reindex(vault_root, path, "body write")
     return {"mtime": path.stat().st_mtime}
+
+
+def _reindex(vault_root: Path, path: Path, what: str) -> None:
+    """FR-30: re-sync captures.db after a note write. Editing a note is a pure file write, so
+    the row keeps the excerpt, hash and tags it had when the note was last indexed -- and the
+    only reconciler (vault_sync's diff pass) runs at server startup or on a manual POST
+    /vault/sync-index, so /search and every other captures.db reader stayed stale for the whole
+    session. Best-effort and non-fatal, the same idiom trash.py and project_tidy.py use: the
+    file has already been written (the source of truth), so a failed index write must never
+    fail the note write.
+
+    ponytail: captures.db only -- re-embedding is left to the caller, since it needs the Ollama
+    config note_editor.py has no business importing (same division of labour as trash.py's
+    restore and storage_engine's scratchpad approve)."""
+    try:
+        from index_writer import upsert_capture_from_file
+        upsert_capture_from_file(vault_root, path)
+    except Exception as exc:
+        print(f"[NoteEditor] index sync on {what} error: {exc}", file=sys.stderr)
 
 
 _MODIFIED_LINE_RE = re.compile(r'^modified:[ \t]*.*$', re.MULTILINE)
@@ -325,6 +346,7 @@ def add_attachment(vault_root: Path, path_str: str, filename: str, data: bytes,
     except Exception:
         dest.unlink(missing_ok=True)
         raise
+    _reindex(vault_root, path, "attachment")   # the ref line is body text -- same staleness
     return {"filename": dest.name, "mtime": path.stat().st_mtime}
 
 

@@ -24,6 +24,7 @@ separate action, exactly as the phone's agenda finds `dailyNoteId` and the UI cr
 """
 from __future__ import annotations
 
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -121,6 +122,23 @@ def _write_note_file(vault_root: Path, folder: str, title: str, body: str,
     # v3.1: the registry is what turns the body's `#project@` tag into the `project:` frontmatter
     # cache — the line is ALWAYS present (`[-]` for a loose note, which a fresh note is).
     _atomic_write_note(str(path), serialize_note(note, load_registry(vault_root)))   # atomic: never torn
+    # FR-30: this is the ONE place the desktop originates a note, and it used to tell no index.
+    # The only reconciler (vault_sync's diff pass) runs at server startup or on a manual POST
+    # /vault/sync-index, so a note made mid-session was absent from captures.db -- invisible to
+    # /search and uncounted by the vault tile -- until the next restart. Reproduced on BOTH the
+    # pre-FR-29 vault-root location and the current `_loose/` one, so the directory was never
+    # the variable. Best-effort and non-fatal, the same idiom trash.py and project_tidy.py use:
+    # the file is the source of truth and is already written, so a failed index write must
+    # never fail the note write.
+    #
+    # ponytail: captures.db only -- a fresh note's body is empty, so there is nothing to embed
+    # yet, and re-embedding needs Ollama config today_view.py has no business importing (same
+    # division of labour as trash.py's restore).
+    try:
+        from index_writer import upsert_capture_from_file
+        upsert_capture_from_file(vault_root, path)
+    except Exception as exc:
+        print(f"[TodayView] index sync on note create error: {exc}", file=sys.stderr)
     return {"id": note.id, "path": str(path), "title": title}
 
 

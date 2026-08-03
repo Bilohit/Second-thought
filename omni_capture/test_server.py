@@ -1383,6 +1383,75 @@ def test_post_note_lands_where_project_tidy_can_actually_see_it(tmp_path: Path):
     assert note_path in set(_filed_notes(root))
 
 
+def test_post_note_is_indexed_immediately(tmp_path: Path):
+    """FR-30: a note created through the app was written to disk and told no index, so /search
+    and every captures.db reader (the vault tile's count) missed it until the next backend
+    start ran vault_sync. Reproduced on BOTH write locations before the fix -- the directory was
+    never the variable, so this is not a FR-29 regression. Pin the daily note too: both
+    origination routes share `_write_note_file`, which is where the fix lives."""
+    from index_writer import search, stats
+
+    client, cfg = _note_client(tmp_path)
+    with mock.patch("config.get_config", lambda: cfg):
+        made = client.post("/note", json={"title": "findable thought"})
+        assert made.status_code == 200, made.text
+        note_path = Path(made.json()["path"])
+        daily = client.post("/today/daily-note")
+        assert daily.status_code == 200, daily.text
+        daily_path = Path(daily.json()["path"])
+
+    root = Path(cfg.vault.root)
+    indexed = {r["path"] for r in search("", root, limit=50)}
+    assert str(note_path) in indexed
+    assert str(daily_path) in indexed
+    assert stats(root)["total"] == 2
+
+
+def test_put_note_reindexes_the_edited_body(tmp_path: Path):
+    """FR-30's other half: saving a note never re-indexed it either, so a body edit left a stale
+    excerpt in captures.db until the next restart. The editor autosaves on a 900ms debounce, so
+    this path runs far more often than creation does."""
+    from index_writer import search
+
+    client, cfg = _note_client(tmp_path)
+    with mock.patch("config.get_config", lambda: cfg):
+        made = client.post("/note", json={"title": "editable"})
+        note_path = Path(made.json()["path"])
+        saved = client.put("/note", json={
+            "path": str(note_path),
+            "body": "kumquat marmalade recipe",
+            "expected_mtime": note_path.stat().st_mtime,
+        })
+        assert saved.status_code == 200, saved.text
+
+    hits = search("kumquat", Path(cfg.vault.root), limit=10)
+    assert [r["path"] for r in hits] == [str(note_path)]
+
+
+def test_note_write_survives_an_index_failure(tmp_path: Path):
+    """The file is the source of truth: a failing derived-cache write must never fail, undo or
+    500 the note write. Same guarantee project_tidy's index sync carries."""
+    import index_writer
+
+    def boom(*_a, **_k):
+        raise RuntimeError("index is down")
+
+    client, cfg = _note_client(tmp_path)
+    with mock.patch("config.get_config", lambda: cfg), \
+         mock.patch.object(index_writer, "upsert_capture_from_file", boom):
+        made = client.post("/note", json={"title": "resilient"})
+        assert made.status_code == 200, made.text
+        note_path = Path(made.json()["path"])
+        assert note_path.exists()
+        saved = client.put("/note", json={
+            "path": str(note_path),
+            "body": "still written",
+            "expected_mtime": note_path.stat().st_mtime,
+        })
+        assert saved.status_code == 200, saved.text
+    assert "still written" in note_path.read_text(encoding="utf-8", newline="")
+
+
 def test_post_note_twice_creates_two_distinct_notes(tmp_path: Path):
     """Unlike the daily note, /note is not find-or-create. Two calls, two files."""
     client, cfg = _note_client(tmp_path)
