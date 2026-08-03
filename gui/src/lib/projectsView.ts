@@ -121,8 +121,10 @@ export function projectTagString(name: string | null | undefined): string | null
 
 /** Server-side hard clamp on GET /search: a result set at or above this
  *  size may be truncated, so the UI needs a pager. Below it, everything
- *  fits in one page and no pager is needed. */
-const DEFAULT_PAGE_SIZE = 200;
+ *  fits in one page and no pager is needed. Exported (SP3 Task 9) so the
+ *  pager UI shares the exact same constant the fetch's own `{ limit: 200 }`
+ *  uses, rather than a second hardcoded 200 that could drift from it. */
+export const DEFAULT_PAGE_SIZE = 200;
 
 /** True only once `total` EXCEEDS one page — spec §5.5.1's detection rule is
  *  "the pager exists iff the total exceeds one page", and it bans a
@@ -153,6 +155,16 @@ export function pageOf(total: number, page: number, size: number = DEFAULT_PAGE_
   const start = (clamped - 1) * size;
   const end = Math.min(start + size, total);
   return { pageCount, page: clamped, start, end };
+}
+
+/** The screen-reader sentence a pager's prev/next `aria-label` restates on
+ *  every click (spec §7: "the sort button's aria-label restates the current
+ *  arrangement after each cycle" — the Task 9 pager applies the identical
+ *  rule to its own icon-only steppers, board mock line 445-446). `start`/
+ *  `end` are `PageInfo`'s 0-based slice bounds; the sentence prints them
+ *  1-based ("notes 1 to 200"), matching the visible range readout below. */
+export function pagerPositionSentence(start: number, end: number, total: number): string {
+  return `Currently showing notes ${start + 1} to ${end} of ${total}.`;
 }
 
 /** The server's synthetic path prefix for LAN-provisional overlay rows

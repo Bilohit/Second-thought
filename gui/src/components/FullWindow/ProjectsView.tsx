@@ -16,6 +16,10 @@
  * Task 8 owns wiring this component into LibraryView/FullWindow in place of
  * the current `vault` section — not built here.
  *
+ * Task 9 owns computing `noteTotal` (the TRUE note count for whichever
+ * selection is active) and handing it to ProjectsPane, which drives the
+ * pager's detection rule (spec §5.5.1) — see that prop's doc comment.
+ *
  * Board: gui/mocks/2026-08-01-projects-fullwindow-v3.html. Spec: docs/
  * superpowers/specs/2026-08-02-projects-s3-fullwindow-design.md.
  */
@@ -166,6 +170,19 @@ export default function ProjectsView({ visible, onOpenNote }: Props) {
 
   if (!visible) return null;
 
+  // SP3 Task 9 (spec §5.5.1): the pager's detection rule needs the TRUE
+  // total for whichever half of the toggle is active — never derived from
+  // ProjectsPane's own fetched rows (that fetch is capped at 200). Projects/
+  // loose read `projectCounts` (GET /stats's by_project, the same source the
+  // rail's tiles already use — LOOSE_PROJECT_ID is a real key in that map,
+  // so the loose bucket needs no special case). Tags read the matching flat
+  // tag's `count` (GET /tags) — the same number the rail's tag row shows.
+  // `null` when nothing is selected yet, or a tag row can't be found (should
+  // not happen); ProjectsPane falls back to its own rows.length in that case.
+  const noteTotal = mode === "tags"
+    ? (selectedTag ? tags.find((t) => t.tag === selectedTag)?.count ?? null : null)
+    : (selectedId ? projectCounts[selectedId] ?? 0 : null);
+
   return (
     <div style={containerStyle}>
       <ProjectsRail
@@ -202,6 +219,7 @@ export default function ProjectsView({ visible, onOpenNote }: Props) {
         projects={projects}
         selectedId={selectedId}
         selectedTag={selectedTag}
+        noteTotal={noteTotal}
         onOpenNote={onOpenNote}
         onRenamed={(oldName, newName) => {
           // FR-05: no direct setSelectedId here — see refresh()'s comment.

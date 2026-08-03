@@ -203,6 +203,17 @@ export function ChevronRightIcon({ size = 12 }: { size?: number }): JSX.Element 
   );
 }
 
+/** Horizontal mirror of ChevronRightIcon — the Projects pager's "previous
+ *  page" stepper (SP3 Task 9, spec §5.5.1/board's Option C). Added here per
+ *  this repo's icon rule rather than pasted inline into ProjectsPane.tsx. */
+export function ChevronLeftIcon({ size = 12 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M15 6l-6 6 6 6" />
+    </svg>
+  );
+}
+
 /** Check glyph — a ladder node that is genuinely done (never drawn for an unknown state). */
 export function CheckIcon({ size = 14 }: { size?: number }): JSX.Element {
   return (

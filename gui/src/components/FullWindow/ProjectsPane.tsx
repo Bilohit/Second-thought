@@ -33,8 +33,30 @@
  * everywhere else. The sort instrument, FLIP re-order, and provisional-row
  * filtering are unchanged and apply identically to both modes.
  *
- * Scope boundaries (binding, this task's brief):
- *  - No pager (spec §5.5.1 — Task 9's, and unreachable at <=200 notes).
+ * Task 9 added the pager (spec §5.5.1, board: gui/mocks/2026-08-03-projects-
+ * pager.html, Option C — range readout + steppers, footer-anchored). Detection
+ * is `needsPager(noteTotal)`: the caller (ProjectsView.tsx) hands in the
+ * TRUE total for the current selection — GET /stats's by_project for a
+ * project (same tag-derived column /search?project= filters on) or the
+ * matching GET /tags row's count for a tag — never `/vault/projects`'s
+ * file_count (a directory listing, s127's bug). `noteTotal` also replaces
+ * `rows.length` as the notes-head count and the delete-confirm's "Its N
+ * notes" wording once it's known (this file used to understate both past
+ * 200 notes — see the old ponytail note this replaces); under 200 the two
+ * numbers are definitionally equal, so nothing visible changes there.
+ *
+ * ★ ponytail: Next can only ever advance within rows THIS pane has actually
+ * fetched. `GET /search` clamps at `limit=200` and has no `offset`/cursor
+ * parameter — verified at source (`vault_admin.py:674-699`, its full
+ * parameter list; `index_writer.py:792`, `search()`'s signature) while
+ * building this pager, not assumed. So once a selection's true total exceeds
+ * one page, only page 1 ever has real rows behind it — `canGoNext` below is
+ * gated on `pageInfo.end < sortedRows.length` (there being MORE already-
+ * fetched rows to reveal), not on the true total implying further pages
+ * exist. Ceiling: once `/search` grows a real offset param, fetch each page
+ * on demand and drop this guard. Flagged in this task's report — the
+ * "already ships" table in the spec (§2) does not list an offset param, so
+ * genuine page-2+ browsing is a Python-side gap, not a gui/ one.
  *
  * Task 6 (motion pass, spec §8) added: the note-row FLIP re-order and the
  * sort button's icon-swap/cycle-spin. Rows are keyed by `path` (not array
@@ -68,17 +90,21 @@ import {
   flipStaggerDelayMs,
   formatAgo,
   metaEpochMs,
+  needsPager,
   nextSortMode,
+  pageOf,
+  pagerPositionSentence,
   projectTagString,
   sortNotes,
   tagDisplayLabel,
+  DEFAULT_PAGE_SIZE,
   SORT_MODE_LABEL,
   SORT_MODE_META_VERB,
   type SortMode,
 } from "../../lib/projectsView";
 import { LOOSE_PROJECT_ID, type RailMode } from "./ProjectsRail";
 import {
-  PencilIcon, TrashIcon, CheckIcon, CloseIcon, FileIcon, ChevronRightIcon,
+  PencilIcon, TrashIcon, CheckIcon, CloseIcon, FileIcon, ChevronRightIcon, ChevronLeftIcon,
   SortNewestIcon, SortOldestIcon, SortEditedIcon, CycleIcon, CopyIcon,
 } from "../PillMenu/icons";
 
@@ -125,6 +151,16 @@ interface ProjectsPaneProps {
    *  parent — see lib/projectsView.ts's `flattenTagTree`), or null. Only
    *  consulted when `mode === "tags"`. */
   selectedTag: string | null;
+  /** The TRUE note count for the current selection — GET /stats's
+   *  by_project (projects/loose) or the matching GET /tags row's count
+   *  (tags), supplied by ProjectsView.tsx. `null`/`undefined` when not yet
+   *  known (falls back to `rows.length`, this pane's own fetched-and-
+   *  filtered row count — identical to this component's behavior before
+   *  Task 9). Drives both the pager's detection (`needsPager`) and, once
+   *  known, the notes-head count / delete-confirm wording, so a >200-note
+   *  selection no longer understates itself the way a plain `rows.length`
+   *  count would (that fetch is capped at 200 — spec §5.5.1). */
+  noteTotal?: number | null;
   onOpenNote?: (path: string) => void;
   /** Fired after a successful rename. The rail's tiles go stale on a
    *  rename — the caller is expected to refetch `listProjects()` +
@@ -153,6 +189,7 @@ export default function ProjectsPane({
   projects,
   selectedId,
   selectedTag,
+  noteTotal,
   onOpenNote,
   onRenamed,
   onDeleted,
@@ -179,8 +216,13 @@ export default function ProjectsPane({
   const [rows, setRows] = useState<SearchResult[]>([]);
   const [notesLoading, setNotesLoading] = useState(false);
   const [sortMode, setSortMode] = useState<SortMode>("newest");
+  // Pager (spec §5.5.1, Task 9): 1-indexed, reset to page 1 whenever the
+  // selection changes below — a stale page 3 left over from a previous,
+  // larger selection must never survive onto a fresh fetch.
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
+    setPage(1);
     if (!activeKey) { setRows([]); return; }
     let cancelled = false;
     setNotesLoading(true);
@@ -203,20 +245,31 @@ export default function ProjectsPane({
   // no reason (harmless, since it no-ops without a pending measurement, but
   // pointless work all the same).
   const sortedRows = useMemo(() => sortNotes(rows, sortMode), [rows, sortMode]);
-  // Rule 2: the ONLY count this pane ever shows — derived from the rows it
-  // just fetched and filtered, never from a sibling source (spec §5.6).
-  // ponytail: this pane fetches with limit:200 (spec §5.5.1's server hard
-  // clamp), so above 200 notes this count AND the delete-confirm's "Its N
-  // notes" both understate the true total. Not a bug — Task 9's pager
-  // upgrades both to GET /stats's by_project total when it lands; today's
-  // real vault (17 notes) never gets near the ceiling. The tag head's
-  // "{noteCount} notes across your vault" wording (below) makes this worse
-  // than a silent under-report at >200: "across your vault" asserts a
-  // vault-wide total, so past the cap it states a specific falsehood rather
-  // than just showing a smaller-than-true number the way the project head's
-  // plain "{noteCount} notes" does. Task 9's pager needs to fix this
-  // string, not just the fetch.
-  const noteCount = rows.length;
+  // Rule 2 (spec §5.6), upgraded by Task 9: `noteTotal` (the caller's TRUE,
+  // sibling-sourced total — GET /stats's by_project / GET /tags) wins once
+  // known; `rows.length` (this pane's own fetched-and-filtered rows) is only
+  // the fallback for "not yet known". Below 200 notes the two are always
+  // numerically equal (the fetch catches everything), so nothing visible
+  // changes for today's real vault (17 notes) — this only matters once a
+  // selection's true total exceeds the 200-row fetch cap, which is exactly
+  // where a plain `rows.length` count would silently understate itself.
+  const noteCount = noteTotal ?? rows.length;
+  // ── pager (spec §5.5.1, board: 2026-08-03-projects-pager.html Option C) ──
+  const pagerActive = needsPager(noteCount);
+  const pageInfo = pageOf(noteCount, page, DEFAULT_PAGE_SIZE);
+  const visibleRows = pagerActive ? sortedRows.slice(pageInfo.start, Math.min(pageInfo.end, sortedRows.length)) : sortedRows;
+  // See this file's header ponytail note: Next is capped at rows already
+  // fetched (no /search offset param exists), not at the true page count.
+  const canGoPagerNext = pagerActive && pageInfo.end < sortedRows.length;
+  const canGoPagerPrev = pagerActive && pageInfo.page > 1;
+  function handlePagerPrev() {
+    if (!canGoPagerPrev) return;
+    setPage((p) => Math.max(1, p - 1));
+  }
+  function handlePagerNext() {
+    if (!canGoPagerNext) return;
+    setPage((p) => p + 1);
+  }
 
   // ── note re-order FLIP (spec §8) ────────────────────────────────────────
   // Measure (First) happens synchronously in handleSortClick, BEFORE
@@ -475,6 +528,9 @@ export default function ProjectsPane({
       prevTopsRef.current = tops;
     }
     setSortMode((m) => nextSortMode(m));
+    // Re-sorting jumps back to page 1 — a stale page 2/3 computed against
+    // the PREVIOUS arrangement has no defined meaning against the new one.
+    setPage(1);
   }
 
   if (!activeKey) return <div style={paneStyle} />;
@@ -697,7 +753,7 @@ export default function ProjectsPane({
       <div style={notesScrollStyle}>
         {notesLoading && rows.length === 0 && <div style={notesEmptyStyle}>Loading…</div>}
         {!notesLoading && sortedRows.length === 0 && <div style={notesEmptyStyle}>No notes here yet.</div>}
-        {sortedRows.map((row) => {
+        {visibleRows.map((row) => {
           const epochMs = metaEpochMs(row, sortMode);
           const meta = epochMs === null ? "date unknown" : `${metaVerb} ${formatAgo(epochMs)}`;
           const title = row.filename ?? row.path.split(/[\\/]/).pop() ?? row.path;
@@ -787,6 +843,45 @@ export default function ProjectsPane({
           <div style={moreRowStyle}>Loose is normal and permanent, not a queue.</div>
         )}
       </div>
+
+      {/* The pager (spec §5.5.1, Task 9): renders iff `needsPager(noteCount)`
+          — under 200 notes there is no footer band here at all, not an empty
+          or collapsed one (spec: "no trace of one"). Option C (board:
+          2026-08-03-projects-pager.html): the range readout carries both the
+          subset AND the honest total in one sentence, never a separate
+          "page X of Y" phrase — see this file's header for why Next stays
+          disabled past the rows this pane has actually fetched. */}
+      {pagerActive && (
+        <div style={pagerFootStyle}>
+          <span style={pagerRangeStyle}>
+            {"Showing "}
+            <b style={pagerRangeBoldStyle}>{pageInfo.start + 1}–{pageInfo.end}</b>
+            {` of ${noteCount}`}
+          </span>
+          <span style={pagerArrowsStyle}>
+            <button
+              className="btn-hover"
+              style={pagerBtnStyle}
+              onClick={handlePagerPrev}
+              disabled={!canGoPagerPrev}
+              title="Previous page"
+              aria-label={`Previous page. ${pagerPositionSentence(pageInfo.start, pageInfo.end, noteCount)}`}
+            >
+              <ChevronLeftIcon size={12} />
+            </button>
+            <button
+              className="btn-hover"
+              style={pagerBtnStyle}
+              onClick={handlePagerNext}
+              disabled={!canGoPagerNext}
+              title="Next page"
+              aria-label={`Next page. ${pagerPositionSentence(pageInfo.start, pageInfo.end, noteCount)}`}
+            >
+              <ChevronRightIcon size={12} />
+            </button>
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -982,3 +1077,21 @@ const noteConfirmStripStyle: CSSProperties = {
 };
 
 const moreRowStyle: CSSProperties = { padding: "9px 16px", fontSize: 10, color: "var(--text-3)" };
+
+// ── pager (spec §5.5.1, Task 9) — Option C, board 2026-08-03-projects-
+// pager.html. Footer-anchored, `border-top` (not `border-bottom` like the
+// bands above it) since this is the pane's last child, matching the board's
+// `.pager-foot`. Buttons are RAISED controls (--ctl-face, spec §4.4), same
+// family as the sort button above, not the recessed --bg an input uses.
+const pagerFootStyle: CSSProperties = {
+  flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+  padding: "8px 16px", borderTop: "1px solid var(--border)", background: "var(--surface)",
+};
+const pagerRangeStyle: CSSProperties = { fontSize: 10, color: "var(--text-2)", fontVariantNumeric: "tabular-nums" };
+const pagerRangeBoldStyle: CSSProperties = { color: "var(--text-1)" };
+const pagerArrowsStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 4, flex: "0 0 auto" };
+const pagerBtnStyle: CSSProperties = {
+  width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
+  background: "var(--ctl-face)", border: "1px solid var(--border)", color: "var(--text-1)",
+  cursor: "pointer", padding: 0,
+};

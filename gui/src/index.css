@@ -1077,6 +1077,20 @@ html, body, #root {
   box-shadow: var(--hover-shadow);
 }
 
+/* A `.btn-hover` element in its real `disabled` state (SP3 Task 9's pager
+   prev/next at the first/last reachable page, spec §7: "uses the real
+   disabled attribute, not a visual-only fade") must not still lift/glow on
+   hover — added here rather than per-component, since any future `.btn-hover`
+   button that also goes `disabled` needs the identical inert look. */
+.btn-hover:disabled {
+  opacity: 0.35;
+  cursor: default;
+  transform: none !important;
+  box-shadow: none !important;
+  background: var(--ctl-face) !important;
+  border-color: var(--border) !important;
+}
+
 .row-hover-lift {
   transition: background var(--hover-dur) var(--hover-ease-out),
               border-color var(--hover-dur) var(--hover-ease-out),

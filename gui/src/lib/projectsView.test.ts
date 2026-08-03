@@ -5,6 +5,8 @@ import {
   projectTagString,
   needsPager,
   pageOf,
+  pagerPositionSentence,
+  DEFAULT_PAGE_SIZE,
   nextSortMode,
   SORT_MODE_CYCLE,
   SORT_MODE_META_VERB,
@@ -285,6 +287,20 @@ describe("pageOf", () => {
     expect(info.pageCount).toBe(1);
     expect(info.start).toBe(0);
     expect(info.end).toBe(0);
+  });
+});
+
+describe("pagerPositionSentence (SP3 Task 9 — the pager's restated aria-label, spec §7)", () => {
+  it("prints a 1-based range and the honest total", () => {
+    expect(pagerPositionSentence(0, 200, 438)).toBe("Currently showing notes 1 to 200 of 438.");
+  });
+
+  it("a later page's range", () => {
+    expect(pagerPositionSentence(200, 400, 438)).toBe("Currently showing notes 201 to 400 of 438.");
+  });
+
+  it("DEFAULT_PAGE_SIZE matches the fetch's own explicit limit (200) — never a second hardcoded number", () => {
+    expect(DEFAULT_PAGE_SIZE).toBe(200);
   });
 });
 

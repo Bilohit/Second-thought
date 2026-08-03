@@ -579,6 +579,70 @@ describe("ProjectsPane — mode gating (spec §5.4): stale selectedId can't leak
   });
 });
 
+describe("ProjectsPane — pager (spec §5.5.1, Task 9, board: 2026-08-03-projects-pager.html Option C)", () => {
+  function manyRows(n: number): SearchResult[] {
+    return Array.from({ length: n }, (_, i) => row({ path: `research/note-${i}.md`, filename: `note-${i}.md` }));
+  }
+
+  it("no pager, no trace of one, under 200 notes — today's real vault (control condition)", async () => {
+    vi.mocked(api.notesForProject).mockResolvedValue([row({}), row({ path: "b.md", filename: "b.md" })]);
+    renderPane();
+    await screen.findByText("2 notes");
+    expect(screen.queryByRole("button", { name: /Previous page/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Next page/ })).toBeNull();
+    expect(screen.queryByText(/Showing/)).toBeNull();
+  });
+
+  it("still no pager at exactly 200 (needsPager: one full page is still one page)", async () => {
+    vi.mocked(api.notesForProject).mockResolvedValue(manyRows(200));
+    renderPane({ noteTotal: 200 });
+    await screen.findByText("200 notes");
+    expect(screen.queryByRole("button", { name: /Previous page/ })).toBeNull();
+  });
+
+  it("the pager appears past 200, with the honest range-and-total readout", async () => {
+    vi.mocked(api.notesForProject).mockResolvedValue(manyRows(200));
+    renderPane({ noteTotal: 438 });
+    // The notes-head count upgrades to the TRUE total (438), not rows.length (200) —
+    // the exact understating this task's ponytail note existed to fix.
+    expect(await screen.findByText("438 notes")).toBeTruthy();
+    expect(screen.getByText((_, el) => el?.textContent === "Showing 1–200 of 438", { selector: "span" })).toBeTruthy();
+  });
+
+  it("Previous is disabled on page 1; its aria-label restates the current range", async () => {
+    vi.mocked(api.notesForProject).mockResolvedValue(manyRows(200));
+    renderPane({ noteTotal: 438 });
+    await screen.findByText("438 notes");
+    const prevBtn = screen.getByRole("button", { name: "Previous page. Currently showing notes 1 to 200 of 438." });
+    expect(prevBtn).toHaveProperty("disabled", true);
+  });
+
+  it("Next is disabled once it would need rows past what this pane actually fetched (no /search offset param exists)", async () => {
+    vi.mocked(api.notesForProject).mockResolvedValue(manyRows(200));
+    renderPane({ noteTotal: 438 });
+    await screen.findByText("438 notes");
+    const nextBtn = screen.getByRole("button", { name: "Next page. Currently showing notes 1 to 200 of 438." });
+    expect(nextBtn).toHaveProperty("disabled", true);
+    fireEvent.click(nextBtn);
+    // A disabled button's click is a no-op — the readout must not have moved.
+    expect(screen.getByText((_, el) => el?.textContent === "Showing 1–200 of 438", { selector: "span" })).toBeTruthy();
+  });
+
+  it("tag mode: the tag head's vault-wide count also upgrades to the true total", async () => {
+    vi.mocked(api.notesForTag).mockResolvedValue(manyRows(200));
+    renderPane({ mode: "tags", selectedId: null, selectedTag: "reading", noteTotal: 250 });
+    expect(await screen.findByText("250 notes across your vault")).toBeTruthy();
+    expect(screen.getByText((_, el) => el?.textContent === "Showing 1–200 of 250", { selector: "span" })).toBeTruthy();
+  });
+
+  it("no noteTotal prop supplied (unknown) falls back to rows.length exactly like before Task 9 — existing under-200 callers are unaffected", async () => {
+    vi.mocked(api.notesForProject).mockResolvedValue([row({}), row({ path: "b.md", filename: "b.md" }), row({ path: "c.md", filename: "c.md" })]);
+    renderPane();
+    expect(await screen.findByText("3 notes")).toBeTruthy();
+    expect(screen.queryByText(/Showing/)).toBeNull();
+  });
+});
+
 describe("ProjectsPane — note delete (FR-04/FR-12 fix, Fork 1: 'shared across all three' board section)", () => {
   it("clicking a row's trash icon opens an inline confirm strip, no modal", async () => {
     vi.mocked(api.notesForProject).mockResolvedValue([row({ path: "a.md", filename: "note-a.md" })]);
