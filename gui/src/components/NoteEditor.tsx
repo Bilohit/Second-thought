@@ -23,7 +23,7 @@ import {
 } from "../lib/api";
 import { applyMarkdownFormat, parseOutline, parseWikilinks, type FormatKind } from "../lib/noteFormat";
 import { displayProject } from "../lib/projectsView";
-import { parseAttachments } from "../lib/attachments";
+import { parseAttachments, attachErrorMessage, NO_ATTACH_HINT } from "../lib/attachments";
 import { isSaveRetry, saveRetryDelayMs } from "../lib/saveRetry";
 import { logger } from "../lib/logger";
 import { diffLines } from "../lib/lineDiff";
@@ -558,6 +558,14 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal, onHead
   // what's actually on disk/in the textarea, no separate source of truth.
   const attachments = useMemo(() => parseAttachments(body), [body]);
 
+  // F-10 (GUI half): a note with no frontmatter at all -- a file dropped into the vault by hand
+  // or by another tool, never opened through Second Thought's own create-note path -- can never
+  // carry the `id` field note_editor.py's add_attachment requires, and 400s the instant the user
+  // tries. NoteContent never exposes `id` itself, but `has_frontmatter` is a safe proxy: its
+  // absence *guarantees* no id (no false "can attach" here), so gate the affordance on it and
+  // tell the user before they reach for it, instead of after a failed request.
+  const canAttach = note?.has_frontmatter ?? true;
+
   // GUI-07: `/note/attachment` is behind X-Omni-Secret, and a DOM-issued
   // `src`/`href` GET carries no headers -- inline attachments 403'd and never
   // rendered. Fetch each one with the auth header and hand the DOM a `blob:`
@@ -618,7 +626,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal, onHead
           setConflictBody(err.currentBody);
           setSaveState("conflict");
         } else {
-          setAttachError(err instanceof Error ? err.message : "Failed to attach file");
+          setAttachError(err instanceof Error ? attachErrorMessage(err.message) : "Failed to attach file");
         }
       });
   }, [note, baseMtime, reloadFromDisk]);
@@ -876,12 +884,16 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal, onHead
   // Finding 5: Mic/Camera attach rows share fmtRowStyle's geometry but must not
   // react to firedFmt -- fmtRowStyle("tag") made them flash green whenever the
   // real Tag format button fired. Plain color, no firedFmt dependency.
-  const attachRowStyle: CSSProperties = {
+  // F-10: `disabled` (no id on this note, see `canAttach` above) dims to --text-3 and swaps the
+  // cursor -- the same muted-not-red treatment the rest of this file uses for "unavailable,
+  // not broken" (never red/yellow, those are reserved for actual error/warn state).
+  const attachRowStyle = (disabled: boolean): CSSProperties => ({
     width: 28, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
-    color: "var(--text-2)",
-    borderBottom: "1px solid var(--border-2)", position: "relative", cursor: "pointer",
+    color: disabled ? "var(--text-3)" : "var(--text-2)",
+    borderBottom: "1px solid var(--border-2)", position: "relative",
+    cursor: disabled ? "not-allowed" : "pointer",
     transition: `background ${reducedMotion ? 1 : 140}ms ${SETTLE}, color ${reducedMotion ? 1 : 140}ms ${SETTLE}`,
-  };
+  });
   const lockBtnStyle: CSSProperties = {
     width: 30, height: 18, display: "flex", alignItems: "center", justifyContent: "center",
     color: toolbarLocked ? "var(--accent)" : "var(--text-3)",
@@ -1013,15 +1025,17 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal, onHead
                     </button>
                   ))}
                   <button
-                    className="ne-toolbar-btn" style={attachRowStyle}
-                    aria-label="Attach voice memo" title="Attach voice memo" disabled={attachBusy}
+                    className="ne-toolbar-btn" style={attachRowStyle(!canAttach)}
+                    aria-label="Attach voice memo" title={canAttach ? "Attach voice memo" : NO_ATTACH_HINT}
+                    disabled={attachBusy || !canAttach}
                     onClick={() => { flushSync(() => setAttachFilter("audio/*")); fileInputRef.current?.click(); }}
                   >
                     <MicIcon size={19} />
                   </button>
                   <button
-                    className="ne-toolbar-btn" style={{ ...attachRowStyle, borderBottom: "none" }}
-                    aria-label="Attach photo" title="Attach photo" disabled={attachBusy}
+                    className="ne-toolbar-btn" style={{ ...attachRowStyle(!canAttach), borderBottom: "none" }}
+                    aria-label="Attach photo" title={canAttach ? "Attach photo" : NO_ATTACH_HINT}
+                    disabled={attachBusy || !canAttach}
                     onClick={() => { flushSync(() => setAttachFilter("image/*")); fileInputRef.current?.click(); }}
                   >
                     <CameraIcon size={19} />

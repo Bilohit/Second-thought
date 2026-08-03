@@ -7,6 +7,7 @@ import NoteEditor from "./NoteEditor";
 import * as api from "../lib/api";
 import type { NoteContent } from "../lib/api";
 import { SAVE_BASE_DELAY_MS } from "../lib/saveRetry";
+import { NO_ATTACH_HINT } from "../lib/attachments";
 
 // ponytail: happy-dom ships no layout engine (getBoundingClientRect/offsetWidth
 // all read 0 here) -- these tests assert DOM structure, ARIA attributes, and
@@ -194,6 +195,36 @@ describe("NoteEditor — toggleToolbarLock mode restore", () => {
     fireEvent.click(screen.getByTitle("Unlock toolbar"));
     // lockPriorModeRef.current !== "view" -> no restore
     expect(screen.getByRole("button", { name: "Switch to view" })).toBeTruthy();
+  });
+});
+
+describe("NoteEditor — attach affordance gated on has_frontmatter (F-10)", () => {
+  // fireEvent, not user.click, throughout: the attach buttons live in the same
+  // pointer-events:none-until-hover toolbar column as the lock button above.
+  it("keeps attach enabled with its normal tooltip for a note with frontmatter", async () => {
+    await renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+
+    const mic = screen.getByTitle("Attach voice memo");
+    const camera = screen.getByTitle("Attach photo");
+    expect(mic.hasAttribute("disabled")).toBe(false);
+    expect(camera.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("disables attach and swaps in the calm hint for a note with no frontmatter (no id)", async () => {
+    vi.mocked(api.getNoteContent).mockResolvedValue({ ...noteFixture, has_frontmatter: false });
+    await renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+
+    // Both attach buttons swap to the same calm hint -- getAllByTitle covers mic + camera.
+    const [mic, camera] = screen.getAllByTitle(NO_ATTACH_HINT);
+    expect(mic.hasAttribute("disabled")).toBe(true);
+    expect(camera.hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByTitle("Attach voice memo")).toBeNull();
+    expect(screen.queryByTitle("Attach photo")).toBeNull();
+
+    fireEvent.click(mic);
+    expect(api.addNoteAttachment).not.toHaveBeenCalled();
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseAttachments, kindOf } from "./attachments";
+import { parseAttachments, kindOf, attachErrorMessage, NO_ATTACH_HINT } from "./attachments";
 
 describe("kindOf", () => {
   it("classifies images", () => { expect(kindOf("photo.JPG")).toBe("image"); });
@@ -61,5 +61,16 @@ describe("parseAttachments", () => {
   it("a ref pointing outside _attachments/ is not an attachment", () => {
     const body = "![elsewhere](../other/place.png)";
     expect(parseAttachments(body)).toEqual([]);
+  });
+});
+
+describe("attachErrorMessage", () => {
+  it("translates the no-id developer copy to calm user-facing text", () => {
+    expect(attachErrorMessage("Note has no id -- cannot attach a file")).toBe(NO_ATTACH_HINT);
+  });
+
+  it("passes every other message through unchanged", () => {
+    expect(attachErrorMessage("Failed to attach file")).toBe("Failed to attach file");
+    expect(attachErrorMessage("")).toBe("");
   });
 });
