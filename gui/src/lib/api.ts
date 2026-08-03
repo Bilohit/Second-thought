@@ -171,7 +171,7 @@ export interface VaultFile {
 }
 
 export interface Config {
-  vault?: { root?: string };
+  vault?: { root?: string; daily_note_tag?: string; daily_note_tag_enabled?: boolean };
   ollama?: { model?: string; base_url?: string };
   gui?: { hotkey?: string };
   capture?: {
@@ -521,6 +521,10 @@ export async function patchConfig(patch: {
   ocr_fast_path_enabled?: boolean;
   ocr_text_min_chars?: number;
   auto_describe_new_folders?: boolean;
+  // SP3 Task 10. Validate with lib/bodyTag.ts before sending: the server 400s an unusable tag,
+  // and this PATCH carries every other Function-tab field with it (the FR-01 shape).
+  daily_note_tag?: string;
+  daily_note_tag_enabled?: boolean;
   chat_system_prompt?: string;
   reminders_delivery?: "app" | "os";
   // [sync] — the server has accepted these since phase-5; the GUI had no consumer, which is why

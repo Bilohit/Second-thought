@@ -1343,6 +1343,8 @@ def _read_frontmatter_keys(path: Path) -> set:
 def test_post_note_creates_note_with_daily_note_frontmatter_shape(tmp_path: Path):
     """POST /note must emit the SAME frontmatter keys as POST /today/daily-note.
     A second origination path with a different shape is a contract fork."""
+    from datetime import datetime
+
     client, cfg = _note_client(tmp_path)
     from note_model import parse_note
 
@@ -1359,8 +1361,13 @@ def test_post_note_creates_note_with_daily_note_frontmatter_shape(tmp_path: Path
 
     assert _read_frontmatter_keys(note_path) == daily_keys
     assert parse_note(note_path.read_text(encoding="utf-8", newline="")).origin == "note"
-    # generic notes do NOT go in Daily/
-    assert note_path.parent != daily_path.parent
+    # SP3 Task 10: both origination paths now land in `_loose/` -- the daily note stopped being
+    # filed into a hardcoded `Daily/` folder, so "different parent" is no longer what separates
+    # them. What still does: the daily note is find-or-create and named for its DAY, while a
+    # generic note is always-new and named for its freshly minted id.
+    assert note_path.parent == daily_path.parent == Path(cfg.vault.root) / "_loose"
+    assert daily_path.stem == datetime.now().strftime("%Y-%m-%d")
+    assert note_path.stem != daily_path.stem
 
 
 def test_post_note_lands_where_project_tidy_can_actually_see_it(tmp_path: Path):
@@ -1450,6 +1457,60 @@ def test_note_write_survives_an_index_failure(tmp_path: Path):
         })
         assert saved.status_code == 200, saved.text
     assert "still written" in note_path.read_text(encoding="utf-8", newline="")
+
+
+def test_daily_note_route_tags_from_config(tmp_path: Path):
+    """SP3 Task 10 end to end: the route reads the user's setting and writes an ordinary body tag."""
+    from body_tags import extract_body_tags
+    from note_model import parse_note
+
+    client, cfg = _note_client(tmp_path)
+    cfg.vault.daily_note_tag = "daily"
+    cfg.vault.daily_note_tag_enabled = True
+    with mock.patch("config.get_config", lambda: cfg):
+        made = client.post("/today/daily-note")
+        assert made.status_code == 200, made.text
+        p = Path(made.json()["path"])
+
+    assert p.parent.name == "_loose"
+    note = parse_note(p.read_text(encoding="utf-8", newline=""))
+    assert "\n#daily\n" in note.body
+    assert extract_body_tags(note.body) == ["daily"]
+
+
+def test_daily_note_route_respects_the_toggle_and_a_bad_config_value(tmp_path: Path):
+    """Off means off. And a hand-edited config.toml holding an unusable tag degrades to no tag
+    rather than writing a line that indexes nothing -- or 500ing note creation."""
+    from note_model import parse_note
+
+    for enabled, tag_value in ((False, "daily"), (True, "a1b2c3"), (True, "two words")):
+        client, cfg = _note_client(tmp_path / f"v-{enabled}-{tag_value}")
+        cfg.vault.daily_note_tag = tag_value
+        cfg.vault.daily_note_tag_enabled = enabled
+        with mock.patch("config.get_config", lambda: cfg):
+            made = client.post("/today/daily-note")
+            assert made.status_code == 200, made.text
+            body = parse_note(Path(made.json()["path"]).read_text(encoding="utf-8", newline="")).body
+        assert "#" not in body.split("\n")[1], (enabled, tag_value, body)
+
+
+def test_patch_config_rejects_an_unusable_daily_tag(tmp_path: Path, monkeypatch):
+    """The field must reject what the scanner would silently drop, and never be a back door into
+    the project model."""
+    client, cfg = _note_client(tmp_path)
+    monkeypatch.setattr(server, "CONFIG_PATH", tmp_path / "config.toml")
+
+    with mock.patch("config.get_config", lambda: cfg):
+        for bad in ("my tag", "a1b2c3", "project@work", "sys/x", "tag!", ""):
+            r = client.patch("/config", json={"daily_note_tag": bad})
+            assert r.status_code == 400, (bad, r.status_code, r.text)
+
+        ok = client.patch("/config", json={"daily_note_tag": "#journal"})
+        assert ok.status_code == 200, ok.text
+
+    import tomlkit
+    doc = tomlkit.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
+    assert doc["vault"]["daily_note_tag"] == "journal"   # leading '#' stripped, not stored
 
 
 def test_post_note_twice_creates_two_distinct_notes(tmp_path: Path):

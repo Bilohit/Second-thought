@@ -100,6 +100,27 @@ def attachment_ref_text(note_id: str, filename: str, alt: str | None = None) -> 
     return f"![{label}](../_attachments/{note_id}/{filename})"
 
 
+# The whole-token form of _TAG_TOKEN's capture group, for validating a tag the USER types into a
+# settings field rather than into a note. Anchored, so it rejects anything the scanner would only
+# partially match ("my tag" -> the scanner would silently keep "my").
+_WHOLE_TAG = re.compile(r"^[A-Za-z0-9_@][A-Za-z0-9_/@:-]*$")
+
+
+def is_valid_body_tag(tag: str) -> bool:
+    """True when writing `#<tag>` into a body would actually produce that tag in the derived
+    `tags:` cache. Validates against what extract_body_tags ABOVE really does, not against a
+    prettier idea of the grammar -- the two silent-drop cases are the point:
+
+      * a 3- or 6-hex-digit token (`abc`, `a1b2c3`) is dropped as a bare colour, so a user who
+        typed it into a settings field would get a tag line that indexes nothing;
+      * a structural tag (`sys`, `sys/*`, `project@*`) is excluded from the cache by design, and
+        `project@x` would additionally FILE the note into a project -- a settings field for a
+        descriptive tag must never be a back door into the project model.
+
+    Pinned by a round-trip test: for any string, this agrees with extract_body_tags("#" + s)."""
+    return bool(_WHOLE_TAG.match(tag)) and not _HEX_COLOR.match(tag) and not is_structural_tag(tag)
+
+
 def extract_body_tags(body: str) -> list[str]:
     """Extract literal `#tag` tokens from a note body. Returns tags in first-seen order, deduped,
     with the leading `#` stripped. Structural tags (`sys`, `sys/*`, `project@*`) are excluded —

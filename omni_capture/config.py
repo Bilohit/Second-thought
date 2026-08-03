@@ -55,6 +55,13 @@ class WhisperConfig:
 class VaultConfig:
     root: Path = field(default_factory=lambda: DEFAULT_VAULT_ROOT)
     scratchpad_folder: str = "_scratchpad"
+    # SP3 Task 10: a daily note is tagged, not filed into a project. Daily notes live in `_loose/`
+    # like every other unfiled note; `#daily` is an ordinary DESCRIPTIVE tag, so it lands in the
+    # derived `tags:` cache and gets its own row in Tags mode. Deliberately NOT a project: a
+    # project is a `#project@` body tag, and inventing one on the user's behalf would both
+    # hardcode a project name and put structural syntax in a note they open every day.
+    daily_note_tag: str = "daily"
+    daily_note_tag_enabled: bool = True
 
 
 @dataclass
@@ -240,6 +247,10 @@ def load_config(config_path: Path | None = None) -> Config:
     cfg.vault.scratchpad_folder = (
         os.getenv("OMNI_SCRATCHPAD_FOLDER")
         or vault_raw.get("scratchpad_folder", "_scratchpad")
+    )
+    cfg.vault.daily_note_tag = str(vault_raw.get("daily_note_tag", "daily"))
+    cfg.vault.daily_note_tag_enabled = _parse_bool(
+        vault_raw.get("daily_note_tag_enabled", True), True
     )
 
     ollama_raw = raw.get("ollama", {})

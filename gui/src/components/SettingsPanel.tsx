@@ -14,6 +14,7 @@ import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, use
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getConfig, patchConfig } from "../lib/api";
 import { formatHotkey, DEFAULT_HOTKEY, canParseHotkey } from "../lib/hotkey";
+import { BODY_TAG_HINT, isValidBodyTag, normalizeBodyTag } from "../lib/bodyTag";
 import { setHotkey as setHotkeyRust, setLogLevel, revealLogFile } from "../lib/tauri";
 import { getVaultFolders } from "../lib/api";
 import { DEFAULT_CHAT_SYSTEM_PROMPT } from "../lib/lookChatDefaults";
@@ -407,6 +408,8 @@ export default function SettingsPanel({
   const [confidence, setConfidence] = useState(0.6);
   const [scrutiny, setScrutiny] = useState<"relaxed" | "balanced" | "strict">("balanced");
   const [autoDescribe, setAutoDescribe] = useState(false);
+  const [dailyTagEnabled, setDailyTagEnabled] = useState(true);
+  const [dailyTag, setDailyTag] = useState("daily");
   const [chatSystemPrompt, setChatSystemPrompt] = useState("");
   const [reminderDelivery, setReminderDelivery] = useState<"app" | "os">("app");
 
@@ -442,10 +445,12 @@ export default function SettingsPanel({
   const lastGoodRef = useRef<{
     vaultRoot: string; model: string; hotkey: string;
     confidence: number; scrutiny: "relaxed" | "balanced" | "strict"; autoDescribe: boolean;
+    dailyTagEnabled: boolean; dailyTag: string;
     chatSystemPrompt: string; reminderDelivery: "app" | "os";
   }>({
     vaultRoot: "", model: "llama3.2", hotkey: DEFAULT_HOTKEY,
     confidence: 0.6, scrutiny: "balanced", autoDescribe: false,
+    dailyTagEnabled: true, dailyTag: "daily",
     chatSystemPrompt: "", reminderDelivery: "app",
   });
 
@@ -483,6 +488,8 @@ export default function SettingsPanel({
           confidence: cfg.capture?.confidence_threshold ?? 0.6,
           scrutiny: cfg.capture?.llm_scrutiny ?? "balanced",
           autoDescribe: cfg.capture?.auto_describe_new_folders ?? false,
+          dailyTagEnabled: cfg.vault?.daily_note_tag_enabled ?? true,
+          dailyTag: cfg.vault?.daily_note_tag ?? "daily",
           chatSystemPrompt: cfg.look?.chat_system_prompt ?? "",
           reminderDelivery: cfg.reminders?.delivery ?? "app",
         };
@@ -492,6 +499,8 @@ export default function SettingsPanel({
         setConfidence(loaded.confidence);
         setScrutiny(loaded.scrutiny);
         setAutoDescribe(loaded.autoDescribe);
+        setDailyTagEnabled(loaded.dailyTagEnabled);
+        setDailyTag(loaded.dailyTag);
         setChatSystemPrompt(loaded.chatSystemPrompt);
         setReminderDelivery(loaded.reminderDelivery);
         lastGoodRef.current = loaded;
@@ -537,6 +546,13 @@ export default function SettingsPanel({
       return;
     }
 
+    // SP3 Task 10: an unusable daily tag is 400'd by the server, and this PATCH carries every
+    // other Function-tab field with it — precisely how FR-01 took the whole tab down. So a bad
+    // value is simply LEFT OUT of the patch (the field shows its own error) and every other
+    // setting still saves. The toggle always rides along; it can't be invalid.
+    const dailyTagClean = normalizeBodyTag(dailyTag);
+    const dailyTagPatch = isValidBodyTag(dailyTagClean) ? { daily_note_tag: dailyTagClean } : {};
+
     try {
       await patchConfig({
         vault_root: vaultRoot,
@@ -545,6 +561,8 @@ export default function SettingsPanel({
         confidence_threshold: confidence,
         llm_scrutiny: scrutiny,
         auto_describe_new_folders: autoDescribe,
+        ...dailyTagPatch,
+        daily_note_tag_enabled: dailyTagEnabled,
         chat_system_prompt: chatSystemPrompt,
         reminders_delivery: reminderDelivery,
       });
@@ -570,6 +588,8 @@ export default function SettingsPanel({
             confidence_threshold: confidence,
             llm_scrutiny: scrutiny,
             auto_describe_new_folders: autoDescribe,
+            ...dailyTagPatch,
+            daily_note_tag_enabled: dailyTagEnabled,
             chat_system_prompt: chatSystemPrompt,
             reminders_delivery: reminderDelivery,
           });
@@ -582,7 +602,7 @@ export default function SettingsPanel({
         setDirty(false);
         return;
       }
-      lastGoodRef.current = { vaultRoot, model, hotkey, confidence, scrutiny, autoDescribe, chatSystemPrompt, reminderDelivery };
+      lastGoodRef.current = { vaultRoot, model, hotkey, confidence, scrutiny, autoDescribe, dailyTagEnabled, dailyTag, chatSystemPrompt, reminderDelivery };
       setDirty(false);
       if (!opts.silent) {
         setSaved(true);
@@ -600,13 +620,15 @@ export default function SettingsPanel({
       setConfidence(g.confidence);
       setScrutiny(g.scrutiny);
       setAutoDescribe(g.autoDescribe);
+      setDailyTagEnabled(g.dailyTagEnabled);
+      setDailyTag(g.dailyTag);
       setChatSystemPrompt(g.chatSystemPrompt);
       setReminderDelivery(g.reminderDelivery);
       setDirty(false);
     } finally {
       if (!opts.silent) setSaving(false);
     }
-  }, [vaultRoot, model, hotkey, confidence, scrutiny, autoDescribe, chatSystemPrompt, reminderDelivery]);
+  }, [vaultRoot, model, hotkey, confidence, scrutiny, autoDescribe, dailyTagEnabled, dailyTag, chatSystemPrompt, reminderDelivery]);
 
   const handleSave = () => { void flush({ silent: false }); };
 
@@ -949,6 +971,39 @@ export default function SettingsPanel({
                 onChange={(v) => { setAutoDescribe(v); markDirty(); }}
               />
             </Field>
+
+            {/* Daily-note tag (SP3 Task 10). A daily note is not a project — it lands in
+                `_loose/` like any other unfiled note and is grouped by this ordinary
+                descriptive tag instead. */}
+            <Field label="Tag Daily Notes" inline>
+              <Toggle
+                label="Tag Daily Notes"
+                checked={dailyTagEnabled}
+                onChange={(v) => { setDailyTagEnabled(v); markDirty(); }}
+              />
+            </Field>
+
+            {dailyTagEnabled && (
+              <Field label="Daily Tag">
+                <input
+                  value={dailyTag}
+                  onChange={(e) => { setDailyTag(e.target.value); markDirty(); }}
+                  placeholder="daily"
+                  aria-label="Daily note tag"
+                  aria-invalid={!isValidBodyTag(normalizeBodyTag(dailyTag))}
+                  style={INPUT_STYLE}
+                  onFocus={focusRing}
+                  onBlur={blurRing}
+                />
+                <span style={{ fontSize: 11, color: "var(--text-3)" }}>
+                  Added to each new daily note as #{normalizeBodyTag(dailyTag) || "daily"}, so
+                  they group under one tag.
+                </span>
+                {!isValidBodyTag(normalizeBodyTag(dailyTag)) && (
+                  <span style={{ fontSize: 11, color: "var(--red)" }}>{BODY_TAG_HINT}</span>
+                )}
+              </Field>
+            )}
 
             {/* Reminder delivery */}
             <Field label="Reminders">

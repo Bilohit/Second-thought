@@ -4,6 +4,7 @@ from pathlib import Path
 
 from today_view import _bucket_reminders, _parse_local, build_today, create_daily_note, find_daily_note
 from note_model import parse_note
+from projects import LOOSE_DIR
 from reminders import create_reminder
 
 
@@ -97,7 +98,10 @@ def test_build_today_no_daily_note(tmp_path):
 def test_create_daily_note_mints_desktop_note(tmp_path):
     res = create_daily_note(tmp_path, "2026-07-26")
     p = Path(res["path"])
-    assert p == tmp_path / "Daily" / "2026-07-26.md"   # lands in Daily/
+    # SP3 Task 10: lands in _loose/, NOT the old hardcoded Daily/. A daily note is not a project;
+    # post-s127 a project is the body tag `#project@<name>`, so a note in `Daily/` with no such tag
+    # resolved loose anyway and the tidy pass relocated it. Grouping moved to the `#daily` tag.
+    assert p == tmp_path / LOOSE_DIR / "2026-07-26.md"
     assert res["title"] == "2026-07-26"
     note = parse_note(p.read_text(encoding="utf-8", newline=""))
     assert note.origin == "note" and note.origin_device == "desktop" and note.device == "desktop"
@@ -105,6 +109,32 @@ def test_create_daily_note_mints_desktop_note(tmp_path):
     assert note.body == "# 2026-07-26\n\n## Intentions\n- [ ] \n\n## Log\n"   # phone-parity template
     # now discoverable by the same S1 title-match the view uses
     assert find_daily_note(tmp_path, "2026-07-26")["id"] == res["id"]
+
+
+def test_create_daily_note_with_tag_writes_an_ordinary_body_tag(tmp_path):
+    """SP3 Task 10: the tag is plain body text one line under the heading -- NOT the trailing
+    machine `tags:` line, which mobile_sync_agent's enrichment replaces wholesale."""
+    from body_tags import extract_body_tags
+    from machine_tags import strip_trailing_tags_line
+
+    res = create_daily_note(tmp_path, "2026-07-26", tag="daily")
+    note = parse_note(Path(res["path"]).read_text(encoding="utf-8", newline=""))
+    assert note.body == "# 2026-07-26\n#daily\n\n## Intentions\n- [ ] \n\n## Log\n"
+    assert extract_body_tags(note.body) == ["daily"]           # reaches the derived tags: cache
+    assert strip_trailing_tags_line(note.body) == note.body     # NOT in the machine region
+
+
+def test_create_daily_note_without_tag_is_byte_identical_to_the_old_template(tmp_path):
+    """The toggle's off state must not be a second, subtly different template."""
+    off = create_daily_note(tmp_path, "2026-07-26", tag=None)
+    body = parse_note(Path(off["path"]).read_text(encoding="utf-8", newline="")).body
+    assert body == "# 2026-07-26\n\n## Intentions\n- [ ] \n\n## Log\n"
+
+
+def test_create_daily_note_honours_an_explicit_folder(tmp_path):
+    """Passing `folder` still works -- the default moved, the parameter did not disappear."""
+    res = create_daily_note(tmp_path, "2026-07-26", folder="Daily")
+    assert Path(res["path"]) == tmp_path / "Daily" / "2026-07-26.md"
 
 
 def test_create_daily_note_idempotent_body_sacred(tmp_path):

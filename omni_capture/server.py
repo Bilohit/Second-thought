@@ -619,6 +619,8 @@ class ConfigPatch(BaseModel):
     ocr_fast_path_enabled: Optional[bool] = None
     ocr_text_min_chars: Optional[int] = None
     auto_describe_new_folders: Optional[bool] = None
+    daily_note_tag: Optional[str] = None
+    daily_note_tag_enabled: Optional[bool] = None
     chat_system_prompt: Optional[str] = None
     reminders_delivery: Optional[str] = None
     sync_enabled: Optional[bool] = None
@@ -1504,6 +1506,24 @@ async def patch_config(patch: ConfigPatch, _: None = Depends(_require_secret)):
         _set("capture", "ocr_text_min_chars", min_chars)
     if patch.auto_describe_new_folders is not None:
         _set("capture", "auto_describe_new_folders", bool(patch.auto_describe_new_folders))
+    if patch.daily_note_tag is not None:
+        # SP3 Task 10. Validated against what the body scanner ACTUALLY keeps, not against a
+        # looser idea of the grammar: `body_tags.is_valid_body_tag` also rejects the two silent
+        # drops (a 3/6-hex-digit token reads as a colour; `project@x` / `sys` are structural and
+        # never reach the `tags:` cache -- and `project@x` would file the note into a project,
+        # which this field must never be a back door into). Rejecting loudly beats saving a value
+        # that produces a tag line indexing nothing.
+        from body_tags import is_valid_body_tag
+        daily_tag = patch.daily_note_tag.strip().lstrip("#")
+        if not is_valid_body_tag(daily_tag):
+            raise HTTPException(
+                status_code=400,
+                detail="Daily tag must be letters, digits, _ / @ : or - (no spaces), "
+                       "and cannot be a sys or project@ tag.",
+            )
+        _set("vault", "daily_note_tag", daily_tag)
+    if patch.daily_note_tag_enabled is not None:
+        _set("vault", "daily_note_tag_enabled", bool(patch.daily_note_tag_enabled))
     if patch.chat_system_prompt is not None:
         _set("look", "chat_system_prompt", patch.chat_system_prompt)
     if patch.reminders_delivery is not None:
@@ -1878,11 +1898,18 @@ async def create_today_daily_note(day: Optional[str] = None, _: None = Depends(_
     + body-sacred: returns the existing note UNTOUCHED if one already matches. An explicit POST —
     never a side-effect of GET /today. Returns {id,path,title}."""
     from datetime import datetime
+    from body_tags import is_valid_body_tag
     from config import get_config
     from today_view import create_daily_note
     cfg = get_config()
     day_iso = day or datetime.now().strftime("%Y-%m-%d")
-    return create_daily_note(Path(cfg.vault.root), day_iso)
+    # SP3 Task 10: the tag is user-settable, so a hand-edited config.toml can hold anything.
+    # Re-validate here rather than trusting it: PATCH /config guards the GUI path, not the file.
+    # An invalid value degrades to no tag -- a normal outcome, never a 500 on note creation.
+    tag = cfg.vault.daily_note_tag if cfg.vault.daily_note_tag_enabled else None
+    if tag is not None and not is_valid_body_tag(tag):
+        tag = None
+    return create_daily_note(Path(cfg.vault.root), day_iso, tag=tag)
 
 
 @app.post("/note")

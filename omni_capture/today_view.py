@@ -88,7 +88,24 @@ def find_daily_note(vault_root: Path, day_iso: str) -> Optional[dict]:
 
 # Phone-parity daily template (phone `templates.ts` id "daily"): title == the ISO day, body dates
 # itself + intentions/log skeleton. One-time plain-Markdown insert; the user owns it after creation.
-_DAILY_BODY = "# {day}\n\n## Intentions\n- [ ] \n\n## Log\n"
+_DAILY_SKELETON = "\n## Intentions\n- [ ] \n\n## Log\n"
+
+
+def _daily_body(day_iso: str, tag: Optional[str]) -> str:
+    """The daily template, optionally carrying its `#<tag>` line (SP3 Task 10).
+
+    The tag goes in as ORDINARY BODY TEXT, one line under the heading -- deliberately NOT the
+    trailing machine `tags:` line (ISS-051 §3). That line is machine-managed, and
+    `mobile_sync_agent`'s enrichment pass REPLACES it wholesale
+    (`apply_trailing_tags_line(body, ["project@X"])`, mobile_sync_agent.py:1484-1487, whose own
+    `ponytail:` note says it merges only "if a second machine-owned token appears") -- so a tag
+    parked there would be silently dropped the first time a note got classified into a project.
+    Written once at creation and never rewritten: `create_daily_note` is find-or-create, so the
+    user owns this line from the moment it exists, exactly like a tag they typed themselves.
+
+    With no tag the output is BYTE-IDENTICAL to the pre-Task-10 template."""
+    head = f"# {day_iso}\n" + (f"#{tag}\n" if tag else "")
+    return head + _DAILY_SKELETON
 
 
 def _write_note_file(vault_root: Path, folder: str, title: str, body: str,
@@ -142,19 +159,30 @@ def _write_note_file(vault_root: Path, folder: str, title: str, body: str,
     return {"id": note.id, "path": str(path), "title": title}
 
 
-def create_daily_note(vault_root: Path, day_iso: str, folder: str = "Daily",
-                       now_iso: Optional[str] = None) -> dict:
+def create_daily_note(vault_root: Path, day_iso: str, folder: Optional[str] = None,
+                       now_iso: Optional[str] = None, tag: Optional[str] = None) -> dict:
     """Find-or-create the daily note for `day_iso` under `<vault>/<folder>/`.
 
     One of the two desktop note-origination paths (the other is `create_note`, always-new in
     `_loose/` — see server.py's POST /note docstring for what distinguishes them). Body sacred +
     idempotent: if a note already matches this day (S1 title-match anywhere in the vault) or a file
     already occupies the target path, that existing note is returned UNTOUCHED — this never
-    overwrites user bytes. Returns {"id", "path", "title"}. `now_iso` is injectable for tests."""
+    overwrites user bytes. Returns {"id", "path", "title"}. `now_iso` is injectable for tests.
+
+    SP3 Task 10: `folder` now defaults to `_loose/` (via `note_dir_for(None)`), not the old
+    hardcoded `"Daily"`. A daily note is not a project — post-s127 a project IS the body tag
+    `#project@<name>`, so a note written into `Daily/` with no such tag resolves loose anyway and
+    the tidy pass relocates it (measured, not assumed). Grouping is carried by the ordinary
+    descriptive `tag` instead, which is what `tag` writes. Passing `folder` explicitly still works
+    and is what the tests use to pin the old shape."""
+    from projects import note_dir_for   # function-local, matching this module's import style
+
     existing = find_daily_note(vault_root, day_iso)
     if existing:
         return existing
 
+    if folder is None:
+        folder = note_dir_for(None)
     dest = Path(vault_root) / folder
     path = dest / f"{day_iso}.md"
     if path.exists():
@@ -163,7 +191,7 @@ def create_daily_note(vault_root: Path, day_iso: str, folder: str = "Daily",
         note = parse_note(path.read_text(encoding="utf-8", newline=""))
         return {"id": note.id, "path": str(path), "title": note.title}
 
-    return _write_note_file(vault_root, folder, day_iso, _DAILY_BODY.format(day=day_iso),
+    return _write_note_file(vault_root, folder, day_iso, _daily_body(day_iso, tag),
                              filename_stem=day_iso, now_iso=now_iso)
 
 

@@ -4,6 +4,7 @@ from body_tags import (
     attachment_ref_text,
     derive_body_attachments,
     extract_body_tags,
+    is_valid_body_tag,
     parse_body_attachment_refs,
 )
 
@@ -210,3 +211,43 @@ def test_attachment_ref_text_round_trips_through_derive():
     text = attachment_ref_text("note1", "beach day.jpg", "beach")
     assert derive_body_attachments(text) == ["beach day.jpg"]
     assert parse_body_attachment_refs(text) == ["beach day.jpg"]
+
+
+# -- is_valid_body_tag (SP3 Task 10) ------------------------------------------
+# The settings field lets the user name the daily tag, so validation must agree with what the
+# scanner above ACTUALLY keeps -- including its two silent drops.
+
+def test_valid_body_tag_accepts_ordinary_shapes():
+    for t in ("daily", "work", "area/health", "@work", "project:work", "a-b", "x_1", "D"):
+        assert is_valid_body_tag(t), t
+
+
+def test_valid_body_tag_rejects_what_the_scanner_would_mangle():
+    for t in ("", "my tag", "two words", "#daily", "-lead", "/lead", "tag!", "tag.md"):
+        assert not is_valid_body_tag(t), t
+
+
+def test_valid_body_tag_rejects_the_hex_colour_silent_drop():
+    # The scanner drops these as bare colours, so saving one would give a tag line indexing nothing.
+    for t in ("abc", "fff", "a1b2c3", "DEADBE"):
+        assert not is_valid_body_tag(t), t
+    assert is_valid_body_tag("abcd")      # 4 digits is not a colour shape
+    assert is_valid_body_tag("daily")     # letters outside hex are fine
+
+
+def test_valid_body_tag_rejects_structural_tags():
+    # project@x would FILE the note into a project -- this field is never a back door into that.
+    for t in ("sys", "sys/llm-failed", "project@work", "project@_loose"):
+        assert not is_valid_body_tag(t), t
+
+
+def test_valid_body_tag_agrees_with_the_scanner_round_trip():
+    """The property that makes the two impossible to drift: a tag is valid IFF writing `#<tag>`
+    into a body yields exactly that tag back."""
+    candidates = [
+        "daily", "work", "area/health", "@work", "project:work", "a-b", "x_1", "abcd", "D",
+        "abc", "fff", "a1b2c3", "sys", "sys/x", "project@work",
+        "my tag", "", "#daily", "-lead", "tag!", "tag.md", "two words",
+    ]
+    for t in candidates:
+        assert is_valid_body_tag(t) == (extract_body_tags("#" + t) == [t]), t
