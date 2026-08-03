@@ -710,28 +710,6 @@ html, body, #root {
    board's :root block. Reused under their existing names below rather than
    adding a second pair of tokens on the same two curves. ═══════════════════ */
 
-/* Suggestion collapse (spec §8, board .disclose lines 211-215): same 1fr ->
-   0fr grid-rows technique as .sync-disclose above, but that utility opens
-   (0fr -> 1fr via [data-open]) for the sync wizard's rungs; this one starts
-   OPEN and collapses to SHUT on dismiss, and adds the opacity half spec §8
-   calls for (grid-template-rows 240ms + opacity 180ms). Scoped under a `pr-`
-   prefix, matching ProjectsRail.tsx's own scoping convention, since it is
-   the one consumer today. */
-.pr-disclose {
-  display: grid;
-  grid-template-rows: 1fr;
-  transition: grid-template-rows 240ms var(--menu-travel-ease), opacity 180ms var(--hover-ease-out);
-  flex: 0 0 auto;
-}
-.pr-disclose > * {
-  overflow: hidden;
-  min-height: 0;
-}
-.pr-disclose.pr-disclose-shut {
-  grid-template-rows: 0fr;
-  opacity: 0;
-}
-
 /* Sort icon swap (spec §8, board icPop line 280): the button "restates
  * itself" on click. Applied via a `key={sortMode}` remount in
  * ProjectsPane.tsx — the same entrance-only keyed-remount pattern as
@@ -756,16 +734,6 @@ html, body, #root {
   animation: icCycleSpin 320ms var(--menu-travel-ease) both;
 }
 
-/* Dismiss-hover pulse (spec §8, board xPulse line 209): a brief overshoot
-   scale on the suggestion box's dismiss icon, paired with the red
-   border/glow declared alongside ProjectsRail.tsx's .pr-sg-dismiss:hover
-   rule. */
-@keyframes xPulse {
-  0%   { transform: scale(1); }
-  42%  { transform: scale(1.24); }
-  100% { transform: scale(1); }
-}
-
 /* PROJECTS full-window interaction states (:hover/:focus-visible/:focus-within/
    :active) — relocated from ProjectsRail.tsx/ProjectsPane.tsx component-local
    <style> blocks. Those blocks rendered fine in `npm run dev` (devCsp allows
@@ -782,18 +750,6 @@ html, body, #root {
 .pr-tile:hover { background: var(--surface-2); }
 .pr-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .pr-newbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
-.pr-sg-create { transition: background 160ms var(--hover-ease-out), transform 120ms var(--hover-ease-out); }
-.pr-sg-create:hover { background: var(--accent); color: var(--on-accent); }
-.pr-sg-create:active { transform: scale(0.97); }
-.pr-sg-create:focus-visible { outline: 2px solid var(--text-1); outline-offset: 1px; }
-.pr-sg-rename { transition: background 160ms var(--hover-ease-out), border-color 160ms var(--hover-ease-out), transform 120ms var(--hover-ease-out); }
-.pr-sg-rename:hover { background: var(--ctl-face-hover); border-color: var(--accent); }
-.pr-sg-rename:active { transform: scale(0.96); }
-.pr-sg-rename:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.pr-sg-dismiss { transition: color 200ms var(--hover-ease-out), border-color 200ms var(--hover-ease-out), background 200ms var(--hover-ease-out), box-shadow 220ms var(--hover-ease-out); }
-.pr-sg-dismiss:hover, .pr-sg-dismiss:focus-visible { color: var(--red); border-color: var(--red); background: rgba(255,100,103,0.12); box-shadow: 0 0 0 3px rgba(255,100,103,0.10); outline: none; }
-.pr-sg-dismiss:hover svg, .pr-sg-dismiss:focus-visible svg { animation: xPulse 340ms var(--hover-ease-out); }
-.pr-sg-dismiss:active { transform: scale(0.92); }
 .pr-tagrow { transition: background 160ms var(--hover-ease-out), color 160ms var(--hover-ease-out); }
 .pr-tagrow:hover { background: var(--surface-2); color: var(--text-1); }
 .pr-tagrow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
@@ -980,12 +936,10 @@ html, body, #root {
 
   /* Sort icon swap (Projects full window, spec §8) — drop the scale/translate
      pop, instant opacity swap only, same treatment as fwViewIn/segSwapIn
-     above. icCycleSpin (rotate 0->360, visually identical at both ends) and
-     xPulse (hover-only, already collapsed by the blanket transition-duration
-     override above) need no override of their own. The FLIP re-order itself
-     never reaches this file: ProjectsPane.tsx skips the invert/play pass
-     entirely under reduced motion, so the DOM simply ends up in the new
-     order (spec §8's last row). */
+     above. icCycleSpin (rotate 0->360, visually identical at both ends) needs
+     no override of its own. The FLIP re-order itself never reaches this file:
+     ProjectsPane.tsx skips the invert/play pass entirely under reduced
+     motion, so the DOM simply ends up in the new order (spec §8's last row). */
   @keyframes icPop {
     from { opacity: 0; }
     to   { opacity: 1; }

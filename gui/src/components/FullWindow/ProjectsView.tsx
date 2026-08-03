@@ -196,12 +196,6 @@ export default function ProjectsView({ visible, onOpenNote }: Props) {
         tags={tags}
         selectedTag={selectedTag}
         onSelectTag={setSelectedTag}
-        // Presentational only (see ProjectsRail.tsx's file header) — Task 4
-        // does not call GET /inbox/{note_id}/suggest-projects or invent
-        // which note_id this screen's "one Inbox suggestion" (spec §1) is
-        // even for. That data source needs its own decision, not a guess
-        // made here; left null rather than fabricated. See this task's report.
-        suggestion={null}
         onProjectCreated={(name) => {
           // FR-04/FR-12 fix: was `onNewProject={() => {}}` — an empty stub
           // (see this file's history; the button lifted on hover and took

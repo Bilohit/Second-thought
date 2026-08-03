@@ -413,8 +413,8 @@ export function ListIcon({ size = 14 }: { size?: number }): JSX.Element {
   );
 }
 
-/** Pencil glyph — rename affordances (sub-project 3's Inbox-suggestion
- *  Rename button). */
+/** Pencil glyph — rename affordances (e.g. ProjectsPane.tsx's project
+ *  rename button). */
 export function PencilIcon({ size = 14 }: { size?: number }): JSX.Element {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

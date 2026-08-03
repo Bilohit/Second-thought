@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import ProjectsRail, { LOOSE_PROJECT_ID, type ProjectsRailSuggestion } from "./ProjectsRail";
+import ProjectsRail, { LOOSE_PROJECT_ID } from "./ProjectsRail";
 import * as api from "../../lib/api";
 import type { ProjectEntry } from "../../lib/api";
 
@@ -151,71 +151,11 @@ describe("ProjectsRail — tile counts come from projectCounts, never ProjectEnt
   });
 });
 
-describe("ProjectsRail — suggestion button geometry (spec §4.2, user-specified)", () => {
-  const SUGG: ProjectsRailSuggestion = { name: "trip-japan", fact: "3 loose captures, past 6 days, matching no project" };
-
-  it("Create and Rename are equal-width BY CONSTRUCTION (flex:1 1 0, min-width:0) regardless of label length", () => {
-    renderRail({ suggestion: SUGG });
-    const create = screen.getByRole("button", { name: /create/i });
-    const rename = screen.getByRole("button", { name: /rename/i });
-    // happy-dom's CSSOM normalizes the flex-basis component to "0px" even
-    // though the declared value was the unitless "0" — assert what the DOM
-    // actually reports, same 0-basis contract either way.
-    expect(create.style.flex).toBe("1 1 0px");
-    expect(rename.style.flex).toBe("1 1 0px");
-    expect(create.style.minWidth).toBe("0");
-    expect(rename.style.minWidth).toBe("0");
-    // Same declared height, driven by the ONE --ctl custom property (not
-    // three padding values that happen to agree).
-    expect(create.style.height).toBe("var(--ctl)");
-    expect(rename.style.height).toBe("var(--ctl)");
-  });
-
-  it("the dismiss button is a TRUE square, excluded from flex growth", () => {
-    renderRail({ suggestion: SUGG });
-    const dismiss = screen.getByRole("button", { name: "Not a project" });
-    expect(dismiss.style.width).toBe("var(--ctl)");
-    expect(dismiss.style.height).toBe("var(--ctl)");
-    expect(dismiss.style.width).toBe(dismiss.style.height);
-    expect(dismiss.style.flex).toBe("0 0 auto");
-  });
-
-  it("Create keeps the accent; Rename and the dismiss square use the raised control face (spec §4.4)", () => {
-    renderRail({ suggestion: SUGG });
-    const create = screen.getByRole("button", { name: /create/i });
-    const rename = screen.getByRole("button", { name: /rename/i });
-    const dismiss = screen.getByRole("button", { name: "Not a project" });
-    expect(create.style.background).toBe("var(--accent-glow)");
-    expect(rename.style.background).toBe("var(--ctl-face)");
-    expect(dismiss.style.background).toBe("var(--ctl-face)");
-  });
-
-  it("does not render at all when suggestion is null", () => {
-    renderRail({ suggestion: null });
-    expect(screen.queryByText("Inbox suggests")).toBeNull();
-    expect(screen.queryByRole("button", { name: /create/i })).toBeNull();
-  });
-});
-
 describe("ProjectsRail — New project is always the last thing in the rail (spec §3)", () => {
-  it("is last when no suggestion is present", () => {
-    const { container } = renderRail({ suggestion: null });
+  it("is always the last child of the rail", () => {
+    const { container } = renderRail();
     const rail = container.firstElementChild as HTMLElement;
     expect(rail.lastElementChild?.textContent).toContain("New project");
-  });
-
-  it("is still last when a suggestion IS present", () => {
-    const { container } = renderRail({
-      suggestion: { name: "trip-japan", fact: "3 loose captures" },
-    });
-    const rail = container.firstElementChild as HTMLElement;
-    expect(rail.lastElementChild?.textContent).toContain("New project");
-    // and the suggestion box sits directly above it, not above the toggle.
-    const children = Array.from(rail.children);
-    const suggIndex = children.findIndex((c) => c.textContent?.includes("Inbox suggests"));
-    const footIndex = children.findIndex((c) => c.textContent?.includes("New project"));
-    expect(suggIndex).toBeGreaterThan(-1);
-    expect(suggIndex).toBe(footIndex - 1);
   });
 });
 
