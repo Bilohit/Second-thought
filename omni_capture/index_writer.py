@@ -796,6 +796,7 @@ def search(
     since: Optional[str]    = None,
     limit: int              = 25,
     tag: Optional[str]      = None,
+    offset: int             = 0,
 ) -> list[dict]:
     """
     Search over captures, tiered and scored (P-DSEARCH).
@@ -837,6 +838,21 @@ def search(
     project   Optional exact-match filter on the `project` column.
     since     ISO-8601 timestamp lower-bound (inclusive).
     limit     Max rows to return.
+    offset    FR-27: rows to skip before *limit* is applied, for page 2+. Applied
+              AFTER this function's own tiering/scoring: each internal pass fetches
+              offset+limit rows (instead of just limit) so the globally re-sorted
+              `combined` list still has the full window available to slice
+              combined[offset:offset+limit] from -- slicing per-pass instead would
+              cut each tier's SQL ORDER BY (bm25/timestamp), not the final score
+              order, and could duplicate or skip rows across pages. Never negative
+              (clamped below). Default 0 reproduces the pre-FR-27 slice exactly
+              (combined[0:limit] == combined[:limit]), so every existing caller
+              that omits it is unaffected.
+              # ponytail: fetch_cap grows with offset, so a very deep page (large
+              # offset) makes every internal pass fetch that many more rows before
+              # the final slice -- fine at the GUI pager's realistic depths, would
+              # need a keyset/cursor pass instead of LIMIT/OFFSET if this vault's
+              # search result sets ever need page 100+.
     tag       F-4: tag filter -- the Library tags browser's "jump to filtered
               search" hand-off. Membership is resolved from the vault FILES
               (tag_index.resolve_paths), never from the `tags` column. The column
@@ -857,6 +873,8 @@ def search(
     if tag and not tag_paths:
         return []
 
+    offset = max(0, offset)
+
     # init_db is INSIDE the try: opening a corrupt db raises sqlite3.DatabaseError
     # here, before any query runs. Reads mirror the write path (log_capture_db) and
     # fail soft -- files are the source of truth and index_health is purely
@@ -874,8 +892,15 @@ def search(
         clauses, params = _row_filter_clauses(project, since, tag_paths)
         for c in clauses:
             sql += f" AND {c}"
-        sql += " ORDER BY timestamp DESC LIMIT ?"
+        # FR-27: `id DESC` is a required final tiebreaker, not cosmetic --
+        # LIMIT/OFFSET pagination is only well-defined over a fully
+        # deterministic ORDER BY. Rows sharing a timestamp (common: bulk
+        # imports, same-second captures) would otherwise let SQLite return
+        # ties in a LIMIT-size-dependent order, so different pages could
+        # arbitrarily duplicate or skip a tied row.
+        sql += " ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?"
         params.append(limit)
+        params.append(offset)
         try:
             rows = cursor.execute(sql, params).fetchall()
         except sqlite3.DatabaseError as exc:
@@ -891,6 +916,11 @@ def search(
 
     seen_paths: set[str] = set()
     combined: list[dict] = []
+    # Each pass below fetches through the END of the requested page (not just
+    # `limit`) -- see the offset docstring above: the final combined[offset:...]
+    # slice is what actually applies pagination, so every tier needs the earlier
+    # rows in-hand to be correctly out-ranked/sliced, not truncated away first.
+    fetch_cap = offset + limit
 
     def _fts_pass(match_query: str, tier: str, exclude: bool) -> None:
         sql = (
@@ -902,8 +932,12 @@ def search(
         for c in clauses:
             sql += f" AND {c}"
         params.extend(extra)
-        sql += " ORDER BY _rank ASC, c.timestamp DESC LIMIT ?"
-        params.append(limit)
+        # FR-27: same deterministic-tiebreaker requirement as the blank-query
+        # pass above -- _rank/timestamp can tie, and fetch_cap now varies by
+        # page, so an ambiguous tie order would let a row change tiers
+        # (exact <-> substring) depending on which page asked for it.
+        sql += " ORDER BY _rank ASC, c.timestamp DESC, c.id DESC LIMIT ?"
+        params.append(fetch_cap)
         try:
             rows = cursor.execute(sql, params).fetchall()
         except sqlite3.DatabaseError as exc:
@@ -939,8 +973,9 @@ def search(
     for c in clauses:
         like_sql += f" AND {c}"
     like_params.extend(extra)
-    like_sql += " ORDER BY timestamp DESC LIMIT ?"
-    like_params.append(limit)
+    # FR-27: same deterministic-tiebreaker requirement as the two passes above.
+    like_sql += " ORDER BY timestamp DESC, id DESC LIMIT ?"
+    like_params.append(fetch_cap)
     try:
         like_rows = cursor.execute(like_sql, like_params).fetchall()
     except sqlite3.DatabaseError as exc:
@@ -958,7 +993,7 @@ def search(
 
     conn.close()
     combined.sort(key=lambda d: d["score"], reverse=True)
-    return combined[:limit]
+    return combined[offset:offset + limit]
 
 
 def _binds(values) -> str:

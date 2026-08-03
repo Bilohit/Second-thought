@@ -735,6 +735,7 @@ async def search_captures(
     project: Optional[str] = None,
     since: Optional[str] = None,
     limit: int = 25,
+    offset: int = 0,
     x_log_level: Optional[str] = Header(None, alias="X-Log-Level"),
 ):
     """Unified, scored, tier-labeled search (P-DSEARCH, ISS-011/ISS-012):
@@ -744,6 +745,15 @@ async def search_captures(
     token (F-4 tags browser hand-off) -- it is stripped from the free-text match
     and applied as an exact-tag filter (and the semantic tier, which has no
     concept of tags, is skipped for a tag-only query).
+
+    FR-27 (paging): `offset` (default 0, clamped non-negative) is threaded into
+    the keyword tier ONLY (idx_search already returns its own combined/sorted
+    rows pre-sliced to [offset:offset+limit], see index_writer.search). The
+    semantic tier is a fixed top-k cosine rescue/"related" band, not a paginated
+    corpus -- it has no stable page-2 meaning, and re-running the same top-k
+    query for offset>0 would just re-surface page 1's semantic rows again, never
+    advance. It therefore only runs when offset == 0 (see the ponytail comment
+    below); offset > 0 is keyword-tier-only paging.
 
     FR-13 rescue: when the keyword tier comes back empty AND the semantic
     tier's own top candidate falls below `min_similarity` (i.e. nothing
@@ -777,10 +787,11 @@ async def search_captures(
     from look_log import debug_logging_from_level, set_look_verbose, look_debug, look_info
     set_look_verbose(debug_logging_from_level(x_log_level))
     limit = min(max(1, limit), 200)
+    offset = max(0, offset)
     free_q, tag = _extract_tag_filter(q)
-    look_debug(f"GET /search q={q!r} project={project} since={since} limit={limit} tag={tag}")
+    look_debug(f"GET /search q={q!r} project={project} since={since} limit={limit} offset={offset} tag={tag}")
     root = _srv()._get_vault_root()
-    rows = idx_search(free_q, root, project=project, since=since, limit=limit, tag=tag)
+    rows = idx_search(free_q, root, project=project, since=since, limit=limit, tag=tag, offset=offset)
     results = [_shape_search_row(r) for r in rows]
 
     cfg = get_config()
@@ -788,7 +799,13 @@ async def search_captures(
     # put `results` in its final order -- the blanket score-sort at the end
     # of this function must then be skipped, not applied on top of it.
     reranked = False
-    if free_q.strip() and cfg.vector.enabled:
+    # ponytail: semantic tier is page-1-only (FR-27) -- it's a fixed top-k
+    # cosine rescue/"related" band, not a paginated corpus, so re-querying it
+    # for offset>0 would just re-surface the same top-k rows on every page
+    # rather than advancing. If semantic pagination is ever wanted, it needs
+    # its own cursor over vector_store (a stable top-k walk), not offset
+    # threaded through here.
+    if free_q.strip() and cfg.vector.enabled and offset == 0:
         # FR-13: whether a below-floor rescue is even worth asking for depends
         # on the keyword tier, which vector_store cannot see -- so that's
         # decided here, not inside semantic_search. `results` at this point is

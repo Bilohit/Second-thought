@@ -304,6 +304,55 @@ class TestSearch(unittest.TestCase):
             results = search("anything", vault)
             self.assertEqual(results, [])
 
+    def test_offset_default_matches_pre_fr27_behavior(self):
+        """FR-27 backward-compat: omitting offset must behave byte-identically
+        to before it existed."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = _vault(Path(td))
+            self._populate(vault)
+            no_offset_kw = search("", vault, limit=2)
+            explicit_zero = search("", vault, limit=2, offset=0)
+            self.assertEqual(no_offset_kw, explicit_zero)
+
+    def test_offset_pages_through_without_repeating(self):
+        """FR-27: fetching limit=k, offset=k must return the NEXT k rows, not
+        page 1 again -- the defect this task fixes (no way to reach rows 201+
+        under the old hard limit clamp, now generalized: no way to reach rows
+        k+1..2k under any limit)."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = _vault(Path(td))
+            for i in range(6):
+                log_capture_db(
+                    _entry_index(
+                        filepath=f"/v/T/note{i}.md", filename=f"note{i}",
+                        timestamp=f"2025-01-{i + 1:02d}T00:00:00",
+                    ),
+                    vault,
+                )
+            page1 = search("", vault, limit=3, offset=0)
+            page2 = search("", vault, limit=3, offset=3)
+            self.assertEqual(len(page1), 3)
+            self.assertEqual(len(page2), 3)
+            paths1 = {r["path"] for r in page1}
+            paths2 = {r["path"] for r in page2}
+            self.assertEqual(paths1 & paths2, set(), "page 2 must not repeat page 1")
+            # Newest-first browse order: page1 = note5,4,3 ; page2 = note2,1,0.
+            self.assertEqual([r["filename"] for r in page1], ["note5", "note4", "note3"])
+            self.assertEqual([r["filename"] for r in page2], ["note2", "note1", "note0"])
+
+    def test_offset_past_end_returns_empty(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = _vault(Path(td))
+            self._populate(vault)
+            results = search("", vault, limit=10, offset=100)
+            self.assertEqual(results, [])
+
+    def test_negative_offset_clamped_to_zero(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = _vault(Path(td))
+            self._populate(vault)
+            self.assertEqual(search("", vault, limit=2, offset=-5), search("", vault, limit=2, offset=0))
+
 
 class TestTieredSearch(unittest.TestCase):
     """P-DSEARCH: substring + exact + bm25-relevance tiers (ISS-011, ISS-012)."""
@@ -372,6 +421,27 @@ class TestTieredSearch(unittest.TestCase):
             self.assertGreaterEqual(len(results), 2)
             self.assertEqual(results[0]["filename"], "rocket-heavy",
                               "bm25 relevance must win over recency")
+
+    def test_offset_pages_through_scored_tier_without_repeating(self):
+        """FR-27: pagination must hold for the bm25-scored/re-sorted path too,
+        not just the blank-query browse path -- the whole point of slicing
+        combined[offset:offset+limit] AFTER the global sort, rather than
+        offsetting each tier's own SQL independently."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = _vault(Path(td))
+            for i in range(6):
+                self._write_note(
+                    vault, "Tech_Notes", f"rocket-{i}",
+                    f"rocket rocket rocket engines variant {i}",
+                )
+            page1 = search("rocket", vault, limit=3, offset=0)
+            page2 = search("rocket", vault, limit=3, offset=3)
+            self.assertEqual(len(page1), 3)
+            self.assertEqual(len(page2), 3)
+            names1 = {r["filename"] for r in page1}
+            names2 = {r["filename"] for r in page2}
+            self.assertEqual(names1 & names2, set(), "page 2 must not repeat page 1")
+            self.assertEqual(names1 | names2, {f"rocket-{i}" for i in range(6)})
 
     def test_blank_query_still_orders_by_recency_with_null_tier(self):
         """A blank query keeps the old 'browse everything, newest first'
@@ -864,6 +934,52 @@ class TestSearchEndpoint(unittest.TestCase):
             data   = client.get("/search?q=anything").json()
             self.assertEqual(data["count"],   0)
             self.assertEqual(data["results"], [])
+
+    # GET /search?offset= — FR-27
+    def test_search_offset_pages_without_repeating(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            for i in range(6):
+                self._seed(vault, [_entry_search(filepath=f"/v/T/{i}.md", filename=str(i),
+                                                  timestamp=f"2025-01-{i + 1:02d}T00:00:00")])
+            client = self._make_client(vault)
+            page1 = client.get("/search?limit=3&offset=0").json()["results"]
+            page2 = client.get("/search?limit=3&offset=3").json()["results"]
+            self.assertEqual(len(page1), 3)
+            self.assertEqual(len(page2), 3)
+            paths1 = {r["path"] for r in page1}
+            paths2 = {r["path"] for r in page2}
+            self.assertEqual(paths1 & paths2, set(), "page 2 must not repeat page 1")
+
+    def test_search_omitting_offset_matches_explicit_zero(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            self._seed(vault, [_entry_search(filepath="/v/T/a.md", filename="a"),
+                                _entry_search(filepath="/v/T/b.md", filename="b")])
+            client = self._make_client(vault)
+            no_offset = client.get("/search").json()
+            explicit_zero = client.get("/search?offset=0").json()
+            self.assertEqual(no_offset["results"], explicit_zero["results"])
+
+    def test_search_semantic_tier_skipped_when_offset_positive(self):
+        """FR-27: the semantic rescue/related band is a fixed top-k, not a
+        paginated corpus -- it must only be computed on page 1 (offset=0),
+        never re-run (and re-surfaced) on page 2+."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            client = self._make_client(vault)
+            import vector_store
+            fake_row = {
+                "path": "Tech_Notes/related.md", "similarity": 0.87,
+                "excerpt": "…", "category": "Tech_Notes",
+            }
+            with mock.patch.object(vector_store, "semantic_search", return_value=[fake_row]) as m:
+                data = client.get("/search?q=something&offset=25").json()
+            m.assert_not_called()
+            self.assertFalse(any(r["tier"] == "semantic" for r in data["results"]))
 
     # GET /search — projects screen "recently edited" sort needs a modified field
     def test_search_result_publishes_note_mtime(self):
