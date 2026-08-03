@@ -46,14 +46,22 @@ const MAIN_VIEWS: MainView[] = ["dashboard", "look", "library", "history"];
 // into Inbox (a strip, full-window only); its Reminders/Scratchpad cards were
 // deleted outright, both already duplicated by Inbox's own Reminders tab and
 // header count.
-const TITLES: Record<RailView, [string, string]> = {
+// Task 9 (C1): "note" is deliberately absent here now -- NoteEditor's own
+// topbar content (back/title/sync/mode-toggle/external/more) is lifted into
+// this component's topbar via the `onHeaderActionsChange` slot (see
+// `noteHeaderActions` state below), the same seam InboxPanel/CompactQuickNote
+// already use for CompactShell. A fixed "Note" placeholder would be wrong the
+// instant a real note (or "New Note") is open, so the note view's title is
+// computed from `editorPath` at render time instead -- see `title`/`subtitle`
+// below -- and used only as the one-frame fallback before NoteEditor's effect
+// fires on mount.
+const TITLES: Record<Exclude<RailView, "note">, [string, string]> = {
   dashboard: ["Dashboard", "capture · recent · inbox"],
   look:      ["Look", "search · chat over vault"],
   library:   ["Vault", "projects · tags · notes"],
   history:   ["History", "daily rhythm · by project"],
   settings:  ["Settings", ""],
   inbox:     ["Inbox", "review · reminders"],
-  note:      ["Note", ""],
 };
 
 // Subset of SettingsPanel props that FullWindow receives and forwards
@@ -150,8 +158,6 @@ export default function FullWindow(props: FullWindowProps) {
     return () => ro.disconnect();
   }, [syncSlider]);
 
-  const [title, subtitle] = TITLES[view];
-
   const [syncing, setSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -195,6 +201,27 @@ export default function FullWindow(props: FullWindowProps) {
     setEditorPath(path);
     setView("note");
   }, []);
+
+  // Task 9 (C1): NoteEditor's own topbar is deleted -- it pushes its content
+  // (back/title/sync/mode-toggle/external/more) up into this component's
+  // shared topbar through `onHeaderActionsChange`, exactly the seam
+  // InboxPanel/CompactQuickNote already use to reach CompactShell's
+  // `headerActions` slot. `null` until NoteEditor's effect fires (or once it
+  // unmounts), and reset whenever the rail leaves the note view so a stale
+  // note's controls can't survive into "New Note" or a different rail tab.
+  const [noteHeaderActions, setNoteHeaderActions] = useState<React.ReactNode | null>(null);
+  useEffect(() => {
+    if (view !== "note") setNoteHeaderActions(null);
+  }, [view]);
+
+  // Task 9: "note" has no static TITLES entry (see comment above the map) --
+  // derive a real filename fallback from `editorPath` instead of a fixed
+  // placeholder. This only ever paints for the one frame before NoteEditor's
+  // own `onHeaderActionsChange` effect fires and `noteHeaderActions` above
+  // takes over rendering the topbar for real.
+  const [title, subtitle] = view === "note"
+    ? [editorPath ? (editorPath.split(/[\\/]/).pop() ?? "Note").replace(/\.md$/i, "") : "New Note", ""]
+    : TITLES[view];
 
   return (
     <div
@@ -296,9 +323,22 @@ export default function FullWindow(props: FullWindowProps) {
       <div className="fw-chrome" data-corner={props.pillCorner} style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, position: "relative" }}>
         {/* Topbar */}
         <div className="drag-region" style={{ height: 46, borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10, padding: "0 14px", flex: "none" }}>
-          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-1)" }}>{title}</span>
-          <span style={{ fontSize: 11, color: "var(--text-3)" }}>{subtitle}</span>
-          <span style={{ flex: 1 }} />
+          {view === "note" ? (
+            // Task 9 (C1): NoteEditor supplies its whole row (back/title/sync/
+            // mode-toggle/external/more) through the slot -- this wrapper only
+            // provides `no-drag` (a "drag-region" ancestor would otherwise eat
+            // clicks on the lifted buttons) and the fallback title for the one
+            // frame before that content arrives.
+            <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
+              {noteHeaderActions ?? <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-1)" }}>{title}</span>}
+            </div>
+          ) : (
+            <>
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-1)" }}>{title}</span>
+              <span style={{ fontSize: 11, color: "var(--text-3)" }}>{subtitle}</span>
+              <span style={{ flex: 1 }} />
+            </>
+          )}
           {view === "look" && (
             <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <button
@@ -407,6 +447,7 @@ export default function FullWindow(props: FullWindowProps) {
               path={editorPath}
               onClose={() => { setView("dashboard"); setEditorPath(null); }}
               onOpenExternal={props.onOpenFile}
+              onHeaderActionsChange={setNoteHeaderActions}
             />
           </div>
         )}

@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { useState, type ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -41,11 +42,31 @@ const noteFixture: NoteContent = {
   has_frontmatter: true,
 };
 
+// Task 9 (C1): NoteEditor no longer renders its own topbar/corner-menu inline
+// -- back/title/sync/mode-toggle/external/more now only reach the DOM via
+// `onHeaderActionsChange`, the slot FullWindow's real topbar consumes. `Host`
+// stands in for that consumer here so the DOM-query-based tests below (many
+// of which target "More"/"Back"/"Switch to view" etc.) keep working
+// unmodified: it just renders whatever NoteEditor hands it next to the editor
+// itself, the same shape FullWindow renders it in (a sibling, not a nested
+// child of the dialog).
+function Host({
+  path, onClose, onOpenExternal,
+}: { path: string | null; onClose: () => void; onOpenExternal: (path: string) => void }) {
+  const [headerActions, setHeaderActions] = useState<ReactNode>(null);
+  return (
+    <>
+      <div>{headerActions}</div>
+      <NoteEditor open path={path} onClose={onClose} onOpenExternal={onOpenExternal} onHeaderActionsChange={setHeaderActions} />
+    </>
+  );
+}
+
 function renderEditor(path = "Test/note.md") {
   const onClose = vi.fn();
   const onOpenExternal = vi.fn();
   const utils = render(
-    <NoteEditor open path={path} onClose={onClose} onOpenExternal={onOpenExternal} />,
+    <Host path={path} onClose={onClose} onOpenExternal={onOpenExternal} />,
   );
   return { ...utils, onClose, onOpenExternal };
 }
@@ -188,7 +209,7 @@ describe("NoteEditor — menu reset on note switch + outside click", () => {
       path: "Test/other.md",
       title: "Other Note",
     });
-    rerender(<NoteEditor open path="Test/other.md" onClose={onClose} onOpenExternal={onOpenExternal} />);
+    rerender(<Host path="Test/other.md" onClose={onClose} onOpenExternal={onOpenExternal} />);
     await screen.findByRole("heading", { name: "Other Note" });
 
     expect(screen.getByRole("button", { name: "More" }).getAttribute("aria-expanded")).toBe("false");

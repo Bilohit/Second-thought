@@ -35,13 +35,21 @@ import { parseBlocks } from "../lib/markdown";
 const TRAVEL = "cubic-bezier(0.22,1,0.36,1)";
 const SETTLE = "cubic-bezier(0.16,1,0.3,1)";
 const DUR = 260;
-// Corner overflow-menu column width: the More/external-editor buttons stack
-// vertically (menuBtnStyle's column), so the column is one 26px button wide,
-// not two side by side. Shared by drawerStyle so the drawer's right edge
-// always tracks the menu column instead of drifting from a stale hardcoded
-// value (Finding 7 -- the old value, 48, was sized for the deleted
+// Corner overflow-menu column width. Originally the width of the vertically-
+// stacked More/external-editor button column that used to live at the right
+// edge of the body row; Task 9 moved those buttons into FullWindow's topbar,
+// but the format toolbar and drawer still stop this far short of the body's
+// right edge for the same visual clearance. Shared by drawerStyle so the
+// drawer's right edge always tracks it instead of drifting from a stale
+// hardcoded value (Finding 7 -- the old value, 48, was sized for the deleted
 // Instrument rail).
 const CORNER_MENU_WIDTH = 26;
+// Task 10 (E): the format toolbar's clipping edge box width AND the distance
+// the toolbar translates to hide itself off that edge -- these two used to be
+// the same "46" written twice with nothing forcing them to agree (that
+// mismatch was the peek-edge bug). One constant, used in both fmtEdgeStyle
+// and toolbarColStyle below.
+const TOOLBAR_EDGE_W = 52;
 // Autosave debounce + failure backoff live in lib/saveRetry.ts (GUI-18).
 
 interface NoteEditorProps {
@@ -49,6 +57,13 @@ interface NoteEditorProps {
   path: string | null;
   onClose: () => void;
   onOpenExternal: (path: string) => void;
+  /** Task 9 (C1): NoteEditor no longer owns its own top bar -- FullWindow's
+   *  shared topbar hosts it instead, the same seam InboxPanel/CompactQuickNote
+   *  already use to lift controls into CompactShell's `headerActions` slot.
+   *  Receives the back control, note title, sync state, and (once a note is
+   *  loaded) the mode toggle / open-external / more-menu trio, or `null` on
+   *  unmount. */
+  onHeaderActionsChange?: (actions: React.ReactNode | null) => void;
 }
 
 // -- local icons (feature-specific glyphs; Bell/Clock reused from PillMenu/icons.tsx) --
@@ -230,7 +245,7 @@ const FMT_ORDER: { kind: FormatKind; label: string; Icon: (p: { size?: number })
 
 type DrawerKey = "meta" | "conn" | "remind" | "history";
 
-export default function NoteEditor({ open, path, onClose, onOpenExternal }: NoteEditorProps) {
+export default function NoteEditor({ open, path, onClose, onOpenExternal, onHeaderActionsChange }: NoteEditorProps) {
   const [visible, setVisible] = useState(false);
   const [note, setNote] = useState<NoteContent | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -670,6 +685,146 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
       .finally(() => { creatingRef.current = false; });
   }, [note]);
 
+  // -- Task 9 (C1): header controls, lifted into FullWindow's shared topbar --
+  // These styles used to live in the "-- styles --" block below (they were
+  // NoteEditor's own topbar/corner-menu). They move up here, above the
+  // `if (!open) return null` early return, because the effect that forwards
+  // them via `onHeaderActionsChange` is a hook and every hook in this
+  // component must run unconditionally on every render (same reason all the
+  // other useState/useEffect calls above are unconditional too).
+  const iconBtnStyle: CSSProperties = {
+    width: 28, height: 28, display: "inline-flex", alignItems: "center", justifyContent: "center",
+    background: "none", border: "1px solid transparent", color: "var(--text-2)", cursor: "pointer",
+    transition: `color ${DUR}ms ${SETTLE}, border-color ${DUR}ms ${SETTLE}`,
+  };
+  const titleStyle: CSSProperties = {
+    fontSize: 14, fontWeight: 600, letterSpacing: "-0.02em", color: "var(--text-1)",
+    flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  };
+  const dotColor = saveState === "conflict" ? "var(--red)" : saveState === "saving" ? "var(--yellow)" : "var(--green)";
+  const syncLabel = saveState === "conflict" ? "conflict" : saveState === "saving" ? "saving" : saveState === "error" ? "save failed" : "synced";
+  const syncStyle: CSSProperties = { display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-3)" };
+  const dotStyle: CSSProperties = { width: 6, height: 6, borderRadius: "50%", background: dotColor, transition: `background ${DUR}ms ${SETTLE}` };
+  const menuBtnStyle = (active: boolean): CSSProperties => ({
+    width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
+    color: active ? "var(--text-1)" : "var(--text-2)",
+    // Finding 4 (re-review): only set an inline background for the active
+    // state, which should dominate over hover -- leaving it unset otherwise
+    // lets .ne-toolbar-btn:hover apply (an inline style always beats a class rule).
+    background: active ? "var(--surface)" : undefined,
+    border: `1px solid ${active ? "var(--accent)" : "transparent"}`, cursor: "pointer",
+    transition: `background 160ms ${SETTLE}, border-color 160ms ${SETTLE}, color 160ms ${SETTLE}`,
+  });
+  // Re-anchored (Task 9): used to hang off the old vertically-stacked
+  // corner column at a hardcoded `top:56`. Now anchored to its own
+  // `position:relative` wrapper (just the "More" button, 26px tall)
+  // wherever FullWindow's topbar happens to place it, so it tracks the
+  // button instead of a value sized for the deleted layout.
+  const menuDropStyle = (open: boolean): CSSProperties => ({
+    position: "absolute", top: "calc(100% + 8px)", right: 0, width: 138, background: "var(--surface)",
+    border: "1px solid var(--border)", zIndex: 20, boxShadow: "0 8px 20px rgba(0,0,0,0.35)",
+    opacity: open ? 1 : 0, transform: open ? "translateY(0) scale(1)" : "translateY(-6px) scale(0.98)",
+    pointerEvents: open ? "auto" : "none",
+    transition: `opacity ${reducedMotion ? 1 : 190}ms ${SETTLE}, transform ${reducedMotion ? 1 : 190}ms ${SETTLE}`,
+  });
+  const menuRowStyle: CSSProperties = {
+    display: "flex", alignItems: "center", gap: 9, padding: "7px 11px", fontSize: 11.5,
+    color: "var(--text-2)", cursor: "pointer", width: "100%", textAlign: "left",
+    // Finding 4 (re-review): background reset moved to the .ne-menu-row base
+    // rule in index.css -- an inline "none" here would beat :hover the same
+    // way it beat :active before.
+    border: "none", font: "inherit",
+    transition: `background 140ms ${SETTLE}, color 140ms ${SETTLE}`,
+  };
+
+  // Back, title, sync, then (once a note is loaded) the mode toggle /
+  // open-external / more-menu trio -- left to right, matching the locked
+  // order (fork C1). Built fresh every render like InboxPanel's own
+  // `headerActionButtons`; the effect below doesn't list every closure this
+  // captures (note/mode/menuOpen/pinnedDrawer/...) as a dep for the same
+  // reason InboxPanel's doesn't -- they're always current at call time.
+  const headerActions = (
+    <>
+      <button style={iconBtnStyle} onClick={onClose} aria-label="Back" title="Back">
+        <IconBack />
+      </button>
+      <span style={titleStyle}>{note?.title ?? "…"}</span>
+      <span style={syncStyle}><span style={dotStyle} /> {syncLabel}</span>
+      {note && (
+        <>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={attachFilter}
+            style={{ display: "none" }}
+            onChange={(e) => { handleAttachFile(e.target.files?.[0] ?? null); e.target.value = ""; }}
+          />
+          <button
+            style={iconBtnStyle}
+            onClick={() => setMode((m) => (m === "view" ? "edit" : "view"))}
+            aria-label={mode === "view" ? "Switch to edit" : "Switch to view"}
+            title={mode === "view" ? "Switch to edit" : "Switch to view"}
+          >
+            {mode === "view" ? <IconPencil size={15} /> : <IconEye size={15} />}
+          </button>
+          <button className="ne-toolbar-btn" style={menuBtnStyle(false)} aria-label="Open in external editor" title="Open in your set markdown editor"
+            onClick={() => onOpenExternal(note.path)}
+          >
+            <IconExternal />
+          </button>
+          {/* Corner overflow menu (replaces the old always-visible Instrument rail) */}
+          <div style={{ position: "relative" }}>
+            <button className="ne-toolbar-btn" style={menuBtnStyle(menuOpen)} aria-label="More" aria-haspopup="true" aria-expanded={menuOpen}
+              onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
+            >
+              <MoreIcon size={16} />
+            </button>
+            {/* ponytail: Connections and Outline both open the existing combined "conn" drawer
+                rather than splitting ConnectionsDrawer's content into two components. Two menu
+                entries satisfy the phone-parity ask without a drawer-content refactor; split the
+                drawer for real if Outline needs its own scroll position or the combined view gets
+                too busy. */}
+            <div style={menuDropStyle(menuOpen)} role="menu" aria-hidden={!menuOpen}>
+              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("remind"); }}>
+                <BellIcon size={13} />Reminder
+              </button>
+              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); if (pinnedDrawer !== "conn") togglePin("conn"); }}>
+                <IconConnections size={13} />Connections
+              </button>
+              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); if (pinnedDrawer !== "conn") togglePin("conn"); }}>
+                <OutlineIcon size={13} />Outline
+              </button>
+              {historyStatus !== "offline" && (
+                <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("history"); }}>
+                  <ClockIcon size={13} />History
+                </button>
+              )}
+              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("meta"); }}>
+                <IconMeta size={13} />Metadata
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </>
+  );
+
+  useEffect(() => {
+    onHeaderActionsChange?.(open ? headerActions : null);
+    return () => onHeaderActionsChange?.(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onHeaderActionsChange, open, note, mode, saveState, menuOpen, pinnedDrawer, historyStatus, attachFilter]);
+  // `onClose`/`onOpenExternal` are deliberately NOT in the deps above: FullWindow
+  // passes `onClose` as a fresh inline arrow every render (not useCallback'd),
+  // so listing it here would re-fire this effect -> re-push a new headerActions
+  // object -> parent re-renders -> a new `onClose` reference -> loop, forever.
+  // Both closures are read directly out of the current render's props inside
+  // `headerActions` above (always current), and neither closes over anything
+  // that varies independently of the state already listed, so omitting them
+  // costs nothing -- the one thing it can't do is decide to skip a push that
+  // was otherwise needed, since `note`/`mode`/etc. already cover every case
+  // where the *content* of a click handler actually changes.
+
   if (!open) return null;
 
   const activeDrawer = pinnedDrawer;
@@ -688,23 +843,6 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     pointerEvents: visible ? "auto" : "none",
     transition: `opacity ${reducedMotion ? 1 : DUR}ms ${TRAVEL}, transform ${reducedMotion ? 1 : DUR}ms ${TRAVEL}`,
   };
-  const topbarStyle: CSSProperties = {
-    display: "flex", alignItems: "center", gap: 10, padding: "0 14px",
-    height: 46, borderBottom: "1px solid var(--border-2)", flex: "none",
-  };
-  const iconBtnStyle: CSSProperties = {
-    width: 28, height: 28, display: "inline-flex", alignItems: "center", justifyContent: "center",
-    background: "none", border: "1px solid transparent", color: "var(--text-2)", cursor: "pointer",
-    transition: `color ${DUR}ms ${SETTLE}, border-color ${DUR}ms ${SETTLE}`,
-  };
-  const titleStyle: CSSProperties = {
-    fontSize: 14, fontWeight: 600, letterSpacing: "-0.02em", color: "var(--text-1)",
-    flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-  };
-  const dotColor = saveState === "conflict" ? "var(--red)" : saveState === "saving" ? "var(--yellow)" : "var(--green)";
-  const syncLabel = saveState === "conflict" ? "conflict" : saveState === "saving" ? "saving" : saveState === "error" ? "save failed" : "synced";
-  const syncStyle: CSSProperties = { display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-3)" };
-  const dotStyle: CSSProperties = { width: 6, height: 6, borderRadius: "50%", background: dotColor, transition: `background ${DUR}ms ${SETTLE}` };
 
   const bodyRowStyle: CSSProperties = { flex: 1, minHeight: 0, display: "flex", position: "relative" };
   const contentStyle: CSSProperties = { flex: 1, minWidth: 0, overflowY: "auto", position: "relative" };
@@ -715,32 +853,6 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     font: "inherit", fontSize: 13.5, lineHeight: 1.75, resize: "none", padding: 0, outline: "none",
   };
 
-  const menuBtnStyle = (active: boolean): CSSProperties => ({
-    width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
-    color: active ? "var(--text-1)" : "var(--text-2)",
-    // Finding 4 (re-review): only set an inline background for the active
-    // state, which should dominate over hover -- leaving it unset otherwise
-    // lets .ne-toolbar-btn:hover apply (an inline style always beats a class rule).
-    background: active ? "var(--surface)" : undefined,
-    border: `1px solid ${active ? "var(--accent)" : "transparent"}`, cursor: "pointer",
-    transition: `background 160ms ${SETTLE}, border-color 160ms ${SETTLE}, color 160ms ${SETTLE}`,
-  });
-  const menuDropStyle = (open: boolean): CSSProperties => ({
-    position: "absolute", top: 56, right: 0, width: 138, background: "var(--surface)",
-    border: "1px solid var(--border)", zIndex: 20, boxShadow: "0 8px 20px rgba(0,0,0,0.35)",
-    opacity: open ? 1 : 0, transform: open ? "translateY(0) scale(1)" : "translateY(-6px) scale(0.98)",
-    pointerEvents: open ? "auto" : "none",
-    transition: `opacity ${reducedMotion ? 1 : 190}ms ${SETTLE}, transform ${reducedMotion ? 1 : 190}ms ${SETTLE}`,
-  });
-  const menuRowStyle: CSSProperties = {
-    display: "flex", alignItems: "center", gap: 9, padding: "7px 11px", fontSize: 11.5,
-    color: "var(--text-2)", cursor: "pointer", width: "100%", textAlign: "left",
-    // Finding 4 (re-review): background reset moved to the .ne-menu-row base
-    // rule in index.css -- an inline "none" here would beat :hover the same
-    // way it beat :active before.
-    border: "none", font: "inherit",
-    transition: `background 140ms ${SETTLE}, color 140ms ${SETTLE}`,
-  };
   const drawerStyle: CSSProperties = {
     position: "absolute", top: 0, right: CORNER_MENU_WIDTH, bottom: 0,
     width: drawerOpen ? 236 : 0, overflow: "hidden",
@@ -755,7 +867,14 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
 
   // Finding 1: anchored against bodyRowStyle (non-scrolling), offset from the
   // right by the corner-menu column's width so the two zones never overlap.
-  const fmtEdgeStyle: CSSProperties = { position: "absolute", top: 0, right: CORNER_MENU_WIDTH, bottom: 0, width: 46 };
+  // Task 10 (E): `overflow: hidden` is the actual fix for the peek-edge bug --
+  // nothing local clipped the translated-out toolbar before (only `fw-shell`
+  // at the very top of the tree did), so it always showed a sliver at the
+  // body's right edge even fully "hidden". The peek arrow (`peekArrowStyle`
+  // below) sits at `right:6` inside this box, well within its bounds, so it
+  // stays visible after the clip -- only the toolbar column, which
+  // deliberately translates itself past the box's right edge, gets cut off.
+  const fmtEdgeStyle: CSSProperties = { position: "absolute", top: 0, right: CORNER_MENU_WIDTH, bottom: 0, width: TOOLBAR_EDGE_W, overflow: "hidden" };
   const peekArrowStyle: CSSProperties = {
     position: "absolute", top: "50%", right: 6,
     width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center",
@@ -766,7 +885,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
   const toolbarColStyle: CSSProperties = {
     position: "absolute", top: "50%", right: 8, display: "flex", flexDirection: "column",
     alignItems: "stretch", gap: 5,
-    transform: toolbarOut ? "translate(0px, -50%)" : "translate(46px, -50%)",
+    transform: toolbarOut ? "translate(0px, -50%)" : `translate(${TOOLBAR_EDGE_W}px, -50%)`,
     transition: `transform ${reducedMotion ? 1 : 260}ms ${SETTLE}`,
     pointerEvents: toolbarOut ? "auto" : "none",
   };
@@ -799,32 +918,6 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
 
   return (
     <div style={wrapStyle} role="dialog" aria-label="Note editor">
-      <div style={topbarStyle} className="no-drag">
-        <button style={iconBtnStyle} onClick={onClose} aria-label="Back" title="Back">
-          <IconBack />
-        </button>
-        <span style={titleStyle}>{note?.title ?? "…"}</span>
-        {note && (
-          <>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={attachFilter}
-              style={{ display: "none" }}
-              onChange={(e) => { handleAttachFile(e.target.files?.[0] ?? null); e.target.value = ""; }}
-            />
-            <button
-              style={iconBtnStyle}
-              onClick={() => setMode((m) => (m === "view" ? "edit" : "view"))}
-              aria-label={mode === "view" ? "Switch to edit" : "Switch to view"}
-              title={mode === "view" ? "Switch to edit" : "Switch to view"}
-            >
-              {mode === "view" ? <IconPencil size={15} /> : <IconEye size={15} />}
-            </button>
-          </>
-        )}
-        <span style={syncStyle}><span style={dotStyle} /> {syncLabel}</span>
-      </div>
       {attachError && (
         <div style={{ padding: "4px 14px", fontSize: 11, color: "var(--red)" }}>{attachError}</div>
       )}
@@ -942,7 +1035,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
                 <div style={fmtStripStyle}>
                   {FMT_ORDER.map(({ kind, label, Icon }) => (
                     <button key={kind} className="ne-toolbar-btn" style={fmtRowStyle(kind)} aria-label={label} title={label} onClick={() => applyFmt(kind)}>
-                      <Icon size={13} />
+                      <Icon size={19} />
                     </button>
                   ))}
                   <button
@@ -950,14 +1043,14 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
                     aria-label="Attach voice memo" title="Attach voice memo" disabled={attachBusy}
                     onClick={() => { flushSync(() => setAttachFilter("audio/*")); fileInputRef.current?.click(); }}
                   >
-                    <MicIcon size={13} />
+                    <MicIcon size={19} />
                   </button>
                   <button
                     className="ne-toolbar-btn" style={{ ...attachRowStyle, borderBottom: "none" }}
                     aria-label="Attach photo" title="Attach photo" disabled={attachBusy}
                     onClick={() => { flushSync(() => setAttachFilter("image/*")); fileInputRef.current?.click(); }}
                   >
-                    <CameraIcon size={13} />
+                    <CameraIcon size={19} />
                   </button>
                 </div>
               )}
@@ -968,48 +1061,13 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
                 title={toolbarLocked ? "Unlock toolbar" : "Lock toolbar open"}
                 onClick={toggleToolbarLock}
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+                {/* Task 10 (E): was hardcoded 12x12 with no size prop -- the odd one
+                    out once the other toolbar icons grew 13px -> 19px. Scaled by the
+                    same ~1.46x so it stays proportional, not just re-picked to look right. */}
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
                   <rect x="5" y="10.5" width="14" height="9" rx="0.5" />
                   <path d={toolbarLocked ? "M8 10.5V7a4 4 0 0 1 8 0v3.5" : "M8 10.5V7a4 4 0 0 1 8 0"} />
                 </svg>
-              </button>
-            </div>
-          </div>
-
-          {/* Corner overflow menu (replaces the old always-visible Instrument rail) */}
-          <div style={{ position: "relative" }}>
-            <button className="ne-toolbar-btn" style={menuBtnStyle(menuOpen)} aria-label="More" aria-haspopup="true" aria-expanded={menuOpen}
-              onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
-            >
-              <MoreIcon size={16} />
-            </button>
-            <button className="ne-toolbar-btn" style={menuBtnStyle(false)} aria-label="Open in external editor" title="Open in your set markdown editor"
-              onClick={() => onOpenExternal(note.path)}
-            >
-              <IconExternal />
-            </button>
-            {/* ponytail: Connections and Outline both open the existing combined "conn" drawer
-                rather than splitting ConnectionsDrawer's content into two components. Two menu
-                entries satisfy the phone-parity ask without a drawer-content refactor; split the
-                drawer for real if Outline needs its own scroll position or the combined view gets
-                too busy. */}
-            <div style={menuDropStyle(menuOpen)} role="menu" aria-hidden={!menuOpen}>
-              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("remind"); }}>
-                <BellIcon size={13} />Reminder
-              </button>
-              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); if (pinnedDrawer !== "conn") togglePin("conn"); }}>
-                <IconConnections size={13} />Connections
-              </button>
-              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); if (pinnedDrawer !== "conn") togglePin("conn"); }}>
-                <OutlineIcon size={13} />Outline
-              </button>
-              {historyStatus !== "offline" && (
-                <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("history"); }}>
-                  <ClockIcon size={13} />History
-                </button>
-              )}
-              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("meta"); }}>
-                <IconMeta size={13} />Metadata
               </button>
             </div>
           </div>
