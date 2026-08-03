@@ -96,7 +96,7 @@ interface Props {
   activeTarget?: MenuTarget | null;
   onToggle: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
-  onSelect: (target: Exclude<MenuTarget, "hide">) => void;
+  onSelect: (target: MenuTarget) => void;
   onHide: () => void;
   /** P1-5: the bar's own toggle button, so Escape can restore focus to the
    *  control that opened the menu instead of leaving it wherever the last
@@ -111,7 +111,10 @@ interface Props {
   sampleRate?: number;
 }
 
-export default function CapsuleMenu({ open, corner, label, dotColor, isActive, llmStatus, inboxCount, draggable, dragging, onDragPointerDown, nearEdge, exiting = false, shown = true, panelZone, activeTarget = null, onToggle, onContextMenu, onSelect, onHide, toggleRef, voicePhase, voiceElapsedMs, readWaveform, readSpectrum, sampleRate }: Props) {
+// onHide: no menu item calls it any more (the hide item is deleted, s135) —
+// kept as a still-typed, unused prop rather than deleted so the prop-drilling
+// chain from App.tsx survives intact for whichever task next needs it.
+export default function CapsuleMenu({ open, corner, label, dotColor, isActive, llmStatus, inboxCount, draggable, dragging, onDragPointerDown, nearEdge, exiting = false, shown = true, panelZone, activeTarget = null, onToggle, onContextMenu, onSelect, onHide: _onHide, toggleRef, voicePhase, voiceElapsedMs, readWaveform, readSpectrum, sampleRate }: Props) {
   const isRecording = voicePhase === "recording";
   const sliderRef = useRef<HTMLSpanElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -250,9 +253,7 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
       )}
       <div role="menu" aria-label="Second Thought actions" className="capsule-items">
         {ALL_TARGETS.map((id, i) => {
-          const isHide = id === "hide";
           const showBadge = id === "inbox" && inboxCount > 0;
-          const activate = () => { isHide ? onHide() : onSelect(id); };
           return (
             <button
               key={id}
@@ -260,14 +261,14 @@ export default function CapsuleMenu({ open, corner, label, dotColor, isActive, l
               ref={(el) => { itemRefs.current[i] = el; }}
               role="menuitem"
               tabIndex={open ? 0 : -1}
-              className={`capsule-item no-drag${isHide ? " capsule-item-hide" : ""}${activeTarget === id ? " active" : ""}`}
+              className={`capsule-item no-drag${activeTarget === id ? " active" : ""}`}
               style={{ transitionDelay: `${delays[i]}ms` }}
               aria-label={showBadge ? `${MENU_LABELS[id]}, ${inboxCount} item${inboxCount === 1 ? "" : "s"} need review` : MENU_LABELS[id]}
               title={MENU_LABELS[id]}
-              onClick={(e) => { e.stopPropagation(); activate(); }}
+              onClick={(e) => { e.stopPropagation(); onSelect(id); }}
               onMouseEnter={() => showSliderAt(itemRefs.current[i])}
               onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); activate(); }
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(id); }
                 // P1-5: trap Tab/Shift+Tab inside the open bar instead of
                 // letting it escape to whatever follows in the DOM.
                 else if (e.key === "Tab") {

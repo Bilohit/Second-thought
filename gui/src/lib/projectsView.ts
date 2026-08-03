@@ -78,6 +78,23 @@ export function sortNotes<T extends SortableNote>(rows: readonly T[], mode: Sort
   return indexed.map((entry) => entry.row);
 }
 
+/** Mirrors `omni_capture/projects.py`'s `_VALID_NAME` regex exactly — a
+ *  project name is simultaneously a tag suffix, a `.projects.toml` key and a
+ *  vault directory name, so it is narrower than the general tag grammar
+ *  (contract §1.3's comment on `_VALID_NAME`). The leading-character rule
+ *  also makes every reserved `_`-prefixed hub folder (`_loose`, `_trash`,
+ *  `_attachments`, `_mobile_inbox`) unreachable as a project name, since none
+ *  of them can start with an alphanumeric. This is a client-side pre-check
+ *  only — the server (`vault_admin.py`'s create-project route, backed by
+ *  this same regex) remains the authority; a name that somehow slips past
+ *  this check still gets rejected server-side and surfaces via the normal
+ *  `assertOk` error message. */
+const VALID_PROJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+export function isValidProjectName(name: string): boolean {
+  return VALID_PROJECT_NAME.test(name);
+}
+
 /** Index's internal sentinel for "no project" is the literal string
  *  "_loose" — no surface may ever render that token to the user. Maps it
  *  (and a null/empty project, which means the same thing: an unfiled row)
@@ -85,6 +102,21 @@ export function sortNotes<T extends SortableNote>(rows: readonly T[], mode: Sort
 export function displayProject(value: string | null | undefined): string {
   if (!value || value === "_loose") return "loose";
   return value;
+}
+
+/** Builds the exact `#project@<name>` tag text a user pastes into a note's
+ *  body to file it under `name` (the tag IS the source of truth — see
+ *  `displayProject`'s comment above and `omni_capture/projects.py`'s
+ *  `_PROJECT_TAG` regex, which this string must stay byte-for-byte
+ *  parseable by). Returns `null` for the `_loose` sentinel or an empty/
+ *  missing name: a note with no project has no tag to copy, and building
+ *  `#project@_loose` would leak an internal sentinel into the clipboard and
+ *  claim a "loose" note can be filed by pasting a tag — it can't, loose has
+ *  no tag at all. Callers must treat `null` as "render no copy affordance",
+ *  never fall back to a placeholder string. */
+export function projectTagString(name: string | null | undefined): string | null {
+  if (!name || name === "_loose") return null;
+  return `#project@${name}`;
 }
 
 /** Server-side hard clamp on GET /search: a result set at or above this

@@ -13,6 +13,11 @@ import ProjectsPane from "./ProjectsPane";
 import { LOOSE_PROJECT_ID } from "./ProjectsRail";
 import * as api from "../../lib/api";
 import type { ProjectEntry, SearchResult } from "../../lib/api";
+import * as clipboard from "@tauri-apps/plugin-clipboard-manager";
+
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
+  writeText: vi.fn(),
+}));
 
 vi.mock("../../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/api")>();
@@ -23,6 +28,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     renameProject: vi.fn(),
     deleteProject: vi.fn(),
     updateProjectDescription: vi.fn(),
+    moveToTrash: vi.fn(),
   };
 });
 
@@ -54,6 +60,8 @@ beforeEach(() => {
   vi.mocked(api.renameProject).mockResolvedValue(undefined);
   vi.mocked(api.deleteProject).mockResolvedValue(undefined);
   vi.mocked(api.updateProjectDescription).mockResolvedValue(undefined);
+  vi.mocked(api.moveToTrash).mockResolvedValue({ ok: true, filename: "a.md", trashed_path: "_trash/a.md" });
+  vi.mocked(clipboard.writeText).mockResolvedValue(undefined);
 });
 
 function renderPane(props: Partial<React.ComponentProps<typeof ProjectsPane>> = {}) {
@@ -119,7 +127,8 @@ describe("ProjectsPane — head variants (spec §6)", () => {
     vi.mocked(api.notesForProject).mockResolvedValue([row({}), row({ path: "b.md", filename: "b.md" })]);
     renderPane({ projects: [], selectedId: LOOSE_PROJECT_ID });
     expect(await screen.findByText("No projects yet")).toBeTruthy();
-    expect(screen.getByText(/All 2 of your notes are loose/)).toBeTruthy();
+    expect(screen.getByText(/All\s*2\s*of your notes are loose/)).toBeTruthy();
+    expect(screen.getByText("#project@name")).toBeTruthy();
   });
 
   it("loose head reads 'loose' and 'no project tag, nothing to set up' — no rename/delete/description (spec §4.8)", async () => {
@@ -145,19 +154,19 @@ describe("ProjectsPane — the description field (spec §4.6: no gauge, saves as
   it("never renders a quality/match-score gauge — only the honest one-line note", async () => {
     renderPane({ projects: [project({ description: "Something." })] });
     await screen.findByLabelText("Project description");
-    expect(screen.getByText("This is what your phone matches new notes against.")).toBeTruthy();
+    expect(screen.getByText("New captures are matched against this text — on this device, or a phone, if you use one.")).toBeTruthy();
     expect(screen.queryByText(/%/)).toBeNull();
     expect(screen.queryByRole("progressbar")).toBeNull();
   });
 
   it("shows the yellow empty variant when the description is blank", async () => {
     renderPane({ projects: [project({ description: "" })] });
-    expect(await screen.findByText("Empty. Your phone has nothing to match new notes against yet.")).toBeTruthy();
+    expect(await screen.findByText("Empty. Nothing to match new captures against yet.")).toBeTruthy();
   });
 
   it("a whitespace-only description counts as empty", async () => {
     renderPane({ projects: [project({ description: "   " })] });
-    expect(await screen.findByText("Empty. Your phone has nothing to match new notes against yet.")).toBeTruthy();
+    expect(await screen.findByText("Empty. Nothing to match new captures against yet.")).toBeTruthy();
   });
 
   it("has no Save button — saves debounced as you type", async () => {
@@ -190,6 +199,52 @@ describe("ProjectsPane — the description field (spec §4.6: no gauge, saves as
     await vi.advanceTimersByTimeAsync(600);
     expect(api.updateProjectDescription).toHaveBeenCalledTimes(1);
     expect(api.updateProjectDescription).toHaveBeenCalledWith("research", "abc");
+  });
+});
+
+describe("ProjectsPane — FR-21: copy-the-tag affordance (board: Fork 3 Option A)", () => {
+  it("renders the exact #project@<name> tag and copies it via the clipboard-manager plugin, writing nothing to any note", async () => {
+    renderPane({ projects: [project({ name: "kitchen-remodel" })], selectedId: "kitchen-remodel" });
+    await screen.findByText("kitchen-remodel");
+    expect(screen.getByText("project@kitchen-remodel")).toBeTruthy();
+
+    const copyBtn = screen.getByRole("button", { name: "Copy tag #project@kitchen-remodel" });
+    fireEvent.click(copyBtn);
+
+    await vi.waitFor(() => expect(clipboard.writeText).toHaveBeenCalledWith("#project@kitchen-remodel"));
+    // The chip's own click handler never calls any api.ts mutation — the
+    // only writes this test's mocked surface would catch (rename/delete/
+    // description/moveToTrash) must all stay untouched by a tag copy.
+    expect(api.renameProject).not.toHaveBeenCalled();
+    expect(api.deleteProject).not.toHaveBeenCalled();
+    expect(api.updateProjectDescription).not.toHaveBeenCalled();
+    expect(api.moveToTrash).not.toHaveBeenCalled();
+  });
+
+  it("swaps to a distinct copied state (icon + label, not color alone) after a successful copy", async () => {
+    renderPane({ projects: [project({ name: "kitchen-remodel" })], selectedId: "kitchen-remodel" });
+    const copyBtn = await screen.findByRole("button", { name: "Copy tag #project@kitchen-remodel" });
+    fireEvent.click(copyBtn);
+    await screen.findByRole("button", { name: "Tag copied" });
+  });
+
+  it("renders no chip for the loose head — a loose note has no project tag to copy", async () => {
+    renderPane({ projects: [project({})], selectedId: LOOSE_PROJECT_ID });
+    await screen.findByText("no project tag, nothing to set up");
+    expect(screen.queryByRole("button", { name: /Copy tag/ })).toBeNull();
+    expect(document.body.textContent).not.toContain("_loose");
+  });
+
+  it("renders no chip on the calm empty-vault head — no project is selected", async () => {
+    renderPane({ projects: [], selectedId: LOOSE_PROJECT_ID });
+    await screen.findByText("No projects yet");
+    expect(screen.queryByRole("button", { name: /Copy tag/ })).toBeNull();
+  });
+
+  it("renders no chip in tag mode — a tag head is not a project head (spec §5.4)", async () => {
+    renderPane({ mode: "tags", selectedTag: "reading", projects: [project({})] });
+    await screen.findByText("reading");
+    expect(screen.queryByRole("button", { name: /Copy tag/ })).toBeNull();
   });
 });
 
@@ -433,5 +488,98 @@ describe("ProjectsPane — mode gating (spec §5.4): stale selectedId can't leak
     await vi.waitFor(() => expect(api.notesForTag).toHaveBeenCalled());
     expect(screen.queryByLabelText("Project description")).toBeNull();
     expect(screen.queryByRole("button", { name: "Rename project" })).toBeNull();
+  });
+});
+
+describe("ProjectsPane — note delete (FR-04/FR-12 fix, Fork 1: 'shared across all three' board section)", () => {
+  it("clicking a row's trash icon opens an inline confirm strip, no modal", async () => {
+    vi.mocked(api.notesForProject).mockResolvedValue([row({ path: "a.md", filename: "note-a.md" })]);
+    renderPane();
+    await screen.findByText("note-a.md");
+    fireEvent.click(screen.getByRole("button", { name: 'Move "note-a.md" to trash' }));
+    expect(screen.getByText(/It stays recoverable for 30 days\./)).toBeTruthy();
+    expect(api.moveToTrash).not.toHaveBeenCalled(); // opening the confirm never fires the mutation itself
+  });
+
+  it("Cancel dismisses the strip without calling moveToTrash", async () => {
+    vi.mocked(api.notesForProject).mockResolvedValue([row({ path: "a.md", filename: "note-a.md" })]);
+    renderPane();
+    await screen.findByText("note-a.md");
+    fireEvent.click(screen.getByRole("button", { name: 'Move "note-a.md" to trash' }));
+    fireEvent.click(screen.getByText("Cancel"));
+    expect(screen.queryByText(/It stays recoverable for 30 days\./)).toBeNull();
+    expect(api.moveToTrash).not.toHaveBeenCalled();
+  });
+
+  it("Move to Trash calls moveToTrash(path), drops the row, and fires onNoteDeleted", async () => {
+    const onNoteDeleted = vi.fn();
+    vi.mocked(api.notesForProject).mockResolvedValue([
+      row({ path: "a.md", filename: "note-a.md" }),
+      row({ path: "b.md", filename: "note-b.md" }),
+    ]);
+    renderPane({ onNoteDeleted });
+    await screen.findByText("note-a.md");
+    fireEvent.click(screen.getByRole("button", { name: 'Move "note-a.md" to trash' }));
+    fireEvent.click(screen.getByText("Move to Trash"));
+
+    await vi.waitFor(() => expect(api.moveToTrash).toHaveBeenCalledWith("a.md"));
+    await vi.waitFor(() => expect(onNoteDeleted).toHaveBeenCalledWith("a.md"));
+    await vi.waitFor(() => expect(screen.queryByText("note-a.md")).toBeNull());
+    expect(screen.getByText("note-b.md")).toBeTruthy(); // the other row survives
+  });
+
+  it("the note count (rows.length, spec §5.6) drops by one immediately on a successful delete — no refetch needed", async () => {
+    vi.mocked(api.notesForProject).mockResolvedValue([
+      row({ path: "a.md", filename: "note-a.md" }),
+      row({ path: "b.md", filename: "note-b.md" }),
+    ]);
+    renderPane();
+    expect(await screen.findByText("2 notes")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: 'Move "note-a.md" to trash' }));
+    fireEvent.click(screen.getByText("Move to Trash"));
+    await vi.waitFor(() => expect(screen.getByText("1 notes")).toBeTruthy());
+  });
+
+  it("a failed delete surfaces the error and leaves the row in place", async () => {
+    vi.mocked(api.moveToTrash).mockRejectedValue(new Error("Failed to move note to trash"));
+    vi.mocked(api.notesForProject).mockResolvedValue([row({ path: "a.md", filename: "note-a.md" })]);
+    renderPane();
+    await screen.findByText("note-a.md");
+    fireEvent.click(screen.getByRole("button", { name: 'Move "note-a.md" to trash' }));
+    fireEvent.click(screen.getByText("Move to Trash"));
+
+    expect(await screen.findByText("Failed to move note to trash")).toBeTruthy();
+    // Still there, nothing silently lost — appears twice (the row itself,
+    // and the confirm strip's own bold mention of it) because a FAILED
+    // delete deliberately leaves the confirm strip open to retry, unlike a
+    // successful one which closes it.
+    expect(screen.getAllByText("note-a.md").length).toBeGreaterThan(0);
+  });
+
+  it("switching the selected project closes any open confirm strip (same reset effect as rename/project-delete)", async () => {
+    vi.mocked(api.notesForProject).mockImplementation(async (name) =>
+      name === "research" ? [row({ path: "a.md", filename: "note-a.md" })] : [],
+    );
+    const { rerender } = renderPane({ projects: [project({ name: "research" }), project({ name: "kitchen-remodel" })] });
+    await screen.findByText("note-a.md");
+    fireEvent.click(screen.getByRole("button", { name: 'Move "note-a.md" to trash' }));
+    expect(screen.getByText(/It stays recoverable for 30 days\./)).toBeTruthy();
+
+    rerender(
+      <ProjectsPane
+        mode="projects"
+        projects={[project({ name: "research" }), project({ name: "kitchen-remodel" })]}
+        selectedId="kitchen-remodel"
+        selectedTag={null}
+      />,
+    );
+    expect(screen.queryByText(/It stays recoverable for 30 days\./)).toBeNull();
+  });
+
+  it("note delete is available in tag mode too — the row markup is shared with project mode", async () => {
+    vi.mocked(api.notesForTag).mockResolvedValue([row({ path: "a.md", filename: "note-a.md", project: "research" })]);
+    renderPane({ mode: "tags", selectedId: null, selectedTag: "reading" });
+    await screen.findByText("note-a.md");
+    expect(screen.getByRole("button", { name: 'Move "note-a.md" to trash' })).toBeTruthy();
   });
 });

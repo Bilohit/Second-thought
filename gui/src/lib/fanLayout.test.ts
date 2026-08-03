@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { availableArc, SAFETY_EPSILON, SPREAD_MAX_ARC, unifiedFan, type FanParams } from "./fanLayout";
+import { ALL_TARGETS } from "../components/PillMenu/icons";
 
-const SIX = ["search", "vault", "settings", "inbox", "stats", "hide"];
+// Real shipped set, not a decoupled fixture — so a future item add/remove is
+// guarded here automatically instead of silently going stale (Task 2 s135).
+const SIX: string[] = ALL_TARGETS;
 const SCREENS = [
   { sw: 1440, sh: 900 },
   { sw: 800, sh: 600 },
@@ -146,13 +149,12 @@ describe("unifiedFan — full wheel", () => {
     expect(search.angleDeg).toBeCloseTo(-90, 4);
   });
 
-  it("pins hide to 6 o'clock (bottom-middle) opposite search on a full wheel", () => {
+  it("distributes all six items evenly with no opposite-item pin (hide removed, s135)", () => {
     const result = unifiedFan(baseParams({ cx: 720, cy: 450 }));
-    const search = result.items.find((i) => i.id === "search")!;
-    const hide = result.items.find((i) => i.id === "hide")!;
     expect(result.fullFits).toBe(true);
-    expect(search.angleDeg).toBeCloseTo(-90, 4);
-    expect(hide.angleDeg).toBeCloseTo(90, 4);
+    const angles = result.items.map((i) => i.angleDeg).sort((a, b) => a - b);
+    const gaps = angles.slice(1).map((a, i) => a - angles[i]);
+    for (const g of gaps) expect(g).toBeCloseTo(360 / SIX.length, 4);
   });
 });
 
@@ -191,18 +193,20 @@ describe("unifiedFan — determinism (G4)", () => {
 });
 
 describe("unifiedFan — reading order", () => {
-  it("Search...Hide stays top-to-bottom for every tested anchor/position", () => {
+  it("first...last canonical item stays top-to-bottom for every tested anchor/position", () => {
     const sw = 1440, sh = 900;
     const positions = [
       { cx: 18, cy: 18 }, { cx: 720, cy: 18 }, { cx: 1422, cy: 18 },
       { cx: 18, cy: 450 }, { cx: 720, cy: 450 }, { cx: 1422, cy: 450 },
       { cx: 18, cy: 882 }, { cx: 720, cy: 882 }, { cx: 1422, cy: 882 },
     ];
+    const firstId = SIX[0];
+    const lastId = SIX[SIX.length - 1];
     for (const { cx, cy } of positions) {
       const result = unifiedFan(baseParams({ cx, cy, sw, sh }));
-      const search = result.items.find((i) => i.id === "search")!;
-      const hide = result.items.find((i) => i.id === "hide")!;
-      expect(search.y).toBeLessThanOrEqual(hide.y + 1e-6);
+      const first = result.items.find((i) => i.id === firstId)!;
+      const last = result.items.find((i) => i.id === lastId)!;
+      expect(first.y).toBeLessThanOrEqual(last.y + 1e-6);
     }
   });
 });

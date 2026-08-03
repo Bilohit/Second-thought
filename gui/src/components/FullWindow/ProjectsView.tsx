@@ -92,13 +92,20 @@ export default function ProjectsView({ visible, onOpenNote }: Props) {
   // exact render where `projects` already contains it — no null tick, and
   // the anti-clobber property is untouched because the effect's deps are
   // unchanged.
-  const refresh = useCallback((opts?: { rename?: { oldName: string; newName: string } }) => {
+  //
+  // `opts.select` is the same idea for a fresh create (FR-04/FR-12 fix,
+  // ProjectsRail's inline create): a brand-new project has no "prev name" to
+  // match against, so it always wins over both the rename branch and the
+  // first-open default, landing the user straight on the tile they just
+  // typed rather than leaving the pre-create selection sitting there.
+  const refresh = useCallback((opts?: { rename?: { oldName: string; newName: string }; select?: string }) => {
     let cancelled = false;
 
     listProjects().then(({ projects: rows }) => {
       if (cancelled) return;
       setProjects(rows);
       setSelectedId((prev) => {
+        if (opts?.select) return opts.select;
         // A rename of the CURRENTLY selected project: move the selection to
         // its new name in lockstep with the `projects` update above. If the
         // user has since selected something else, leave that alone —
@@ -178,7 +185,17 @@ export default function ProjectsView({ visible, onOpenNote }: Props) {
         // even for. That data source needs its own decision, not a guess
         // made here; left null rather than fabricated. See this task's report.
         suggestion={null}
-        onNewProject={() => { /* Task 5/8: create-project flow — no modal exists on the board either. */ }}
+        onProjectCreated={(name) => {
+          // FR-04/FR-12 fix: was `onNewProject={() => {}}` — an empty stub
+          // (see this file's history; the button lifted on hover and took
+          // focus but did nothing). ProjectsRail now owns the whole inline
+          // create flow itself and only calls this once createProject() has
+          // actually succeeded server-side, so `refresh` here is a real
+          // post-mutation refetch, the same shape as onRenamed/onDeleted
+          // below — never a client-side-only state patch pretending the
+          // create happened.
+          refresh({ select: name });
+        }}
       />
       <ProjectsPane
         mode={mode}
@@ -193,6 +210,17 @@ export default function ProjectsView({ visible, onOpenNote }: Props) {
         }}
         onDeleted={(name) => {
           setSelectedId((prev) => (prev === name ? LOOSE_PROJECT_ID : prev));
+          refresh();
+        }}
+        onNoteDeleted={() => {
+          // FR-04/FR-12 fix, the other half: a note moved to trash changes
+          // the OWNING project's note count (getStats().by_project) that the
+          // rail's tiles show — ProjectsPane already drops the row from its
+          // own local `rows` state for the pane's own count (spec §5.6: that
+          // count is always `rows.length`, never a sibling source), so this
+          // callback's only job is refetching the rail's stale stats/tiles,
+          // the same "the rail goes stale after a mutation" contract
+          // onRenamed/onDeleted above already follow.
           refresh();
         }}
         onDescriptionSaved={(name, description) => {

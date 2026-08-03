@@ -170,19 +170,14 @@ export function unifiedFan(p: FanParams): FanResult {
   };
 
   const slotAngles = ids.map((_, i) => slotAngle(i));
-  // Reading order (preserve existing rule): canonical Search...Hide order
+  // Reading order (preserve existing rule): canonical Search...History order
   // always reads top-to-bottom. A partial arc reverses the walk if the raw
   // assignment would put the last item above the first. A full wheel keeps
-  // Search pinned to 12 o'clock and moves "hide" to the diametrically
-  // opposite slot (bottom-middle) — the two fixed anchors of the detached
-  // layout; the remaining items keep canonical order around them.
+  // Search pinned to 12 o'clock; the remaining items keep canonical order
+  // around it and distribute evenly (no opposite-item pin any more).
   const yOf = (deg: number) => Math.sin((deg * Math.PI) / 180);
   let orderedIds: string[];
-  if (isFullWheel && ids.includes("hide")) {
-    const rest = ids.filter((id) => id !== "hide");
-    const opposite = Math.floor(n / 2); // slot at first-item angle + 180°
-    orderedIds = [...rest.slice(0, opposite), "hide", ...rest.slice(opposite)];
-  } else if (isFullWheel || n <= 1 || yOf(slotAngles[0]) <= yOf(slotAngles[n - 1])) {
+  if (isFullWheel || n <= 1 || yOf(slotAngles[0]) <= yOf(slotAngles[n - 1])) {
     orderedIds = ids;
   } else {
     orderedIds = [...ids].reverse();

@@ -45,13 +45,15 @@
  * `--ease-settle` (see index.css's "PROJECTS full-window motion pass"
  * comment block) — reused, not reinvented.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   notesForProject,
   notesForTag,
   renameProject,
   deleteProject,
+  moveToTrash,
   updateProjectDescription,
   type ProjectEntry,
   type SearchResult,
@@ -63,6 +65,7 @@ import {
   formatAgo,
   metaEpochMs,
   nextSortMode,
+  projectTagString,
   sortNotes,
   tagDisplayLabel,
   SORT_MODE_LABEL,
@@ -72,7 +75,7 @@ import {
 import { LOOSE_PROJECT_ID, type RailMode } from "./ProjectsRail";
 import {
   PencilIcon, TrashIcon, CheckIcon, CloseIcon, FileIcon, ChevronRightIcon,
-  SortNewestIcon, SortOldestIcon, SortEditedIcon, CycleIcon,
+  SortNewestIcon, SortOldestIcon, SortEditedIcon, CycleIcon, CopyIcon,
 } from "../PillMenu/icons";
 
 /** Debounce for the description editor's "saves as you type" (spec §4.6).
@@ -131,6 +134,14 @@ interface ProjectsPaneProps {
    *  own copy of the registry entry (keeps the rail's "no description"
    *  warning in sync without a full refetch on every keystroke). */
   onDescriptionSaved?: (name: string, description: string) => void;
+  /** FR-04/FR-12: fired after a note is successfully moved to trash (the
+   *  other half of the fork this component's caller needs — see this file's
+   *  header). This pane already drops the row from its own `rows` state so
+   *  its OWN count stays correct by construction (spec §5.6); the caller is
+   *  only on the hook for refetching whatever ELSE went stale (the rail's
+   *  stats-derived tile counts), the same "caller refetches after a
+   *  mutation" contract onRenamed/onDeleted above already follow. */
+  onNoteDeleted?: (path: string) => void;
 }
 
 export default function ProjectsPane({
@@ -142,6 +153,7 @@ export default function ProjectsPane({
   onRenamed,
   onDeleted,
   onDescriptionSaved,
+  onNoteDeleted,
 }: ProjectsPaneProps) {
   const isTagMode = mode === "tags";
   // Every project-only affordance (description editor, rename, delete, the
@@ -153,6 +165,11 @@ export default function ProjectsPane({
   const isEmptyVault = !isTagMode && projects.length === 0;
   const selected = !isTagMode && selectedId && !isLoose ? projects.find((p) => p.name === selectedId) ?? null : null;
   const activeKey = isTagMode ? selectedTag : selectedId;
+  // The copy-the-tag affordance (FR-21): the exact text a user pastes into a
+  // note's body to file it under `selected`. null for loose/tag-mode/no
+  // selection — projectTagString() is the one sanctioned builder, same
+  // sentinel guard as displayProject() above (lib/projectsView.ts).
+  const tagString = selected ? projectTagString(selected.name) : null;
 
   // ── notes: this pane's OWN fetch (spec §5.5's "the implementation trap") ──
   const [rows, setRows] = useState<SearchResult[]>([]);
@@ -279,13 +296,35 @@ export default function ProjectsPane({
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [descDraft, setDescDraft] = useState("");
   const pendingSaveRef = useRef<{ name: string; value: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  // FR-04/FR-12: which note row (by path) is showing its inline delete
+  // confirm strip, or null. Board (Fork 1, shared across all three create
+  // options): "a trailing danger icon appears on row hover/focus... opening
+  // an inline confirm strip — no modal, no context menu, no multi-select" —
+  // exactly one at a time, by construction (a single path, not a Set).
+  const [confirmingDeleteNotePath, setConfirmingDeleteNotePath] = useState<string | null>(null);
+  const [noteDeleteBusy, setNoteDeleteBusy] = useState(false);
+  // FR-21: transient "copied" feedback for the tag-copy button — icon + label
+  // swap to CheckIcon/"Copied" for a beat, never color alone (uiux-pro-max:
+  // state must not be color-only). Cleared on selection change below so a
+  // stale "Copied" can't survive onto a different project's chip.
+  const [tagCopied, setTagCopied] = useState(false);
+  const tagCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setRenaming(false);
     setConfirmingDelete(false);
+    setConfirmingDeleteNotePath(null);
     setMutationError(null);
     setDescDraft(selected?.description ?? "");
+    setTagCopied(false);
+    if (tagCopiedTimerRef.current) { clearTimeout(tagCopiedTimerRef.current); tagCopiedTimerRef.current = null; }
   }, [selectedId, mode]); // eslint-disable-line react-hooks/exhaustive-deps -- `selected` is derived FROM selectedId/mode; re-running on every `projects` identity change would clobber an in-progress edit on every unrelated refetch. `mode` is included so leaving Projects mid-rename and coming back doesn't resurrect a stale rename/delete-confirm box (spec §5.4: a tag head must never look like a project head).
+
+  useEffect(() => {
+    return () => {
+      if (tagCopiedTimerRef.current) clearTimeout(tagCopiedTimerRef.current);
+    };
+  }, []);
 
   // Flush an in-flight debounced description save immediately when the
   // selection moves on (or the pane unmounts), rather than letting a save
@@ -341,6 +380,53 @@ export default function ProjectsPane({
       .catch((e) => setMutationError(e instanceof Error ? e.message : "Failed to delete"));
   }
 
+  function requestDeleteNote(path: string) {
+    setMutationError(null);
+    setConfirmingDeleteNotePath(path);
+  }
+
+  function cancelDeleteNote() {
+    setConfirmingDeleteNotePath(null);
+  }
+
+  function confirmDeleteNote(path: string) {
+    setMutationError(null);
+    setNoteDeleteBusy(true);
+    moveToTrash(path)
+      .then(() => {
+        setConfirmingDeleteNotePath(null);
+        setNoteDeleteBusy(false);
+        // Rule 2 (this file's header): the note count is always rows.length
+        // off THIS pane's own fetched rows — dropping the row locally, not
+        // waiting on a refetch, is what keeps that count correct the instant
+        // the delete succeeds.
+        setRows((prev) => prev.filter((r) => r.path !== path));
+        onNoteDeleted?.(path);
+      })
+      .catch((e) => {
+        setNoteDeleteBusy(false);
+        setMutationError(e instanceof Error ? e.message : "Failed to move note to trash");
+      });
+  }
+
+  // FR-21: the copy-the-tag affordance. Writes `tag` to the OS clipboard via
+  // Tauri's clipboard-manager plugin (already a dependency, see file header
+  // import) and nothing else — no api.ts call, no note-body write of any
+  // kind. The user still has to paste it into their own editor themselves;
+  // this function's only job is putting the exact string on the clipboard.
+  function handleCopyTag(tag: string) {
+    writeText(tag)
+      .then(() => {
+        setTagCopied(true);
+        if (tagCopiedTimerRef.current) clearTimeout(tagCopiedTimerRef.current);
+        tagCopiedTimerRef.current = setTimeout(() => {
+          tagCopiedTimerRef.current = null;
+          setTagCopied(false);
+        }, 1500);
+      })
+      .catch((e) => setMutationError(e instanceof Error ? e.message : "Failed to copy tag"));
+  }
+
   function handleSortClick() {
     if (!prefersReducedMotion()) {
       const tops = new Map<string, number>();
@@ -357,27 +443,14 @@ export default function ProjectsPane({
 
   return (
     <div style={paneStyle}>
-      {/* Pseudo-class states an inline style object cannot express, same
-          scoping pattern as ProjectsRail.tsx's `pr-` prefix. Uses
-          var(--hover-ease-out) rather than the equivalent
-          cubic-bezier(0.16,1,0.3,1) literal (index.css:79), same cleanup as
-          ProjectsRail.tsx's scoped <style> block. */}
-      <style>{`
-        .pp-iconbtn { transition: color 160ms var(--hover-ease-out), background 160ms var(--hover-ease-out); }
-        .pp-iconbtn:hover { color: var(--text-1); background: var(--surface-2); }
-        .pp-iconbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
-        .pp-iconbtn.pp-danger { color: var(--red); opacity: 0.82; }
-        .pp-iconbtn.pp-danger:hover { opacity: 1; background: rgba(255,100,103,0.12); }
-        .pp-desc-area:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-        .pp-sortbtn { transition: color 160ms var(--hover-ease-out), border-color 160ms var(--hover-ease-out), background 160ms var(--hover-ease-out); }
-        .pp-sortbtn:hover { border-color: var(--accent); background: var(--ctl-face-hover); }
-        .pp-sortbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-        .pp-noterow { transition: background 160ms var(--hover-ease-out), color 160ms var(--hover-ease-out); }
-        .pp-noterow:hover { background: var(--surface-2); color: var(--text-1); }
-        .pp-noterow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-        .pp-ghost { transition: color 160ms var(--hover-ease-out), border-color 160ms var(--hover-ease-out); }
-        .pp-ghost:hover { color: var(--text-1); border-color: var(--accent); }
-      `}</style>
+      {/* Pseudo-class states (:hover/:focus-visible/:focus-within) for the
+          `pp-` prefixed classNames below live in index.css's "PROJECTS
+          full-window interaction states" block, not a component-local
+          <style> tag here: the production CSP (style-src 'self', no
+          'unsafe-inline') silently drops an inline <style> tag's rules — the
+          FR-03 lesson (see index.css's [data-theme="custom"] comment,
+          App.tsx, and lib/customThemeVars.ts for the same rule elsewhere).
+          Do not reintroduce a <style> block here. */}
 
       {isTagMode ? (
         // Spec §5.4: a tag head is NOT a project head. No description
@@ -398,8 +471,9 @@ export default function ProjectsPane({
         <div style={calmHeadStyle}>
           <h3 style={calmHeadingStyle}>No projects yet</h3>
           <p style={calmParaStyle}>
-            All {noteCount} of your notes are loose, which is a normal and permanent place for a note
-            to live. Make a project when you want the phone to file new captures somewhere by itself.
+            {"All "}{noteCount}{" of your notes are loose — a normal, permanent state. A project is a tag: add "}
+            <b style={{ color: "var(--text-1)" }}>#project@name</b>
+            {" to a note's body and it belongs there. This panel can start the tag; it can't write it into a note for you."}
           </p>
         </div>
       ) : isLoose ? (
@@ -464,14 +538,40 @@ export default function ProjectsPane({
           />
           <div style={descFootStyle}>
             {descDraft.trim() ? (
-              <span style={descNoteStyle}>This is what your phone matches new notes against.</span>
+              <span style={descNoteStyle}>New captures are matched against this text — on this device, or a phone, if you use one.</span>
             ) : (
               <span style={{ ...descNoteStyle, color: "var(--yellow)" }}>
-                Empty. Your phone has nothing to match new notes against yet.
+                Empty. Nothing to match new captures against yet.
               </span>
             )}
             <span style={savesAsYouTypeStyle}>saves as you type</span>
           </div>
+          {/* FR-21: the one legitimate "assign a note to a project"
+              affordance — show the exact tag, write nothing (board: Fork 3
+              Option A, gui/mocks/2026-08-02-flowreview-decisions.html). A
+              copy button, not an insert button: the user still pastes it
+              into a note themselves. tagString is null only when selected is
+              somehow a loose/invalid name (projectTagString's sentinel
+              guard) — defensive, since a real registry entry's name can
+              never be "_loose" (isValidProjectName's regex forbids a
+              leading "_"), but this component never renders a chip it can't
+              back with a real tag. */}
+          {tagString && (
+            <div style={tagChipRowStyle}>
+              <span style={tagChipStyle}>
+                <span style={tagChipHashStyle}>#</span>{tagString.slice(1)}
+              </span>
+              <button
+                className={tagCopied ? "pp-tag-copy-btn pp-copied" : "pp-tag-copy-btn"}
+                style={tagCopyBtnStyle}
+                onClick={() => handleCopyTag(tagString)}
+                title={tagCopied ? "Copied" : "Copy tag"}
+                aria-label={tagCopied ? "Tag copied" : `Copy tag ${tagString}`}
+              >
+                {tagCopied ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
+              </button>
+            </div>
+          )}
         </div>
       ) : null}
 
@@ -519,46 +619,86 @@ export default function ProjectsPane({
           const epochMs = metaEpochMs(row, sortMode);
           const meta = epochMs === null ? "date unknown" : `${metaVerb} ${formatAgo(epochMs)}`;
           const title = row.filename ?? row.path.split(/[\\/]/).pop() ?? row.path;
+          const isConfirmingThisRow = confirmingDeleteNotePath === row.path;
+          const openEnabled = !isConfirmingThisRow;
           return (
-            <div
-              key={row.path}
-              ref={(el) => setRowRef(row.path, el)}
-              className="pp-noterow"
-              role="button"
-              tabIndex={0}
-              style={noteRowStyle}
-              onClick={() => onOpenNote?.(row.path)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenNote?.(row.path); }
-              }}
-            >
-              <span style={noteRowFileIconStyle}><FileIcon size={12} /></span>
-              <span style={noteRowTitleStyle}>{title}</span>
-              {/* Spec §5.3: only the tag view renders this — a tag cuts
-                  ACROSS projects, so it's the one view that has to answer
-                  "where does this note actually live". Text + border, not a
-                  coloured pill (colour there would be decoration).
-                  displayProject() is the one sanctioned `_loose` guard
-                  (spec §2.2) — never reimplemented inline. Trap 3
-                  (task brief): this row's `project` always comes from the
-                  FTS tier's captures.db `project` column (s127-fixed,
-                  resolved against .projects.toml), never the semantic
-                  tier's pre-s127 directory-derived one — notesForTag/
-                  notesForProject (api.ts) both call searchCaptures() with
-                  an EMPTY free-text query (just a project filter or a
-                  stripped `tag:` token), and vault_admin.search_captures
-                  only runs the semantic branch when `free_q.strip()` is
-                  truthy, so a semantic-tier row (tier: "semantic") can
-                  never appear in a row this pane fetches — verified at
-                  source, not assumed. */}
-              {isTagMode && (
-                <span style={row.project && row.project !== LOOSE_PROJECT_ID ? pjChipStyle : pjChipLooseStyle}>
-                  {displayProject(row.project)}
-                </span>
+            <Fragment key={row.path}>
+              <div
+                ref={(el) => setRowRef(row.path, el)}
+                className="pp-noterow"
+                role="button"
+                tabIndex={0}
+                style={noteRowStyle}
+                onClick={openEnabled ? () => onOpenNote?.(row.path) : undefined}
+                onKeyDown={(e) => {
+                  if (!openEnabled) return;
+                  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenNote?.(row.path); }
+                }}
+              >
+                <span style={noteRowFileIconStyle}><FileIcon size={12} /></span>
+                <span style={noteRowTitleStyle}>{title}</span>
+                {/* Spec §5.3: only the tag view renders this — a tag cuts
+                    ACROSS projects, so it's the one view that has to answer
+                    "where does this note actually live". Text + border, not a
+                    coloured pill (colour there would be decoration).
+                    displayProject() is the one sanctioned `_loose` guard
+                    (spec §2.2) — never reimplemented inline. Trap 3
+                    (task brief): this row's `project` always comes from the
+                    FTS tier's captures.db `project` column (s127-fixed,
+                    resolved against .projects.toml), never the semantic
+                    tier's pre-s127 directory-derived one — notesForTag/
+                    notesForProject (api.ts) both call searchCaptures() with
+                    an EMPTY free-text query (just a project filter or a
+                    stripped `tag:` token), and vault_admin.search_captures
+                    only runs the semantic branch when `free_q.strip()` is
+                    truthy, so a semantic-tier row (tier: "semantic") can
+                    never appear in a row this pane fetches — verified at
+                    source, not assumed. */}
+                {isTagMode && (
+                  <span style={row.project && row.project !== LOOSE_PROJECT_ID ? pjChipStyle : pjChipLooseStyle}>
+                    {displayProject(row.project)}
+                  </span>
+                )}
+                <span style={noteRowMetaStyle}>{meta}</span>
+                {/* FR-04/FR-12: the full window's only way to delete a note
+                    (board: hover-icon on the row, matching the danger-icon
+                    language the pane head already teaches for deleting a
+                    PROJECT, rather than a second/different affordance).
+                    Hidden until row hover/focus via the .pp-note-del CSS
+                    above — always in the DOM and tab-reachable, never
+                    display:none, so keyboard-only use isn't penalized. */}
+                <button
+                  className="pp-note-del"
+                  style={noteRowDelBtnStyle}
+                  onClick={(e) => { e.stopPropagation(); requestDeleteNote(row.path); }}
+                  title="Move to trash"
+                  aria-label={`Move "${title}" to trash`}
+                >
+                  <TrashIcon size={12} />
+                </button>
+                <span style={noteRowChevStyle}><ChevronRightIcon size={11} /></span>
+              </div>
+              {isConfirmingThisRow && (
+                <div style={noteConfirmStripStyle}>
+                  <span style={confirmTextStyle}>
+                    {"Move "}
+                    <b style={{ color: "var(--text-1)" }}>{title}</b>
+                    {" to Trash? It stays recoverable for 30 days."}
+                  </span>
+                  <button className="pp-ghost" style={ghostBtnStyle} onClick={cancelDeleteNote} disabled={noteDeleteBusy}>
+                    Cancel
+                  </button>
+                  <button
+                    className="pp-ghost"
+                    style={ghostDangerBtnStyle}
+                    onClick={() => confirmDeleteNote(row.path)}
+                    disabled={noteDeleteBusy}
+                  >
+                    Move to Trash
+                  </button>
+                </div>
               )}
-              <span style={noteRowMetaStyle}>{meta}</span>
-              <span style={noteRowChevStyle}><ChevronRightIcon size={11} /></span>
-            </div>
+            </Fragment>
           );
         })}
         {isLoose && !isEmptyVault && (
@@ -634,6 +774,29 @@ const descFootStyle: CSSProperties = { display: "flex", alignItems: "center", ju
 const descNoteStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 7, fontSize: 9.5, color: "var(--text-3)" };
 const savesAsYouTypeStyle: CSSProperties = { fontSize: 9, color: "var(--text-3)", flex: "0 0 auto" };
 
+// FR-21 copy-the-tag row (board: Fork 3 Option A's "tag-chip-row"). Sits on
+// --surface so its own --ctl-face-faced copy button (below) never touches
+// --surface-2 directly — the known --ctl-face === --surface-2 ceiling
+// (index.css) only bites when a control's face sits ON --surface-2; here
+// the ambient this row inherits is --bg (ProjectsView's containerStyle sets
+// no background of its own), and the row itself repaints to --surface,
+// giving the --ctl-face button a surface two steps away from its own face
+// color in both themes.
+const tagChipRowStyle: CSSProperties = {
+  display: "flex", alignItems: "center", gap: 8, marginTop: 8,
+  padding: "8px 10px", border: "1px solid var(--border)", background: "var(--surface)", maxWidth: 420,
+};
+const tagChipStyle: CSSProperties = {
+  fontSize: 11, color: "var(--text-1)", background: "var(--bg)", border: "1px solid var(--border)",
+  padding: "4px 8px", flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+};
+const tagChipHashStyle: CSSProperties = { color: "var(--text-3)" };
+const tagCopyBtnStyle: CSSProperties = {
+  width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
+  background: "var(--ctl-face)", border: "1px solid var(--border)", color: "var(--text-1)",
+  cursor: "pointer", padding: 0, flex: "0 0 auto",
+};
+
 const mutationErrorStyle: CSSProperties = {
   flex: "0 0 auto", padding: "6px 16px", fontSize: 10.5, color: "var(--red)", borderBottom: "1px solid var(--border)",
 };
@@ -698,5 +861,17 @@ const pjChipStyle: CSSProperties = pjChipBase;
 const pjChipLooseStyle: CSSProperties = { ...pjChipBase, borderStyle: "dashed" };
 const noteRowMetaStyle: CSSProperties = { fontSize: 9.5, color: "var(--text-3)", flex: "0 0 auto", fontVariantNumeric: "tabular-nums" };
 const noteRowChevStyle: CSSProperties = { color: "var(--text-3)", flex: "0 0 auto", display: "flex" };
+const noteRowDelBtnStyle: CSSProperties = {
+  width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 auto",
+  color: "var(--text-3)", background: "none", border: "1px solid transparent", cursor: "pointer", padding: 0,
+};
+// Same visual language as confirmStripStyle (project-delete, above) — one
+// danger-confirm pattern reused, not a second one invented for notes — but
+// scoped to sit BETWEEN two note rows (board: the strip replaces the row
+// immediately below the one being deleted) rather than the pane-wide band
+// confirmStripStyle occupies under the head.
+const noteConfirmStripStyle: CSSProperties = {
+  ...confirmStripStyle, borderBottom: "1px solid var(--border-2)", padding: "8px 16px",
+};
 
 const moreRowStyle: CSSProperties = { padding: "9px 16px", fontSize: 10, color: "var(--text-3)" };

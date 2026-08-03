@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   sortNotes,
   displayProject,
+  projectTagString,
   needsPager,
   pageOf,
   nextSortMode,
@@ -17,6 +18,7 @@ import {
   filterMachineTags,
   flattenTagTree,
   tagDisplayLabel,
+  isValidProjectName,
   type SortableNote,
 } from "./projectsView";
 import type { TagNode } from "./api";
@@ -151,6 +153,53 @@ describe("displayProject", () => {
 
   it("maps empty string to loose", () => {
     expect(displayProject("")).toBe("loose");
+  });
+});
+
+describe("projectTagString — the copy-the-tag affordance's pure string builder", () => {
+  it("builds the #project@<name> tag for a normal name", () => {
+    expect(projectTagString("kitchen-remodel")).toBe("#project@kitchen-remodel");
+  });
+
+  it("returns null for the _loose sentinel — a loose note has no tag to copy", () => {
+    expect(projectTagString("_loose")).toBeNull();
+  });
+
+  it("returns null for null", () => {
+    expect(projectTagString(null)).toBeNull();
+  });
+
+  it("returns null for undefined", () => {
+    expect(projectTagString(undefined)).toBeNull();
+  });
+
+  it("returns null for an empty string", () => {
+    expect(projectTagString("")).toBeNull();
+  });
+});
+
+describe("isValidProjectName — mirrors omni_capture/projects.py's _VALID_NAME", () => {
+  it("accepts a plain lowercase name", () => expect(isValidProjectName("research")).toBe(true));
+  it("accepts digits, hyphens and underscores after the first character", () => {
+    expect(isValidProjectName("trip-osaka-2026")).toBe(true);
+    expect(isValidProjectName("kitchen_remodel")).toBe(true);
+  });
+  it("accepts a single alphanumeric character", () => {
+    expect(isValidProjectName("a")).toBe(true);
+    expect(isValidProjectName("9")).toBe(true);
+  });
+  it("rejects the empty string", () => expect(isValidProjectName("")).toBe(false));
+  it("rejects a name starting with - or _ — this is what keeps every reserved _-prefixed hub folder unreachable", () => {
+    expect(isValidProjectName("_loose")).toBe(false);
+    expect(isValidProjectName("_trash")).toBe(false);
+    expect(isValidProjectName("-leading-hyphen")).toBe(false);
+  });
+  it("rejects embedded whitespace", () => expect(isValidProjectName("trip osaka")).toBe(false));
+  it("rejects a name carrying a slash (would escape the vault directory)", () => {
+    expect(isValidProjectName("a/b")).toBe(false);
+  });
+  it("rejects a name carrying an @ (would collide with the #project@name tag grammar)", () => {
+    expect(isValidProjectName("a@b")).toBe(false);
   });
 });
 

@@ -45,12 +45,21 @@
  * (they animate note rows and the sort button, not anything in this file).
  */
 import { useEffect, useRef, useState } from "react";
-import type { CSSProperties } from "react";
-import type { ProjectEntry } from "../../lib/api";
-import { displayProject, tagDisplayLabel, type FlatTag } from "../../lib/projectsView";
+import type { CSSProperties, KeyboardEvent } from "react";
+import { createProject, type ProjectEntry } from "../../lib/api";
+import { displayProject, isValidProjectName, tagDisplayLabel, type FlatTag } from "../../lib/projectsView";
 import { slideDirection } from "../../lib/segmentedToggle";
 import SegmentedToggle from "../ui/SegmentedToggle";
 import { DashboardIcon, ListIcon, PlusIcon, MenuIcon, CheckIcon, PencilIcon, CloseIcon } from "../PillMenu/icons";
+
+/** Generic-enough client-side message for an invalid name — the real
+ *  authority is the server (`vault_admin.py`'s create-project route, backed
+ *  by the identical `_VALID_NAME` regex `isValidProjectName` mirrors); this
+ *  only saves a round trip for the common case (spaces, a leading symbol).
+ *  A collision ("already exists") is NOT checked client-side — only the
+ *  server's live registry can know that — so it always surfaces through the
+ *  catch block's server error message instead. */
+const INVALID_NAME_MESSAGE = "Letters, numbers, - or _ only, starting with a letter or number.";
 
 /** Board xPulse/disclose durations (spec §8), mirrored in JS so the dismiss
  *  handler's cleanup timer agrees with index.css's `.pr-disclose` transition
@@ -121,7 +130,15 @@ interface ProjectsRailProps {
   onSuggestionCreate?: () => void;
   onSuggestionRename?: () => void;
   onSuggestionDismiss?: () => void;
-  onNewProject: () => void;
+  /** Fired after a successful inline create (spec board: 2026-08-02-flowreview-
+   *  decisions.html, Fork 1 Option B) with the newly created name — the
+   *  caller is expected to refetch listProjects()/getStats() (the rail's own
+   *  tiles/counts go stale) and select the new project, mirroring
+   *  ProjectsPane's onRenamed/onDeleted callbacks. This band-3 button used
+   *  to be wired to an empty `onNewProject={() => {}}` stub (the FR-04/FR-12
+   *  regression) — creation is now owned entirely inside this component, so
+   *  there is no longer an external "open a modal" hook to call. */
+  onProjectCreated?: (name: string) => void;
 }
 
 export default function ProjectsRail({
@@ -139,7 +156,7 @@ export default function ProjectsRail({
   onSuggestionCreate,
   onSuggestionRename,
   onSuggestionDismiss,
-  onNewProject,
+  onProjectCreated,
 }: ProjectsRailProps) {
   // One tile in a two-column grid would leave a hole, so loose spans the
   // row when it is the only thing there (spec §4, mirrored from the board's
@@ -173,6 +190,68 @@ export default function ProjectsRail({
   }, [suggestion]);
   useEffect(() => () => { if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current); }, []);
 
+  // ── inline project create (Fork 1 Option B: no modal, a new tile appears
+  // in the grid, already editable — see the file header/onProjectCreated's
+  // comment for the regression this replaces). All state is local: this
+  // component owns the whole flow, start to the API call, and only reports
+  // OUTWARD once creation actually succeeds.
+  const [creating, setCreating] = useState(false);
+  const [createValue, setCreateValue] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createSubmitting, setCreateSubmitting] = useState(false);
+  // Guards the classic blur-vs-Escape race: Escape's keydown handler cancels
+  // synchronously, but removing the input from the tree (creating -> false)
+  // can still let the browser fire a trailing native blur on it first. This
+  // ref, set true only inside the Escape handler and consumed by the very
+  // next blur, tells that blur "this was a cancel, not a commit" — a commit
+  // on blur must never re-fire right after the user explicitly cancelled.
+  const cancelledByEscapeRef = useRef(false);
+
+  function startCreate() {
+    if (creating) return; // a second click while already editing must not wipe what the user typed
+    setCreating(true);
+    setCreateValue("");
+    setCreateError(null);
+  }
+
+  function cancelCreate() {
+    setCreating(false);
+    setCreateValue("");
+    setCreateError(null);
+    setCreateSubmitting(false);
+  }
+
+  function commitCreate() {
+    const trimmed = createValue.trim();
+    if (!trimmed) { cancelCreate(); return; } // committing nothing is a cancel, not an error
+    if (!isValidProjectName(trimmed)) { setCreateError(INVALID_NAME_MESSAGE); return; }
+    setCreateSubmitting(true);
+    setCreateError(null);
+    createProject(trimmed)
+      .then(() => {
+        cancelCreate();
+        onProjectCreated?.(trimmed);
+      })
+      .catch((e) => {
+        setCreateSubmitting(false);
+        setCreateError(e instanceof Error ? e.message : "Failed to create project");
+      });
+  }
+
+  function handleCreateKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") { e.preventDefault(); commitCreate(); }
+    else if (e.key === "Escape") {
+      e.preventDefault();
+      cancelledByEscapeRef.current = true;
+      cancelCreate();
+    }
+  }
+
+  function handleCreateBlur() {
+    if (cancelledByEscapeRef.current) { cancelledByEscapeRef.current = false; return; }
+    commitCreate();
+  }
+
   function handleDismiss() {
     if (!prefersReducedMotion()) {
       setCollapsing(true);
@@ -185,33 +264,14 @@ export default function ProjectsRail({
 
   return (
     <div style={railStyle}>
-      {/* Pseudo-class states an inline style object cannot express
-          (:hover/:focus-visible/:active). Scoped by the `pr-` prefix so
-          nothing here can collide with another mounted view's classNames.
-          Uses var(--hover-ease-out) rather than the equivalent
-          cubic-bezier(0.16,1,0.3,1) literal (index.css:79) so this curve's
-          value lives in exactly one place. */}
-      <style>{`
-        .pr-tile { transition: background 160ms var(--hover-ease-out), color 160ms var(--hover-ease-out); }
-        .pr-tile:hover { background: var(--surface-2); }
-        .pr-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-        .pr-newbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
-        .pr-sg-create { transition: background 160ms var(--hover-ease-out), transform 120ms var(--hover-ease-out); }
-        .pr-sg-create:hover { background: var(--accent); color: var(--on-accent); }
-        .pr-sg-create:active { transform: scale(0.97); }
-        .pr-sg-create:focus-visible { outline: 2px solid var(--text-1); outline-offset: 1px; }
-        .pr-sg-rename { transition: background 160ms var(--hover-ease-out), border-color 160ms var(--hover-ease-out), transform 120ms var(--hover-ease-out); }
-        .pr-sg-rename:hover { background: var(--ctl-face-hover); border-color: var(--accent); }
-        .pr-sg-rename:active { transform: scale(0.96); }
-        .pr-sg-rename:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-        .pr-sg-dismiss { transition: color 200ms var(--hover-ease-out), border-color 200ms var(--hover-ease-out), background 200ms var(--hover-ease-out), box-shadow 220ms var(--hover-ease-out); }
-        .pr-sg-dismiss:hover, .pr-sg-dismiss:focus-visible { color: var(--red); border-color: var(--red); background: rgba(255,100,103,0.12); box-shadow: 0 0 0 3px rgba(255,100,103,0.10); outline: none; }
-        .pr-sg-dismiss:hover svg, .pr-sg-dismiss:focus-visible svg { animation: xPulse 340ms var(--hover-ease-out); }
-        .pr-sg-dismiss:active { transform: scale(0.92); }
-        .pr-tagrow { transition: background 160ms var(--hover-ease-out), color 160ms var(--hover-ease-out); }
-        .pr-tagrow:hover { background: var(--surface-2); color: var(--text-1); }
-        .pr-tagrow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-      `}</style>
+      {/* Pseudo-class states (:hover/:focus-visible/:active) for the `pr-`
+          prefixed classNames below live in index.css's "PROJECTS full-window
+          interaction states" block, not a component-local <style> tag here:
+          the production CSP (style-src 'self', no 'unsafe-inline') silently
+          drops an inline <style> tag's rules — the FR-03 lesson (see
+          index.css's [data-theme="custom"] comment, App.tsx, and
+          lib/customThemeVars.ts for the same rule elsewhere). Do not
+          reintroduce a <style> block here. */}
 
       {/* band 1 — the toggle. Never scrolls, never moves. */}
       <div style={railTopStyle}>
@@ -290,6 +350,62 @@ export default function ProjectsRail({
                 </button>
               );
             })}
+            {/* Fork 1 Option B: the inline create row. Full-width regardless
+                of how many real tiles precede it (a name is easier to read/
+                type in a full row than squeezed into one half of the
+                2-column grid) — a judgment call the board doesn't pin down
+                for every tile count, flagged in this task's report.
+                Background is --accent-d, the SAME wash a selected tile uses
+                (tileSelectedStyle below) — never --surface-2, which is
+                identical to --ctl-face in both themes (see this screen's own
+                ceiling note) and would make the confirm/cancel glyphs below
+                nearly invisible. */}
+            {creating && (
+              <div style={editingTileStyle}>
+                <input
+                  autoFocus
+                  className="pr-create-input"
+                  value={createValue}
+                  onChange={(e) => { setCreateValue(e.target.value); if (createError) setCreateError(null); }}
+                  onKeyDown={handleCreateKeyDown}
+                  onBlur={handleCreateBlur}
+                  placeholder="project-name"
+                  aria-label="New project name"
+                  disabled={createSubmitting}
+                  style={createInputStyle}
+                />
+                <div style={editHintRowStyle}>
+                  <span style={createError ? editErrorStyle : editHintStyle}>
+                    {createError ?? "Enter to create · Esc to cancel"}
+                  </span>
+                  <span style={editGlyphsStyle}>
+                    <button
+                      type="button"
+                      className="pr-glyph"
+                      style={glyphBtnStyle}
+                      disabled={createSubmitting}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={commitCreate}
+                      title="Create"
+                      aria-label="Create project"
+                    >
+                      <CheckIcon size={10} />
+                    </button>
+                    <button
+                      type="button"
+                      className="pr-glyph"
+                      style={glyphBtnStyle}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={cancelCreate}
+                      title="Cancel"
+                      aria-label="Cancel"
+                    >
+                      <CloseIcon size={10} />
+                    </button>
+                  </span>
+                </div>
+              </div>
+            )}
             <button
               role="option"
               className="pr-tile"
@@ -395,7 +511,7 @@ export default function ProjectsRail({
       {/* band 3 — New project. Never scrolls, never moves, always the last
           thing in the rail regardless of state (spec §3). */}
       <div style={railFootStyle}>
-        <button className="pr-newbtn btn-hover" onClick={onNewProject} style={newBtnStyle}>
+        <button className="pr-newbtn btn-hover" onClick={startCreate} style={newBtnStyle}>
           <PlusIcon size={13} /> New project
         </button>
       </div>
@@ -407,7 +523,9 @@ export default function ProjectsRail({
 // style-object convention (no CSS-in-JS library, see gui/src/components/
 // FullWindow/DashboardView.tsx's cardStyle/chipStyle/etc). Values are
 // transcribed from the board's CSS 1:1 where the property is static; the
-// pseudo-class-only rules live in the <style> block above instead. ──────
+// pseudo-class-only rules live in index.css's "PROJECTS full-window
+// interaction states" block instead (moved there from a component-local
+// <style> tag — see the comment above; that tag was dead in production). ──
 
 const railStyle: CSSProperties = {
   flex: "0 0 auto", width: 260, borderRight: "1px solid var(--border)",
@@ -434,6 +552,24 @@ const tileLooseNameStyle: CSSProperties = { ...tileNameStyle, color: "var(--text
 const tileCountStyle: CSSProperties = { fontSize: 9, color: "var(--text-3)", fontVariantNumeric: "tabular-nums" };
 const tileWarnStyle: CSSProperties = { fontSize: 8.5, color: "var(--yellow)" };
 const looseDotStyle: CSSProperties = { width: 5, height: 5, border: "1px dashed currentColor", borderRadius: "50%", flex: "0 0 auto" };
+
+// ── inline create (Fork 1 Option B) ─────────────────────────────────────
+const editingTileStyle: CSSProperties = {
+  gridColumn: "1 / -1", minWidth: 0, background: "var(--accent-d)", borderLeft: "2px solid var(--accent)",
+  padding: "9px 9px", display: "flex", flexDirection: "column", gap: 6,
+};
+const createInputStyle: CSSProperties = {
+  width: "100%", boxSizing: "border-box", background: "var(--bg)", border: "1px solid var(--border)",
+  color: "var(--text-1)", fontFamily: "inherit", fontSize: 11, fontWeight: 600, padding: "5px 7px",
+};
+const editHintRowStyle: CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 };
+const editHintStyle: CSSProperties = { fontSize: 9, color: "var(--text-3)" };
+const editErrorStyle: CSSProperties = { fontSize: 9, color: "var(--red)" };
+const editGlyphsStyle: CSSProperties = { display: "flex", gap: 2, flex: "0 0 auto" };
+const glyphBtnStyle: CSSProperties = {
+  width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center",
+  color: "var(--text-2)", background: "var(--ctl-face)", border: "1px solid var(--border)", cursor: "pointer", padding: 0,
+};
 
 // ── tag list (spec §5.1) — same selected-state language as a project tile:
 // accent wash + 2px accent left edge, board's .tagrow (mock lines 144-154).

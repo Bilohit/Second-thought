@@ -10,12 +10,25 @@
  * not something this file can measure in pixels; a real-browser/CDP pass
  * (spec §9.5) is the only place that can confirm the pixels themselves.
  */
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import ProjectsRail, { LOOSE_PROJECT_ID, type ProjectsRailSuggestion } from "./ProjectsRail";
+import * as api from "../../lib/api";
 import type { ProjectEntry } from "../../lib/api";
 
-afterEach(cleanup);
+vi.mock("../../lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/api")>();
+  return { ...actual, createProject: vi.fn() };
+});
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
+
+beforeEach(() => {
+  vi.mocked(api.createProject).mockResolvedValue(undefined);
+});
 
 function project(overrides: Partial<ProjectEntry>): ProjectEntry {
   return {
@@ -40,7 +53,6 @@ function renderRail(props: Partial<React.ComponentProps<typeof ProjectsRail>> = 
       tags={[]}
       selectedTag={null}
       onSelectTag={NOOP}
-      onNewProject={NOOP}
       {...props}
     />,
   );
@@ -311,5 +323,102 @@ describe("ProjectsRail — the tag list (spec §5.1)", () => {
   it("shows a calm empty state, not a blank panel, when there are no tags", () => {
     renderRail({ mode: "tags", tags: [] });
     expect(screen.getByText("No tags yet.")).toBeTruthy();
+  });
+});
+
+describe("ProjectsRail — inline create (FR-04/FR-12 fix, Fork 1 Option B: board 2026-08-02-flowreview-decisions.html)", () => {
+  it("New project reveals an inline editable row, not a modal", () => {
+    renderRail();
+    expect(screen.queryByLabelText("New project name")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+    expect(screen.getByLabelText("New project name")).toBeTruthy();
+    expect(screen.getByText("Enter to create · Esc to cancel")).toBeTruthy();
+  });
+
+  it("Enter commits: calls createProject with the trimmed name and reports it via onProjectCreated", async () => {
+    const onProjectCreated = vi.fn();
+    renderRail({ onProjectCreated });
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+    fireEvent.change(screen.getByLabelText("New project name"), { target: { value: "  trip-osaka  " } });
+    fireEvent.keyDown(screen.getByLabelText("New project name"), { key: "Enter" });
+
+    await vi.waitFor(() => expect(api.createProject).toHaveBeenCalledWith("trip-osaka"));
+    await vi.waitFor(() => expect(onProjectCreated).toHaveBeenCalledWith("trip-osaka"));
+    // The row closes back to the plain "New project" button once created.
+    await vi.waitFor(() => expect(screen.queryByLabelText("New project name")).toBeNull());
+  });
+
+  it("Escape cancels without ever calling createProject", () => {
+    renderRail();
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+    fireEvent.change(screen.getByLabelText("New project name"), { target: { value: "abandoned" } });
+    fireEvent.keyDown(screen.getByLabelText("New project name"), { key: "Escape" });
+
+    expect(screen.queryByLabelText("New project name")).toBeNull();
+    expect(api.createProject).not.toHaveBeenCalled();
+  });
+
+  it("the check glyph commits, the close glyph cancels — same as the keyboard path", async () => {
+    const onProjectCreated = vi.fn();
+    renderRail({ onProjectCreated });
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+    fireEvent.change(screen.getByLabelText("New project name"), { target: { value: "kitchen-remodel" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create project" }));
+    await vi.waitFor(() => expect(onProjectCreated).toHaveBeenCalledWith("kitchen-remodel"));
+  });
+
+  it("an invalid name shows an inline error and never calls createProject (server-mirrored validity, projects.py's _VALID_NAME)", () => {
+    renderRail();
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+    fireEvent.change(screen.getByLabelText("New project name"), { target: { value: "trip osaka" } });
+    fireEvent.keyDown(screen.getByLabelText("New project name"), { key: "Enter" });
+
+    expect(api.createProject).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("New project name")).toBeTruthy(); // stays open, editable
+    expect(screen.queryByText("Enter to create · Esc to cancel")).toBeNull(); // replaced by the error
+  });
+
+  it("committing an empty/whitespace-only name is a silent cancel, not an error", () => {
+    renderRail();
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+    fireEvent.change(screen.getByLabelText("New project name"), { target: { value: "   " } });
+    fireEvent.keyDown(screen.getByLabelText("New project name"), { key: "Enter" });
+
+    expect(api.createProject).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("New project name")).toBeNull();
+  });
+
+  it("a server-side rejection (e.g. name collision) surfaces as the inline error and keeps the row open to retry", async () => {
+    vi.mocked(api.createProject).mockRejectedValue(new Error('A project named "research" already exists.'));
+    renderRail();
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+    fireEvent.change(screen.getByLabelText("New project name"), { target: { value: "research" } });
+    fireEvent.keyDown(screen.getByLabelText("New project name"), { key: "Enter" });
+
+    expect(await screen.findByText('A project named "research" already exists.')).toBeTruthy();
+    expect(screen.getByLabelText("New project name")).toBeTruthy(); // still open
+  });
+
+  it("blur commits, same as Enter", async () => {
+    const onProjectCreated = vi.fn();
+    renderRail({ onProjectCreated });
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+    fireEvent.change(screen.getByLabelText("New project name"), { target: { value: "trip-japan" } });
+    fireEvent.blur(screen.getByLabelText("New project name"));
+    await vi.waitFor(() => expect(api.createProject).toHaveBeenCalledWith("trip-japan"));
+  });
+
+  it("a second click on New project while already editing does not wipe what the user already typed", () => {
+    renderRail();
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+    fireEvent.change(screen.getByLabelText("New project name"), { target: { value: "kept" } });
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+    expect((screen.getByLabelText("New project name") as HTMLInputElement).value).toBe("kept");
+  });
+
+  it("works identically at zero projects, with no separate empty-state wiring", () => {
+    renderRail({ projects: [], looseCount: 17 });
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+    expect(screen.getByLabelText("New project name")).toBeTruthy();
   });
 });

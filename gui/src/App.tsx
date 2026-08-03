@@ -70,6 +70,7 @@ import DeletePromptModal from "./components/DeletePromptModal";
 import { EDITABLE_ORDER, type EditableSlot } from "./lib/themeCode";
 import { deriveCustom } from "./lib/themeDerive";
 import { applyCustomThemeVars, removeCustomThemeVars } from "./lib/customThemeVars";
+import { VIEW_TO_RAIL } from "./lib/viewRouting";
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 
@@ -214,12 +215,12 @@ function getInitialSelectedMonitorId(): string | null {
 
 // ── View ───────────────────────────────────────────────────────────────────
 
-type View = "capture" | "settings" | "vault" | "inbox" | "stats" | "look" | "today";
+type View = "capture" | "settings" | "vault" | "inbox" | "stats" | "look" | "today" | "note";
 
 // Legacy pill-menu targets → FullWindow rail views (branch C purge).
-const VIEW_TO_RAIL: Record<string, "dashboard" | "today" | "look" | "library" | "settings" | "inbox"> = {
-  capture: "dashboard", look: "look", vault: "library", settings: "settings", inbox: "inbox", stats: "library", today: "today",
-};
+// FR-07: the alias table itself now lives in lib/viewRouting.ts (with its
+// own regression test) — `stats` used to alias `library`, landing the menu's
+// History item on a screen that lost its stats content in s130.
 
 // ── Animated window movement ────────────────────────────────────────────────
 // Tauri's setPosition is an instant OS-level jump; everything else in this app
@@ -393,6 +394,14 @@ async function animateWindowAndSizeTo(
 
 export default function App() {
   const [view, setView]                   = useState<View>("capture");
+  // FR-07 dead-control fix: `view` is a plain value, so re-selecting the
+  // same menu target while already there is a same-value setState — React
+  // bails, FullWindow never even receives a fresh `initialView`, and the
+  // click does nothing. `navToken` is bumped on every navigation request
+  // (see the sites below) regardless of whether the target value itself
+  // changed, giving FullWindow a token it can key its apply-effect on.
+  const [navToken, setNavToken]           = useState(0);
+  const bumpNavToken = useCallback(() => setNavToken((n) => n + 1), []);
   const [lookMode, setLookMode]           = useState<"search" | "chat">(getInitialLookMode);
   const [lookChatPersist, setLookChatPersist] = useState<LookChatPersist>(getInitialLookChatPersist);
   const [theme, setTheme]                 = useState<Theme>(getInitialTheme);
@@ -994,12 +1003,12 @@ export default function App() {
     let unlistenVault:    (() => void) | undefined;
     let unlistenInbox:    (() => void) | undefined;
     let unlistenStats:    (() => void) | undefined;
-    listen<void>("open-settings", () => setView("settings")).then((fn) => { unlistenSettings = fn; });
-    listen<void>("open-vault",    () => setView("vault")).then((fn) => { unlistenVault = fn; });
-    listen<void>("open-inbox",    () => setView("inbox")).then((fn) => { unlistenInbox = fn; });
-    listen<void>("open-stats",    () => setView("stats")).then((fn) => { unlistenStats = fn; });
+    listen<void>("open-settings", () => { setView("settings"); bumpNavToken(); }).then((fn) => { unlistenSettings = fn; });
+    listen<void>("open-vault",    () => { setView("vault"); bumpNavToken(); }).then((fn) => { unlistenVault = fn; });
+    listen<void>("open-inbox",    () => { setView("inbox"); bumpNavToken(); }).then((fn) => { unlistenInbox = fn; });
+    listen<void>("open-stats",    () => { setView("stats"); bumpNavToken(); }).then((fn) => { unlistenStats = fn; });
     return () => { unlistenSettings?.(); unlistenVault?.(); unlistenInbox?.(); unlistenStats?.(); };
-  }, []);
+  }, [bumpNavToken]);
 
   // Click-away close (for_sonnet.md "Pill Focus-Stealing Fix" Piece B/C): the
   // pill window is non-activating (WS_EX_NOACTIVATE, see the noactivate
@@ -2292,20 +2301,17 @@ export default function App() {
   // ── Pill menu routing (for_sonnet.md §5.1/§8.5) ─────────────────────────
   // Selecting a nav item closes the menu and expands to the full window on
   // that view; "search" routes to the look view instead of a modal.
-  const handleMenuSelect = useCallback((target: Exclude<MenuTarget, "hide">) => {
-    // TODAY has no compact panel (desktop D1 = FullWindow only; D2 flyout dropped) — it always
-    // opens the full-window TODAY view, switching out of a compact mode if needed.
-    if (target === "today") {
-      closePillMenu();
-      if (displayMode !== "full") setDisplayMode("full");
-      setExpanded(true);
-      setView("today");
-      return;
+  const handleMenuSelect = useCallback((target: MenuTarget) => {
+    // newnote is deliberately asymmetric: full window opens the real editor (Task 8),
+    // compact opens the quick pad. See DECISIONS.md §5 s135.
+    if (target === "newnote" && displayMode === "full") {
+      closePillMenu(); setExpanded(true); setView("note"); bumpNavToken(); return;
     }
     if (displayMode === "full") {
       closePillMenu();
       setExpanded(true);
-      setView(target === "search" ? "look" : target);
+      setView(target === "search" ? "look" : target === "newnote" ? "note" : target);
+      bumpNavToken();
       return;
     }
     // Compact modes (Capsule/Minimal): stay in pill land — the menu morphs
@@ -2325,7 +2331,7 @@ export default function App() {
     // pill.
     if (displayMode !== "capsule") setMenuOpen(false);
     void prefetchPanelZone().then(() => setCompactPanel(target));
-  }, [displayMode, closePillMenu, prefetchPanelZone, compactPanel]);
+  }, [displayMode, closePillMenu, prefetchPanelZone, compactPanel, bumpNavToken]);
 
   // D1: a dedicated Hide item sends the app to the tray even when pinned,
   // distinct from re-clicking the pill (which only dismisses the menu).
@@ -2663,6 +2669,7 @@ export default function App() {
             lookChatPersist={lookChatPersist}
             onOpenFile={(path) => openFilePath(path).catch(() => {})}
             initialView={VIEW_TO_RAIL[view] ?? "dashboard"}
+            initialViewToken={navToken}
             onHideToTray={displayMode === "full"
               ? () => getCurrentWindow().hide()
               : () => setView("capture")}

@@ -12,18 +12,22 @@ import {
   type Point,
   type MonitorBounds,
 } from "./compactPanel";
-import { CAPSULE_OPEN_W } from "../components/PillMenu/CapsuleMenu";
+import { CAPSULE_OPEN_W, CAPSULE_ICON_W, CAPSULE_PAD_X } from "../components/PillMenu/CapsuleMenu";
+import { ALL_TARGETS } from "../components/PillMenu/icons";
 
 describe("constants", () => {
+  it("panel width tracks the menu item count, not a frozen literal", () => {
+    expect(PANEL_W).toBe(ALL_TARGETS.length * CAPSULE_ICON_W + CAPSULE_PAD_X * 2);
+  });
+
   it("exports the agreed panel constants", () => {
-    expect(PANEL_W).toBe(332);
     expect(PANEL_H).toBe(320);
     expect(PANEL_GAP).toBe(0);
     expect(PANEL_ANIM_MS).toBe(300);
     expect(PANEL_EXIT_MS).toBe(360);
   });
 
-  it("PANEL_W equals CAPSULE_OPEN_W", () => {
+  it("the compact panel is exactly as wide as the open capsule bar", () => {
     expect(PANEL_W).toBe(CAPSULE_OPEN_W);
   });
 });

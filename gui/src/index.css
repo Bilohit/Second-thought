@@ -766,6 +766,66 @@ html, body, #root {
   100% { transform: scale(1); }
 }
 
+/* PROJECTS full-window interaction states (:hover/:focus-visible/:focus-within/
+   :active) — relocated from ProjectsRail.tsx/ProjectsPane.tsx component-local
+   <style> blocks. Those blocks rendered fine in `npm run dev` (devCsp allows
+   inline) but were dead in every release build: production CSP is
+   `style-src 'self'` with no `'unsafe-inline'` (src-tauri/tauri.conf.json),
+   so a <style> tag contributes zero rules to the CSSOM there — the exact
+   FR-03 lesson (see this file's [data-theme="custom"] comment above, plus
+   App.tsx/lib/customThemeVars.ts). Do not move these back into a component
+   <style> tag. Relocated verbatim — same selectors/specificity/declarations,
+   no redesign. */
+
+/* ProjectsRail.tsx (`pr-` prefix) */
+.pr-tile { transition: background 160ms var(--hover-ease-out), color 160ms var(--hover-ease-out); }
+.pr-tile:hover { background: var(--surface-2); }
+.pr-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.pr-newbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.pr-sg-create { transition: background 160ms var(--hover-ease-out), transform 120ms var(--hover-ease-out); }
+.pr-sg-create:hover { background: var(--accent); color: var(--on-accent); }
+.pr-sg-create:active { transform: scale(0.97); }
+.pr-sg-create:focus-visible { outline: 2px solid var(--text-1); outline-offset: 1px; }
+.pr-sg-rename { transition: background 160ms var(--hover-ease-out), border-color 160ms var(--hover-ease-out), transform 120ms var(--hover-ease-out); }
+.pr-sg-rename:hover { background: var(--ctl-face-hover); border-color: var(--accent); }
+.pr-sg-rename:active { transform: scale(0.96); }
+.pr-sg-rename:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pr-sg-dismiss { transition: color 200ms var(--hover-ease-out), border-color 200ms var(--hover-ease-out), background 200ms var(--hover-ease-out), box-shadow 220ms var(--hover-ease-out); }
+.pr-sg-dismiss:hover, .pr-sg-dismiss:focus-visible { color: var(--red); border-color: var(--red); background: rgba(255,100,103,0.12); box-shadow: 0 0 0 3px rgba(255,100,103,0.10); outline: none; }
+.pr-sg-dismiss:hover svg, .pr-sg-dismiss:focus-visible svg { animation: xPulse 340ms var(--hover-ease-out); }
+.pr-sg-dismiss:active { transform: scale(0.92); }
+.pr-tagrow { transition: background 160ms var(--hover-ease-out), color 160ms var(--hover-ease-out); }
+.pr-tagrow:hover { background: var(--surface-2); color: var(--text-1); }
+.pr-tagrow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.pr-create-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.pr-glyph { transition: color 160ms var(--hover-ease-out), background 160ms var(--hover-ease-out); }
+.pr-glyph:hover { color: var(--text-1); background: var(--ctl-face-hover); }
+.pr-glyph:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+/* ProjectsPane.tsx (`pp-` prefix) */
+.pp-iconbtn { transition: color 160ms var(--hover-ease-out), background 160ms var(--hover-ease-out); }
+.pp-iconbtn:hover { color: var(--text-1); background: var(--surface-2); }
+.pp-iconbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.pp-iconbtn.pp-danger { color: var(--red); opacity: 0.82; }
+.pp-iconbtn.pp-danger:hover { opacity: 1; background: rgba(255,100,103,0.12); }
+.pp-desc-area:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.pp-tag-copy-btn { transition: background 160ms var(--hover-ease-out), color 160ms var(--hover-ease-out), border-color 160ms var(--hover-ease-out); }
+.pp-tag-copy-btn:hover { background: var(--ctl-face-hover); }
+.pp-tag-copy-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.pp-tag-copy-btn.pp-copied { color: var(--green); border-color: var(--green); }
+.pp-sortbtn { transition: color 160ms var(--hover-ease-out), border-color 160ms var(--hover-ease-out), background 160ms var(--hover-ease-out); }
+.pp-sortbtn:hover { border-color: var(--accent); background: var(--ctl-face-hover); }
+.pp-sortbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pp-noterow { transition: background 160ms var(--hover-ease-out), color 160ms var(--hover-ease-out); }
+.pp-noterow:hover { background: var(--surface-2); color: var(--text-1); }
+.pp-noterow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.pp-ghost { transition: color 160ms var(--hover-ease-out), border-color 160ms var(--hover-ease-out); }
+.pp-ghost:hover { color: var(--text-1); border-color: var(--accent); }
+.pp-note-del { opacity: 0; transition: opacity 140ms var(--hover-ease-out), color 160ms var(--hover-ease-out), background 160ms var(--hover-ease-out); }
+.pp-noterow:hover .pp-note-del, .pp-noterow:focus-within .pp-note-del, .pp-note-del:focus-visible { opacity: 1; }
+.pp-note-del:hover { color: var(--red); background: rgba(255,100,103,0.12); }
+.pp-note-del:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+
 /* ═══════════════════════════════════════════════════════════════════════════
    WAVE 6 (O-8c) — animation-pass additions. Same locked vocabulary as above:
    travel cubic-bezier(0.22,1,0.36,1) / settle cubic-bezier(0.16,1,0.3,1),

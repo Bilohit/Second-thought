@@ -50,13 +50,16 @@ interface Props {
   pillGeometry?: PillGeometry | null;
   fanStyle?: "spread" | "capped";
   inboxCount: number;
-  onSelect: (target: Exclude<MenuTarget, "hide">) => void;
+  onSelect: (target: MenuTarget) => void;
   onHide: () => void;
 }
 
 const ITEM_IDS = ALL_TARGETS;
 
-export default function RadialMenu({ open, corner, pillGeometry, fanStyle, inboxCount, onSelect, onHide }: Props) {
+// onHide: no menu item calls it any more (the hide spoke is deleted, s135) —
+// kept as a still-typed, unused prop rather than deleted so the prop-drilling
+// chain from App.tsx survives intact for whichever task next needs it.
+export default function RadialMenu({ open, corner, pillGeometry, fanStyle, inboxCount, onSelect, onHide: _onHide }: Props) {
   // Dev tuner overrides (off by default — see for_sonnet.md "Dev-only
   // troubleshooting tuner") take precedence over the `fanStyle` prop too, so
   // its fan-style toggle can A/B against the Settings choice live.
@@ -135,9 +138,7 @@ export default function RadialMenu({ open, corner, pillGeometry, fanStyle, inbox
       {positions.map((pos, i) => {
         const id = pos.id as MenuTarget;
         const label = MENU_LABELS[id];
-        const isHide = id === "hide";
         const showBadge = id === "inbox" && inboxCount > 0;
-        const activate = () => { isHide ? onHide() : onSelect(id); };
         return (
           <button
             key={id}
@@ -145,7 +146,7 @@ export default function RadialMenu({ open, corner, pillGeometry, fanStyle, inbox
             type="button"
             role="menuitem"
             data-corner={corner}
-            className={`spoke${isHide ? " spoke-hide" : ""}${entered ? " open" : ""}`}
+            className={`spoke${entered ? " open" : ""}`}
             style={
               {
                 "--tx": `${Math.round(pos.x)}px`,
@@ -162,7 +163,7 @@ export default function RadialMenu({ open, corner, pillGeometry, fanStyle, inbox
             tabIndex={open ? 0 : -1}
             title={label}
             aria-label={showBadge ? `${label}, ${inboxCount} item${inboxCount === 1 ? "" : "s"} need review` : label}
-            onClick={(e) => { e.stopPropagation(); activate(); }}
+            onClick={(e) => { e.stopPropagation(); onSelect(id); }}
             onKeyDown={(e) => handleKeyDown(e, id)}
           >
             <MenuIcon target={id} size={RADIAL_ICON_SIZE} />

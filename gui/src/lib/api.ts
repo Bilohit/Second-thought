@@ -860,6 +860,18 @@ export async function createDailyNote(day?: string): Promise<TodayDailyNote> {
   return r.json() as Promise<TodayDailyNote>;
 }
 
+// Always-new generic note origination (POST /note, Task 1) — vault root, not Daily/, and never
+// find-or-create (unlike createDailyNote above). Same response shape as /today/daily-note.
+export async function createNote(title?: string): Promise<TodayDailyNote> {
+  const r = await fetch(`${BASE}/note`, {
+    method: "POST",
+    headers: await authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ title: title ?? null }),
+  });
+  await assertOk(r, "Failed to create note");
+  return r.json() as Promise<TodayDailyNote>;
+}
+
 export interface LookSource { n: number; path: string; project: string; filename: string; snippet: string; }
 export type LookTier = "high" | "none" | "talk" | "offline";
 export type LookChatEvent =

@@ -6,8 +6,9 @@ import SettingsPanel from "../SettingsPanel";
 import DashboardView from "./DashboardView";
 import LibraryView from "./LibraryView";
 import TodayView from "./TodayView";
+import HistoryView from "./HistoryView";
 import { railSliderFromElement } from "../../lib/railSelection";
-import { MenuIcon, DashboardIcon, RefreshIcon } from "../PillMenu/icons";
+import { MenuIcon, DashboardIcon, RefreshIcon, ClockIcon } from "../PillMenu/icons";
 import { syncVaultIndex, getStats, getInbox } from "../../lib/api";
 import InboxPanel, { type InboxTab } from "../InboxPanel";
 import ErrorBoundary from "../ErrorBoundary";
@@ -29,19 +30,26 @@ interface LookChatHook {
   setIgnoreHistory: (enabled: boolean) => void;
 }
 
-type MainView = "dashboard" | "today" | "look" | "library";
+type MainView = "dashboard" | "today" | "look" | "library" | "history";
 type RailView = MainView | "settings" | "inbox";
-const MAIN_VIEWS: MainView[] = ["dashboard", "today", "look", "library"];
+const MAIN_VIEWS: MainView[] = ["dashboard", "today", "look", "library", "history"];
 // ISS-022: the folder-panel nav label is "Vault" everywhere — was "Library"
 // here vs "Vault" in Capsule/Minimal mode. SP3 Task 8: the container's
 // sub-tabs are now Projects/Trash (the standalone Tags page and the old
 // folders/stats grid are gone — ProjectsView is the "vault" sub-tab, spec
 // docs/superpowers/specs/2026-08-02-projects-s3-fullwindow-design.md §1).
+// FR-07: "history" is a first-class rail destination (see HistoryView.tsx) —
+// it used to alias "library" via App.tsx's VIEW_TO_RAIL, which stopped
+// carrying any stats content once s130 pulled ProjectBar/DaySparkline out of
+// LibraryView. FR-22: the sub-tab label below is "Notes", not "Projects" —
+// "Projects" now names exactly one thing on this screen, ProjectsView's own
+// Projects|Tags toggle.
 const TITLES: Record<RailView, [string, string]> = {
   dashboard: ["Dashboard", "capture · recent · inbox"],
   today:     ["Today", "agenda · daily note"],
   look:      ["Look", "search · chat over vault"],
   library:   ["Vault", "projects · tags · notes"],
+  history:   ["History", "daily rhythm · by project"],
   settings:  ["Settings", ""],
   inbox:     ["Inbox", "review · reminders"],
 };
@@ -96,13 +104,22 @@ interface FullWindowProps {
   onVoiceToggle: () => void;
   onVoiceCancel: () => void;
   initialView?: RailView;
+  /** FR-07 dead-control fix: bumped by App.tsx on every menu/nav-event
+   *  selection, independent of whether `initialView`'s *value* changed.
+   *  Re-selecting the rail section you're already on (e.g. clicking History
+   *  in the pill menu while already viewing it) previously did nothing —
+   *  `initialView` was the same string as last time, so the effect below
+   *  (keyed only on that value) never re-ran. This is the general fix, not
+   *  a per-target special case: it re-applies for any RailView, including
+   *  a case the App-level `view` state never even changes for. */
+  initialViewToken?: number;
 }
 
 export default function FullWindow(props: FullWindowProps) {
   const [view, setView] = useState<RailView>(props.initialView ?? "dashboard");
   useEffect(() => {
     if (props.initialView) setView(props.initialView);
-  }, [props.initialView]);
+  }, [props.initialView, props.initialViewToken]);
   const [inboxTab, setInboxTab] = useState<InboxTab>("inbox");
   const [librarySection, setLibrarySection] = useState<"vault" | "trash">("vault");
   const [healthOpen, setHealthOpen] = useState(false);
@@ -236,7 +253,7 @@ export default function FullWindow(props: FullWindowProps) {
                 aria-label={TITLES[v][0]}
                 aria-pressed={view === v}
               >
-                {v === "dashboard" ? <DashboardIcon size={18} /> : v === "today" ? <MenuIcon target="today" size={18} /> : v === "look" ? <MenuIcon target="search" size={18} /> : <MenuIcon target="vault" size={18} />}
+                {v === "dashboard" ? <DashboardIcon size={18} /> : v === "today" ? <MenuIcon target="today" size={18} /> : v === "look" ? <MenuIcon target="search" size={18} /> : v === "library" ? <MenuIcon target="vault" size={18} /> : <ClockIcon size={18} />}
               </button>
             ))}
           </div>
@@ -297,7 +314,7 @@ export default function FullWindow(props: FullWindowProps) {
               <SegmentedToggle
                 ariaLabel="Vault section"
                 options={[
-                  { key: "vault" as const, label: "Projects" },
+                  { key: "vault" as const, label: "Notes" },
                   { key: "trash" as const, label: "Trash" },
                 ]}
                 value={librarySection}
@@ -361,6 +378,11 @@ export default function FullWindow(props: FullWindowProps) {
         {view === "library" && (
           <div key="library" className="fw-view-panel">
             <LibraryView visible section={librarySection} onOpenNote={setEditorPath} />
+          </div>
+        )}
+        {view === "history" && (
+          <div key="history" className="fw-view-panel">
+            <HistoryView visible />
           </div>
         )}
         {view === "inbox" && (

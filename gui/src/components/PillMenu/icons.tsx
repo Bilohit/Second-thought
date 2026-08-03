@@ -3,27 +3,33 @@
  * ---------
  * Shared icon set for the pill menus — exact paths reused from
  * CaptureOverlay.tsx's header row so the menu items look identical to the
- * full-window equivalents. `hide` is an eye-off glyph (ISS-038 — the prior
- * download-arrow glyph read as "save"), used for the menu's "hide" action.
+ * full-window equivalents.
  */
 import type { JSX } from "react";
 
-export type MenuTarget = "search" | "today" | "vault" | "settings" | "inbox" | "stats" | "hide";
+export type MenuTarget = "search" | "vault" | "settings" | "inbox" | "stats" | "newnote";
 
 export const MENU_LABELS: Record<MenuTarget, string> = {
   search: "Look",
-  today: "Today",
   vault: "Vault",
   settings: "Settings",
   inbox: "Inbox",
   stats: "History",
-  hide: "Hide",
+  newnote: "New Note",
 };
 
-export const NAV_TARGETS: Exclude<MenuTarget, "hide">[] = ["search", "today", "vault", "settings", "inbox", "stats"];
-export const ALL_TARGETS: MenuTarget[] = [...NAV_TARGETS, "hide"];
+export const NAV_TARGETS: MenuTarget[] = ["search", "vault", "settings", "inbox", "stats", "newnote"];
+export const ALL_TARGETS: MenuTarget[] = NAV_TARGETS;
 
-export function MenuIcon({ target, size = 16 }: { target: MenuTarget; size?: number }): JSX.Element {
+// FullWindow.tsx's own rail independently renders a "Today" nav button and a
+// bottom "Hide" button via MenuIcon — unrelated to the pill menu's 6-item cap
+// (s135) but sharing this glyph set. Both go away when Task 3 merges Today
+// into Inbox and Task 8 deletes the rail's Hide button; until then MenuIcon
+// accepts this wider IconTarget so those two rail glyphs keep rendering
+// without re-admitting "today"/"hide" into MenuTarget/ALL_TARGETS.
+export type IconTarget = MenuTarget | "today" | "hide";
+
+export function MenuIcon({ target, size = 16 }: { target: IconTarget; size?: number }): JSX.Element {
   const common = {
     width: size,
     height: size,
@@ -44,14 +50,6 @@ export function MenuIcon({ target, size = 16 }: { target: MenuTarget; size?: num
         <svg {...common}>
           <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
           <circle cx="12" cy="12" r="3" />
-        </svg>
-      );
-    case "today":
-      // Calendar — the TODAY/agenda view glyph (matches the phone tab's CalendarIcon).
-      return (
-        <svg {...common}>
-          <rect x="3" y="4" width="18" height="18" rx="0" />
-          <path d="M3 10h18M8 2v4M16 2v4" />
         </svg>
       );
     case "vault":
@@ -82,9 +80,23 @@ export function MenuIcon({ target, size = 16 }: { target: MenuTarget; size?: num
           <line x1="6" y1="20" x2="6" y2="14" />
         </svg>
       );
+    case "newnote":
+      // Reuse PlusIcon's glyph rather than drawing a new path — see the
+      // repo's icon rule (never a one-off SVG when an export exists).
+      return <PlusIcon size={size} />;
+    case "today":
+      // Calendar — FullWindow's rail-only "Today" nav button (matches the
+      // phone tab's CalendarIcon). Not a MenuTarget any more; see IconTarget.
+      return (
+        <svg {...common}>
+          <rect x="3" y="4" width="18" height="18" rx="0" />
+          <path d="M3 10h18M8 2v4M16 2v4" />
+        </svg>
+      );
     case "hide":
-      // Eye-off — reads unambiguously as "hide", distinct from the
-      // download/save-into-tray arrow it replaces (ISS-038).
+      // Eye-off — FullWindow's rail-only bottom "Hide" button (ISS-038 — the
+      // prior download-arrow glyph read as "save"). Not a MenuTarget any
+      // more; see IconTarget.
       return (
         <svg {...common}>
           <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
@@ -241,6 +253,18 @@ export function ClipboardIcon({ size = 14 }: { size?: number }): JSX.Element {
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <rect x="8" y="3" width="8" height="4" />
       <path d="M16 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2" />
+    </svg>
+  );
+}
+
+/** Copy-to-clipboard action glyph (two overlapping sheets) — distinct from
+ *  ClipboardIcon above, which is a clipboard-with-clip OBJECT used to label
+ *  a capture's clipboard SOURCE TYPE, not an action. */
+export function CopyIcon({ size = 14 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="9" y="9" width="11" height="11" rx="1" />
+      <path d="M5 15V5a1 1 0 0 1 1-1h10" />
     </svg>
   );
 }
