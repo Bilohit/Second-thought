@@ -55,10 +55,14 @@ import {
   deleteProject,
   moveToTrash,
   updateProjectDescription,
+  getTidyPreview,
+  applyTidy,
   type ProjectEntry,
   type SearchResult,
+  type TidyMove,
 } from "../../lib/api";
 import {
+  describeTidyMove,
   displayProject,
   excludeProvisional,
   flipStaggerDelayMs,
@@ -295,6 +299,14 @@ export default function ProjectsPane({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [descDraft, setDescDraft] = useState("");
+  // FR-23 Option A: the project-tidy confirm/preview strip. Deliberately NOT
+  // scoped to `selected` -- a delete moves the selection to loose (see
+  // ProjectsView.tsx's onDeleted) in the SAME component instance, so this has
+  // to survive that transition to still show the preview for the delete that
+  // just happened. `null` = no pending tidy known; `[]` never renders (the
+  // strip only ever appears with at least one real move).
+  const [tidyPreview, setTidyPreview] = useState<TidyMove[] | null>(null);
+  const [tidyBusy, setTidyBusy] = useState(false);
   const pendingSaveRef = useRef<{ name: string; value: string; timer: ReturnType<typeof setTimeout> } | null>(null);
   // FR-04/FR-12: which note row (by path) is showing its inline delete
   // confirm strip, or null. Board (Fork 1, shared across all three create
@@ -360,6 +372,35 @@ export default function ProjectsPane({
     setRenaming(true);
   }
 
+  // FR-23 Option A: renaming/deleting a project no longer silently re-paths
+  // files (project_tidy.py's tidy pass moves the WHOLE vault, not just this
+  // project's notes -- that silent full-vault sweep is the incident this
+  // exists to prevent). The registry action still happens right away; this
+  // just checks whether anything is now waiting to physically move, and
+  // shows it. A vault with nothing to tidy (preview count 0, or the check
+  // itself failing) shows nothing more -- never blocks on this, and an
+  // untidy-on-disk vault is still a correct one (every surface resolves a
+  // note by its tag, never its folder).
+  function checkTidyPreview() {
+    getTidyPreview()
+      .then((preview) => setTidyPreview(preview.count > 0 ? preview.moves : null))
+      .catch(() => { /* best-effort; see comment above */ });
+  }
+
+  function declineTidy() {
+    setTidyPreview(null);
+  }
+
+  function confirmTidy() {
+    setTidyBusy(true);
+    applyTidy()
+      .then(() => { setTidyBusy(false); setTidyPreview(null); })
+      .catch((e) => {
+        setTidyBusy(false);
+        setMutationError(e instanceof Error ? e.message : "Failed to move files");
+      });
+  }
+
   function confirmRename() {
     if (!selected) return;
     const newName = renameValue.trim();
@@ -367,7 +408,7 @@ export default function ProjectsPane({
     const oldName = selected.name;
     setMutationError(null);
     renameProject(oldName, newName)
-      .then(() => { setRenaming(false); onRenamed?.(oldName, newName); })
+      .then(() => { setRenaming(false); onRenamed?.(oldName, newName); checkTidyPreview(); })
       .catch((e) => setMutationError(e instanceof Error ? e.message : "Failed to rename"));
   }
 
@@ -376,7 +417,7 @@ export default function ProjectsPane({
     const name = selected.name;
     setMutationError(null);
     deleteProject(name)
-      .then(() => { setConfirmingDelete(false); onDeleted?.(name); })
+      .then(() => { setConfirmingDelete(false); onDeleted?.(name); checkTidyPreview(); })
       .catch((e) => setMutationError(e instanceof Error ? e.message : "Failed to delete"));
   }
 
@@ -582,7 +623,8 @@ export default function ProjectsPane({
           <span style={confirmTextStyle}>
             {"Delete "}
             <b style={{ color: "var(--text-1)" }}>{selected.name}</b>
-            {`? Its ${noteCount} notes become loose. None is deleted, trashed or edited.`}
+            {`? Its ${noteCount} notes become loose. None is deleted, trashed or edited, and none moves `}
+            {"on disk yet — you'll see a separate confirmation before anything is re-filed."}
           </span>
           <button className="pp-ghost" style={ghostBtnStyle} onClick={() => setConfirmingDelete(false)}>
             Cancel
@@ -590,6 +632,46 @@ export default function ProjectsPane({
           <button className="pp-ghost" style={ghostDangerBtnStyle} onClick={confirmDelete}>
             Delete project only
           </button>
+        </div>
+      )}
+
+      {/* FR-23 Option A: the project-tidy confirm/preview strip. Appears only
+          after a delete or rename actually leaves something to physically
+          move (checkTidyPreview's count > 0) -- never automatically, and
+          this is the ONLY place a tidy move can be triggered from. Neutral
+          (grayscale) styling, not the red confirmStripStyle above: moving a
+          file to match its own tag is a safe, reversible-by-re-tidy
+          housekeeping step, not a destructive action, and this repo reserves
+          color for real semantic state (identity lock). */}
+      {tidyPreview && tidyPreview.length > 0 && (
+        <div style={tidyStripStyle}>
+          <span style={confirmTextStyle}>
+            <b style={{ color: "var(--text-1)" }}>{tidyPreview.length}</b>
+            {tidyPreview.length === 1 ? " note" : " notes"}
+            {" — possibly from other projects too — will move into the folder "}
+            {"its own tag already points to. No project changes, no body is edited; only where "}
+            {tidyPreview.length === 1 ? "the file" : "the files"}
+            {" sit."}
+          </span>
+          <div style={tidyListStyle}>
+            {tidyPreview.map((move) => {
+              const d = describeTidyMove(move);
+              return (
+                <div key={`${move.from}->${move.to}`} style={tidyRowStyle}>
+                  <span style={tidyRowFileStyle}>{d.file}</span>
+                  <span style={tidyRowPathStyle}>{d.from} <ChevronRightIcon size={9} /> {d.to}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div style={tidyActionsRowStyle}>
+            <button className="pp-ghost" style={ghostBtnStyle} onClick={declineTidy} disabled={tidyBusy}>
+              Not now
+            </button>
+            <button className="pp-ghost" style={tidyPrimaryBtnStyle} onClick={confirmTidy} disabled={tidyBusy}>
+              {tidyBusy ? "Moving…" : `Move ${tidyPreview.length === 1 ? "file" : "files"}`}
+            </button>
+          </div>
         </div>
       )}
 
@@ -811,6 +893,31 @@ const ghostBtnStyle: CSSProperties = {
   border: "1px solid var(--border)", background: "var(--bg)", padding: "5px 9px", cursor: "pointer", fontFamily: "inherit",
 };
 const ghostDangerBtnStyle: CSSProperties = { ...ghostBtnStyle, borderColor: "var(--red)", color: "var(--red)" };
+
+// FR-23 Option A: same strip shell as confirmStripStyle (flex row, border-
+// bottom, padding/gap) but grayscale instead of the red danger tint -- this
+// strip confirms a benign file move, never a deletion, and the identity lock
+// reserves red/yellow/green for real semantic state, not decoration.
+const tidyStripStyle: CSSProperties = {
+  flex: "0 0 auto", borderBottom: "1px solid var(--border)", background: "var(--ctl-face)",
+  padding: "9px 16px", display: "flex", flexDirection: "column", gap: 8,
+};
+const tidyListStyle: CSSProperties = {
+  display: "flex", flexDirection: "column", gap: 2, maxHeight: 110, overflowY: "auto",
+  border: "1px solid var(--border)", background: "var(--bg)", padding: "4px 8px",
+};
+const tidyRowStyle: CSSProperties = {
+  display: "flex", alignItems: "center", gap: 8, fontSize: 10, padding: "2px 0",
+};
+const tidyRowFileStyle: CSSProperties = {
+  flex: "0 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  color: "var(--text-1)",
+};
+const tidyRowPathStyle: CSSProperties = {
+  display: "inline-flex", alignItems: "center", gap: 3, flex: "0 0 auto", color: "var(--text-3)",
+};
+const tidyActionsRowStyle: CSSProperties = { display: "flex", justifyContent: "flex-end", gap: 6 };
+const tidyPrimaryBtnStyle: CSSProperties = { ...ghostBtnStyle, borderColor: "var(--text-1)", color: "var(--text-1)" };
 
 const notesHeadStyle: CSSProperties = {
   flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,

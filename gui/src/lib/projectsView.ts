@@ -305,3 +305,35 @@ export function flattenTagTree(tags: readonly TagNode[]): FlatTag[] {
 export function tagDisplayLabel(tag: string): string {
   return tag.replace(/\/$/, "");
 }
+
+// ── FR-23 Option A: project-tidy confirm/preview ────────────────────────────
+
+/** One tidy move (GET /vault/tidy/preview -- api.ts's `TidyMove`), reshaped for
+ *  display: the bare filename plus its FROM/TO folder, each routed through
+ *  `displayProject()` so the internal `_loose` sentinel never reaches the screen
+ *  raw (spec lock: no surface may render "_loose"). A vault-root note (no `/` in
+ *  its path -- should not occur post-s127, but a hand-placed file is not
+ *  impossible) maps to `null`, matching `displayProject`'s own null handling. */
+export interface TidyMoveDisplay {
+  file: string;
+  from: string;
+  to: string;
+}
+
+function folderOf(relPath: string): string | null {
+  const i = relPath.lastIndexOf("/");
+  return i === -1 ? null : relPath.slice(0, i);
+}
+
+/** Never presents a raw filesystem path as if it were meaningful on its own --
+ *  only the folder segment, and only through `displayProject()`. This is the one
+ *  place FR-23's preview strip turns a `{from, to}` move into copy; nothing else
+ *  in the tidy confirm flow should split a path by hand. */
+export function describeTidyMove(move: { from: string; to: string }): TidyMoveDisplay {
+  const file = move.to.slice(move.to.lastIndexOf("/") + 1);
+  return {
+    file,
+    from: displayProject(folderOf(move.from)),
+    to: displayProject(folderOf(move.to)),
+  };
+}

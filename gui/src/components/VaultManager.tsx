@@ -32,12 +32,16 @@ import {
   getSyncIgnore,
   setSyncIgnore,
   moveToTrash,
+  getTidyPreview,
+  applyTidy,
   type VaultFolder,
   type VaultFile,
   type ProvisionalItem,
+  type TidyMove,
 } from "../lib/api";
 import { mergeProvisional, type CanonicalNoteRow } from "../lib/provisional";
 import { middleEllipsis } from "../lib/middleEllipsis";
+import { describeTidyMove } from "../lib/projectsView";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
   INPUT_STYLE, BTN_GHOST, ROW_CARD, ROW_DIVIDER,
@@ -732,6 +736,13 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
   const [modal, setModal] = useState<ModalState>({ kind: "none" });
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmingDeleteName, setConfirmingDeleteName] = useState<string | null>(null);
+  // FR-23 Option A: project-tidy confirm/preview. Deliberately at this
+  // top-level component, not inside FolderCard -- a delete/rename can leave
+  // notes OUTSIDE the affected folder pending too (project_tidy.py's plan
+  // covers the whole vault), and this has to keep showing across a drill-in/
+  // drill-out or a folder-list refresh. `null` = nothing known pending.
+  const [tidyPreview, setTidyPreview] = useState<TidyMove[] | null>(null);
+  const [tidyBusy, setTidyBusy] = useState(false);
   // F-1: bulk conflict badge set (one request instead of one per row).
   const [conflictPaths, setConflictPaths] = useState<Set<string>>(new Set());
   // F-5: local-only sync-ignore set (vault-relative posix paths).
@@ -904,6 +915,34 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
     }
   };
 
+  // FR-23 Option A: rename/delete no longer silently re-path files on the
+  // server (project_tidy.py's tidy pass moves the WHOLE vault, not just the
+  // affected project -- that silent full-vault sweep, with no confirm,
+  // preview or undo, is the incident this exists to prevent). The registry
+  // action below still happens right away; this only checks whether
+  // anything is now pending a physical move and shows it. Never blocks on
+  // this check failing -- an untidy-on-disk vault is still a correct one,
+  // every surface resolves a note by its tag, never its folder.
+  const checkTidyPreview = () => {
+    getTidyPreview()
+      .then((preview) => setTidyPreview(preview.count > 0 ? preview.moves : null))
+      .catch(() => { /* best-effort; see comment above */ });
+  };
+
+  const handleDeclineTidy = () => setTidyPreview(null);
+
+  const handleApplyTidy = async () => {
+    setTidyBusy(true);
+    try {
+      await applyTidy();
+      setTidyPreview(null);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Failed to move files");
+    } finally {
+      setTidyBusy(false);
+    }
+  };
+
   const handleRename = async (oldName: string, newName: string) => {
     setActionError(null);
     try {
@@ -911,6 +950,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
       setModal({ kind: "none" });
       if (drillCat === oldName) setDrillCat(newName);
       await load();
+      checkTidyPreview();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Failed to rename");
     }
@@ -929,7 +969,9 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
 
   // DELETE removes the REGISTRY ENTRY ONLY -- it never deletes, trashes, moves or
   // edits a note (contract 1.3), so there is no `force` for a non-empty folder any
-  // more: the notes simply go loose and the server's tidy pass refiles them.
+  // more: the notes simply go loose. FR-23 Option A: the server no longer also
+  // re-files them right here -- checkTidyPreview() below surfaces that as an
+  // explicit, declinable confirm step instead (see its comment).
   const handleDelete = async (name: string) => {
     setActionError(null);
     try {
@@ -937,6 +979,7 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
       setConfirmingDeleteName(null);
       if (drillCat === name) setDrillCat(null);
       await load();
+      checkTidyPreview();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Failed to delete");
     }
@@ -1148,6 +1191,81 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
 
         {actionError && (
           <span style={{ fontSize: 11, color: "var(--red)", padding: "0 2px" }}>{actionError}</span>
+        )}
+
+        {/* FR-23 Option A: project-tidy confirm/preview strip. Appears only
+            after a rename/delete leaves something pending (checkTidyPreview's
+            count > 0) -- never automatically, and this is the only place a
+            tidy move can be triggered from. Grayscale, not the red delete-
+            confirm tint below: moving a file to match its own tag is a safe
+            housekeeping step, not a destructive one -- this repo reserves
+            color for real semantic state, never decoration. */}
+        {tidyPreview && tidyPreview.length > 0 && (
+          <div
+            style={{
+              background: "var(--surface-2)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+              padding: "10px 12px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+            }}
+          >
+            <span style={{ fontSize: 12, color: "var(--text-2)" }}>
+              <strong style={{ color: "var(--text-1)" }}>{tidyPreview.length}</strong>
+              {tidyPreview.length === 1 ? " note" : " notes"}
+              {" — possibly from other projects too — will move into the folder its own tag already "}
+              {"points to. No project changes, no body is edited; only where "}
+              {tidyPreview.length === 1 ? "the file" : "the files"}
+              {" sit."}
+            </span>
+            <div
+              style={{
+                display: "flex", flexDirection: "column", gap: 2, maxHeight: 110, overflowY: "auto",
+                border: "1px solid var(--border)", background: "var(--bg)", padding: "4px 8px",
+              }}
+            >
+              {tidyPreview.map((move) => {
+                const d = describeTidyMove(move);
+                return (
+                  <div
+                    key={`${move.from}->${move.to}`}
+                    style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10, padding: "2px 0" }}
+                  >
+                    <span style={{
+                      flex: "0 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis",
+                      whiteSpace: "nowrap", color: "var(--text-1)",
+                    }}>
+                      {d.file}
+                    </span>
+                    <span style={{ color: "var(--text-3)", flex: "0 0 auto" }}>{d.from} → {d.to}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
+              <button
+                onClick={handleDeclineTidy}
+                disabled={tidyBusy}
+                className="btn-hover"
+                style={{ ...BTN_GHOST, color: "var(--text-2)", fontSize: 12, padding: "5px 10px" }}
+              >
+                Not now
+              </button>
+              <button
+                onClick={handleApplyTidy}
+                disabled={tidyBusy}
+                className="btn-hover"
+                style={{
+                  padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: "var(--radius)",
+                  border: "1px solid var(--text-1)", background: "var(--bg)", color: "var(--text-1)", cursor: "pointer",
+                }}
+              >
+                {tidyBusy ? "Moving…" : `Move ${tidyPreview.length === 1 ? "file" : "files"}`}
+              </button>
+            </div>
+          </div>
         )}
 
         {/* Folder list */}

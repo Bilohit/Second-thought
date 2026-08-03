@@ -29,6 +29,8 @@ vi.mock("../../lib/api", async (importOriginal) => {
     deleteProject: vi.fn(),
     updateProjectDescription: vi.fn(),
     moveToTrash: vi.fn(),
+    getTidyPreview: vi.fn(),
+    applyTidy: vi.fn(),
   };
 });
 
@@ -61,6 +63,8 @@ beforeEach(() => {
   vi.mocked(api.deleteProject).mockResolvedValue(undefined);
   vi.mocked(api.updateProjectDescription).mockResolvedValue(undefined);
   vi.mocked(api.moveToTrash).mockResolvedValue({ ok: true, filename: "a.md", trashed_path: "_trash/a.md" });
+  vi.mocked(api.getTidyPreview).mockResolvedValue({ moves: [], count: 0 });
+  vi.mocked(api.applyTidy).mockResolvedValue({ moved: 0, skipped: 0, removed_dirs: 0 });
   vi.mocked(clipboard.writeText).mockResolvedValue(undefined);
 });
 
@@ -317,7 +321,9 @@ describe("ProjectsPane — delete (spec §4.7: the true consequence, stated)", (
     await screen.findByText("2 notes");
     fireEvent.click(screen.getByRole("button", { name: "Delete project" }));
     expect(
-      screen.getByText((_, el) => el?.textContent === "Delete trip-japan? Its 2 notes become loose. None is deleted, trashed or edited."),
+      screen.getByText((_, el) => el?.textContent ===
+        "Delete trip-japan? Its 2 notes become loose. None is deleted, trashed or edited, and none moves "
+        + "on disk yet — you'll see a separate confirmation before anything is re-filed."),
     ).toBeTruthy();
   });
 
@@ -338,6 +344,88 @@ describe("ProjectsPane — delete (spec §4.7: the true consequence, stated)", (
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("button", { name: "Delete project only" })).toBeNull();
     expect(api.deleteProject).not.toHaveBeenCalled();
+  });
+});
+
+describe("ProjectsPane — FR-23 Option A: project-tidy confirm/preview", () => {
+  it("a delete that leaves nothing to move shows no tidy strip", async () => {
+    vi.mocked(api.getTidyPreview).mockResolvedValue({ moves: [], count: 0 });
+    renderPane({ projects: [project({ name: "trip-japan" })], selectedId: "trip-japan" });
+    await screen.findByText("trip-japan");
+    fireEvent.click(screen.getByRole("button", { name: "Delete project" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete project only" }));
+    await vi.waitFor(() => expect(api.getTidyPreview).toHaveBeenCalled());
+    expect(screen.queryByText(/will move/)).toBeNull();
+    expect(api.applyTidy).not.toHaveBeenCalled();
+  });
+
+  it("a delete that leaves notes to re-file shows the exact from/to preview and count", async () => {
+    vi.mocked(api.getTidyPreview).mockResolvedValue({
+      moves: [
+        { from: "trip-japan/plan.md", to: "_loose/plan.md" },
+        { from: "personal/diary.md", to: "_loose/diary.md" },
+      ],
+      count: 2,
+    });
+    renderPane({ projects: [project({ name: "trip-japan" })], selectedId: "trip-japan" });
+    await screen.findByText("trip-japan");
+    fireEvent.click(screen.getByRole("button", { name: "Delete project" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete project only" }));
+
+    await screen.findByText("plan.md");
+    expect(screen.getByText("diary.md")).toBeTruthy();
+    // The internal "_loose" sentinel must never reach the screen raw.
+    expect(screen.queryByText(/_loose/)).toBeNull();
+    expect(screen.getAllByText(/loose/).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Move files" })).toBeTruthy();
+  });
+
+  it("declining (Not now) hides the strip and never calls applyTidy", async () => {
+    vi.mocked(api.getTidyPreview).mockResolvedValue({
+      moves: [{ from: "personal/diary.md", to: "_loose/diary.md" }],
+      count: 1,
+    });
+    renderPane({ projects: [project({ name: "trip-japan" })], selectedId: "trip-japan" });
+    await screen.findByText("trip-japan");
+    fireEvent.click(screen.getByRole("button", { name: "Delete project" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete project only" }));
+    await screen.findByText("diary.md");
+
+    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+    expect(screen.queryByText("diary.md")).toBeNull();
+    expect(api.applyTidy).not.toHaveBeenCalled();
+  });
+
+  it("confirming (Move file) calls applyTidy and then hides the strip", async () => {
+    vi.mocked(api.getTidyPreview).mockResolvedValue({
+      moves: [{ from: "personal/diary.md", to: "_loose/diary.md" }],
+      count: 1,
+    });
+    vi.mocked(api.applyTidy).mockResolvedValue({ moved: 1, skipped: 0, removed_dirs: 1 });
+    renderPane({ projects: [project({ name: "trip-japan" })], selectedId: "trip-japan" });
+    await screen.findByText("trip-japan");
+    fireEvent.click(screen.getByRole("button", { name: "Delete project" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete project only" }));
+    await screen.findByText("diary.md");
+
+    fireEvent.click(screen.getByRole("button", { name: "Move file" }));
+    await vi.waitFor(() => expect(api.applyTidy).toHaveBeenCalled());
+    await vi.waitFor(() => expect(screen.queryByText("diary.md")).toBeNull());
+  });
+
+  it("a rename that leaves notes to re-file also surfaces the preview", async () => {
+    vi.mocked(api.getTidyPreview).mockResolvedValue({
+      moves: [{ from: "onboarding-v2/a.md", to: "onboarding-v3/a.md" }],
+      count: 1,
+    });
+    renderPane({ projects: [project({ name: "onboarding-v2" })], selectedId: "onboarding-v2" });
+    await screen.findByText("onboarding-v2");
+    fireEvent.click(screen.getByRole("button", { name: "Rename project" }));
+    const input = screen.getByLabelText("New project name");
+    fireEvent.change(input, { target: { value: "onboarding-v3" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await vi.waitFor(() => expect(api.renameProject).toHaveBeenCalled());
+    await screen.findByText("a.md");
   });
 });
 

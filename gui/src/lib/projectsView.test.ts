@@ -19,6 +19,7 @@ import {
   flattenTagTree,
   tagDisplayLabel,
   isValidProjectName,
+  describeTidyMove,
   type SortableNote,
 } from "./projectsView";
 import type { TagNode } from "./api";
@@ -459,5 +460,26 @@ describe("metaEpochMs", () => {
 
   it("null for an unparseable timestamp", () => {
     expect(metaEpochMs({ timestamp: "not-a-date" }, "newest")).toBeNull();
+  });
+});
+
+describe("describeTidyMove (FR-23 Option A: preview-strip display mapping)", () => {
+  it("splits filename from folder on both sides", () => {
+    expect(describeTidyMove({ from: "work/foo.md", to: "_loose/foo.md" })).toEqual({
+      file: "foo.md",
+      from: "work",
+      to: "loose",
+    });
+  });
+
+  it("never leaks the raw _loose sentinel, on either side", () => {
+    const d = describeTidyMove({ from: "_loose/a.md", to: "trip-japan/a.md" });
+    expect(d.from).not.toBe("_loose");
+    expect(d.from).toBe("loose");
+    expect(d.to).toBe("trip-japan");
+  });
+
+  it("a vault-root file (no folder) maps to loose, not a raw null/empty string", () => {
+    expect(describeTidyMove({ from: "a.md", to: "_loose/a.md" }).from).toBe("loose");
   });
 });

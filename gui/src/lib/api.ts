@@ -618,13 +618,60 @@ export async function updateProjectDescription(
 }
 
 /** Removes the REGISTRY ENTRY ONLY -- never a note (contract 1.3). Its notes go
- *  loose by the dangling rule and the server tidy pass moves them into `_loose/`. */
+ *  loose by the dangling rule. FR-23 Option A: this no longer also moves any file --
+ *  see `getTidyPreview`/`applyTidy` below, which the caller must drive explicitly. */
 export async function deleteProject(name: string): Promise<void> {
   const r = await fetch(
     `${BASE}/vault/projects/${encodeURIComponent(name)}`,
     { method: "DELETE", headers: await authHeaders() },
   );
   await assertOk(r, "Failed to delete project");
+}
+
+/** One planned project-tidy move, vault-relative on both sides (e.g.
+ *  `{ from: "work/foo.md", to: "_loose/foo.md" }`). Raw paths -- callers must route
+ *  the folder segment through `displayProject()`/`describeTidyMove()` (projectsView.ts)
+ *  before rendering; `_loose` must never reach the screen unmapped. */
+export interface TidyMove {
+  from: string;
+  to: string;
+}
+
+export interface TidyPreview {
+  moves: TidyMove[];
+  count: number;
+}
+
+/** FR-23 Option A: exactly what a project-tidy pass would move right now -- read-only,
+ *  nothing applied. Call this before ever showing a tidy confirm strip (after a project
+ *  delete/rename, or any time), and again immediately before `applyTidy()` if any time
+ *  has passed, since the vault may have changed underneath. */
+export async function getTidyPreview(): Promise<TidyPreview> {
+  const r = await fetch(`${BASE}/vault/tidy/preview`, { headers: await authHeaders() });
+  await assertOk(r, "Failed to preview vault tidy");
+  const body = await r.json();
+  return {
+    moves: arrayField<TidyMove>(body, "moves"),
+    count: typeof body?.count === "number" ? body.count : 0,
+  };
+}
+
+export interface TidyApplyResult {
+  moved: number;
+  skipped: number;
+  removed_dirs: number;
+}
+
+/** FR-23 Option A: physically applies the pending tidy move. Only ever call this after
+ *  the user has seen `getTidyPreview()`'s list and explicitly confirmed -- never
+ *  automatically. Moves files only; no note body byte is ever touched. */
+export async function applyTidy(): Promise<TidyApplyResult> {
+  const r = await fetch(`${BASE}/vault/tidy/apply`, {
+    method: "POST",
+    headers: await authHeaders(),
+  });
+  await assertOk(r, "Failed to apply vault tidy");
+  return r.json();
 }
 
 /** A registry entry from GET /vault/projects (vault_admin.py's `list_projects`,

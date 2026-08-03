@@ -845,7 +845,10 @@ class TestProjectRegistryCrud(unittest.TestCase):
         d.mkdir(exist_ok=True)
         return d
 
-    def test_delete_removes_the_entry_only_and_sends_notes_loose(self):
+    def test_delete_removes_the_entry_only_and_leaves_the_move_pending(self):
+        """FR-23 Option A: delete no longer auto-tidies the filesystem. The note is
+        dangling (reads as loose) immediately, but the physical move is a separate,
+        confirmable step -- GET /vault/tidy/preview then POST /vault/tidy/apply."""
         with tempfile.TemporaryDirectory() as td:
             vault = Path(td) / "vault"
             d = self._seed(vault)
@@ -853,13 +856,30 @@ class TestProjectRegistryCrud(unittest.TestCase):
             note.write_text("---\ncreated: x\n---\n\nbody\n\ntags: #project@Botany\n", encoding="utf-8")
             before = note.read_bytes()
 
-            r = self._client(vault).delete("/vault/projects/Botany")
+            client = self._client(vault)
+            r = client.delete("/vault/projects/Botany")
             self.assertEqual(r.status_code, 200)
+            self.assertNotIn("went_loose", r.json())
+
+            # Nothing has moved yet -- the delete is registry-only.
+            self.assertTrue(note.exists(), "delete must not move a file on its own")
+            self.assertEqual(note.read_bytes(), before, "delete must not edit a single byte")
+
+            preview = client.get("/vault/tidy/preview").json()
+            self.assertEqual(preview["count"], 1)
+            self.assertEqual(preview["moves"], [{"from": "Botany/n.md", "to": "_loose/n.md"}])
+
+            applied = client.post("/vault/tidy/apply").json()
+            self.assertEqual(applied["moved"], 1)
 
             moved = vault / "_loose" / "n.md"
             self.assertTrue(moved.exists(), "a dangling note must go loose, never be deleted")
-            self.assertEqual(moved.read_bytes(), before, "delete must not edit a single byte")
+            self.assertEqual(moved.read_bytes(), before, "tidy must not edit a single byte")
             self.assertFalse(d.exists(), "the emptied project directory is removed by the tidy pass")
+
+            # Declining (never calling apply) is a legitimate end state: re-previewing
+            # afterwards should show nothing pending.
+            self.assertEqual(client.get("/vault/tidy/preview").json()["count"], 0)
 
     def test_rename_retags_machine_bodies_and_only_offers_user_notes(self):
         with tempfile.TemporaryDirectory() as td:
@@ -872,7 +892,8 @@ class TestProjectRegistryCrud(unittest.TestCase):
                                  encoding="utf-8")
             user_before = user_note.read_bytes()
 
-            r = self._client(vault).patch("/vault/projects/Botany", json={"new_name": "Plants"})
+            client = self._client(vault)
+            r = client.patch("/vault/projects/Botany", json={"new_name": "Plants"})
             self.assertEqual(r.status_code, 200, r.text)
             body = r.json()
             self.assertEqual(body["retagged"], 1)
@@ -881,6 +902,17 @@ class TestProjectRegistryCrud(unittest.TestCase):
             import project_registry
             entry = project_registry.load(vault)["projects"]["Plants"]
             self.assertEqual(entry["renamed_from"], "Botany")
+
+            # FR-23 Option A: rename retags bodies immediately (that's a body edit the
+            # provenance gate already governs, unrelated to project-tidy) but no longer
+            # auto-moves files -- both notes are still sitting in the OLD directory
+            # until the pending tidy is previewed and explicitly applied.
+            self.assertTrue((vault / "Botany" / "cap.md").exists(), "no auto-move on rename")
+            self.assertFalse((vault / "Plants" / "cap.md").exists())
+
+            preview = client.get("/vault/tidy/preview").json()
+            self.assertEqual(preview["count"], 2, "both notes resolve into Plants via renamed_from")
+            client.post("/vault/tidy/apply")
 
             # The machine-authored capture followed the rename.
             self.assertTrue((vault / "Plants" / "cap.md").exists())

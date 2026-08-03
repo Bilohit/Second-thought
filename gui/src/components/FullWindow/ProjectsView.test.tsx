@@ -34,6 +34,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     notesForProject: vi.fn(),
     notesForTag: vi.fn(),
     renameProject: vi.fn(),
+    getTidyPreview: vi.fn(),
   };
 });
 
@@ -53,6 +54,7 @@ beforeEach(() => {
   vi.mocked(api.notesForProject).mockResolvedValue([]);
   vi.mocked(api.notesForTag).mockResolvedValue([]);
   vi.mocked(api.renameProject).mockResolvedValue(undefined);
+  vi.mocked(api.getTidyPreview).mockResolvedValue({ moves: [], count: 0 });
 });
 
 describe("ProjectsView — auto-select the first tag on switching to Tags (spec §5.2)", () => {

@@ -376,7 +376,17 @@ async def rename_project(name: str, body: ProjectRename):
         path.write_text(text.replace(old_tag, new_tag), encoding="utf-8")
         retagged += 1
 
-    _tidy(root)
+    # FR-23 Option A: the folder re-path used to happen right here, unconditionally and
+    # invisibly (`_tidy(root)`) -- and `_tidy` re-files the WHOLE vault, not just this
+    # project's notes, so any rename could silently sweep untagged legacy folders into
+    # `_loose/` with no confirmation, preview or undo (the incident this exists to
+    # prevent). The registry write + body retag above are the sync-safe, non-destructive
+    # half (contract: renamed_from keeps every note resolving during rollout) and still
+    # happen unconditionally. The physical move is now a separate, explicit step --
+    # GET /vault/tidy/preview to show the user what would move, POST /vault/tidy/apply
+    # to actually do it. Declining leaves the vault merely untidy on disk, which every
+    # surface still reads correctly (project_tidy.py's own contract: "self-healing,
+    # never wrong").
     return {"ok": True, "old_name": name, "new_name": new_name,
             "retagged": retagged, "offered": offered}
 
@@ -386,18 +396,25 @@ async def delete_project(name: str):
     """Remove a project from the REGISTRY ONLY (contract §1.3).
 
     It never deletes, trashes, moves or edits a note. Every note still tagged with the
-    removed name is now dangling, which reads as LOOSE by the one resolution rule, and
-    the tidy pass below moves those notes into `_loose/` and removes the emptied
-    directory. Nothing is lost and nothing is unreachable: retagging is a body edit the
-    user makes, or re-creating the project restores every note to it.
+    removed name is now dangling, which reads as LOOSE by the one resolution rule.
+    Nothing is lost and nothing is unreachable: retagging is a body edit the user makes,
+    or re-creating the project restores every note to it.
+
+    FR-23 Option A: this used to also run the tidy pass (`_tidy(root)`) right here,
+    unconditionally -- and tidy re-files the WHOLE vault (every note, not just this
+    project's), so deleting one project could silently sweep unrelated legacy folders
+    into `_loose/` with no confirmation, preview or undo. That physical move is now a
+    separate, explicit step: GET /vault/tidy/preview to show the user what would move,
+    POST /vault/tidy/apply to actually do it. Declining leaves the vault merely untidy
+    on disk -- every surface still resolves a note by its tag, not its folder, so this
+    is never wrong, just cosmetically behind (project_tidy.py's own contract).
     """
     root = _srv()._get_vault_root()
     if name not in project_registry.load(root).get("projects", {}):
         raise HTTPException(status_code=404, detail=f"'{name}' not found.")
 
     project_registry.update(root, lambda r: r["projects"].pop(name, None))
-    result = _tidy(root)
-    return {"ok": True, "deleted": name, "went_loose": result.moved}
+    return {"ok": True, "deleted": name}
 
 
 # Top-level folders the tidy pass must never touch. A note in the review inbox, the
@@ -418,9 +435,10 @@ def _filed_notes(root: Path):
                 yield path
 
 
-def _tidy(root: Path):
-    """Re-file every note into the directory its tag now implies, and drop directories
-    the move emptied. Desktop alone re-paths a file (project_tidy.py's whole premise)."""
+def _tidy_entries(root: Path) -> list:
+    """Every filed note as a `project_tidy.NoteLoc`, read fresh off disk -- the shared
+    input both the preview and the real apply build their plan from, so they can never
+    disagree about what a tidy pass would move."""
     import project_tidy
     entries = []
     for path in _filed_notes(root):
@@ -428,8 +446,62 @@ def _tidy(root: Path):
             entries.append(project_tidy.NoteLoc(path, path.read_text(encoding="utf-8")))
         except (OSError, UnicodeDecodeError):
             continue
+    return entries
+
+
+def _tidy(root: Path):
+    """Re-file every note into the directory its tag now implies, and drop directories
+    the move emptied. Desktop alone re-paths a file (project_tidy.py's whole premise).
+
+    Callers: ONLY `apply_tidy_endpoint` below (FR-23 Option A) -- never called as a side
+    effect of another route. A note's project (the `#project@` tag) is unaffected either
+    way; this only ever changes where the file sits."""
+    import project_tidy
     reg = project_registry.load(root)
-    return project_tidy.apply_tidy(root, project_tidy.plan_tidy(entries, root, reg))
+    return project_tidy.apply_tidy(root, project_tidy.plan_tidy(_tidy_entries(root), root, reg))
+
+
+def _tidy_preview(root: Path) -> dict:
+    """Read-only: exactly the moves `_tidy()` would make right now, with nothing
+    applied -- no registry write, no file move, no body byte touched. Reuses the same
+    pure planner `_tidy()` calls (project_tidy.plan_tidy); that pure-planner/locked-
+    applier split is what makes a preview cheap to compute (see project_tidy.py's
+    module docstring)."""
+    import project_tidy
+    reg = project_registry.load(root)
+    moves = project_tidy.plan_tidy(_tidy_entries(root), root, reg)
+    return {
+        "moves": [
+            {
+                "from": str(m.src.relative_to(root)).replace("\\", "/"),
+                "to": str(m.dst.relative_to(root)).replace("\\", "/"),
+            }
+            for m in moves
+        ],
+        "count": len(moves),
+    }
+
+
+@router.get("/vault/tidy/preview")
+async def tidy_preview_endpoint():
+    """FR-23 Option A: what a project-tidy pass would move, right now, with nothing
+    applied. The GUI calls this to populate the confirm/preview strip before EVERY
+    tidy move -- after a project delete or rename, or any time the user wants to check
+    before committing to POST /vault/tidy/apply below."""
+    root = _srv()._get_vault_root()
+    return _tidy_preview(root)
+
+
+@router.post("/vault/tidy/apply")
+async def apply_tidy_endpoint():
+    """FR-23 Option A: physically apply the pending project-tidy move. Called only after
+    the user has seen the GET /vault/tidy/preview list and explicitly confirmed --
+    never automatically, and never as a side effect of deleting or renaming a project.
+    Moves files only; no note body byte is ever touched (project_tidy.apply_tidy's own
+    contract)."""
+    root = _srv()._get_vault_root()
+    result = _tidy(root)
+    return {"ok": True, "moved": result.moved, "skipped": result.skipped, "removed_dirs": result.removed_dirs}
 
 
 @router.get("/vault/folders/{name}/files")
