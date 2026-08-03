@@ -44,48 +44,12 @@ import { setAlwaysOnTop } from "../../lib/tauri";
 import { applyMarkdownFormat, type FormatKind } from "../../lib/noteFormat";
 import { isSaveRetry, saveRetryDelayMs } from "../../lib/saveRetry";
 import { initialPadState, reduce, loadLastNoteId, saveLastNoteId, type PadState } from "../../lib/quickPad";
-import { PlusIcon, TrashIcon } from "../PillMenu/icons";
+import { PlusIcon, TrashIcon, BoldIcon, ChecklistIcon, PinIcon } from "../PillMenu/icons";
 import { BTN_GHOST } from "../ui/styles";
 import { logger } from "../../lib/logger";
 
 interface Props {
   onHeaderActionsChange?: (actions: ReactNode | null) => void;
-}
-
-// -- local glyphs: Bold/Checklist mirror NoteEditor.tsx's own local (non-
-// exported) toolbar icons pixel-for-pixel so the pad's two format actions
-// read identically to the full editor's. Pin has no existing export
-// anywhere in the app; icons.tsx is out of this task's scope (Task 2/5
-// territory), so it is defined locally here per the same
-// feature-specific-glyph convention NoteEditor.tsx already uses for its own
-// corner-menu icons. --
-
-function BoldIcon({ size = 13 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M8 5v14M8 5h3a3 3 0 010 6H8M8 12h4a3.5 3.5 0 010 7H8" />
-    </svg>
-  );
-}
-
-function ChecklistIcon({ size = 13 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
-      <rect x="3" y="9" width="6" height="6" rx="1" />
-      <path d="M4.5 12l1.3 1.3L8 10.5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M12 10.5h9M12 14.5h9" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function PinIcon({ size = 13 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 2v7" />
-      <path d="M7 9h10l1.5 5H5.5z" />
-      <path d="M12 14v8" />
-    </svg>
-  );
 }
 
 type SaveState = "idle" | "saving" | "saved" | "error" | "conflict";

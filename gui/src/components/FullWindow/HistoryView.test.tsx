@@ -3,9 +3,9 @@
  * HistoryView.test.tsx — FR-07 regression.
  *
  * Confirms the restored full-window History destination actually renders
- * the by-project/daily-rhythm content from getStats(), and that it routes
- * project names through displayProject() rather than ever printing the
- * "_loose" index sentinel directly (the P1 seven sites leaked before).
+ * the by-project content from getStats(), and that it routes project names
+ * through displayProject() rather than ever printing the "_loose" index
+ * sentinel directly (the P1 seven sites leaked before).
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 describe("HistoryView — FR-07: a real History destination, not an alias of Vault", () => {
-  it("renders the daily rhythm and by-project cards from getStats()", async () => {
+  it("renders the by-project cards from getStats()", async () => {
     vi.mocked(api.getStats).mockResolvedValue({
       total: 3,
       by_day: [{ date: "2026-08-01", count: 2 }, { date: "2026-08-02", count: 1 }],
@@ -33,8 +33,7 @@ describe("HistoryView — FR-07: a real History destination, not an alias of Vau
 
     render(<HistoryView visible />);
 
-    expect(await screen.findByText("Daily rhythm")).toBeTruthy();
-    expect(screen.getByText("By project")).toBeTruthy();
+    expect(await screen.findByText("By project")).toBeTruthy();
     expect(await screen.findByText("kitchen-remodel")).toBeTruthy();
     // The index's "_loose" sentinel must never reach the DOM as literal text.
     expect(screen.getByText("loose")).toBeTruthy();

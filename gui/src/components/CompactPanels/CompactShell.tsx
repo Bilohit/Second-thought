@@ -17,7 +17,7 @@
  * `onOpenFull` escape hatch — full controls live inside `children`.
  *
  * Task 2.2 (GATE-B=A, bar-as-header): the tab-strip paradigm (one icon per
- * NAV_TARGETS in the panel header, swapping `children` in place) is
+ * ALL_TARGETS in the panel header, swapping `children` in place) is
  * retired — the bar itself (CapsuleMenu / minimal fan) is the only target
  * switcher now. In minimal mode that means switching targets goes through
  * close island -> reopen fan -> pick; this is the accepted cost of GATE-B=A,

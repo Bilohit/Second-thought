@@ -2,16 +2,16 @@
  * CompactHistory.tsx
  * --------------------
  * Compact Mode Menu Decoupling, Task 2.4: FULL-parity History/Stats content
- * for the capsule's `CompactShell` body. Mirrors the "capture rhythm"
- * summary (`ProjectBar` by-project breakdown + `DaySparkline` daily
- * counts, both from `StatsPanel.tsx`) and the complete "Recent activity"
+ * for the capsule's `CompactShell` body. Mirrors the by-project breakdown
+ * (`ProjectBar`, from `StatsPanel.tsx`) and the complete "Recent activity"
  * list (`DashboardView.tsx`'s `renderRecentCard`, driven by
  * `getStats().recent` — already newest-first from the server) in one
  * scrollable column instead of DashboardView's fixed-height card, since a
  * capsule panel has room to show the whole list rather than a preview.
+ * (Task 11 deleted the sparkline card that used to sit alongside these.)
  */
 import { useEffect, useState } from "react";
-import { ProjectBar, DaySparkline } from "../StatsPanel";
+import { ProjectBar } from "../StatsPanel";
 import { getStats, openFilePath, type Stats } from "../../lib/api";
 import { displayProject } from "../../lib/projectsView";
 
@@ -32,8 +32,8 @@ export default function CompactHistory({ onOpenFile }: Props) {
   return (
     <div style={{ height: "100%", minWidth: 0, display: "flex", flexDirection: "column", gap: 10, overflowY: "auto", overflowX: "hidden" }}>
       {/* minHeight sized so ~5 recent rows show at a glance before the outer
-          column scrolls (the compact body is 288px; the Daily/Project cards
-          live below the fold). A shorter min-height floored the card at ~2
+          column scrolls (the compact body is 288px; the by-project card
+          lives below the fold). A shorter min-height floored the card at ~2
           rows once the column became height-constrained. */}
       <div style={{ flex: "1 1 auto", minHeight: 260, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "var(--space-3)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 8, display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
@@ -70,13 +70,6 @@ export default function CompactHistory({ onOpenFile }: Props) {
             <div style={{ fontSize: 11, color: "var(--text-3)", padding: "12px 0", textAlign: "center" }}>No recent captures</div>
           )}
         </div>
-      </div>
-
-      <div style={{ flex: "none", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "var(--space-3)" }}>
-        <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 8 }}>
-          Daily rhythm
-        </div>
-        <DaySparkline days={stats?.by_day ?? []} />
       </div>
 
       <div style={{ flex: "none", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "var(--space-3)" }}>

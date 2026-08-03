@@ -6,9 +6,9 @@
  * VaultManager's top-level action buttons (open vault folder / refresh /
  * new project) are lifted into CompactShell's `headerActions` slot instead
  * of duplicating a second header row (`compactHeader` on VaultManager); the
- * "By project" / "Daily rhythm" stat sections FullWindow's LibraryView
- * shows alongside VaultManager are dropped outright here — not enough room
- * at 288px to justify them, and they duplicate the History panel's stats.
+ * "By project" stat section FullWindow's LibraryView shows alongside
+ * VaultManager is dropped outright here — not enough room at 288px to
+ * justify it, and it duplicates the History panel's own stats.
  */
 import type { ReactNode } from "react";
 import VaultManager from "../VaultManager";

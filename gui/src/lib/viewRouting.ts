@@ -7,11 +7,11 @@
  * independent of the full App.tsx render tree.
  *
  * FR-07: `stats` used to alias onto `library`, the same destination as
- * `vault`. That was harmless while LibraryView still held the "By project" /
- * "Daily rhythm" stats panels, but s130 removed them from LibraryView (they
- * now live only in HistoryView / CompactHistory), so firing the menu's
- * "History" item landed on a screen with no history content at all. `stats`
- * now maps to its own `history` destination.
+ * `vault`. That was harmless while LibraryView still held the "By project"
+ * stats panel, but s130 removed it from LibraryView (it now lives only in
+ * HistoryView / CompactHistory), so firing the menu's "History" item landed
+ * on a screen with no history content at all. `stats` now maps to its own
+ * `history` destination.
  */
 
 export type LegacyView = "capture" | "settings" | "vault" | "inbox" | "stats" | "look" | "note";

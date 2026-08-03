@@ -18,16 +18,9 @@ export const MENU_LABELS: Record<MenuTarget, string> = {
   newnote: "New Note",
 };
 
-export const NAV_TARGETS: MenuTarget[] = ["search", "vault", "settings", "inbox", "stats", "newnote"];
-export const ALL_TARGETS: MenuTarget[] = NAV_TARGETS;
+export const ALL_TARGETS: MenuTarget[] = ["search", "vault", "settings", "inbox", "stats", "newnote"];
 
-// Task 8 deleted FullWindow's rail-only "Hide" button (hide now lives on the
-// tray icon + Esc), so IconTarget no longer needs to be wider than
-// MenuTarget. Kept as its own name rather than inlining MenuTarget at every
-// MenuIcon call site — Task 11 decides whether to collapse the two together.
-export type IconTarget = MenuTarget;
-
-export function MenuIcon({ target, size = 16 }: { target: IconTarget; size?: number }): JSX.Element {
+export function MenuIcon({ target, size = 16 }: { target: MenuTarget; size?: number }): JSX.Element {
   const common = {
     width: size,
     height: size,
@@ -353,6 +346,46 @@ export function PlusIcon({ size = 14 }: { size?: number }): JSX.Element {
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M12 5v14" />
       <path d="M5 12h14" />
+    </svg>
+  );
+}
+
+/** Bold-B format glyph — shared by NoteEditor's format toolbar and the
+ *  compact quick pad's two-action format row (Task 11: promoted here after
+ *  the two components carried byte-divergent local copies — CompactQuickNote's
+ *  had `aria-hidden="true"`, NoteEditor's didn't; this export keeps that
+ *  attribute, matching every other glyph in this module). */
+export function BoldIcon({ size = 13 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M8 5v14M8 5h3a3 3 0 010 6H8M8 12h4a3.5 3.5 0 010 7H8" />
+    </svg>
+  );
+}
+
+/** Checklist glyph — shared by NoteEditor's format toolbar and the compact
+ *  quick pad's format row (Task 11: promoted here for the same reason as
+ *  `BoldIcon` above). */
+export function ChecklistIcon({ size = 13 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
+      <rect x="3" y="9" width="6" height="6" rx="1" />
+      <path d="M4.5 12l1.3 1.3L8 10.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12 10.5h9M12 14.5h9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Pin glyph — the compact quick pad's always-on-top toggle. Not duplicated
+ *  elsewhere today; promoted here anyway per the repo's icon rule (every
+ *  user-facing icon is an export of this module, never a component-local
+ *  one-off). */
+export function PinIcon({ size = 13 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 2v7" />
+      <path d="M7 9h10l1.5 5H5.5z" />
+      <path d="M12 14v8" />
     </svg>
   );
 }

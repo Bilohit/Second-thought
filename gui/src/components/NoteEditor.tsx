@@ -27,7 +27,7 @@ import { parseAttachments } from "../lib/attachments";
 import { isSaveRetry, saveRetryDelayMs } from "../lib/saveRetry";
 import { logger } from "../lib/logger";
 import { diffLines } from "../lib/lineDiff";
-import { BellIcon, ClockIcon } from "./PillMenu/icons";
+import { BellIcon, ClockIcon, BoldIcon, ChecklistIcon } from "./PillMenu/icons";
 import { Markdown } from "./Markdown";
 import { TagChip } from "./TagChip";
 import { parseBlocks } from "../lib/markdown";
@@ -35,15 +35,6 @@ import { parseBlocks } from "../lib/markdown";
 const TRAVEL = "cubic-bezier(0.22,1,0.36,1)";
 const SETTLE = "cubic-bezier(0.16,1,0.3,1)";
 const DUR = 260;
-// Corner overflow-menu column width. Originally the width of the vertically-
-// stacked More/external-editor button column that used to live at the right
-// edge of the body row; Task 9 moved those buttons into FullWindow's topbar,
-// but the format toolbar and drawer still stop this far short of the body's
-// right edge for the same visual clearance. Shared by drawerStyle so the
-// drawer's right edge always tracks it instead of drifting from a stale
-// hardcoded value (Finding 7 -- the old value, 48, was sized for the deleted
-// Instrument rail).
-const CORNER_MENU_WIDTH = 26;
 // Task 10 (E): the format toolbar's clipping edge box width AND the distance
 // the toolbar translates to hide itself off that edge -- these two used to be
 // the same "46" written twice with nothing forcing them to agree (that
@@ -66,7 +57,7 @@ interface NoteEditorProps {
   onHeaderActionsChange?: (actions: React.ReactNode | null) => void;
 }
 
-// -- local icons (feature-specific glyphs; Bell/Clock reused from PillMenu/icons.tsx) --
+// -- local icons (feature-specific glyphs; Bell/Clock/Bold/Checklist reused from PillMenu/icons.tsx) --
 
 function IconBack(props: { size?: number }) {
   const size = props.size ?? 15;
@@ -98,24 +89,6 @@ function IconExternal(props: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
       <path d="M7 17L17 7M9 7h8v8" /><path d="M6 4H4v16h16v-2" />
-    </svg>
-  );
-}
-function BoldIcon(props: { size?: number }) {
-  const size = props.size ?? 13;
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
-      <path d="M8 5v14M8 5h3a3 3 0 010 6H8M8 12h4a3.5 3.5 0 010 7H8" />
-    </svg>
-  );
-}
-function ChecklistIcon(props: { size?: number }) {
-  const size = props.size ?? 13;
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
-      <rect x="3" y="9" width="6" height="6" rx="1" />
-      <path d="M4.5 12l1.3 1.3L8 10.5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M12 10.5h9M12 14.5h9" strokeLinecap="round" />
     </svg>
   );
 }
@@ -854,7 +827,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal, onHead
   };
 
   const drawerStyle: CSSProperties = {
-    position: "absolute", top: 0, right: CORNER_MENU_WIDTH, bottom: 0,
+    position: "absolute", top: 0, right: 0, bottom: 0,
     width: drawerOpen ? 236 : 0, overflow: "hidden",
     background: "var(--surface)", borderLeft: drawerOpen ? "1px solid var(--border)" : "1px solid transparent",
     transition: `width ${DUR}ms ${TRAVEL}`, zIndex: 6,
@@ -865,8 +838,9 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal, onHead
     padding: "12px 14px 8px", borderBottom: "1px solid var(--border-2)", marginBottom: 4,
   };
 
-  // Finding 1: anchored against bodyRowStyle (non-scrolling), offset from the
-  // right by the corner-menu column's width so the two zones never overlap.
+  // Finding 1: anchored against bodyRowStyle (non-scrolling), flush against
+  // its right edge -- the corner overflow-menu column this used to be offset
+  // from was deleted in Task 9 (its controls moved into FullWindow's topbar).
   // Task 10 (E): `overflow: hidden` is the actual fix for the peek-edge bug --
   // nothing local clipped the translated-out toolbar before (only `fw-shell`
   // at the very top of the tree did), so it always showed a sliver at the
@@ -874,7 +848,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal, onHead
   // below) sits at `right:6` inside this box, well within its bounds, so it
   // stays visible after the clip -- only the toolbar column, which
   // deliberately translates itself past the box's right edge, gets cut off.
-  const fmtEdgeStyle: CSSProperties = { position: "absolute", top: 0, right: CORNER_MENU_WIDTH, bottom: 0, width: TOOLBAR_EDGE_W, overflow: "hidden" };
+  const fmtEdgeStyle: CSSProperties = { position: "absolute", top: 0, right: 0, bottom: 0, width: TOOLBAR_EDGE_W, overflow: "hidden" };
   const peekArrowStyle: CSSProperties = {
     position: "absolute", top: "50%", right: 6,
     width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center",
@@ -1010,8 +984,8 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal, onHead
 
           {/* Finding 1: hangs off bodyRowStyle (non-scrolling) instead of contentStyle
               (which scrolls with note content) so the peek chevron/strip/lock stay
-              reachable on notes long enough to scroll. Offset from the right by
-              CORNER_MENU_WIDTH so it doesn't collide with the corner-menu column. */}
+              reachable on notes long enough to scroll. Flush against the body's
+              right edge (Task 11 removed the dead corner-menu-column reserve). */}
           <div
             style={fmtEdgeStyle}
             onMouseEnter={() => setToolbarPeeking(true)}

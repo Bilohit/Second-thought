@@ -123,8 +123,8 @@ describe("FullWindow — rail stays live behind the note editor (Task 8)", () =>
 
     expect(screen.queryByRole("dialog", { name: /note editor/i })).toBeNull();
     // Exact, case-sensitive match: FullWindow's own topbar subtitle for this
-    // view ("daily rhythm · by project") also contains the substring "by
-    // project" lowercase, so a loose regex here matches two elements.
+    // view ("by project") also contains the substring "by project" lowercase,
+    // so a loose regex here matches two elements.
     expect(await screen.findByText("By project")).toBeTruthy();
   });
 

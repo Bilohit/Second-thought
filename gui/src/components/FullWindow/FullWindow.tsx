@@ -59,7 +59,7 @@ const TITLES: Record<Exclude<RailView, "note">, [string, string]> = {
   dashboard: ["Dashboard", "capture · recent · inbox"],
   look:      ["Look", "search · chat over vault"],
   library:   ["Vault", "projects · tags · notes"],
-  history:   ["History", "daily rhythm · by project"],
+  history:   ["History", "by project"],
   settings:  ["Settings", ""],
   inbox:     ["Inbox", "review · reminders"],
 };

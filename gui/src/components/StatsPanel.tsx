@@ -1,7 +1,7 @@
 /**
  * StatsPanel.tsx
  * --------------
- * History tab: recent activity, live project counts, daily sparkline, total.
+ * History tab: recent activity, live project counts, total.
  * Project counts come from getVaultFolders() (live vault folder listing)
  * rather than the /stats SQLite snapshot — files are source of truth.
  */
@@ -32,28 +32,6 @@ export function ProjectBar({ project, count, pct }: { project: string; count: nu
           }}
         />
       </div>
-    </div>
-  );
-}
-
-export function DaySparkline({ days }: { days: { date: string; count: number }[] }) {
-  const ordered = days.slice().sort((a, b) => a.date.localeCompare(b.date));
-  const max = Math.max(1, ...ordered.map((d) => d.count));
-  return (
-    <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 36 }}>
-      {ordered.map((d) => (
-        <div
-          key={d.date}
-          title={`${d.date}: ${d.count}`}
-          style={{
-            flex: 1,
-            minWidth: 2,
-            height: `${Math.max(6, (d.count / max) * 100)}%`,
-            background: "var(--accent)",
-            borderRadius: "var(--radius-sm)",
-          }}
-        />
-      ))}
     </div>
   );
 }

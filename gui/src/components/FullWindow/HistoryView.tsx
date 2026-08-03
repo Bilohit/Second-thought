@@ -2,19 +2,20 @@
  * HistoryView.tsx
  * ---------------
  * FR-07: the full-window rail's "History" destination. Was aliased onto
- * `library` (VIEW_TO_RAIL), which lost its "By project" / "Daily rhythm"
- * panels when s130 pulled ProjectBar/DaySparkline out of LibraryView --
- * firing the menu's History item landed on a screen with no history content.
- * The compact pill's own CompactHistory.tsx never lost those two panels; this
- * view mounts the same two building blocks (StatsPanel.tsx's ProjectBar and
- * DaySparkline, both left untouched by s130) rather than re-authoring them.
+ * `library` (VIEW_TO_RAIL), which lost its "By project" panel when s130
+ * pulled ProjectBar out of LibraryView -- firing the menu's History item
+ * landed on a screen with no history content. The compact pill's own
+ * CompactHistory.tsx never lost that panel; this view mounts the same
+ * building block (StatsPanel.tsx's ProjectBar, left untouched by s130)
+ * rather than re-authoring it.
  * "Recent activity" is deliberately not repeated here -- DashboardView already
  * has that card in the full window, and the design mock
  * (mocks/2026-08-02-flowreview-decisions.html, Fork 2 / Option A) shows only
- * these two stat cards for the restored History destination.
+ * this stat card for the restored History destination. (Task 11 removed the
+ * sparkline card that used to sit above it -- deleted outright, not moved.)
  */
 import { useEffect, useState } from "react";
-import { ProjectBar, DaySparkline } from "../StatsPanel";
+import { ProjectBar } from "../StatsPanel";
 import { getStats, type Stats } from "../../lib/api";
 import { displayProject } from "../../lib/projectsView";
 
@@ -42,11 +43,6 @@ export default function HistoryView({ visible }: Props) {
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 14, padding: 14, overflow: "auto" }}>
-      <div style={CARD}>
-        <div style={LABEL}>Daily rhythm</div>
-        <DaySparkline days={stats?.by_day ?? []} />
-      </div>
-
       <div style={CARD}>
         <div style={LABEL}>By project</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
