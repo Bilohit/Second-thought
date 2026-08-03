@@ -244,6 +244,14 @@ export interface SearchResult {
   tier?: "exact" | "substring" | "semantic" | null;
   score?: number | null;
   modified?: number | null;
+  /** FR-13: present (always `true`) only on the single below-floor semantic
+   *  candidate the server "rescues" when the keyword tier found nothing and
+   *  every semantic candidate missed the similarity floor -- so the empty
+   *  state can say "something related, but weak" instead of "nothing found"
+   *  (see vault_admin.py's search_captures, `keyword_hit = bool(results)`).
+   *  Absent (never `false`) on every ordinary row; `score` on a rescued row
+   *  is the real sub-threshold cosine similarity, not clamped or faked. */
+  rescued?: true;
 }
 
 export type LlmStatus = "loading" | "ready" | "disconnected";

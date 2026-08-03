@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { searchCaptures, openFilePath, syncVaultIndex, checkHealth, type SearchResult } from "../lib/api";
 import { slideDirection } from "../lib/segmentedToggle";
+import { classifySearchResults } from "../lib/searchResultState";
 import { parseCitations } from "../lib/citations";
 import { displayProject } from "../lib/projectsView";
 import type { ChatMessage } from "../hooks/useLookChat";
@@ -56,17 +57,25 @@ function resultSnippet(r: SearchResult): string {
 }
 
 /** P-DSEARCH: badge for the fused list's tier label (distinct from the chat
- *  confidence tiers above — same visual language, different vocabulary). */
-function searchTierLabel(tier: SearchResult["tier"]): string | null {
-  if (tier === "exact") return "Exact";
-  if (tier === "substring") return "Match";
-  if (tier === "semantic") return "Semantic";
+ *  confidence tiers above — same visual language, different vocabulary).
+ *  FR-13: a rescued row is a below-floor semantic candidate the server
+ *  surfaced anyway -- it must never read as a confident "Semantic" hit
+ *  (that badge's yellow implies it cleared the floor), so it gets its own
+ *  label and the muted --text-3 treatment this codebase already uses for
+ *  "adjacent, not authoritative" content (the /talk chat bubble's dashed
+ *  border below is the same idiom). */
+function searchTierLabel(r: SearchResult): string | null {
+  if (r.rescued) return "Related";
+  if (r.tier === "exact") return "Exact";
+  if (r.tier === "substring") return "Match";
+  if (r.tier === "semantic") return "Semantic";
   return null;
 }
 
-function searchTierColor(tier: SearchResult["tier"]): string {
-  if (tier === "exact") return "var(--green, #4ade80)";
-  if (tier === "semantic") return "var(--yellow, #facc15)";
+function searchTierColor(r: SearchResult): string {
+  if (r.rescued) return "var(--text-3)";
+  if (r.tier === "exact") return "var(--green, #4ade80)";
+  if (r.tier === "semantic") return "var(--yellow, #facc15)";
   return "var(--text-3)";
 }
 
@@ -267,6 +276,83 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
   const effSyncing = embedded ? (externalSyncing ?? false) : syncing;
   const effSyncStatus = embedded ? (externalSyncStatus ?? null) : syncStatus;
   const syncFailed = effSyncStatus?.startsWith("Sync failed");
+  // FR-13: which of empty/rescued/results the settled list is in — see
+  // lib/searchResultState.ts for why a rescued row can never coexist with
+  // an ordinary result set.
+  const searchState = classifySearchResults(results);
+
+  const renderResultRow = (r: SearchResult, idx: number) => {
+    const isActive = idx === activeIdx;
+    const tierLabel = searchTierLabel(r);
+    return (
+      <div
+        key={r.id ?? r.path}
+        id={`lp-result-${r.id ?? idx}`}
+        role="option"
+        aria-selected={isActive}
+        data-idx={idx}
+        onClick={() => openResult(r)}
+        onMouseEnter={() => setActiveIdx(idx)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "9px 14px",
+          cursor: "pointer",
+          background: isActive ? "var(--accent-d)" : "transparent",
+          // FR-13: dashed border marks a rescued row as qualified, not a
+          // confident hit — the same "adjacent, not authoritative" idiom
+          // the /talk chat bubble uses below. Never red/yellow: this isn't
+          // an error or a warning.
+          border: r.rescued ? "1px dashed var(--border)" : "1px solid transparent",
+          transition: "background 0.08s",
+        }}
+      >
+        <span
+          aria-hidden="true"
+          style={{
+            fontSize: 10,
+            fontWeight: 600,
+            letterSpacing: "0.04em",
+            color: isActive ? "var(--accent)" : "var(--text-3)",
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius-sm)",
+            padding: "2px 6px",
+            flexShrink: 0,
+            whiteSpace: "nowrap",
+          }}
+        >
+          {displayProject(r.project)}
+        </span>
+        <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {resultSnippet(r)}
+        </span>
+        {/* P-DSEARCH: fused tier label + normalized relevance score
+            (0..1, higher = better) -- exact/substring (bm25) and
+            semantic (cosine) share this one scale. FR-13: a rescued row's
+            "Related" label replaces the tier label so it never reads as
+            a confident "Semantic" hit. */}
+        {tierLabel && (
+          <span
+            aria-hidden="true"
+            style={{
+              fontSize: 9,
+              fontWeight: 600,
+              letterSpacing: "0.04em",
+              color: searchTierColor(r),
+              flexShrink: 0,
+              whiteSpace: "nowrap",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {tierLabel}
+            {typeof r.score === "number" ? ` · ${Math.round(r.score * 100)}%` : ""}
+          </span>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div
@@ -436,76 +522,27 @@ export default function LookPanel({ mode, onSelectMode, visible, onClose, measur
                   {searchError}
                 </div>
               )}
-              {query.trim() && !searching && !searchError && results.length === 0 && (
+              {query.trim() && !searching && !searchError && searchState.kind === "empty" && (
                 <div role="status" style={{ padding: "20px 16px", textAlign: "center", fontSize: 13, color: "var(--text-3)" }}>
                   No indexed notes match "{query.trim()}"
                 </div>
               )}
-              {results.map((r, idx) => {
-                const isActive = idx === activeIdx;
-                const tierLabel = searchTierLabel(r.tier);
-                return (
-                  <div
-                    key={r.id ?? r.path}
-                    id={`lp-result-${r.id ?? idx}`}
-                    role="option"
-                    aria-selected={isActive}
-                    data-idx={idx}
-                    onClick={() => openResult(r)}
-                    onMouseEnter={() => setActiveIdx(idx)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 10,
-                      padding: "9px 14px",
-                      cursor: "pointer",
-                      background: isActive ? "var(--accent-d)" : "transparent",
-                      transition: "background 0.08s",
-                    }}
-                  >
-                    <span
-                      aria-hidden="true"
-                      style={{
-                        fontSize: 10,
-                        fontWeight: 600,
-                        letterSpacing: "0.04em",
-                        color: isActive ? "var(--accent)" : "var(--text-3)",
-                        background: "var(--surface)",
-                        border: "1px solid var(--border)",
-                        borderRadius: "var(--radius-sm)",
-                        padding: "2px 6px",
-                        flexShrink: 0,
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {displayProject(r.project)}
-                    </span>
-                    <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: "var(--text-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {resultSnippet(r)}
-                    </span>
-                    {/* P-DSEARCH: fused tier label + normalized relevance score
-                        (0..1, higher = better) -- exact/substring (bm25) and
-                        semantic (cosine) share this one scale. */}
-                    {tierLabel && (
-                      <span
-                        aria-hidden="true"
-                        style={{
-                          fontSize: 9,
-                          fontWeight: 600,
-                          letterSpacing: "0.04em",
-                          color: searchTierColor(r.tier),
-                          flexShrink: 0,
-                          whiteSpace: "nowrap",
-                          fontVariantNumeric: "tabular-nums",
-                        }}
-                      >
-                        {tierLabel}
-                        {typeof r.score === "number" ? ` · ${Math.round(r.score * 100)}%` : ""}
-                      </span>
-                    )}
+              {/* FR-13: a rescued row is a below-floor semantic candidate the
+                  server surfaced anyway because nothing else matched at all --
+                  a qualified result, not an error or a confident hit. The
+                  header names that plainly; the row itself keeps its normal
+                  affordances (click/open) with the muted "Related" treatment
+                  from renderResultRow above. */}
+              {query.trim() && !searching && !searchError && searchState.kind === "rescued" && (
+                <div>
+                  <div role="status" style={{ padding: "14px 14px 6px", textAlign: "center", fontSize: 12, color: "var(--text-3)" }}>
+                    No confident match — closest related note:
                   </div>
-                );
-              })}
+                  {renderResultRow(searchState.result, 0)}
+                </div>
+              )}
+              {query.trim() && !searching && !searchError && searchState.kind === "results" &&
+                searchState.results.map((r, idx) => renderResultRow(r, idx))}
             </div>
           </div>
         ) : (
