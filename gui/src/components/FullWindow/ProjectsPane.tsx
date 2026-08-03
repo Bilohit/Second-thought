@@ -45,18 +45,22 @@
  * 200 notes — see the old ponytail note this replaces); under 200 the two
  * numbers are definitionally equal, so nothing visible changes there.
  *
- * ★ ponytail: Next can only ever advance within rows THIS pane has actually
- * fetched. `GET /search` clamps at `limit=200` and has no `offset`/cursor
- * parameter — verified at source (`vault_admin.py:674-699`, its full
- * parameter list; `index_writer.py:792`, `search()`'s signature) while
- * building this pager, not assumed. So once a selection's true total exceeds
- * one page, only page 1 ever has real rows behind it — `canGoNext` below is
- * gated on `pageInfo.end < sortedRows.length` (there being MORE already-
- * fetched rows to reveal), not on the true total implying further pages
- * exist. Ceiling: once `/search` grows a real offset param, fetch each page
- * on demand and drop this guard. Flagged in this task's report — the
- * "already ships" table in the spec (§2) does not list an offset param, so
- * genuine page-2+ browsing is a Python-side gap, not a gui/ one.
+ * ★ FR-27 (s137) LIFTED Task 9's ceiling, and the note is kept because the
+ * shape of the fix matters. Task 9 shipped `canGoNext` gated on
+ * `pageInfo.end < sortedRows.length` — "are there more rows I already hold" —
+ * because `GET /search` clamped at `limit=200` with no `offset`/cursor at
+ * all, so past one page only page 1 ever had real rows behind it. `/search`
+ * and `index_writer.search()` now take an `offset`, so the fetch below walks
+ * it until the selection is exhausted and `canGoNext` is gated on the TRUE
+ * page count instead.
+ *
+ * ★ The fetch walks to completion rather than fetching each page on demand,
+ * and that is deliberate, not laziness: this pane sorts client-side
+ * (`sortNotes`, by name/date) while the server orders by timestamp/score.
+ * Fetching only the visible page would sort each page against rows the
+ * component does not hold, so page 2 of a name-sorted list would show the
+ * wrong notes. Whole-selection-then-sort is the only arrangement that stays
+ * correct without moving sort authority to the server.
  *
  * Task 6 (motion pass, spec §8) added: the note-row FLIP re-order and the
  * sort button's icon-swap/cycle-spin. Rows are keyed by `path` (not array
@@ -129,6 +133,10 @@ const FLIP_TRAVEL_MS = 380;
  *  travel duration, with slack for the frame the invert itself consumes —
  *  mirrors the board's own 560ms cleanup timeout (mock line 964). */
 const FLIP_CLEANUP_MS = 560;
+/** ponytail: 2000 notes per selection (`DEFAULT_PAGE_SIZE` × this). Past
+ *  that a pane like this needs a virtualised list and a server-side sort,
+ *  not more round trips. */
+const MAX_NOTE_PAGES = 10;
 
 function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
@@ -226,14 +234,39 @@ export default function ProjectsPane({
     if (!activeKey) { setRows([]); return; }
     let cancelled = false;
     setNotesLoading(true);
-    const fetchRows = isTagMode ? notesForTag(activeKey, { limit: 200 }) : notesForProject(activeKey, { limit: 200 });
-    fetchRows
-      .then((results) => {
+    // FR-27: `GET /search` clamps ONE fetch at 200 rows, and this pane sorts
+    // and slices client-side (`sortedRows` → `visibleRows`), so a partial
+    // fetch would have every page past the first sorting against rows this
+    // component does not hold. Now that /search takes an `offset`, walk it
+    // until a short page comes back and hold the WHOLE selection — that is
+    // what makes the pager's Next honest instead of capped at one fetch.
+    // The first request omits `offset` entirely, so an un-paged vault sends
+    // byte-identically the same call it did before FR-27.
+    // ponytail: bounded at DEFAULT_PAGE_SIZE * MAX_NOTE_PAGES (2000 notes).
+    // A vault past that wants a virtualised list and a server-side sort, not
+    // a longer loop here.
+    // `DEFAULT_PAGE_SIZE` is reused, never re-hardcoded — it is the one
+    // constant the fetch and the pager UI must not be able to drift apart on
+    // (lib/projectsView.ts's own note on why it is exported).
+    const fetchPage = (offset: number) => {
+      const opts = offset
+        ? { limit: DEFAULT_PAGE_SIZE, offset }
+        : { limit: DEFAULT_PAGE_SIZE };
+      return isTagMode ? notesForTag(activeKey, opts) : notesForProject(activeKey, opts);
+    };
+    (async () => {
+      const all: SearchResult[] = [];
+      for (let i = 0; i < MAX_NOTE_PAGES; i++) {
+        const batch = await fetchPage(i * DEFAULT_PAGE_SIZE);
         if (cancelled) return;
-        // Rule 1: drop LAN-provisional overlay rows before this pane counts
-        // or renders anything — see this file's header comment.
-        setRows(excludeProvisional(results));
-      })
+        all.push(...batch);
+        if (batch.length < DEFAULT_PAGE_SIZE) break;
+      }
+      if (cancelled) return;
+      // Rule 1: drop LAN-provisional overlay rows before this pane counts
+      // or renders anything — see this file's header comment.
+      setRows(excludeProvisional(all));
+    })()
       .catch(() => { if (!cancelled) setRows([]); })
       .finally(() => { if (!cancelled) setNotesLoading(false); });
     return () => { cancelled = true; };
@@ -258,9 +291,11 @@ export default function ProjectsPane({
   const pagerActive = needsPager(noteCount);
   const pageInfo = pageOf(noteCount, page, DEFAULT_PAGE_SIZE);
   const visibleRows = pagerActive ? sortedRows.slice(pageInfo.start, Math.min(pageInfo.end, sortedRows.length)) : sortedRows;
-  // See this file's header ponytail note: Next is capped at rows already
-  // fetched (no /search offset param exists), not at the true page count.
-  const canGoPagerNext = pagerActive && pageInfo.end < sortedRows.length;
+  // FR-27: Next now runs to the TRUE last page. The fetch above walks
+  // /search's `offset` until the selection is exhausted, so `sortedRows`
+  // holds every row `noteCount` counts — the old "capped at rows already
+  // fetched" guard was describing a fetch that could not see past 200.
+  const canGoPagerNext = pagerActive && pageInfo.page < pageInfo.pageCount;
   const canGoPagerPrev = pagerActive && pageInfo.page > 1;
   function handlePagerPrev() {
     if (!canGoPagerPrev) return;

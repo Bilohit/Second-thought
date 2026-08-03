@@ -720,7 +720,7 @@ export async function getVaultFolderFiles(
 
 export async function searchCaptures(
   q: string,
-  opts?: { project?: string; since?: string; limit?: number },
+  opts?: { project?: string; since?: string; limit?: number; offset?: number },
 ): Promise<{ results: SearchResult[]; count: number; query: string }> {
   const stop = logger.time("look", "GET /search");
   logger.debug("look", "search query", { q, ...opts });
@@ -728,6 +728,9 @@ export async function searchCaptures(
   if (opts?.project) params.set("project", opts.project);
   if (opts?.since) params.set("since", opts.since);
   if (opts?.limit) params.set("limit", String(opts.limit));
+  // FR-27: omitted entirely when 0/absent, so an un-paged caller's request URL
+  // is byte-identical to what it sent before offset existed.
+  if (opts?.offset) params.set("offset", String(opts.offset));
   try {
     const r = await fetch(`${BASE}/search?${params.toString()}`, { headers: await authHeaders() });
     if (!r.ok) {
@@ -761,9 +764,11 @@ const NOTE_LIST_LIMIT = 200;
  *  search default; pass `limit` to page a smaller or (up to 200) larger cut. */
 export async function notesForProject(
   project: string,
-  opts?: { limit?: number },
+  opts?: { limit?: number; offset?: number },
 ): Promise<SearchResult[]> {
-  const { results } = await searchCaptures("", { project, limit: opts?.limit ?? NOTE_LIST_LIMIT });
+  const { results } = await searchCaptures("", {
+    project, limit: opts?.limit ?? NOTE_LIST_LIMIT, offset: opts?.offset,
+  });
   return results;
 }
 
@@ -773,9 +778,11 @@ export async function notesForProject(
  *  `notesForProject`. */
 export async function notesForTag(
   tag: string,
-  opts?: { limit?: number },
+  opts?: { limit?: number; offset?: number },
 ): Promise<SearchResult[]> {
-  const { results } = await searchCaptures(`tag:${tag}`, { limit: opts?.limit ?? NOTE_LIST_LIMIT });
+  const { results } = await searchCaptures(`tag:${tag}`, {
+    limit: opts?.limit ?? NOTE_LIST_LIMIT, offset: opts?.offset,
+  });
   return results;
 }
 
@@ -915,8 +922,9 @@ export async function createDailyNote(day?: string): Promise<TodayDailyNote> {
   return r.json() as Promise<TodayDailyNote>;
 }
 
-// Always-new generic note origination (POST /note, Task 1) — vault root, not Daily/, and never
+// Always-new generic note origination (POST /note, Task 1) — `_loose/`, not Daily/, and never
 // find-or-create (unlike createDailyNote above). Same response shape as /today/daily-note.
+// (FR-27/FR-29: it used to land in the vault root, where project-tidy could never see it.)
 export async function createNote(title?: string): Promise<TodayDailyNote> {
   const r = await fetch(`${BASE}/note`, {
     method: "POST",

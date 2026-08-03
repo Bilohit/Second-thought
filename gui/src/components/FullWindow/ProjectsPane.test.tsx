@@ -94,6 +94,44 @@ describe("ProjectsPane — fetch (spec §5.5: explicit limit, no silent 25-row d
   });
 });
 
+describe("ProjectsPane — FR-27 offset paging (Task 9's ceiling, lifted)", () => {
+  /** 200 distinct rows == exactly one full server page, so the fetch must ask
+   *  for a second one. Under 200 it must not. */
+  function fullPage(offset: number) {
+    return Array.from({ length: 200 }, (_, i) => row({ path: `research/n-${offset + i}.md`, filename: `n-${offset + i}.md` }));
+  }
+
+  it("stops after one call when the first page comes back short", async () => {
+    vi.mocked(api.notesForProject).mockResolvedValue([row({})]);
+    renderPane();
+    await vi.waitFor(() => expect(api.notesForProject).toHaveBeenCalledWith("research", { limit: 200 }));
+    // A short page means the selection is exhausted -- no speculative round trip.
+    expect(api.notesForProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("walks offset until a short page, and never sends offset on the first call", async () => {
+    vi.mocked(api.notesForProject)
+      .mockResolvedValueOnce(fullPage(0))
+      .mockResolvedValueOnce([row({ path: "research/tail.md", filename: "tail.md" })]);
+    renderPane();
+    await vi.waitFor(() => expect(api.notesForProject).toHaveBeenCalledTimes(2));
+    // First call byte-identical to the pre-FR-27 request; second one paged.
+    expect(api.notesForProject).toHaveBeenNthCalledWith(1, "research", { limit: 200 });
+    expect(api.notesForProject).toHaveBeenNthCalledWith(2, "research", { limit: 200, offset: 200 });
+  });
+
+  it("enables Next on page 1 of a multi-page selection — the case Task 9 could not reach", async () => {
+    vi.mocked(api.notesForProject)
+      .mockResolvedValueOnce(fullPage(0))
+      .mockResolvedValueOnce([row({ path: "research/tail.md", filename: "tail.md" })]);
+    renderPane({ noteTotal: 201 });
+    const next = await screen.findByRole("button", { name: /^Next page\./ });
+    await vi.waitFor(() => expect(next).toHaveProperty("disabled", false));
+    // Prev is still correctly disabled on page 1 -- the guard was lifted, not deleted.
+    expect(screen.getByRole("button", { name: /^Previous page\./ })).toHaveProperty("disabled", true);
+  });
+});
+
 describe("ProjectsPane — the provisional-row guard (task brief's rule 1, index_writer.py:686-700)", () => {
   it("drops a __lan_provisional__ row from both the list and the count", async () => {
     vi.mocked(api.notesForProject).mockResolvedValue([
@@ -584,6 +622,23 @@ describe("ProjectsPane — pager (spec §5.5.1, Task 9, board: 2026-08-03-projec
     return Array.from({ length: n }, (_, i) => row({ path: `research/note-${i}.md`, filename: `note-${i}.md` }));
   }
 
+  /** FR-27: models what `GET /search` actually does with `offset` — a window
+   *  into `total` rows. Before offset existed a flat `mockResolvedValue(200
+   *  rows)` was a fair model of the endpoint, because the endpoint genuinely
+   *  could not return anything else; now it would be a server that hands back
+   *  the same page forever no matter what you ask for, which is the one thing
+   *  a paging test must not assume. */
+  function mockPaged(
+    fn: typeof api.notesForProject | typeof api.notesForTag,
+    total: number,
+  ) {
+    const all = manyRows(total);
+    vi.mocked(fn).mockImplementation(async (_key: string, opts?: { limit?: number; offset?: number }) => {
+      const offset = opts?.offset ?? 0;
+      return all.slice(offset, offset + (opts?.limit ?? 200));
+    });
+  }
+
   it("no pager, no trace of one, under 200 notes — today's real vault (control condition)", async () => {
     vi.mocked(api.notesForProject).mockResolvedValue([row({}), row({ path: "b.md", filename: "b.md" })]);
     renderPane();
@@ -594,14 +649,14 @@ describe("ProjectsPane — pager (spec §5.5.1, Task 9, board: 2026-08-03-projec
   });
 
   it("still no pager at exactly 200 (needsPager: one full page is still one page)", async () => {
-    vi.mocked(api.notesForProject).mockResolvedValue(manyRows(200));
+    mockPaged(api.notesForProject, 200);
     renderPane({ noteTotal: 200 });
     await screen.findByText("200 notes");
     expect(screen.queryByRole("button", { name: /Previous page/ })).toBeNull();
   });
 
   it("the pager appears past 200, with the honest range-and-total readout", async () => {
-    vi.mocked(api.notesForProject).mockResolvedValue(manyRows(200));
+    mockPaged(api.notesForProject, 438);
     renderPane({ noteTotal: 438 });
     // The notes-head count upgrades to the TRUE total (438), not rows.length (200) —
     // the exact understating this task's ponytail note existed to fix.
@@ -610,26 +665,44 @@ describe("ProjectsPane — pager (spec §5.5.1, Task 9, board: 2026-08-03-projec
   });
 
   it("Previous is disabled on page 1; its aria-label restates the current range", async () => {
-    vi.mocked(api.notesForProject).mockResolvedValue(manyRows(200));
+    mockPaged(api.notesForProject, 438);
     renderPane({ noteTotal: 438 });
     await screen.findByText("438 notes");
     const prevBtn = screen.getByRole("button", { name: "Previous page. Currently showing notes 1 to 200 of 438." });
     expect(prevBtn).toHaveProperty("disabled", true);
   });
 
-  it("Next is disabled once it would need rows past what this pane actually fetched (no /search offset param exists)", async () => {
-    vi.mocked(api.notesForProject).mockResolvedValue(manyRows(200));
+  /** ★ FR-27 replaced Task 9's "Next is disabled once it would need rows past
+   *  what this pane actually fetched" test. That assertion pinned the ceiling,
+   *  not a product rule: `/search` had no offset, so page 2 could never have
+   *  rows behind it. Both halves of the real rule are pinned below instead —
+   *  Next advances while pages remain, and stops at the true last page. */
+  it("Next advances through the real pages now that the fetch can reach them", async () => {
+    mockPaged(api.notesForProject, 438);
     renderPane({ noteTotal: 438 });
     await screen.findByText("438 notes");
     const nextBtn = screen.getByRole("button", { name: "Next page. Currently showing notes 1 to 200 of 438." });
-    expect(nextBtn).toHaveProperty("disabled", true);
+    expect(nextBtn).toHaveProperty("disabled", false);
     fireEvent.click(nextBtn);
-    // A disabled button's click is a no-op — the readout must not have moved.
-    expect(screen.getByText((_, el) => el?.textContent === "Showing 1–200 of 438", { selector: "span" })).toBeTruthy();
+    expect(screen.getByText((_, el) => el?.textContent === "Showing 201–400 of 438", { selector: "span" })).toBeTruthy();
+  });
+
+  it("Next is disabled on the TRUE last page, and its click is a no-op", async () => {
+    mockPaged(api.notesForProject, 438);
+    renderPane({ noteTotal: 438 });
+    await screen.findByText("438 notes");
+    fireEvent.click(screen.getByRole("button", { name: /^Next page\./ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Next page\./ }));
+    // 438 rows over 200-row pages == 3 pages; the third is the last.
+    expect(screen.getByText((_, el) => el?.textContent === "Showing 401–438 of 438", { selector: "span" })).toBeTruthy();
+    const lastNext = screen.getByRole("button", { name: /^Next page\./ });
+    expect(lastNext).toHaveProperty("disabled", true);
+    fireEvent.click(lastNext);
+    expect(screen.getByText((_, el) => el?.textContent === "Showing 401–438 of 438", { selector: "span" })).toBeTruthy();
   });
 
   it("tag mode: the tag head's vault-wide count also upgrades to the true total", async () => {
-    vi.mocked(api.notesForTag).mockResolvedValue(manyRows(200));
+    mockPaged(api.notesForTag, 250);
     renderPane({ mode: "tags", selectedId: null, selectedTag: "reading", noteTotal: 250 });
     expect(await screen.findByText("250 notes across your vault")).toBeTruthy();
     expect(screen.getByText((_, el) => el?.textContent === "Showing 1–200 of 250", { selector: "span" })).toBeTruthy();
