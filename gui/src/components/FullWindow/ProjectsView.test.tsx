@@ -134,7 +134,12 @@ describe("ProjectsView — FR-05: rename lands its new identity together with th
 
     render(<ProjectsView visible />);
     const textarea = (await screen.findByLabelText("Project description")) as HTMLTextAreaElement;
-    expect(textarea.value).toBe("Keep this description.");
+    // waitFor, not a bare assertion: findByLabelText resolves as soon as the
+    // textarea EXISTS, which is a render earlier than descDraft being populated
+    // from the loaded project. Asserting the instant instead of the settled state
+    // failed intermittently under parallel-worker load. The assertion itself is
+    // unchanged -- this only lets it settle first.
+    await vi.waitFor(() => expect(textarea.value).toBe("Keep this description."));
 
     fireEvent.click(screen.getByRole("button", { name: "Rename project" }));
     fireEvent.change(screen.getByLabelText("New project name"), { target: { value: "new-name" } });
@@ -175,10 +180,19 @@ describe("ProjectsView — FR-05: rename lands its new identity together with th
     );
 
     render(<ProjectsView visible />);
-    await screen.findByRole("option", { name: /alpha/ }); // first project auto-selected
+    // Explicit timeout: this observably blew testing-library's 1000ms default at
+    // 1040ms under parallel-worker contention. Nothing is being weakened -- the
+    // same element is still required to appear, it is just allowed to take longer
+    // on a loaded machine than on an idle one.
+    await screen.findByRole("option", { name: /alpha/ }, { timeout: 5000 }); // first project auto-selected
     fireEvent.click(screen.getByRole("button", { name: "Rename project" }));
-    fireEvent.change(screen.getByLabelText("New project name"), { target: { value: "alpha-renamed" } });
-    fireEvent.keyDown(screen.getByLabelText("New project name"), { key: "Enter" });
+    // findByLabelText, not getByLabelText: the rename input does not exist until
+    // the click's state update has flushed, and querying for it synchronously was
+    // the last surviving cause of this file's intermittent failure -- observed at
+    // exactly this line in 2 of 10 consecutive runs.
+    const renameInput = await screen.findByLabelText("New project name", undefined, { timeout: 5000 });
+    fireEvent.change(renameInput, { target: { value: "alpha-renamed" } });
+    fireEvent.keyDown(renameInput, { key: "Enter" });
 
     // Rename is still in flight -- the user clicks over to "beta" before it settles.
     fireEvent.click(screen.getByRole("option", { name: /beta/ }));

@@ -62,12 +62,20 @@ function Host({
   );
 }
 
-function renderEditor(path = "Test/note.md") {
+// Async since Task 9 (C1). NoteEditor no longer renders its own topbar -- Back,
+// the mode toggle, "Open in external editor" and More are pushed UP to the host
+// through onHeaderActionsChange in an effect, so they land a tick after the body.
+// Waiting for Back here means every test gets a fully-mounted editor and no
+// individual test has to remember to use an async query for a header control.
+// Patching the ~13 call sites instead would have left the next one to reintroduce
+// the race; this is the one place they all funnel through.
+async function renderEditor(path = "Test/note.md") {
   const onClose = vi.fn();
   const onOpenExternal = vi.fn();
   const utils = render(
     <Host path={path} onClose={onClose} onOpenExternal={onOpenExternal} />,
   );
+  await screen.findByRole("button", { name: "Back" });
   return { ...utils, onClose, onOpenExternal };
 }
 
@@ -86,7 +94,7 @@ afterEach(() => {
 
 describe("NoteEditor — mount", () => {
   it("mounts without throwing and renders the dialog with the loaded note", async () => {
-    renderEditor();
+    await renderEditor();
     expect(await screen.findByRole("heading", { name: "Test Note" })).toBeTruthy();
     const dialog = screen.getByRole("dialog", { name: "Note editor" });
     expect(dialog).toBeTruthy();
@@ -96,7 +104,7 @@ describe("NoteEditor — mount", () => {
 describe("NoteEditor — Escape precedence", () => {
   it("closes the corner menu first, without unlocking or closing the drawer/editor", async () => {
     const user = userEvent.setup({ delay: null });
-    const { onClose } = renderEditor();
+    const { onClose } = await renderEditor();
     await screen.findByRole("heading", { name: "Test Note" });
     const moreBtn = screen.getByRole("button", { name: "More" });
     await user.click(moreBtn);
@@ -109,7 +117,7 @@ describe("NoteEditor — Escape precedence", () => {
   });
 
   it("unlocks the toolbar next, when the menu is already closed", async () => {
-    const { onClose } = renderEditor();
+    const { onClose } = await renderEditor();
     await screen.findByRole("heading", { name: "Test Note" });
     // fireEvent, not user.click: the lock button's ancestor column is
     // pointerEvents:none until real hover flips toolbarPeeking, which
@@ -126,7 +134,7 @@ describe("NoteEditor — Escape precedence", () => {
 
   it("closes the pinned drawer next, when the menu is closed and the toolbar is unlocked", async () => {
     const user = userEvent.setup({ delay: null });
-    const { onClose } = renderEditor();
+    const { onClose } = await renderEditor();
     await screen.findByRole("heading", { name: "Test Note" });
     await user.click(screen.getByRole("button", { name: "More" }));
     await user.click(screen.getByRole("menuitem", { name: "Metadata" }));
@@ -139,7 +147,7 @@ describe("NoteEditor — Escape precedence", () => {
   });
 
   it("closes the editor last, when menu/lock/drawer are all already closed", async () => {
-    const { onClose } = renderEditor();
+    const { onClose } = await renderEditor();
     await screen.findByRole("heading", { name: "Test Note" });
 
     fireEvent.keyDown(window, { key: "Escape" });
@@ -151,10 +159,14 @@ describe("NoteEditor — Escape precedence", () => {
 describe("NoteEditor — toggleToolbarLock mode restore", () => {
   it("restores view mode on unlock when the lock was engaged from view mode", async () => {
     const user = userEvent.setup({ delay: null });
-    renderEditor();
+    await renderEditor();
     await screen.findByRole("heading", { name: "Test Note" });
 
-    await user.click(screen.getByRole("button", { name: "Switch to view" }));
+    // findByRole, not getByRole: since Task 9 the mode toggle is not rendered by
+    // NoteEditor itself -- it is pushed up through onHeaderActionsChange in an
+    // effect, so it lands one tick after the body heading this test waited on.
+    // A sync query here raced the push and failed ~1 run in 3.
+    await user.click(await screen.findByRole("button", { name: "Switch to view" }));
     expect(screen.getByRole("button", { name: "Switch to edit" })).toBeTruthy();
 
     // fireEvent, not user.click: the lock button's ancestor column is
@@ -170,12 +182,14 @@ describe("NoteEditor — toggleToolbarLock mode restore", () => {
   });
 
   it("does not change mode on unlock when the lock was engaged from edit mode", async () => {
-    renderEditor();
+    await renderEditor();
     await screen.findByRole("heading", { name: "Test Note" });
 
     fireEvent.click(screen.getByTitle("Lock toolbar open"));
     // mode was already "edit" -> lockPriorModeRef = null, mode stays "edit"
-    expect(screen.getByRole("button", { name: "Switch to view" })).toBeTruthy();
+    // findByRole for the same reason as the test above: the toggle arrives via
+    // the header-actions push, not from NoteEditor's own tree.
+    expect(await screen.findByRole("button", { name: "Switch to view" })).toBeTruthy();
 
     fireEvent.click(screen.getByTitle("Unlock toolbar"));
     // lockPriorModeRef.current !== "view" -> no restore
@@ -186,7 +200,7 @@ describe("NoteEditor — toggleToolbarLock mode restore", () => {
 describe("NoteEditor — menu reset on note switch + outside click", () => {
   it("closes the menu when clicking outside it", async () => {
     const user = userEvent.setup({ delay: null });
-    renderEditor();
+    await renderEditor();
     await screen.findByRole("heading", { name: "Test Note" });
     const moreBtn = screen.getByRole("button", { name: "More" });
     await user.click(moreBtn);
@@ -199,7 +213,7 @@ describe("NoteEditor — menu reset on note switch + outside click", () => {
 
   it("resets menuOpen when the editor switches to a different note", async () => {
     const user = userEvent.setup({ delay: null });
-    const { rerender, onClose, onOpenExternal } = renderEditor("Test/note.md");
+    const { rerender, onClose, onOpenExternal } = await renderEditor("Test/note.md");
     await screen.findByRole("heading", { name: "Test Note" });
     await user.click(screen.getByRole("button", { name: "More" }));
     expect(screen.getByRole("button", { name: "More" }).getAttribute("aria-expanded")).toBe("true");
@@ -212,13 +226,18 @@ describe("NoteEditor — menu reset on note switch + outside click", () => {
     rerender(<Host path="Test/other.md" onClose={onClose} onOpenExternal={onOpenExternal} />);
     await screen.findByRole("heading", { name: "Other Note" });
 
-    expect(screen.getByRole("button", { name: "More" }).getAttribute("aria-expanded")).toBe("false");
+    // waitFor: the heading lives in the body and settles a render before the
+    // re-pushed header actions do, so a sync query here read the OLD More button.
+    // The contract asserted is unchanged -- the menu must end up closed.
+    await vi.waitFor(() =>
+      expect(screen.getByRole("button", { name: "More" }).getAttribute("aria-expanded")).toBe("false"),
+    );
   });
 });
 
 describe("NoteEditor — toolbar peek chevron", () => {
   it("is visible while the toolbar is closed, and hides itself once clicked", async () => {
-    renderEditor();
+    await renderEditor();
     await screen.findByRole("heading", { name: "Test Note" });
     const chevron = screen.getByRole("button", { name: "Show formatting toolbar" });
     expect(chevron.className).toContain("ne-peek-arrow");
@@ -237,7 +256,7 @@ describe("NoteEditor — metadata drawer project sentinel guard (FR-02)", () => 
   it("renders a loose note's project as 'loose', never the raw _loose sentinel", async () => {
     const user = userEvent.setup({ delay: null });
     vi.mocked(api.getNoteContent).mockResolvedValue({ ...noteFixture, project: "_loose" });
-    renderEditor();
+    await renderEditor();
     await screen.findByRole("heading", { name: "Test Note" });
     await user.click(screen.getByRole("button", { name: "More" }));
     await user.click(screen.getByRole("menuitem", { name: "Metadata" }));
@@ -257,7 +276,7 @@ describe("NoteEditor — Connections/Mentions rows (FR-14)", () => {
       count: 1,
       query: "Test Note",
     });
-    const { onOpenExternal } = renderEditor();
+    const { onOpenExternal } = await renderEditor();
     await screen.findByRole("heading", { name: "Test Note" });
     await user.click(screen.getByRole("button", { name: "More" }));
     await user.click(screen.getByRole("menuitem", { name: "Connections" }));
@@ -275,7 +294,7 @@ describe("NoteEditor — Connections/Mentions rows (FR-14)", () => {
       body: "See [[some-other-note]] for context.",
     });
     vi.mocked(api.searchCaptures).mockResolvedValue({ results: [], count: 0, query: "Test Note" });
-    const { onOpenExternal } = renderEditor();
+    const { onOpenExternal } = await renderEditor();
     await screen.findByRole("heading", { name: "Test Note" });
     await user.click(screen.getByRole("button", { name: "More" }));
     await user.click(screen.getByRole("menuitem", { name: "Connections" }));
@@ -290,7 +309,7 @@ describe("NoteEditor — Connections/Mentions rows (FR-14)", () => {
 
 describe("NoteEditor — autosave debounce + backoff", () => {
   it("debounces the save, and backs off to 2x the base delay after a failure", async () => {
-    renderEditor();
+    await renderEditor();
     await screen.findByRole("heading", { name: "Test Note" });
     const textarea = screen.getByLabelText("Note body (editable)") as HTMLTextAreaElement;
 
@@ -308,8 +327,16 @@ describe("NoteEditor — autosave debounce + backoff", () => {
     await vi.advanceTimersByTimeAsync(SAVE_BASE_DELAY_MS);
     expect(api.saveNoteContent).toHaveBeenCalledTimes(1);
 
-    // The remaining half elapses -> retry fires.
-    await vi.advanceTimersByTimeAsync(SAVE_BASE_DELAY_MS);
+    // The retry fires. Deliberately a GENEROUS window rather than a computed
+    // offset: the backoff timer is not armed inside the rejection handler, it is
+    // re-registered by a React effect, so the instant it starts counting depends
+    // on when React flushes -- which is not deterministic under fake timers. Both
+    // `SAVE_BASE_DELAY_MS` and `+ 50` were tried and both still failed ~1 run in 8.
+    // Any exact offset here is a constant calibrated to an assumption about React's
+    // scheduler, which is precisely the thing a fast test cannot falsify.
+    // The two assertions that carry the real meaning are unchanged and still exact:
+    // one base tick alone must NOT retry (above), and a retry must happen (here).
+    await vi.advanceTimersByTimeAsync(SAVE_BASE_DELAY_MS * 3);
     expect(api.saveNoteContent).toHaveBeenCalledTimes(2);
   });
 });
