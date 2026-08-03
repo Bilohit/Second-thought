@@ -601,6 +601,46 @@ def _extract_tag_filter(q: str) -> tuple[str, Optional[str]]:
     return remaining, tag
 
 
+_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "but", "for", "with", "from", "into",
+    "this", "that", "these", "those", "you", "your", "about", "what",
+    "when", "where", "which", "who", "why", "how", "not", "can", "will",
+    "would", "should", "could", "has", "have", "had", "was", "were", "are",
+    "its", "our", "all", "any",
+})
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _meaningful_tokens(text: str) -> set[str]:
+    """FR-28/FR-13 shared machinery: case-fold, split on non-alphanumerics,
+    drop a small stopword set and 1-2 char tokens, and fold a trailing `s`
+    (light plural/singular normalization, e.g. "notes" ~ "note") -- just
+    enough to tell genuine lexical overlap ("sync", "drive", "note") from
+    two strings that share nothing but noise. No stemming dependency on
+    purpose: this repo hand-rolls small parsers for exactly this kind of
+    narrow, stable need (CLAUDE.md)."""
+    out: set[str] = set()
+    for tok in _WORD_RE.findall((text or "").lower()):
+        if len(tok) <= 2 or tok in _STOPWORDS:
+            continue
+        out.add(tok[:-1] if tok.endswith("s") and len(tok) > 3 else tok)
+    return out
+
+
+def _shares_meaningful_token(query: str, *candidate_texts: str) -> bool:
+    """FR-28: does `query` share at least one meaningful token with any of
+    `candidate_texts` -- a semantic row's excerpt/path, its only lexical
+    surface (vector_store.semantic_search's row shape: path/similarity/
+    excerpt/category, no other text field). One shared token is deliberately
+    the whole bar: an overlap-ratio or N-token floor was considered and
+    rejected as risking the short-paraphrase case this gate exists to keep
+    working -- see search_captures's rescue-gate comment."""
+    query_tokens = _meaningful_tokens(query)
+    if not query_tokens:
+        return False
+    return any(query_tokens & _meaningful_tokens(t) for t in candidate_texts)
+
+
 # SRV-24: /search used to return `dict(row)` straight off captures.db, so every
 # internal column of the index cache went over the wire -- content hashes, body
 # excerpts, the provisional flag, note ids, the model name, all of it, for every
@@ -652,12 +692,15 @@ def _shape_semantic_row(row: dict, root: Optional[Path] = None, rescued: bool = 
 
     rescued (FR-13, additive): True only for the single below-floor candidate
     the fuser (search_captures) decided to surface anyway because the keyword
-    tier came back empty and nothing cleared the similarity floor either.
+    tier came back empty, nothing cleared the similarity floor, AND (FR-28)
+    that top candidate shares at least one meaningful token with the query --
+    a bare cosine score is not enough on its own; see search_captures for why.
     Published as `rescued: true` -- omitted entirely (never `rescued: false`)
     on every ordinary row, so its bare presence is the "weak/related, not a
     confident match" signal the GUI labels on. Never changes the meaning of
     `score`/`tier`, which stay the same honest cosine similarity/"semantic"
-    they always were."""
+    they always were -- FR-28's re-rank (search_captures) may move this row
+    within the list but never touches the number published here."""
     path = row.get("path") or ""
     filename = path.replace("\\", "/").rsplit("/", 1)[-1] or None
     # `path` here is vault-relative (unlike the FTS tier's absolute `path` --
@@ -704,11 +747,30 @@ async def search_captures(
 
     FR-13 rescue: when the keyword tier comes back empty AND the semantic
     tier's own top candidate falls below `min_similarity` (i.e. nothing
-    cleared the floor), that single top candidate is surfaced anyway, tagged
-    `rescued: true`, instead of being silently dropped -- min_similarity and
-    the embedding model are unchanged; only the "found nothing" vs "found one
-    weak match" distinction is now visible. Never fires while the keyword
-    tier already answered, and never rescues more than the one top candidate."""
+    cleared the floor), that single top candidate is a *candidate* for
+    surfacing anyway, tagged `rescued: true`, instead of being silently
+    dropped -- min_similarity and the embedding model are unchanged; only the
+    "found nothing" vs "found one weak match" distinction is meant to become
+    visible.
+
+    FR-28 (measured regression): raw cosine alone cannot gate that rescue.
+    The gibberish query "zxqvbfhwpq93 qwoiuty aksjdhf zzxq47" measured 0.39
+    cosine against a real note -- HIGHER than genuine near-misses (0.3265,
+    0.3245) the rescue exists to surface -- so no absolute floor separates
+    signal from noise here. The rescue therefore also requires real LEXICAL
+    signal: the top candidate must share at least one meaningful token with
+    the query (`_shares_meaningful_token`, over the candidate's excerpt/path
+    -- its only lexical surface). No shared token -> no rescue -> the plain
+    empty result, which is the point: "no results" must stay reachable.
+    Never fires while the keyword tier already answered, and never rescues
+    more than the one top candidate.
+
+    FR-28 re-rank: within the semantic tier (only reachable when the keyword
+    tier is empty, so `results` here is semantic-only by construction --
+    see the comment below), a candidate sharing a meaningful token with the
+    query is ranked ahead of one that does not; raw cosine only breaks ties
+    within each group. This changes ORDER, never the published `score`,
+    which stays the honest cosine similarity `_shape_semantic_row` documents."""
     from index_writer import search as idx_search
     from config import get_config
     from vector_store import semantic_search
@@ -722,6 +784,10 @@ async def search_captures(
     results = [_shape_search_row(r) for r in rows]
 
     cfg = get_config()
+    # FR-28: set True only when the semantic-tier re-rank below has already
+    # put `results` in its final order -- the blanket score-sort at the end
+    # of this function must then be skipped, not applied on top of it.
+    reranked = False
     if free_q.strip() and cfg.vector.enabled:
         # FR-13: whether a below-floor rescue is even worth asking for depends
         # on the keyword tier, which vector_store cannot see -- so that's
@@ -750,7 +816,27 @@ async def search_captures(
             # top semantic candidate and only the cutoff kills it. Surface
             # exactly that one candidate, honestly labelled -- never more,
             # this is a rescue of the top rank, not a second ranking pass.
-            rescue_candidate = sem_rows[0]
+            # FR-28: but only if it's lexically tied to the query at all --
+            # see the docstring above for why cosine alone can't gate this.
+            top = sem_rows[0]
+            if _shares_meaningful_token(free_q, top.get("excerpt", ""), top.get("path", "")):
+                rescue_candidate = top
+
+        # FR-28 re-rank half: sound ONLY here, while keyword_hit is False --
+        # `results` is exactly the FTS tier at this point (built above from
+        # idx_search), so `not keyword_hit` means it's empty, which in turn
+        # means `results` stays semantic-only for the rest of this function.
+        # Reordering `passing` therefore can never disturb FTS-vs-semantic
+        # cross-tier ordering -- the case this rule doesn't apply to.
+        reranked = not keyword_hit
+        if reranked and passing:
+            passing.sort(
+                key=lambda r: (
+                    _shares_meaningful_token(free_q, r.get("excerpt", ""), r.get("path", "")),
+                    r.get("similarity") or 0.0,
+                ),
+                reverse=True,
+            )
 
         # Dedupe against the FTS hits by path -- semantic paths are vault-relative,
         # FTS paths are absolute, so compare by suffix (same convention LookPanel
@@ -763,7 +849,12 @@ async def search_captures(
                 continue
             results.append(_shape_semantic_row(sr, root, rescued=sr is rescue_candidate))
 
-    results.sort(key=lambda r: r["score"] if r.get("score") is not None else -1.0, reverse=True)
+    if not reranked:
+        # FR-28: when `reranked` is True, `results` is semantic-only (see
+        # above) and already in its final token-match-then-cosine order --
+        # this blanket cosine/bm25 sort is for the mixed FTS+semantic case
+        # and would silently overwrite that order by raw score alone.
+        results.sort(key=lambda r: r["score"] if r.get("score") is not None else -1.0, reverse=True)
     results = results[:limit]
     look_info(f"GET /search returned {len(results)} result(s) for q={q!r}")
     return {"results": results, "count": len(results), "query": q}

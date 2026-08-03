@@ -439,10 +439,12 @@ class TestSemanticFusion(unittest.TestCase):
             self.assertAlmostEqual(sem["modified"], note_path.stat().st_mtime, places=3)
 
     def test_rescue_fires_when_no_keyword_hit_and_top_semantic_below_floor(self):
-        """FR-13: the true match at rank #1 below min_similarity, with nothing
-        from the keyword tier, must be surfaced (honestly labelled) rather
-        than silently dropped -- the measured dominant failure this feature
-        fixes."""
+        """FR-13/FR-28: the true match at rank #1 below min_similarity, with
+        nothing from the keyword tier, must still be surfaced (honestly
+        labelled) when it genuinely paraphrases the query -- i.e. shares a
+        meaningful token with it -- rather than silently dropped. This is the
+        measured dominant failure FR-13 fixes; FR-28 narrows *which*
+        below-floor candidates qualify, it doesn't kill the feature."""
         with tempfile.TemporaryDirectory() as td:
             vault = Path(td) / "vault"
             vault.mkdir()
@@ -451,7 +453,7 @@ class TestSemanticFusion(unittest.TestCase):
             near_miss = {
                 "path": "Tech_Notes/near-miss.md",
                 "similarity": 0.32,
-                "excerpt": "…",
+                "excerpt": "A quick paraphrase of the sync workflow.",
                 "category": "Tech_Notes",
                 "below_threshold": True,
             }
@@ -463,6 +465,33 @@ class TestSemanticFusion(unittest.TestCase):
             self.assertEqual(sem["path"], "Tech_Notes/near-miss.md")
             self.assertEqual(sem["score"], 0.32)
             self.assertTrue(sem["rescued"])
+
+    def test_rescue_stays_silent_on_gibberish_query(self):
+        """FR-28 (the regression this task fixes): a query that shares no
+        meaningful token with anything must NOT be rescued, even though its
+        top semantic candidate scores higher cosine than a genuine near-miss
+        would. Measured on the shipped release: the literal gibberish string
+        below returned a "Related - 39%" row against a real note; "no
+        results" must be reachable again."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            client = self._make_client(vault)
+            import vector_store
+            gibberish_hit = {
+                "path": "Tech_Notes/unrelated.md",
+                "similarity": 0.39,
+                "excerpt": "Notes about syncing files to Google Drive on schedule.",
+                "category": "Tech_Notes",
+                "below_threshold": True,
+            }
+            with mock.patch.object(vector_store, "semantic_search", return_value=[gibberish_hit]):
+                data = client.get(
+                    "/search?q=zxqvbfhwpq93+qwoiuty+aksjdhf+zzxq47"
+                ).json()
+
+            self.assertEqual(data["results"], [])
+            self.assertEqual(data["count"], 0)
 
     def test_rescue_does_not_fire_when_keyword_tier_already_answered(self):
         """FR-13 hard constraint: a below-floor semantic candidate must never
@@ -504,7 +533,8 @@ class TestSemanticFusion(unittest.TestCase):
             import vector_store
             near_miss_1 = {
                 "path": "Tech_Notes/near-miss-1.md", "similarity": 0.33,
-                "excerpt": "…", "category": "Tech_Notes", "below_threshold": True,
+                "excerpt": "A paraphrase of the query, roughly.",
+                "category": "Tech_Notes", "below_threshold": True,
             }
             near_miss_2 = {
                 "path": "Tech_Notes/near-miss-2.md", "similarity": 0.31,
@@ -516,6 +546,47 @@ class TestSemanticFusion(unittest.TestCase):
 
             sem_paths = {r["path"] for r in data["results"] if r["tier"] == "semantic"}
             self.assertEqual(sem_paths, {"Tech_Notes/near-miss-1.md"})
+
+    def test_rerank_promotes_lexical_match_over_higher_cosine_noise(self):
+        """FR-28 re-rank half (the 1-of-8 measured failure: true match
+        present among semantic candidates but outranked by noise): with the
+        keyword tier empty, a lower-cosine candidate sharing a meaningful
+        token with the query must sort ABOVE a higher-cosine candidate that
+        shares none -- while each row's published `score` stays its own
+        honest cosine value, unchanged by the reorder."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            client = self._make_client(vault)
+            import vector_store
+            # Deliberately parked under "Misc" (not "Tech_Notes") so neither
+            # row's own path tokenizes into a spurious match against the
+            # query -- only the excerpt content should decide this.
+            noisy_but_high_cosine = {
+                "path": "Misc/noise.md", "similarity": 0.55,
+                "excerpt": "Completely unrelated filler content.",
+                "category": "Misc",
+            }
+            true_match_lower_cosine = {
+                "path": "Misc/true-match.md", "similarity": 0.45,
+                "excerpt": "How to sync notes to Google Drive automatically.",
+                "category": "Misc",
+            }
+            with mock.patch.object(
+                vector_store, "semantic_search",
+                return_value=[noisy_but_high_cosine, true_match_lower_cosine],
+            ):
+                data = client.get("/search?q=sync+drive+notes").json()
+
+            sem = [r for r in data["results"] if r["tier"] == "semantic"]
+            self.assertEqual([r["path"] for r in sem],
+                              ["Misc/true-match.md", "Misc/noise.md"],
+                              "lexically-matching candidate must outrank higher-cosine noise")
+            # Published scores stay the honest cosine values -- reorder never
+            # touches the number.
+            by_path = {r["path"]: r["score"] for r in sem}
+            self.assertEqual(by_path["Misc/true-match.md"], 0.45)
+            self.assertEqual(by_path["Misc/noise.md"], 0.55)
 
 
 class TestStats(unittest.TestCase):
