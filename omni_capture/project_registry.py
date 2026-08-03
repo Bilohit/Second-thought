@@ -97,9 +97,15 @@ def dumps(reg: Registry) -> str:
 def save(vault_root: Path, reg: Registry) -> None:
     """Whole-file rewrite. CALLERS MUST HOLD the registry lock (`_registry_lock_path`, obtained
     through the `dedup._vault_lock(lock_path)` factory — contract §13.2 as corrected in v3.1);
-    this function does not acquire it, so a caller can merge-then-write atomically."""
+    this function does not acquire it, so a caller can merge-then-write atomically.
+
+    The write itself goes through `atomic_write_text` (temp sibling + os.replace) so a crash
+    or partial write mid-save can never leave a truncated/empty registry on disk — the lock
+    only ever serializes *concurrent writers*, it says nothing about a torn write from one."""
+    from atomic_io import atomic_write_text
+
     path = Path(vault_root) / REGISTRY_FILENAME
-    path.write_text(dumps(reg), encoding="utf-8")
+    atomic_write_text(path, dumps(reg))
 
 
 def update(vault_root: Path, mutate) -> Registry:

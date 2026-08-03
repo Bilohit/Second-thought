@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -117,6 +118,20 @@ def move_to_trash(vault_root: Path, path: Path) -> dict:
         origins = _load_origins(vault_root)
         origins[dest.name] = origin
         _save_origins(vault_root, origins)
+    # FR-25: this is a pure filesystem move, so captures.db still has a row for the
+    # file's OLD path -- and nothing re-syncs that away on its own. vault_sync's
+    # orphan purge only runs at server startup or on a manual POST /vault/sync-index,
+    # so without this, /stats (and any other captures.db reader) keeps counting a
+    # trashed note indefinitely. Best-effort and non-fatal, same idiom as
+    # scratchpad.py's approve/discard index cleanup: the vault file has already moved
+    # (the source of truth), so a failed index write must never fail the trash move.
+    try:
+        from index_writer import remove_capture_by_path
+        from vector_store import remove_from_index
+        remove_capture_by_path(vault_root, path)
+        remove_from_index(vault_root, path)
+    except Exception as exc:
+        print(f"[Trash] index cleanup on trash error: {exc}", file=sys.stderr)
     return {"ok": True, "filename": dest.name, "trashed_path": str(dest)}
 
 
@@ -213,4 +228,16 @@ def restore_from_trash(vault_root: Path, filename: str) -> dict:
     if filename in origins:
         origins.pop(filename, None)
         _save_origins(vault_root, origins)
+    # FR-25 symmetry: the note is back in the vault at `dest` -- re-add its captures.db
+    # row so /stats counts it again without waiting for a full vault sync, instead of
+    # staying invisible until the next startup/manual sync repopulates it. Best-effort
+    # and non-fatal, same reasoning as move_to_trash's cleanup above. Vector
+    # re-embedding is left to the route/caller (it needs Ollama config trash.py has no
+    # business importing) -- same division of labor as storage_engine's scratchpad
+    # approve path and its server.py caller.
+    try:
+        from index_writer import upsert_capture_from_file
+        upsert_capture_from_file(vault_root, dest)
+    except Exception as exc:
+        print(f"[Trash] index reindex on restore error: {exc}", file=sys.stderr)
     return {"ok": True, "category": category, "path": str(dest)}

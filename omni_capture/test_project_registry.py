@@ -265,3 +265,77 @@ def test_clear_stale_renamed_from_keeps_it_while_a_note_still_carries_the_old_na
     reg = _reg(new={**_entry(), "renamed_from": "old"})
     out = pr.clear_stale_renamed_from(reg, live_names={"old"})
     assert out["projects"]["new"]["renamed_from"] == "old"
+
+
+def test_save_writes_atomically_via_a_temp_sibling(tmp_path, monkeypatch):
+    # save() must go through atomic_io's temp-sibling + os.replace idiom, not a bare
+    # write_text -- a crash mid-write must never leave a truncated/empty registry (P2).
+    # Proven by making the temp write blow up and asserting the ORIGINAL file survives
+    # untouched and no `.tmp` litter is left behind -- exactly atomic_io.py's own smoke test.
+    pr.save(tmp_path, _reg(a=_entry("original")))
+    original = (tmp_path / pr.REGISTRY_FILENAME).read_text(encoding="utf-8")
+
+    import atomic_io
+
+    def _boom(tmp, text, encoding, newline):
+        raise OSError("simulated crash mid-write")
+
+    monkeypatch.setattr(atomic_io.Path, "write_text", _boom)
+    with pytest.raises(OSError):
+        pr.save(tmp_path, _reg(a=_entry("corrupted")))
+
+    assert (tmp_path / pr.REGISTRY_FILENAME).read_text(encoding="utf-8") == original
+    assert not (tmp_path / (pr.REGISTRY_FILENAME + ".tmp")).exists()
+
+
+def test_delete_through_update_leaves_every_other_project_byte_for_byte(tmp_path):
+    # Pins the gap this task exists to close: a one-project delete, through the REAL public
+    # path (project_registry.update -- locked load/mutate/save, the same cycle
+    # vault_admin.delete_project's `r["projects"].pop(name, None)` lambda drives), must never
+    # clobber an untouched sibling's bytes.
+    pr.update(tmp_path, lambda r: r["projects"].update({
+        "alpha": _entry("Alpha description."),
+        "beta": _entry("Beta description."),
+        "gamma": _entry("Gamma description."),
+    }))
+    before = (tmp_path / pr.REGISTRY_FILENAME).read_text(encoding="utf-8")
+    beta_block = before[before.index('[projects."beta"]'):before.index('[projects."gamma"]')]
+
+    pr.update(tmp_path, lambda r: r["projects"].pop("alpha", None))
+
+    after = (tmp_path / pr.REGISTRY_FILENAME).read_text(encoding="utf-8")
+    reg = pr.load(tmp_path)
+    assert set(reg["projects"]) == {"beta", "gamma"}
+    assert reg["projects"]["beta"]["description"] == "Beta description."
+    assert reg["projects"]["gamma"]["description"] == "Gamma description."
+    # The untouched sibling's serialized block is byte-for-byte identical, not just
+    # semantically equal -- a rewrite that reordered or reformatted it would still pass a
+    # looser check but would still be evidence of a whole-file clobber.
+    assert beta_block in after
+
+
+def test_rename_through_update_leaves_every_other_project_byte_for_byte(tmp_path):
+    # Same gap, the rename half: vault_admin.rename_project's `_rename` mutate (pop old key,
+    # re-key with renamed_from set) must not disturb an untouched sibling either.
+    pr.update(tmp_path, lambda r: r["projects"].update({
+        "alpha": _entry("Alpha description."),
+        "beta": _entry("Beta description."),
+        "gamma": _entry("Gamma description."),
+    }))
+    before = (tmp_path / pr.REGISTRY_FILENAME).read_text(encoding="utf-8")
+    gamma_block = before[before.index('[projects."gamma"]'):]
+
+    def _rename(r):
+        entry = dict(r["projects"].pop("alpha"))
+        entry["renamed_from"] = "alpha"
+        r["projects"]["alpha-2"] = entry
+
+    pr.update(tmp_path, _rename)
+
+    after = (tmp_path / pr.REGISTRY_FILENAME).read_text(encoding="utf-8")
+    reg = pr.load(tmp_path)
+    assert set(reg["projects"]) == {"alpha-2", "beta", "gamma"}
+    assert reg["projects"]["alpha-2"]["renamed_from"] == "alpha"
+    assert reg["projects"]["beta"]["description"] == "Beta description."
+    assert reg["projects"]["gamma"]["description"] == "Gamma description."
+    assert gamma_block in after

@@ -515,6 +515,49 @@ def test_restore_without_a_recorded_origin_still_falls_back(tmp_path):
     assert (vault / "Uncategorized" / "orphan.md").exists()
 
 
+def test_move_to_trash_removes_the_captures_row(tmp_path):
+    """FR-25: /stats reads captures.db, and move_to_trash is a pure filesystem move --
+    nothing else re-syncs the index at trash time (vault_sync's orphan purge only runs
+    at server startup or on a manual POST /vault/sync-index). Without cleaning up the
+    row here, a trashed note keeps counting toward /stats' total and by_project tiles
+    indefinitely."""
+    from index_writer import init_db, stats, upsert_capture_from_file
+
+    vault = tmp_path
+    (vault / "Personal").mkdir()
+    note = vault / "Personal" / "keep.md"
+    note.write_text("---\nid: n1\norigin: note\n---\nbody\n", encoding="utf-8")
+    upsert_capture_from_file(vault, note)
+    assert stats(vault)["total"] == 1
+
+    move_to_trash(vault, note)
+
+    assert stats(vault)["total"] == 0
+    conn = init_db(vault)
+    row = conn.execute("SELECT COUNT(*) FROM captures WHERE path = ?", (str(note),)).fetchone()
+    conn.close()
+    assert row[0] == 0, "captures row for the old path must not survive the trash move"
+
+
+def test_restore_from_trash_reindexes_the_note(tmp_path):
+    """Symmetric with the trash-side fix above: a restored note is back in the vault
+    and should count again without waiting for a full vault sync."""
+    from index_writer import stats, upsert_capture_from_file
+
+    vault = tmp_path
+    (vault / "Work").mkdir()
+    note = vault / "Work" / "task.md"
+    note.write_text("---\nid: n2\norigin: note\n---\nbody\n", encoding="utf-8")
+    upsert_capture_from_file(vault, note)
+
+    moved = move_to_trash(vault, note)
+    assert stats(vault)["total"] == 0
+
+    restore_from_trash(vault, moved["filename"])
+
+    assert stats(vault)["total"] == 1
+
+
 def test_purge_prunes_the_origin_sidecar(tmp_path):
     """The ledger tracks the folder rather than growing forever."""
     import json
