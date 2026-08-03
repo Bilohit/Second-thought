@@ -1887,7 +1887,7 @@ async def create_today_daily_note(day: Optional[str] = None, _: None = Depends(_
 
 @app.post("/note")
 async def create_note_route(body: NoteCreate, _: None = Depends(_require_secret)):
-    """Always-create a new generic note at the vault root. The desktop's SECOND note-origination
+    """Always-create a new generic note in `_loose/`. The desktop's SECOND note-origination
     action, alongside POST /today/daily-note above — unlike that route this is never
     find-or-create (two calls make two distinct notes) and never lands in `Daily/`. Reuses
     `create_daily_note`'s write path (`today_view._write_note_file`), so it emits the identical

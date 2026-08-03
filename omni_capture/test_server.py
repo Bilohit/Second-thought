@@ -1363,6 +1363,26 @@ def test_post_note_creates_note_with_daily_note_frontmatter_shape(tmp_path: Path
     assert note_path.parent != daily_path.parent
 
 
+def test_post_note_lands_where_project_tidy_can_actually_see_it(tmp_path: Path):
+    """FR-29: /note used to write straight into the vault ROOT, and `_filed_notes` checks
+    `entry.is_dir()` before it ever looks at a file -- so a brand-new note was structurally
+    invisible to project-tidy and could never be re-filed once the user tagged it. Pin BOTH
+    halves: the note lands in `_loose/`, and the tidy scan genuinely yields it."""
+    from projects import LOOSE_DIR
+    from vault_admin import _filed_notes
+
+    client, cfg = _note_client(tmp_path)
+    with mock.patch("config.get_config", lambda: cfg):
+        made = client.post("/note", json={"title": "findable"})
+        assert made.status_code == 200, made.text
+        note_path = Path(made.json()["path"])
+
+    root = Path(cfg.vault.root)
+    assert note_path.parent.name == LOOSE_DIR
+    assert note_path.parent != root          # the regression itself: never bare in the root
+    assert note_path in set(_filed_notes(root))
+
+
 def test_post_note_twice_creates_two_distinct_notes(tmp_path: Path):
     """Unlike the daily note, /note is not find-or-create. Two calls, two files."""
     client, cfg = _note_client(tmp_path)

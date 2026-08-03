@@ -12,8 +12,8 @@ write path so they emit the identical frontmatter key set (contract:
 `Second Thought - Android App/data-model-and-contracts.md`): `create_daily_note` (find-or-create
 on demand, mirroring the phone's "Start today's note" tap, invoked ONLY from the explicit POST
 `/today/daily-note`, never as a side-effect of the GET; idempotent and never clobbers an existing
-note — body sacred) and `create_note` (always-new, invoked from POST `/note`, lands at the vault
-root rather than `Daily/`).
+note — body sacred) and `create_note` (always-new, invoked from POST `/note`, lands in `_loose/`
+rather than `Daily/`).
 
 Cross-peer parity note: overdue = reminders whose local day is BEFORE the viewed day and whose
 fire time has passed; due-today = reminders whose local day IS the viewed day (soonest-first);
@@ -128,8 +128,8 @@ def create_daily_note(vault_root: Path, day_iso: str, folder: str = "Daily",
                        now_iso: Optional[str] = None) -> dict:
     """Find-or-create the daily note for `day_iso` under `<vault>/<folder>/`.
 
-    One of the two desktop note-origination paths (the other is `create_note`, always-new at the
-    vault root — see server.py's POST /note docstring for what distinguishes them). Body sacred +
+    One of the two desktop note-origination paths (the other is `create_note`, always-new in
+    `_loose/` — see server.py's POST /note docstring for what distinguishes them). Body sacred +
     idempotent: if a note already matches this day (S1 title-match anywhere in the vault) or a file
     already occupies the target path, that existing note is returned UNTOUCHED — this never
     overwrites user bytes. Returns {"id", "path", "title"}. `now_iso` is injectable for tests."""
@@ -152,12 +152,22 @@ def create_daily_note(vault_root: Path, day_iso: str, folder: str = "Daily",
 def create_note(vault_root: Path, title: Optional[str] = None, now_iso: Optional[str] = None) -> dict:
     """Always-new generic note origination — the desktop's SECOND note-origination path, alongside
     `create_daily_note`. Unlike the daily note this is never find-or-create: every call mints a
-    fresh note, filed at the vault root (never `Daily/`). Invoked from POST `/note`. Reuses
+    fresh note, filed in `_loose/` (never `Daily/`). Invoked from POST `/note`. Reuses
     `_write_note_file`, `create_daily_note`'s own write path, rather than re-authoring one, so both
     routes emit the identical frontmatter key set — a second, differently-shaped write path would
     fork the contract owned by `Second Thought - Android App/data-model-and-contracts.md`. Returns
-    {"id", "path", "title"}."""
-    return _write_note_file(vault_root, "", title or "", "", now_iso=now_iso)
+    {"id", "path", "title"}.
+
+    FR-29: this used to pass `folder=""`, landing the note directly in the vault ROOT — and
+    `vault_admin._filed_notes` checks `entry.is_dir()` before it ever looks at a file, so a
+    root-level note was structurally invisible to the project-tidy pass and could never be
+    re-filed once the user tagged it. A fresh note has an empty body, so it carries no
+    `#project@` tag by construction, and the data model's own rule for an unresolved project is
+    `projects.note_dir_for(None) == LOOSE_DIR` — the same `_loose/` every other writer already
+    uses (mobile_sync_agent.py:617). Landing it there makes it tidy-visible from birth."""
+    from projects import note_dir_for   # function-local, matching this module's import style
+
+    return _write_note_file(vault_root, note_dir_for(None), title or "", "", now_iso=now_iso)
 
 
 def build_today(
