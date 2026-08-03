@@ -271,6 +271,14 @@ fn set_log_level(level: u32) {
     LOG_LEVEL.store(level, Ordering::Relaxed);
 }
 
+/// Runtime always-on-top toggle for the quick pad's pin. `tauri.conf.json`'s
+/// `alwaysOnTop: true` still sets the *starting* state; this overrides it at
+/// runtime and does not replace the static config.
+#[tauri::command]
+fn set_always_on_top(window: tauri::Window, enabled: bool) -> Result<(), String> {
+    window.set_always_on_top(enabled).map_err(|e| e.to_string())
+}
+
 /// Resolve the project root (works in both debug and release layouts).
 fn compute_project_root() -> PathBuf {
     if cfg!(debug_assertions) {
@@ -1570,7 +1578,7 @@ pub fn run() {
         .manage(AppState { python_child, gui_secret: Mutex::new(gui_secret), active_shortcut: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![
             get_gui_secret, get_pairing_info, set_pairing_enabled, rotate_secret,
-            set_hotkey, append_log, log_file_path, get_log_level, set_log_level,
+            set_hotkey, append_log, log_file_path, get_log_level, set_log_level, set_always_on_top,
             noactivate::set_window_noactivate, noactivate::arm_menu_click_away, noactivate::disarm_menu_click_away,
             noactivate::set_window_bounds
         ])

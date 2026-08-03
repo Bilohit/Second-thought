@@ -97,6 +97,18 @@ export async function setWindowNoactivate(enabled: boolean): Promise<void> {
   }
 }
 
+/** Runtime always-on-top toggle for the quick pad's pin. `tauri.conf.json`'s
+ *  `alwaysOnTop: true` still sets the window's starting state — this
+ *  overrides it at runtime, it does not replace it. Best-effort: no-op
+ *  outside Tauri (browser dev). */
+export async function setAlwaysOnTop(enabled: boolean): Promise<void> {
+  try {
+    await invoke("set_always_on_top", { enabled });
+  } catch (err) {
+    logger.warn("tauri", "set_always_on_top failed", err);
+  }
+}
+
 /** Arm the global click-away mouse hook, hit-testing against `windowLabel`'s
  *  HWND. Call only while a menu is open — disarm on every close path. */
 export async function armMenuClickAway(windowLabel: string): Promise<void> {

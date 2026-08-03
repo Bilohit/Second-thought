@@ -63,6 +63,7 @@ import { computeMenuGeometry, clampPillWindowToMonitor, computeCapsuleMenuGeomet
 import { nextWindowTopLeft, emaVelocity, zeroVelocityAtClamp, dragStartBaseline, type Point } from "./lib/dragMath";
 import { createSpring, stepSpring } from "./lib/spring";
 import { setWindowNoactivate, armMenuClickAway, disarmMenuClickAway, setWindowBoundsAtomic } from "./lib/tauri";
+import { shouldHideOnEscape } from "./lib/hideOnEscape";
 import { geoSnapshot, geoClamp } from "./lib/geoLog";
 import { useToasts } from "./hooks/useToasts";
 import ToastHost from "./components/ToastHost";
@@ -738,6 +739,15 @@ export default function App() {
   const closeCompactPanelRef = useRef(closeCompactPanel);
   useEffect(() => { closeCompactPanelRef.current = closeCompactPanel; }, [closeCompactPanel]);
 
+  // D1: a dedicated Hide item sends the app to the tray even when pinned,
+  // distinct from re-clicking the pill (which only dismisses the menu).
+  // Moved above the keyboard-shortcuts effect (Task 4) so it can appear in
+  // that effect's dependency array without a TDZ error.
+  const handleMenuHide = useCallback(() => {
+    closePillMenu();
+    getCurrentWindow().hide();
+  }, [closePillMenu]);
+
   // s114 panelGeom watchdog: mirrors the panelReady watchdog's discipline -- only
   // ever forces the SAFE state. There is no safe way to fabricate a geometry, so
   // the safe state here is CLOSED (revert to the idle pill), never "assume the
@@ -991,11 +1001,18 @@ export default function App() {
           if (view === "look")    { setView("capture"); return; }
           if (view !== "capture"){ setView("capture"); return; }
         }
+        // Task 4: panel and menu are both already closed above (or never
+        // open), and — for minimal/capsule — `view` is already "capture".
+        // That is the bare-pill state; only there does Escape hide the
+        // window. Full window never hides (shouldHideOnEscape excludes it).
+        if (shouldHideOnEscape({ displayMode, menuOpen, compactPanel })) {
+          handleMenuHide();
+        }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [view, menuOpen, compactPanel, displayMode, closePillMenu, closeCompactPanel, voice.phase, voice.cancel]);
+  }, [view, menuOpen, compactPanel, displayMode, closePillMenu, closeCompactPanel, voice.phase, voice.cancel, handleMenuHide]);
 
   // ── Tauri events ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -2332,13 +2349,6 @@ export default function App() {
     if (displayMode !== "capsule") setMenuOpen(false);
     void prefetchPanelZone().then(() => setCompactPanel(target));
   }, [displayMode, closePillMenu, prefetchPanelZone, compactPanel, bumpNavToken]);
-
-  // D1: a dedicated Hide item sends the app to the tray even when pinned,
-  // distinct from re-clicking the pill (which only dismisses the menu).
-  const handleMenuHide = useCallback(() => {
-    closePillMenu();
-    getCurrentWindow().hide();
-  }, [closePillMenu]);
 
   // Zone must be correct before the first open frame — justify/stagger/CSS all
   // read capsuleZone synchronously when menuOpen flips true. The reconcile
