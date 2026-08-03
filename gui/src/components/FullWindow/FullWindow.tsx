@@ -30,7 +30,7 @@ interface LookChatHook {
 }
 
 type MainView = "dashboard" | "look" | "library" | "history";
-type RailView = MainView | "settings" | "inbox";
+type RailView = MainView | "settings" | "inbox" | "note";
 const MAIN_VIEWS: MainView[] = ["dashboard", "look", "library", "history"];
 // ISS-022: the folder-panel nav label is "Vault" everywhere — was "Library"
 // here vs "Vault" in Capsule/Minimal mode. SP3 Task 8: the container's
@@ -53,6 +53,7 @@ const TITLES: Record<RailView, [string, string]> = {
   history:   ["History", "daily rhythm · by project"],
   settings:  ["Settings", ""],
   inbox:     ["Inbox", "review · reminders"],
+  note:      ["Note", ""],
 };
 
 // Subset of SettingsPanel props that FullWindow receives and forwards
@@ -92,7 +93,6 @@ interface FullWindowProps {
   lookChat: LookChatHook;
   lookChatPersist: LookChatPersist;
   onOpenFile: (path: string) => void;
-  onHideToTray: () => void;
   onCaptureFile: (path: string) => void;
   onCaptureNow: () => void;
   pillCorner: PillCorner;
@@ -188,6 +188,14 @@ export default function FullWindow(props: FullWindowProps) {
   // path compact mode already uses.
   const [editorPath, setEditorPath] = useState<string | null>(null);
 
+  // Task 8: opening a note now has to switch the rail to the "note" view too
+  // (not just set the path) -- the editor is an ordinary keyed view, so
+  // nothing shows it unless `view` actually points at it.
+  const openNote = useCallback((path: string) => {
+    setEditorPath(path);
+    setView("note");
+  }, []);
+
   return (
     <div
       className="fw-shell"
@@ -233,7 +241,7 @@ export default function FullWindow(props: FullWindowProps) {
           )}
         </div>
 
-        <div ref={railTrackRef} style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8, position: "relative", minHeight: 0 }}>
+        <div ref={railTrackRef} data-testid="fw-rail" style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8, position: "relative", minHeight: 0 }}>
           <div
             className="rail-slider"
             aria-hidden="true"
@@ -261,6 +269,16 @@ export default function FullWindow(props: FullWindowProps) {
           <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: "1 1 0", minHeight: 0 }}>
             <div style={{ height: 1, background: "var(--border)", margin: "0 2px 8px", flex: "none" }} />
             <button
+              ref={(el) => { railBtnRefs.current.note = el; }}
+              className="btn-hover rail-btn rail-btn--footer"
+              onClick={() => { setEditorPath(null); setView("note"); }}
+              title="New Note"
+              aria-label="New Note"
+              aria-pressed={view === "note"}
+            >
+              <MenuIcon target="newnote" size={16} />
+            </button>
+            <button
               ref={(el) => { railBtnRefs.current.settings = el; }}
               className="btn-hover rail-btn rail-btn--footer"
               onClick={() => setView("settings")}
@@ -269,15 +287,6 @@ export default function FullWindow(props: FullWindowProps) {
               aria-pressed={view === "settings"}
             >
               <MenuIcon target="settings" size={16} />
-            </button>
-            <button
-              className="btn-hover rail-btn rail-btn--footer"
-              onClick={props.onHideToTray}
-              title="Hide"
-              aria-label="Hide"
-              aria-pressed={false}
-            >
-              <MenuIcon target="hide" size={16} />
             </button>
           </div>
         </div>
@@ -336,7 +345,7 @@ export default function FullWindow(props: FullWindowProps) {
               visible
               captureState={props.captureState}
               stepDefs={props.stepDefs}
-              onOpenFile={setEditorPath}
+              onOpenFile={openNote}
               onCaptureFile={props.onCaptureFile}
               onCaptureNow={props.onCaptureNow}
               llmStatus={props.llmStatus}
@@ -373,7 +382,7 @@ export default function FullWindow(props: FullWindowProps) {
         )}
         {view === "library" && (
           <div key="library" className="fw-view-panel">
-            <LibraryView visible section={librarySection} onOpenNote={setEditorPath} />
+            <LibraryView visible section={librarySection} onOpenNote={openNote} />
           </div>
         )}
         {view === "history" && (
@@ -383,7 +392,7 @@ export default function FullWindow(props: FullWindowProps) {
         )}
         {view === "inbox" && (
           <div key={`inbox-${inboxTab}`} className="fw-view-panel">
-            <InboxPanel visible embedded initialTab={inboxTab} onClose={() => setView("dashboard")} onCountChange={props.onInboxCountChange} onOpenNote={setEditorPath} />
+            <InboxPanel visible embedded initialTab={inboxTab} onClose={() => setView("dashboard")} onCountChange={props.onInboxCountChange} onOpenNote={openNote} />
           </div>
         )}
         {view === "settings" && (
@@ -391,13 +400,17 @@ export default function FullWindow(props: FullWindowProps) {
             <SettingsPanel visible onClose={() => setView("dashboard")} {...props.settingsProps} embedded />
           </div>
         )}
+        {view === "note" && (
+          <div key="note" className="fw-view-panel">
+            <NoteEditor
+              open
+              path={editorPath}
+              onClose={() => { setView("dashboard"); setEditorPath(null); }}
+              onOpenExternal={props.onOpenFile}
+            />
+          </div>
+        )}
         </ErrorBoundary>
-        <NoteEditor
-          open={editorPath !== null}
-          path={editorPath}
-          onClose={() => setEditorPath(null)}
-          onOpenExternal={props.onOpenFile}
-        />
       </div>
     </div>
   );

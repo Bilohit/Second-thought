@@ -21,14 +21,11 @@ export const MENU_LABELS: Record<MenuTarget, string> = {
 export const NAV_TARGETS: MenuTarget[] = ["search", "vault", "settings", "inbox", "stats", "newnote"];
 export const ALL_TARGETS: MenuTarget[] = NAV_TARGETS;
 
-// FullWindow.tsx's own rail independently renders a bottom "Hide" button via
-// MenuIcon — unrelated to the pill menu's 6-item cap (s135) but sharing this
-// glyph set. It goes away when Task 8 deletes the rail's Hide button; until
-// then MenuIcon accepts this wider IconTarget so that rail glyph keeps
-// rendering without re-admitting "hide" into MenuTarget/ALL_TARGETS. Task 3
-// merged Today into Inbox and removed FullWindow's "Today" rail button, so
-// "today" is gone from here too.
-export type IconTarget = MenuTarget | "hide";
+// Task 8 deleted FullWindow's rail-only "Hide" button (hide now lives on the
+// tray icon + Esc), so IconTarget no longer needs to be wider than
+// MenuTarget. Kept as its own name rather than inlining MenuTarget at every
+// MenuIcon call site — Task 11 decides whether to collapse the two together.
+export type IconTarget = MenuTarget;
 
 export function MenuIcon({ target, size = 16 }: { target: IconTarget; size?: number }): JSX.Element {
   const common = {
@@ -85,18 +82,6 @@ export function MenuIcon({ target, size = 16 }: { target: IconTarget; size?: num
       // Reuse PlusIcon's glyph rather than drawing a new path — see the
       // repo's icon rule (never a one-off SVG when an export exists).
       return <PlusIcon size={size} />;
-    case "hide":
-      // Eye-off — FullWindow's rail-only bottom "Hide" button (ISS-038 — the
-      // prior download-arrow glyph read as "save"). Not a MenuTarget any
-      // more; see IconTarget.
-      return (
-        <svg {...common}>
-          <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
-          <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
-          <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
-          <path d="M2 2l20 20" />
-        </svg>
-      );
   }
 }
 

@@ -2680,9 +2680,6 @@ export default function App() {
             onOpenFile={(path) => openFilePath(path).catch(() => {})}
             initialView={VIEW_TO_RAIL[view] ?? "dashboard"}
             initialViewToken={navToken}
-            onHideToTray={displayMode === "full"
-              ? () => getCurrentWindow().hide()
-              : () => setView("capture")}
             onCaptureFile={captureFile}
             onCaptureNow={captureNow}
             pillCorner={pillCorner}

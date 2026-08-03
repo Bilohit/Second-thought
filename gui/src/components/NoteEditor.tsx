@@ -11,6 +11,8 @@ import {
   resolveNoteConflict,
   addNoteAttachment,
   fetchAttachmentBlob,
+  createNote,
+  moveToTrash,
   NoteConflictError,
   type NoteContent,
   type SearchResult,
@@ -229,7 +231,6 @@ const FMT_ORDER: { kind: FormatKind; label: string; Icon: (p: { size?: number })
 type DrawerKey = "meta" | "conn" | "remind" | "history";
 
 export default function NoteEditor({ open, path, onClose, onOpenExternal }: NoteEditorProps) {
-  const [everOpened, setEverOpened] = useState(false);
   const [visible, setVisible] = useState(false);
   const [note, setNote] = useState<NoteContent | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -280,20 +281,32 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
   const lastAttemptedBodyRef = useRef<string | null>(null);
   const saveFailuresRef = useRef(0);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Task 8: New Note support (null `path`) — the note is created on the
+  // FIRST KEYSTROKE, never on open/click, mirroring
+  // CompactPanels/CompactQuickNote.tsx's identical create-on-type +
+  // getNoteContent()-for-a-real-mtime sequence. `creatingRef` guards
+  // re-entrant creates while that round trip is in flight; `mountedRef`
+  // detects the editor having been navigated away from (unmounted) before it
+  // resolves, so an abandoned, never-shown, never-autosaved-into note file
+  // doesn't silently persist (same orphan concern CompactQuickNote guards).
+  const creatingRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   const reducedMotion = typeof window !== "undefined"
     && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  // -- mount / open animation (mirrors DailyDigest.tsx exactly) --
+  // -- mount / open animation (mirrors DailyDigest.tsx exactly). Keyed on
+  // `open` alone, not `[open, path]` -- a New Note (null `path` until the
+  // first keystroke creates one) must still fade in. --
   useEffect(() => {
-    if (open && path) {
-      setEverOpened(true);
+    if (open) {
       const raf = requestAnimationFrame(() => setVisible(true));
       return () => cancelAnimationFrame(raf);
     }
     setVisible(false);
     return undefined;
-  }, [open, path]);
+  }, [open]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -349,9 +362,14 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     return () => { cancelled = true; };
   }, [open, path]);
 
-  // -- debounced autosave; stops once a conflict is surfaced until the user reloads --
+  // -- debounced autosave; stops once a conflict is surfaced until the user reloads.
+  // Keyed on `note` (not the raw `path` prop): a New Note is created
+  // internally on first keystroke without ever changing the `path` prop (see
+  // handleNewNoteChange below), so `note`/`baseMtime` are the source of truth
+  // for "is there something real to save to" in both the opened-existing-note
+  // and just-self-created-note cases. --
   useEffect(() => {
-    if (!open || !path || baseMtime === null) return;
+    if (!open || !note || baseMtime === null) return;
     if (saveState === "conflict") return;
     if (body === lastSavedBodyRef.current) return;
     // GUI-18: a failed save leaves lastSavedBodyRef untouched, so this effect
@@ -361,12 +379,13 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     const retrying = isSaveRetry(body, lastAttemptedBodyRef.current);
     if (!retrying) saveFailuresRef.current = 0;
     const delay = saveRetryDelayMs(saveFailuresRef.current);
+    const savePath = note.path;
 
     setSaveState("saving");
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
       lastAttemptedBodyRef.current = body;
-      saveNoteContent(path, body, baseMtime)
+      saveNoteContent(savePath, body, baseMtime)
         .then((r) => {
           saveFailuresRef.current = 0;
           lastSavedBodyRef.current = body;
@@ -387,7 +406,7 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
     }, delay);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [body, open, path, baseMtime, saveState]);
+  }, [body, open, note, baseMtime, saveState]);
 
   useEffect(() => () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); }, []);
 
@@ -616,14 +635,52 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
       });
   }, [note, baseMtime, reloadFromDisk]);
 
-  if (!everOpened || !path) return null;
+  // -- New Note: create on the first keystroke, never on open/click (locked
+  // decision, s135). `path` prop stays null throughout -- the created note's
+  // path lives only in `note.path` once loaded, exactly like every other
+  // note-identity read in this file (see the attachments block above), so
+  // the load-reset effect keyed on `[open, path]` never re-fires for this
+  // transition and can't clobber whatever the user has typed since. --
+  const handleNewNoteChange = useCallback((text: string) => {
+    setBody(text);
+    if (note || creatingRef.current) return;
+    creatingRef.current = true;
+    createNote()
+      .then((created) => getNoteContent(created.path).then((content) => ({ content })))
+      .then(({ content }) => {
+        if (!mountedRef.current) {
+          // Navigated away while the create was in flight -- the file was
+          // never shown to the user and autosave never armed for it, so it
+          // must not silently persist (mirrors CompactQuickNote's
+          // generation-orphan guard).
+          void moveToTrash(content.path).catch(() => {});
+          return;
+        }
+        setNote(content);
+        // Do NOT setBody(content.body) here -- content.body is the freshly
+        // created (empty) server copy; the user may have kept typing during
+        // the round trip and that local `body` state is authoritative.
+        lastSavedBodyRef.current = content.body;
+        setBaseMtime(content.mtime);
+      })
+      .catch((err) => {
+        logger.error("note", "failed to create note", err);
+        setSaveState("error");
+      })
+      .finally(() => { creatingRef.current = false; });
+  }, [note]);
+
+  if (!open) return null;
 
   const activeDrawer = pinnedDrawer;
   const drawerOpen = activeDrawer !== null;
 
   // -- styles --
+  // Task 8: no longer an absolutely-positioned overlay -- it's an ordinary
+  // keyed view inside FullWindow's `.fw-view-panel` switch now, so it fills
+  // that flex parent instead of covering it from above.
   const wrapStyle: CSSProperties = {
-    position: "absolute", inset: 0, zIndex: 20,
+    flex: 1, minHeight: 0,
     background: "var(--bg)",
     display: "flex", flexDirection: "column",
     opacity: visible ? 1 : 0,
@@ -807,6 +864,29 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal }: Note
           >
             RELOAD (discards local edits)
           </button>
+        </div>
+      )}
+
+      {/* New Note, pre-creation: a bare textarea, no toolbar/corner-menu/drawers
+          (all of those read `note.*`, and there is no note until the first
+          keystroke creates one via handleNewNoteChange). Disappears the
+          instant `note` is set -- the block below takes over seamlessly. */}
+      {!note && path === null && (
+        <div style={bodyRowStyle}>
+          <div style={contentStyle}>
+            <div style={measureStyle}>
+              <textarea
+                ref={textareaRef}
+                style={paperStyle}
+                aria-label="Note body (editable)"
+                spellCheck={false}
+                placeholder="Start typing to create a note…"
+                autoFocus
+                value={body}
+                onChange={(e) => handleNewNoteChange(e.target.value)}
+              />
+            </div>
+          </div>
         </div>
       )}
 
