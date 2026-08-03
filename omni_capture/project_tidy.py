@@ -10,6 +10,7 @@ correctly, because both read the tag. Self-healing, never wrong.
 This module is the PURE planner. The applier that touches the filesystem is `apply_tidy` (Task 6).
 """
 import os
+import sys
 import uuid
 from pathlib import Path
 from typing import Dict, List, NamedTuple
@@ -78,6 +79,7 @@ def apply_tidy(vault_root: Path, moves: List[Move]) -> TidyResult:
     vault_root = Path(vault_root)
     moved = skipped = 0
     source_dirs: set = set()
+    applied: List[Move] = []
 
     with _vault_lock(_tidy_lock_path(vault_root)):
         for move in moves:
@@ -98,6 +100,7 @@ def apply_tidy(vault_root: Path, moves: List[Move]) -> TidyResult:
                 continue
             source_dirs.add(move.src.parent)
             moved += 1
+            applied.append(move)
 
         removed_dirs = 0
         for directory in source_dirs:
@@ -109,4 +112,44 @@ def apply_tidy(vault_root: Path, moves: List[Move]) -> TidyResult:
             except OSError:
                 pass
 
+    # FR-26: captures.db / vectors.db each still hold a row keyed on the OLD path for every
+    # note that just moved -- a pure filesystem move re-syncs neither on its own. Same defect
+    # class as trash.move_to_trash (trash.py:121), same idiom: best-effort, non-fatal, and run
+    # only after the file is already safely on disk so an index failure can never roll back or
+    # block the move. Unlike trash (one file per call), a tidy pass moves a whole plan at once,
+    # so this is one batched reconcile pass over every note that actually moved -- done here,
+    # outside `_vault_lock`, rather than interleaved into the move loop above, so a slow or
+    # failing index write never extends the lock hold or gets confused with a move failure.
+    if applied:
+        _sync_index_after_moves(vault_root, applied)
+
     return TidyResult(moved, skipped, removed_dirs)
+
+
+def _sync_index_after_moves(vault_root: Path, applied: List[Move]) -> None:
+    """Best-effort captures.db/vectors.db cleanup for a batch of already-applied moves.
+
+    Mirrors trash.move_to_trash's index cleanup (trash.py:128-134): the vault file has already
+    moved (the source of truth), so nothing here may raise past this function -- every DB op is
+    caught individually and just logged, exactly like trash.py's own `except Exception`.
+    """
+    try:
+        from index_writer import remove_capture_by_path, upsert_capture_from_file
+        from vector_store import remove_from_index
+    except Exception as exc:
+        print(f"[ProjectTidy] index modules unavailable: {exc}", file=sys.stderr)
+        return
+
+    for move in applied:
+        try:
+            remove_capture_by_path(vault_root, move.src)
+            upsert_capture_from_file(vault_root, move.dst)
+            # ponytail: vectors.db is dropped, not re-embedded here -- re-embedding needs the
+            # Ollama base_url/model config, which project_tidy.py has no business importing
+            # (same division of labor trash.py's restore_from_trash draws for the identical
+            # reason, trash.py:234-237). A stale vector row would keep semantic search
+            # pointing at a dead path; dropping it now is strictly safer than that, and the
+            # note is re-embedded on the next full vault reindex.
+            remove_from_index(vault_root, move.src)
+        except Exception as exc:
+            print(f"[ProjectTidy] index cleanup for {move.dst} error: {exc}", file=sys.stderr)

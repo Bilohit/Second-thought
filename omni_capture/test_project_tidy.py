@@ -1,6 +1,9 @@
 import os
 from pathlib import Path
 
+import index_writer
+import vector_store
+import project_registry
 import project_tidy as pt
 from project_registry import SCHEMA
 
@@ -143,3 +146,63 @@ def test_a_blocked_move_is_skipped_and_the_pass_continues(tmp_path, monkeypatch)
     assert not blocked_dst.exists()
     assert healthy_dst.exists()
     assert not healthy_src.exists()
+
+
+# -- FR-26: captures.db/vectors.db must not keep pointing at a note's pre-tidy path -----------
+
+def test_apply_updates_captures_db_and_vectors_db_off_the_stale_path(tmp_path):
+    (tmp_path / "_loose").mkdir()
+    src = tmp_path / "_loose" / "a.md"
+    dst = tmp_path / "research" / "a.md"
+    src.write_text("---\nid: 1\n---\n\nbody #project@research\n", encoding="utf-8")
+    # derive_project resolves the tag against the ON-DISK registry -- an unregistered name
+    # reads as loose (project_registry.resolve_project's contract), so "research" must
+    # actually be registered for the moved note to land in captures.db as project=research.
+    project_registry.save(tmp_path, _reg("research"))
+
+    # Seed a captures.db row at the OLD path, as if the note was indexed before this tidy pass.
+    index_writer.upsert_capture_from_file(tmp_path, src)
+    # Seed a stale vectors.db embedding row keyed on the OLD vault-relative path.
+    conn = vector_store._get_conn(tmp_path)
+    conn.execute(
+        "INSERT INTO embeddings (id, embedding, document, category) VALUES (?, ?, ?, ?)",
+        ("_loose/a.md::c0", b"\x00" * 4, "body #project@research", ""),
+    )
+    conn.commit()
+    conn.close()
+
+    result = pt.apply_tidy(tmp_path, [pt.Move(src, dst)])
+    assert result.moved == 1
+
+    db = index_writer.init_db(tmp_path)
+    rows = db.execute("SELECT path, project FROM captures").fetchall()
+    db.close()
+    paths = {r["path"] for r in rows}
+    assert str(src) not in paths
+    assert str(dst) in paths
+    assert [r["project"] for r in rows if r["path"] == str(dst)][0] == "research"
+
+    vconn = vector_store._get_conn(tmp_path)
+    ids = {row[0] for row in vconn.execute("SELECT id FROM embeddings").fetchall()}
+    vconn.close()
+    assert "_loose/a.md::c0" not in ids
+
+
+def test_an_index_write_failure_does_not_block_or_undo_the_move(tmp_path, monkeypatch):
+    (tmp_path / "_loose").mkdir()
+    src = tmp_path / "_loose" / "a.md"
+    dst = tmp_path / "research" / "a.md"
+    src.write_text("---\nid: 1\n---\n\nbody #project@research\n", encoding="utf-8")
+
+    def boom(*a, **kw):
+        raise RuntimeError("index is on fire")
+
+    monkeypatch.setattr(index_writer, "remove_capture_by_path", boom)
+    monkeypatch.setattr(index_writer, "upsert_capture_from_file", boom)
+    monkeypatch.setattr(vector_store, "remove_from_index", boom)
+
+    result = pt.apply_tidy(tmp_path, [pt.Move(src, dst)])
+
+    assert result.moved == 1
+    assert dst.exists()
+    assert not src.exists()
