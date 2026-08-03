@@ -21,6 +21,9 @@ retrieve_related(vault_root, query_text, base_url, embed_model, top_k) -> list[s
 semantic_search(vault_root, query_text, base_url, embed_model, top_k) -> list[dict]
     F-10: structured {path, similarity, excerpt, category} rows for the Look
     "Semantic" results band. Same ranking as retrieve_related. [] on failure.
+    include_below_threshold=True (FR-13) also returns below-floor rows
+    (tagged below_threshold: True) instead of dropping them -- for a caller
+    that can see the keyword tier and decide whether a rescue is warranted.
 
 _embed(text, base_url, model) -> list[float]
     Call Ollama. Exposed for mocking in tests.
@@ -486,6 +489,7 @@ def semantic_search(
     embed_model: str = _DEFAULT_EMBED_MODEL,
     top_k: int = 5,
     min_similarity: float = 0.0,
+    include_below_threshold: bool = False,
 ) -> list[dict]:
     """F-10: structured counterpart to retrieve_related() for the Look
     "Semantic" results band -- same ranking (_cosine_top_k + _dedupe_to_parent
@@ -495,6 +499,18 @@ def semantic_search(
 
     Returns [] on an empty store, a blank query, or any error -- same
     fail-soft contract as retrieve_related/best_match.
+
+    include_below_threshold (FR-13): the threshold FILTERS an already-ranked
+    list, it never RANKS it -- _cosine_top_k/_dedupe_to_parent run first, the
+    `min_similarity` cutoff is applied after, over already-sorted-desc rows.
+    Every caller that omits this flag keeps that exact drop-at-the-floor
+    behavior (default False). When True, rows that rank within top_k but fall
+    under `min_similarity` are kept instead of discarded, each tagged
+    `"below_threshold": True` -- a plain fact about the row, not a decision.
+    This function still never decides whether surfacing one is warranted;
+    that call belongs to the caller that can also see the keyword tier (see
+    vault_admin.search_captures) -- this only stops the near-miss from being
+    silently thrown away before anyone gets to decide.
     """
     try:
         if not (query_text or "").strip():
@@ -511,16 +527,21 @@ def semantic_search(
         ranked = _dedupe_to_parent(candidates, top_k)
         cat_by_id = {r[0].split("::c")[0]: r[3] for r in rows}
 
-        return [
-            {
+        out = []
+        for sim, doc_id, doc in ranked:
+            below = sim < min_similarity
+            if below and not include_below_threshold:
+                continue
+            row = {
                 "path": doc_id,
                 "similarity": round(sim, 4),
                 "excerpt": doc[:280],
                 "category": cat_by_id.get(doc_id),
             }
-            for sim, doc_id, doc in ranked
-            if sim >= min_similarity
-        ]
+            if below:
+                row["below_threshold"] = True
+            out.append(row)
+        return out
     except Exception as exc:
         print(f"[{_ist_now()}] [VectorStore] non-fatal semantic_search error: {exc}",
               file=sys.stderr, flush=True)

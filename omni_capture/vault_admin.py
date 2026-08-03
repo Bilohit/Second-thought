@@ -613,6 +613,9 @@ def _extract_tag_filter(q: str) -> tuple[str, Optional[str]]:
 # projection follows it, and `_shape_semantic_row` below maps vector_store's own
 # `category` column (a separate schema this task does not touch) onto the same
 # published key, so both tiers of one result list agree on their field names.
+# FR-13: a semantic-tier row may also carry `rescued: true` -- additive, never
+# present on an FTS row, never `false` on an ordinary semantic row (its bare
+# presence is the signal) -- see _shape_semantic_row.
 _SEARCH_ROW_FIELDS = ("id", "timestamp", "project", "path", "filename",
                       "source_url", "confidence", "tags", "tier", "score")
 
@@ -639,13 +642,22 @@ def _shape_search_row(row: dict) -> dict:
     return shaped
 
 
-def _shape_semantic_row(row: dict, root: Optional[Path] = None) -> dict:
+def _shape_semantic_row(row: dict, root: Optional[Path] = None, rescued: bool = False) -> dict:
     """Project one vector_store.semantic_search row onto the SAME /search result
     shape as _shape_search_row, tagged tier="semantic" -- so FTS and semantic hits
     fuse into one scored, tier-labeled list (P-DSEARCH item 6) instead of the GUI
     fetching+merging two independent endpoints itself. Fields the vector store
     doesn't carry (id/timestamp/source_url/confidence/tags) are left None; the
-    GUI already treats those as optional for this reason."""
+    GUI already treats those as optional for this reason.
+
+    rescued (FR-13, additive): True only for the single below-floor candidate
+    the fuser (search_captures) decided to surface anyway because the keyword
+    tier came back empty and nothing cleared the similarity floor either.
+    Published as `rescued: true` -- omitted entirely (never `rescued: false`)
+    on every ordinary row, so its bare presence is the "weak/related, not a
+    confident match" signal the GUI labels on. Never changes the meaning of
+    `score`/`tier`, which stay the same honest cosine similarity/"semantic"
+    they always were."""
     path = row.get("path") or ""
     filename = path.replace("\\", "/").rsplit("/", 1)[-1] or None
     # `path` here is vault-relative (unlike the FTS tier's absolute `path` --
@@ -653,7 +665,7 @@ def _shape_semantic_row(row: dict, root: Optional[Path] = None) -> dict:
     # root before stat'ing; no root (e.g. a unit test shaping a row in
     # isolation) publishes modified: None rather than stat'ing a bogus path.
     abs_path = str(root / path) if root is not None and path else None
-    return {
+    shaped = {
         "id": None,
         "timestamp": None,
         # vector_store's `embeddings.category` column has always held the note's parent
@@ -669,6 +681,9 @@ def _shape_semantic_row(row: dict, root: Optional[Path] = None) -> dict:
         "score": row.get("similarity"),
         "modified": _note_modified(abs_path),
     }
+    if rescued:
+        shaped["rescued"] = True
+    return shaped
 
 
 @router.get("/search")
@@ -685,7 +700,15 @@ async def search_captures(
     ONE result list, sorted by score descending. `q` may embed a `tag:<value>`
     token (F-4 tags browser hand-off) -- it is stripped from the free-text match
     and applied as an exact-tag filter (and the semantic tier, which has no
-    concept of tags, is skipped for a tag-only query)."""
+    concept of tags, is skipped for a tag-only query).
+
+    FR-13 rescue: when the keyword tier comes back empty AND the semantic
+    tier's own top candidate falls below `min_similarity` (i.e. nothing
+    cleared the floor), that single top candidate is surfaced anyway, tagged
+    `rescued: true`, instead of being silently dropped -- min_similarity and
+    the embedding model are unchanged; only the "found nothing" vs "found one
+    weak match" distinction is now visible. Never fires while the keyword
+    tier already answered, and never rescues more than the one top candidate."""
     from index_writer import search as idx_search
     from config import get_config
     from vector_store import semantic_search
@@ -700,21 +723,45 @@ async def search_captures(
 
     cfg = get_config()
     if free_q.strip() and cfg.vector.enabled:
+        # FR-13: whether a below-floor rescue is even worth asking for depends
+        # on the keyword tier, which vector_store cannot see -- so that's
+        # decided here, not inside semantic_search. `results` at this point is
+        # exactly the FTS "exact"/"substring" tier (free_q is non-blank, so
+        # every row already carries a real tier -- see index_writer.search).
+        keyword_hit = bool(results)
         sem_rows = await anyio.to_thread.run_sync(
             lambda: semantic_search(
                 root, free_q, cfg.ollama.base_url, cfg.vector.embed_model,
                 top_k=min(max(1, limit), 25), min_similarity=cfg.vector.min_similarity,
+                include_below_threshold=not keyword_hit,
             )
         )
+        # Candidates are already ranked desc before the floor is applied
+        # (vector_store._cosine_top_k/_dedupe_to_parent run first, the
+        # min_similarity filter after -- vector_store.py's semantic_search
+        # docstring) -- so a below-threshold sem_rows[0] means every row here
+        # is below threshold. `passing` and a `rescue_candidate` are therefore
+        # mutually exclusive by construction, never both non-empty for the
+        # same query.
+        passing = [r for r in sem_rows if not r.get("below_threshold")]
+        rescue_candidate = None
+        if not keyword_hit and not passing and sem_rows:
+            # The measured FR-13 failure mode: the true match is already the
+            # top semantic candidate and only the cutoff kills it. Surface
+            # exactly that one candidate, honestly labelled -- never more,
+            # this is a rescue of the top rank, not a second ranking pass.
+            rescue_candidate = sem_rows[0]
+
         # Dedupe against the FTS hits by path -- semantic paths are vault-relative,
         # FTS paths are absolute, so compare by suffix (same convention LookPanel
         # used client-side before this fused into one server-side list).
         existing = {r["path"].replace("\\", "/") for r in results if r.get("path")}
-        for sr in sem_rows:
+        fused_semantic = passing + ([rescue_candidate] if rescue_candidate else [])
+        for sr in fused_semantic:
             rel = (sr.get("path") or "").replace("\\", "/")
             if rel and any(p.endswith(rel) for p in existing):
                 continue
-            results.append(_shape_semantic_row(sr, root))
+            results.append(_shape_semantic_row(sr, root, rescued=sr is rescue_candidate))
 
     results.sort(key=lambda r: r["score"] if r.get("score") is not None else -1.0, reverse=True)
     results = results[:limit]

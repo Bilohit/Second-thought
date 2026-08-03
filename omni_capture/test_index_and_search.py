@@ -438,6 +438,85 @@ class TestSemanticFusion(unittest.TestCase):
             self.assertIsInstance(sem["modified"], float)
             self.assertAlmostEqual(sem["modified"], note_path.stat().st_mtime, places=3)
 
+    def test_rescue_fires_when_no_keyword_hit_and_top_semantic_below_floor(self):
+        """FR-13: the true match at rank #1 below min_similarity, with nothing
+        from the keyword tier, must be surfaced (honestly labelled) rather
+        than silently dropped -- the measured dominant failure this feature
+        fixes."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            client = self._make_client(vault)
+            import vector_store
+            near_miss = {
+                "path": "Tech_Notes/near-miss.md",
+                "similarity": 0.32,
+                "excerpt": "…",
+                "category": "Tech_Notes",
+                "below_threshold": True,
+            }
+            # Empty vault -> real idx_search legitimately returns [] (no keyword hit).
+            with mock.patch.object(vector_store, "semantic_search", return_value=[near_miss]):
+                data = client.get("/search?q=paraphrase+query").json()
+
+            sem = next(r for r in data["results"] if r["tier"] == "semantic")
+            self.assertEqual(sem["path"], "Tech_Notes/near-miss.md")
+            self.assertEqual(sem["score"], 0.32)
+            self.assertTrue(sem["rescued"])
+
+    def test_rescue_does_not_fire_when_keyword_tier_already_answered(self):
+        """FR-13 hard constraint: a below-floor semantic candidate must never
+        be rescued once the keyword tier already returned results."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            client = self._make_client(vault)
+            import index_writer
+            import vector_store
+            keyword_row = {
+                "id": 1, "timestamp": "2025-06-17T10:00:00", "project": "Tech_Notes",
+                "path": "/vault/Tech_Notes/hit.md", "filename": "hit",
+                "source_url": None, "confidence": 0.9, "tags": "",
+                "tier": "exact", "score": 0.9,
+            }
+            near_miss = {
+                "path": "Tech_Notes/near-miss.md",
+                "similarity": 0.32,
+                "excerpt": "…",
+                "category": "Tech_Notes",
+                "below_threshold": True,
+            }
+            with mock.patch.object(index_writer, "search", return_value=[keyword_row]), \
+                 mock.patch.object(vector_store, "semantic_search", return_value=[near_miss]):
+                data = client.get("/search?q=paraphrase+query").json()
+
+            self.assertFalse(any(r.get("tier") == "semantic" for r in data["results"]),
+                              "below-floor candidate must not surface once the keyword tier answered")
+            self.assertFalse(any(r.get("rescued") for r in data["results"]))
+
+    def test_rescue_never_surfaces_more_than_the_top_candidate(self):
+        """FR-13: rescue is a single top-rank surface, never a second ranking
+        pass -- a second below-floor candidate must not also appear."""
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            vault.mkdir()
+            client = self._make_client(vault)
+            import vector_store
+            near_miss_1 = {
+                "path": "Tech_Notes/near-miss-1.md", "similarity": 0.33,
+                "excerpt": "…", "category": "Tech_Notes", "below_threshold": True,
+            }
+            near_miss_2 = {
+                "path": "Tech_Notes/near-miss-2.md", "similarity": 0.31,
+                "excerpt": "…", "category": "Tech_Notes", "below_threshold": True,
+            }
+            with mock.patch.object(vector_store, "semantic_search",
+                                    return_value=[near_miss_1, near_miss_2]):
+                data = client.get("/search?q=paraphrase+query").json()
+
+            sem_paths = {r["path"] for r in data["results"] if r["tier"] == "semantic"}
+            self.assertEqual(sem_paths, {"Tech_Notes/near-miss-1.md"})
+
 
 class TestStats(unittest.TestCase):
     def _populate(self, vault: Path) -> None:
