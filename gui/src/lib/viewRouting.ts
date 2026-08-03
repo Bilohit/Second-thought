@@ -14,9 +14,9 @@
  * now maps to its own `history` destination.
  */
 
-export type LegacyView = "capture" | "settings" | "vault" | "inbox" | "stats" | "look" | "today" | "note";
+export type LegacyView = "capture" | "settings" | "vault" | "inbox" | "stats" | "look" | "note";
 
-export type RailDestination = "dashboard" | "today" | "look" | "library" | "history" | "settings" | "inbox";
+export type RailDestination = "dashboard" | "look" | "library" | "history" | "settings" | "inbox";
 
 export const VIEW_TO_RAIL: Record<LegacyView, RailDestination> = {
   capture: "dashboard",
@@ -25,7 +25,6 @@ export const VIEW_TO_RAIL: Record<LegacyView, RailDestination> = {
   settings: "settings",
   inbox: "inbox",
   stats: "history",
-  today: "today",
   // ponytail: placeholder destination — FullWindow has no "note" RailView yet
   // (Task 8 adds it). handleMenuSelect's "newnote" branch sets view="note"
   // regardless; until Task 8 lands, full window falls back to Dashboard.

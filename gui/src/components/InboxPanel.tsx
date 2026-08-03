@@ -17,10 +17,14 @@ import {
   suggestProjects,
   listReminders,
   deleteReminder,
+  getToday,
+  createDailyNote,
   type InboxItem,
   type Reminder,
+  type TodayDailyNote,
 } from "../lib/api";
 import { formatWhen } from "../lib/reminderFormat";
+import { logger } from "../lib/logger";
 import SegmentedToggle from "./ui/SegmentedToggle";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
@@ -29,7 +33,7 @@ import {
 } from "./ui/styles";
 import {
   MenuIcon, RefreshIcon, BellIcon, CloseIcon,
-  ClipboardIcon, LinkIcon, ImageIcon, MicIcon, CheckIcon, TrashIcon,
+  ClipboardIcon, LinkIcon, ImageIcon, MicIcon, CheckIcon, TrashIcon, PlusIcon,
 } from "./PillMenu/icons";
 
 const NEW_FOLDER_SENTINEL = "__new_folder__";
@@ -92,6 +96,10 @@ interface Props {
    *  fallback, so Full-window (which never passes these) is unchanged. */
   tab?: InboxTab;
   onTabChange?: (tab: InboxTab) => void;
+  /** Opens a note in the host's editor. Only consulted by the daily-note
+   *  strip (full-window only, gated on `!compactHeader` below) — compact
+   *  callers never render the strip so they never need this. */
+  onOpenNote?: (path: string) => void;
 }
 
 function InboxRow({
@@ -350,9 +358,80 @@ function InboxRow({
   );
 }
 
+const DAILY_NOTE_STRIP_STYLE: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  width: "100%",
+  textAlign: "left",
+  border: "1px solid var(--border-2)",
+  borderRadius: "var(--radius-sm)",
+  background: "var(--glass-bg)",
+  padding: "8px 12px",
+  cursor: "pointer",
+  fontFamily: "inherit",
+  fontSize: 12,
+  color: "var(--text-1)",
+};
+
+/** Task 3 (Today merge): the one card that genuinely moved out of the old
+ *  TodayView -- a single slim row, full-window only (see the `!compactHeader`
+ *  gate at the call site). Today's other two cards (Reminders, Scratchpad
+ *  count) were deleted outright, not migrated: Inbox's own Reminders tab
+ *  already renders a superset of Today's overdue+due-today subset, and
+ *  Inbox's own header count already prints the same list_scratchpad() number. */
+function DailyNoteStrip({ onOpenNote }: { onOpenNote?: (path: string) => void }) {
+  // undefined = still loading (render nothing rather than flash an empty state).
+  const [note, setNote] = useState<TodayDailyNote | null | undefined>(undefined);
+  const [date, setDate] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    getToday()
+      .then((d) => { if (!cancelled) { setNote(d.daily_note); setDate(d.date); } })
+      .catch((err) => logger.warn("inbox", "getToday failed", err));
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleStart = () => {
+    createDailyNote(date)
+      .then((created) => { setNote(created); onOpenNote?.(created.path); })
+      .catch((err) => logger.warn("inbox", "create daily note failed", err));
+  };
+
+  if (note === undefined) return null;
+
+  return (
+    <div className="no-drag" style={{ padding: "12px 16px 0" }}>
+      {note ? (
+        <button
+          type="button"
+          className="btn-hover"
+          onClick={() => onOpenNote?.(note.path)}
+          style={DAILY_NOTE_STRIP_STYLE}
+        >
+          <MenuIcon target="vault" size={13} />
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{note.title}</span>
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="btn-hover"
+          aria-label="Start today's note"
+          onClick={handleStart}
+          style={DAILY_NOTE_STRIP_STYLE}
+        >
+          <PlusIcon size={13} />
+          <span>Start today&rsquo;s note</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function InboxPanel({
   visible, onClose, onCountChange, measureRef, embedded = false, initialTab = "inbox",
-  compactHeader = false, onHeaderActionsChange, tab: tabProp, onTabChange,
+  compactHeader = false, onHeaderActionsChange, tab: tabProp, onTabChange, onOpenNote,
 }: Props) {
   const [mounted, setMounted] = useState(visible);
   const [items, setItems] = useState<InboxItem[]>([]);
@@ -553,6 +632,13 @@ export default function InboxPanel({
           </div>
         </div>
       )}
+
+      {/* Task 3 (shell rework): the daily-note strip is the only piece of
+          Today that moved here. Full-window only -- gated on `compactHeader`,
+          never `embedded` (CLAUDE.md's hard rule: FullWindow also passes
+          `embedded`, so overloading it would silently change every current
+          caller). Sits above the tab swap panel so it survives tab switches. */}
+      {!compactHeader && <DailyNoteStrip onOpenNote={onOpenNote} />}
 
       <div key={tab} className="seg-swap-panel" style={{ "--swap-dir": swapDir } as CSSProperties}>
       {tab === "inbox" && (

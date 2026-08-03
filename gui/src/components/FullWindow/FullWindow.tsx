@@ -5,7 +5,6 @@ import LookPanel from "../LookPanel";
 import SettingsPanel from "../SettingsPanel";
 import DashboardView from "./DashboardView";
 import LibraryView from "./LibraryView";
-import TodayView from "./TodayView";
 import HistoryView from "./HistoryView";
 import { railSliderFromElement } from "../../lib/railSelection";
 import { MenuIcon, DashboardIcon, RefreshIcon, ClockIcon } from "../PillMenu/icons";
@@ -30,9 +29,9 @@ interface LookChatHook {
   setIgnoreHistory: (enabled: boolean) => void;
 }
 
-type MainView = "dashboard" | "today" | "look" | "library" | "history";
+type MainView = "dashboard" | "look" | "library" | "history";
 type RailView = MainView | "settings" | "inbox";
-const MAIN_VIEWS: MainView[] = ["dashboard", "today", "look", "library", "history"];
+const MAIN_VIEWS: MainView[] = ["dashboard", "look", "library", "history"];
 // ISS-022: the folder-panel nav label is "Vault" everywhere — was "Library"
 // here vs "Vault" in Capsule/Minimal mode. SP3 Task 8: the container's
 // sub-tabs are now Projects/Trash (the standalone Tags page and the old
@@ -43,10 +42,12 @@ const MAIN_VIEWS: MainView[] = ["dashboard", "today", "look", "library", "histor
 // carrying any stats content once s130 pulled ProjectBar/DaySparkline out of
 // LibraryView. FR-22: the sub-tab label below is "Notes", not "Projects" —
 // "Projects" now names exactly one thing on this screen, ProjectsView's own
-// Projects|Tags toggle.
+// Projects|Tags toggle. Task 3: "Today" is gone — its daily-note card moved
+// into Inbox (a strip, full-window only); its Reminders/Scratchpad cards were
+// deleted outright, both already duplicated by Inbox's own Reminders tab and
+// header count.
 const TITLES: Record<RailView, [string, string]> = {
   dashboard: ["Dashboard", "capture · recent · inbox"],
-  today:     ["Today", "agenda · daily note"],
   look:      ["Look", "search · chat over vault"],
   library:   ["Vault", "projects · tags · notes"],
   history:   ["History", "daily rhythm · by project"],
@@ -253,7 +254,7 @@ export default function FullWindow(props: FullWindowProps) {
                 aria-label={TITLES[v][0]}
                 aria-pressed={view === v}
               >
-                {v === "dashboard" ? <DashboardIcon size={18} /> : v === "today" ? <MenuIcon target="today" size={18} /> : v === "look" ? <MenuIcon target="search" size={18} /> : v === "library" ? <MenuIcon target="vault" size={18} /> : <ClockIcon size={18} />}
+                {v === "dashboard" ? <DashboardIcon size={18} /> : v === "look" ? <MenuIcon target="search" size={18} /> : v === "library" ? <MenuIcon target="vault" size={18} /> : <ClockIcon size={18} />}
               </button>
             ))}
           </div>
@@ -354,11 +355,6 @@ export default function FullWindow(props: FullWindowProps) {
             />
           </div>
         )}
-        {view === "today" && (
-          <div key="today" className="fw-view-panel">
-            <TodayView visible onOpenNote={setEditorPath} />
-          </div>
-        )}
         {view === "look" && (
           <div key="look" className="fw-view-panel">
             <LookPanel
@@ -387,7 +383,7 @@ export default function FullWindow(props: FullWindowProps) {
         )}
         {view === "inbox" && (
           <div key={`inbox-${inboxTab}`} className="fw-view-panel">
-            <InboxPanel visible embedded initialTab={inboxTab} onClose={() => setView("dashboard")} onCountChange={props.onInboxCountChange} />
+            <InboxPanel visible embedded initialTab={inboxTab} onClose={() => setView("dashboard")} onCountChange={props.onInboxCountChange} onOpenNote={setEditorPath} />
           </div>
         )}
         {view === "settings" && (

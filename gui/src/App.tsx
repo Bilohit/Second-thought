@@ -215,7 +215,7 @@ function getInitialSelectedMonitorId(): string | null {
 
 // ── View ───────────────────────────────────────────────────────────────────
 
-type View = "capture" | "settings" | "vault" | "inbox" | "stats" | "look" | "today" | "note";
+type View = "capture" | "settings" | "vault" | "inbox" | "stats" | "look" | "note";
 
 // Legacy pill-menu targets → FullWindow rail views (branch C purge).
 // FR-07: the alias table itself now lives in lib/viewRouting.ts (with its

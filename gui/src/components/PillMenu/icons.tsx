@@ -21,13 +21,14 @@ export const MENU_LABELS: Record<MenuTarget, string> = {
 export const NAV_TARGETS: MenuTarget[] = ["search", "vault", "settings", "inbox", "stats", "newnote"];
 export const ALL_TARGETS: MenuTarget[] = NAV_TARGETS;
 
-// FullWindow.tsx's own rail independently renders a "Today" nav button and a
-// bottom "Hide" button via MenuIcon — unrelated to the pill menu's 6-item cap
-// (s135) but sharing this glyph set. Both go away when Task 3 merges Today
-// into Inbox and Task 8 deletes the rail's Hide button; until then MenuIcon
-// accepts this wider IconTarget so those two rail glyphs keep rendering
-// without re-admitting "today"/"hide" into MenuTarget/ALL_TARGETS.
-export type IconTarget = MenuTarget | "today" | "hide";
+// FullWindow.tsx's own rail independently renders a bottom "Hide" button via
+// MenuIcon — unrelated to the pill menu's 6-item cap (s135) but sharing this
+// glyph set. It goes away when Task 8 deletes the rail's Hide button; until
+// then MenuIcon accepts this wider IconTarget so that rail glyph keeps
+// rendering without re-admitting "hide" into MenuTarget/ALL_TARGETS. Task 3
+// merged Today into Inbox and removed FullWindow's "Today" rail button, so
+// "today" is gone from here too.
+export type IconTarget = MenuTarget | "hide";
 
 export function MenuIcon({ target, size = 16 }: { target: IconTarget; size?: number }): JSX.Element {
   const common = {
@@ -84,15 +85,6 @@ export function MenuIcon({ target, size = 16 }: { target: IconTarget; size?: num
       // Reuse PlusIcon's glyph rather than drawing a new path — see the
       // repo's icon rule (never a one-off SVG when an export exists).
       return <PlusIcon size={size} />;
-    case "today":
-      // Calendar — FullWindow's rail-only "Today" nav button (matches the
-      // phone tab's CalendarIcon). Not a MenuTarget any more; see IconTarget.
-      return (
-        <svg {...common}>
-          <rect x="3" y="4" width="18" height="18" rx="0" />
-          <path d="M3 10h18M8 2v4M16 2v4" />
-        </svg>
-      );
     case "hide":
       // Eye-off — FullWindow's rail-only bottom "Hide" button (ISS-038 — the
       // prior download-arrow glyph read as "save"). Not a MenuTarget any
