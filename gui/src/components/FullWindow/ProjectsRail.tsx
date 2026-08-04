@@ -42,19 +42,18 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent } from "react";
 import { createProject, type ProjectEntry } from "../../lib/api";
-import { displayProject, isValidProjectName, tagDisplayLabel, type FlatTag } from "../../lib/projectsView";
+import { displayProject, INVALID_NAME_MESSAGE, isValidProjectName, tagDisplayLabel, type FlatTag } from "../../lib/projectsView";
 import { slideDirection } from "../../lib/segmentedToggle";
 import SegmentedToggle from "../ui/SegmentedToggle";
 import { DashboardIcon, ListIcon, PlusIcon, CheckIcon, CloseIcon } from "../PillMenu/icons";
 
-/** Generic-enough client-side message for an invalid name — the real
- *  authority is the server (`vault_admin.py`'s create-project route, backed
- *  by the identical `_VALID_NAME` regex `isValidProjectName` mirrors); this
- *  only saves a round trip for the common case (spaces, a leading symbol).
- *  A collision ("already exists") is NOT checked client-side — only the
- *  server's live registry can know that — so it always surfaces through the
- *  catch block's server error message instead. */
-const INVALID_NAME_MESSAGE = "Letters, numbers, - or _ only, starting with a letter or number.";
+/* INVALID_NAME_MESSAGE moved to lib/projectsView.ts (beside the regex it explains) when the
+ * folder import gained rename rows that must show the identical wording. The real authority
+ * is still the server (`vault_admin.py`'s create-project route, backed by the identical
+ * `_VALID_NAME` regex `isValidProjectName` mirrors); the client check only saves a round trip
+ * for the common case (spaces, a leading symbol). A collision ("already exists") is NOT
+ * checked client-side — only the server's live registry can know that — so it always surfaces
+ * through the catch block's server error message instead. */
 
 /** The rail's own two-position view mode — distinct from any note SortMode.
  *  Exactly two positions on every shell (spec §4.1). */

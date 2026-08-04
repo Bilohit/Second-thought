@@ -686,6 +686,58 @@ export async function applyTidy(): Promise<TidyApplyResult> {
   return r.json();
 }
 
+/** One folder the import could turn into a project. `suggested` is a SUGGESTION only --
+ *  for an ineligible name it is the sanitised form, or "" when nothing usable survives,
+ *  and it is never applied without the user seeing it. `phone_count` is disclosure only
+ *  (the row reads "includes N notes written on your phone"); it never filters anything. */
+export interface FolderImportCandidate {
+  folder: string;
+  suggested: string;
+  valid: boolean;
+  existing: boolean;
+  count: number;
+  phone_count: number;
+}
+
+export interface FolderImportPreview {
+  folders: FolderImportCandidate[];
+  count: number;
+}
+
+/** FR-23 Option C: every top-level folder that could become a project, with the number of
+ *  untagged notes inside it. Read-only -- no registry write, no body byte touched. */
+export async function getFolderImportPreview(): Promise<FolderImportPreview> {
+  const r = await fetch(`${BASE}/vault/folder-import/preview`, { headers: await authHeaders() });
+  await assertOk(r, "Failed to preview folder import");
+  const body = await r.json();
+  return {
+    folders: arrayField<FolderImportCandidate>(body, "folders"),
+    count: typeof body?.count === "number" ? body.count : 0,
+  };
+}
+
+export interface FolderImportResult {
+  tagged: number;
+  registered: string[];
+  skipped: { folder: string; reason: string }[];
+}
+
+/** FR-23 Option C: writes `#project@<name>` into the notes of the folders the user ticked,
+ *  and registers each name. THE ONLY CALL IN THIS CLIENT THAT EDITS A NOTE BODY OUTSIDE THE
+ *  EDITOR -- only ever call it after the user has seen `getFolderImportPreview()`'s list and
+ *  confirmed a specific selection. Files are never moved; re-running it is a no-op. */
+export async function applyFolderImport(
+  folders: { folder: string; name: string }[],
+): Promise<FolderImportResult> {
+  const r = await fetch(`${BASE}/vault/folder-import/apply`, {
+    method: "POST",
+    headers: await authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ folders }),
+  });
+  await assertOk(r, "Failed to import folder structure");
+  return r.json();
+}
+
 /** A registry entry from GET /vault/projects (vault_admin.py's `list_projects`,
  *  vault_admin.py:253-270) -- distinct from `VaultFolder`/`GET /vault/folders`,
  *  which lists what's on disk (including non-project folders like

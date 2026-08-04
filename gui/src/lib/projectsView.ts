@@ -95,6 +95,13 @@ export function isValidProjectName(name: string): boolean {
   return VALID_PROJECT_NAME.test(name);
 }
 
+/** The one wording for a rejected project name, shared by every surface that can produce
+ *  one — the rail's inline create field and the folder import's rename rows. It lives
+ *  beside the regex it explains so the two can never drift into describing different
+ *  rules to the user. */
+export const INVALID_NAME_MESSAGE =
+  "Letters, numbers, - or _ only, starting with a letter or number.";
+
 /** Index's internal sentinel for "no project" is the literal string
  *  "_loose" — no surface may ever render that token to the user. Maps it
  *  (and a null/empty project, which means the same thing: an unfiled row)
