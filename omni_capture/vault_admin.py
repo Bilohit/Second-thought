@@ -504,6 +504,105 @@ async def apply_tidy_endpoint():
     return {"ok": True, "moved": result.moved, "skipped": result.skipped, "removed_dirs": result.removed_dirs}
 
 
+# -- Folder-structure import (FR-23 Option C) -----------------------------------
+
+class FolderImportSelection(BaseModel):
+    folder: str
+    name: str
+
+
+class FolderImportRequest(BaseModel):
+    folders: list[FolderImportSelection]
+
+
+@router.get("/vault/folder-import/preview")
+async def folder_import_preview_endpoint():
+    """FR-23 Option C: every top-level folder that could become a project, with the
+    number of untagged notes inside it. Read-only -- no registry write, no body byte
+    touched. The GUI shows this as a per-folder checklist before anything is applied.
+
+    `phone_count` is DISCLOSURE ONLY (s140, user-affirmed): the import tags every untagged
+    note regardless of who wrote it, and the row says "includes N notes written on your
+    phone" so the count is on screen at the moment of consent. It gates nothing."""
+    import folder_import
+    root = _srv()._get_vault_root()
+    reg = project_registry.load(root)
+    plan = folder_import.plan_import(root, reg)
+    return {
+        "folders": [
+            {"folder": c.folder, "suggested": c.suggested, "valid": c.valid,
+             "existing": c.existing, "count": len(c.note_paths), "phone_count": c.phone_count}
+            for c in plan
+        ],
+        "count": sum(len(c.note_paths) for c in plan),
+    }
+
+
+@router.post("/vault/folder-import/apply")
+async def folder_import_apply_endpoint(req: FolderImportRequest):
+    """FR-23 Option C: write `#project@<name>` into the notes of the folders the user
+    ticked, and register each name.
+
+    THE ONLY ROUTE IN THIS PRODUCT THAT EDITS A NOTE BODY OUTSIDE THE EDITOR. It runs
+    only from an explicit per-folder confirmation and never as a side effect of anything
+    else. Both writes are required, not one: `resolve_project` (project_registry.py:183)
+    resolves a tag only when the registry also holds the name, so a tag alone would leave
+    the note reading loose and the tidy pass would move it anyway.
+
+    Idempotent by construction: the plan is recomputed from disk HERE, never carried over
+    from the preview, so a note tagged by a previous call is no longer a candidate and a
+    second identical call tags nothing.
+
+    An unusable name is REFUSED, never silently sanitised -- the folder is reported in
+    `skipped` and its notes are left byte-identical, because guessing a project name is
+    the user's answer to give, not the product's.
+
+    Files are NOT moved. This makes the folders legitimate; project_tidy stays the only
+    code that re-paths a note."""
+    import folder_import
+    from atomic_io import atomic_write_verbatim
+    from note_editor import _reindex
+    from note_model import parse_note, serialize_note
+
+    root = _srv()._get_vault_root()
+    plan = {c.folder: c for c in folder_import.plan_import(root, project_registry.load(root))}
+    tagged = 0
+    registered: list[str] = []
+    skipped: list[dict] = []
+
+    for sel in req.folders:
+        candidate = plan.get(sel.folder)
+        if candidate is None:
+            skipped.append({"folder": sel.folder, "reason": "not-a-candidate"})
+            continue
+        if not projects.is_valid_project_name(sel.name):
+            skipped.append({"folder": sel.folder, "reason": "invalid-name"})
+            continue
+
+        # `setdefault`, not `__setitem__`: a folder whose name already exists JOINS that
+        # project (resolved decision 2), and re-registering would reset its created/description.
+        # The default-arg binding is what stops the lambda capturing the loop variable late.
+        project_registry.update(
+            root, lambda r, n=sel.name: r["projects"].setdefault(n, new_project_entry())
+        )
+        registered.append(sel.name)
+        reg = project_registry.load(root)
+
+        for path in candidate.note_paths:
+            note = parse_note(path.read_text(encoding="utf-8"))
+            note.body = folder_import.tag_line_insert(note.body, sel.name)
+            # serialize_note recomputes the derived `project:` line from the NEW body via
+            # resolve_project (note_model.py:216), so the cache can never disagree with the
+            # tag we just wrote. atomic_write_verbatim, not atomic_write_text: this is a note
+            # body, i.e. user-owned bytes, and only the verbatim shape disables newline
+            # translation (atomic_io.py:12-18 -- body-sacred).
+            atomic_write_verbatim(path, serialize_note(note, reg))
+            _reindex(root, path, "folder import")
+            tagged += 1
+
+    return {"ok": True, "tagged": tagged, "registered": registered, "skipped": skipped}
+
+
 @router.get("/vault/folders/{name}/files")
 async def list_folder_files(name: str):
     """Task 2.6: also carries `hub_name`/`name_clash` per note -- the SAME

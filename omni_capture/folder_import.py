@@ -34,6 +34,18 @@ class FolderCandidate:
     valid: bool
     existing: bool
     note_paths: list[Path] = field(default_factory=list)
+    # DISCLOSURE ONLY (s140, user-affirmed): how many of `note_paths` were authored on the
+    # phone. The import tags every untagged note regardless of origin -- this number exists
+    # so the row can say "includes N notes written on your phone" at the moment of consent.
+    # It must never filter, skip or gate anything.
+    phone_count: int = 0
+
+
+def _effective_origin(note) -> str:
+    """The note's authoring device, under the SAME rule the desktop enrichment pass uses
+    (mobile_sync_agent.py:1462-1464). A legacy note with no `origin_device` is phone-origin
+    only if it carries the phone authorship marker; otherwise it is a desktop-vault note."""
+    return note.origin_device or ("phone" if note.enrich_source == "phone-heuristic" else "desktop")
 
 
 def sanitise_name(folder: str) -> str:
@@ -72,6 +84,7 @@ def plan_import(root: Path, reg: dict) -> list[FolderCandidate]:
         if not entry.is_dir() or entry.name.startswith(".") or entry.name in _EXEMPT:
             continue
         notes = []
+        phone_count = 0
         for path in sorted(entry.iterdir()):
             if not (path.is_file() and path.suffix == ".md"):
                 continue
@@ -85,9 +98,11 @@ def plan_import(root: Path, reg: dict) -> list[FolderCandidate]:
             # arbitrary unknown keys verbatim (note_model.py preserves them byte-for-byte), so
             # scanning the whole file risks a false "already tagged" positive from a frontmatter
             # value -- strip frontmatter via the shared codec first.
-            body = parse_note(text).body
-            if parse_project_tag(body) is None:
+            note = parse_note(text)
+            if parse_project_tag(note.body) is None:
                 notes.append(path)
+                if _effective_origin(note) == "phone":
+                    phone_count += 1
         if not notes:
             continue
         valid = is_valid_project_name(entry.name)
@@ -97,5 +112,6 @@ def plan_import(root: Path, reg: dict) -> list[FolderCandidate]:
             valid=valid,
             existing=entry.name in registered,
             note_paths=notes,
+            phone_count=phone_count,
         ))
     return out

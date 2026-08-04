@@ -61,6 +61,28 @@ def test_frontmatter_holding_a_project_shaped_string_is_not_read_as_tagged(tmp_p
     assert [p.name for p in plan[0].note_paths] == ["a.md"]
 
 
+def test_plan_counts_phone_authored_notes_for_disclosure_without_excluding_them(tmp_path):
+    """s140: phone-origin notes ARE imported (user-affirmed); the row only DISCLOSES how many.
+    The effective-origin rule is the enrichment pass's own (mobile_sync_agent.py:1462-1464):
+    a legacy note with no `origin_device` is phone-origin only if it carries the phone
+    authorship marker `enrich_source: phone-heuristic`."""
+    (tmp_path / "Work").mkdir()
+    (tmp_path / "Work" / "a.md").write_text(
+        "---\nid: 1\norigin_device: phone\n---\n# A\n", encoding="utf-8")
+    (tmp_path / "Work" / "b.md").write_text(
+        "---\nid: 2\nenrich_source: phone-heuristic\n---\n# B\n", encoding="utf-8")
+    (tmp_path / "Work" / "c.md").write_text(
+        "---\nid: 3\norigin_device: desktop\n---\n# C\n", encoding="utf-8")
+    # No origin_device and no phone marker -> desktop, never counted as phone.
+    (tmp_path / "Work" / "d.md").write_text("---\nid: 4\n---\n# D\n", encoding="utf-8")
+
+    plan = folder_import.plan_import(tmp_path, {"schema": 1, "projects": {}})
+
+    assert plan[0].phone_count == 2
+    # Disclosure only: every note is still a candidate, phone-authored or not.
+    assert [p.name for p in plan[0].note_paths] == ["a.md", "b.md", "c.md", "d.md"]
+
+
 def test_plan_reports_validity_suggestion_and_existing_project(tmp_path):
     for folder in ("My Notes", "Recipes"):
         (tmp_path / folder).mkdir()
