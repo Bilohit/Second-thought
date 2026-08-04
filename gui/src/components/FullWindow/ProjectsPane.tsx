@@ -107,6 +107,7 @@ import {
   type SortMode,
 } from "../../lib/projectsView";
 import { LOOSE_PROJECT_ID, type RailMode } from "./ProjectsRail";
+import { useFolderImport, FolderImportOffer, FolderImportChecklist } from "../FolderImportPanel";
 import {
   PencilIcon, TrashIcon, CheckIcon, CloseIcon, FileIcon, ChevronRightIcon, ChevronLeftIcon,
   SortNewestIcon, SortOldestIcon, SortEditedIcon, CycleIcon, CopyIcon,
@@ -224,6 +225,10 @@ export default function ProjectsPane({
   const [rows, setRows] = useState<SearchResult[]>([]);
   const [notesLoading, setNotesLoading] = useState(false);
   const [sortMode, setSortMode] = useState<SortMode>("newest");
+  // FR-32: bumped once after a successful folder import so this fetch re-runs -- the
+  // import can tag notes in folders other than the current selection, the same way
+  // VaultManager's `load()` refreshes its own folder list after the same event.
+  const [noteRefreshNonce, setNoteRefreshNonce] = useState(0);
   // Pager (spec §5.5.1, Task 9): 1-indexed, reset to page 1 whenever the
   // selection changes below — a stale page 3 left over from a previous,
   // larger selection must never survive onto a fresh fetch.
@@ -270,7 +275,7 @@ export default function ProjectsPane({
       .catch(() => { if (!cancelled) setRows([]); })
       .finally(() => { if (!cancelled) setNotesLoading(false); });
     return () => { cancelled = true; };
-  }, [isTagMode, activeKey]);
+  }, [isTagMode, activeKey, noteRefreshNonce]);
 
   // Memoized so identity only changes when `rows`/`sortMode` actually do —
   // the FLIP effect below is keyed on this reference, and re-sorting on
@@ -395,6 +400,13 @@ export default function ProjectsPane({
   // strip only ever appears with at least one real move).
   const [tidyPreview, setTidyPreview] = useState<TidyMove[] | null>(null);
   const [tidyBusy, setTidyBusy] = useState(false);
+  // FR-32: the "keep my folders" offer (FR-23 Option C) belongs in THIS strip too --
+  // shared hook/components with VaultManager's identical strip (FolderImportPanel.tsx),
+  // because wiring it into only one host is the exact bug this fixes.
+  const folderImport = useFolderImport({
+    onApplied: () => { setNoteRefreshNonce((n) => n + 1); checkTidyPreview(); },
+    onError: setMutationError,
+  });
   const pendingSaveRef = useRef<{ name: string; value: string; timer: ReturnType<typeof setTimeout> } | null>(null);
   // FR-04/FR-12: which note row (by path) is showing its inline delete
   // confirm strip, or null. Board (Fork 1, shared across all three create
@@ -473,10 +485,15 @@ export default function ProjectsPane({
     getTidyPreview()
       .then((preview) => setTidyPreview(preview.count > 0 ? preview.moves : null))
       .catch(() => { /* best-effort; see comment above */ });
+    // FR-32: the same moment is the only honest place to offer the OTHER repair (FR-23
+    // Option C) -- see FolderImportPanel.tsx's own doc on why this probe is best-effort
+    // but never silent.
+    folderImport.probe();
   }
 
   function declineTidy() {
     setTidyPreview(null);
+    folderImport.close();
   }
 
   function confirmTidy() {
@@ -759,11 +776,34 @@ export default function ProjectsPane({
             <button className="pp-ghost" style={ghostBtnStyle} onClick={declineTidy} disabled={tidyBusy}>
               Not now
             </button>
+            {/* FR-23 Option C / FR-32: the other answer to the same situation -- shared with
+                VaultManager's identical strip (FolderImportPanel.tsx). */}
+            <FolderImportOffer
+              offer={folderImport.offer}
+              checklistOpen={folderImport.rows !== null}
+              busy={tidyBusy || folderImport.busy}
+              onOpen={folderImport.open}
+              variant="strip"
+            />
             <button className="pp-ghost" style={tidyPrimaryBtnStyle} onClick={confirmTidy} disabled={tidyBusy}>
               {tidyBusy ? "Moving…" : `Move ${tidyPreview.length === 1 ? "file" : "files"}`}
             </button>
           </div>
         </div>
+      )}
+
+      {/* FR-23 Option C / FR-32: the per-folder import checklist, shared with
+          VaultManager's identical checklist (FolderImportPanel.tsx). */}
+      {folderImport.rows && (
+        <FolderImportChecklist
+          rows={folderImport.rows}
+          busy={folderImport.busy}
+          onToggle={folderImport.toggleRow}
+          onRename={folderImport.renameRow}
+          onCancel={folderImport.close}
+          onApply={folderImport.apply}
+          variant="strip"
+        />
       )}
 
       <div style={notesHeadStyle}>

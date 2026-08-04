@@ -34,24 +34,15 @@ import {
   moveToTrash,
   getTidyPreview,
   applyTidy,
-  getFolderImportPreview,
-  applyFolderImport,
   type VaultFolder,
   type VaultFile,
   type ProvisionalItem,
   type TidyMove,
 } from "../lib/api";
-import {
-  rowsFrom,
-  rename,
-  toggle,
-  selection,
-  selectedNoteCount,
-  type ImportRow,
-} from "../lib/folderImport";
 import { mergeProvisional, type CanonicalNoteRow } from "../lib/provisional";
 import { middleEllipsis } from "../lib/middleEllipsis";
-import { describeTidyMove, INVALID_NAME_MESSAGE, isValidProjectName } from "../lib/projectsView";
+import { describeTidyMove } from "../lib/projectsView";
+import { useFolderImport, FolderImportOffer, FolderImportChecklist } from "./FolderImportPanel";
 import {
   PANEL_FRAME, PANEL_HEADER, panelTransform,
   INPUT_STYLE, BTN_GHOST, ROW_CARD, ROW_DIVIDER,
@@ -753,13 +744,19 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
   // drill-out or a folder-list refresh. `null` = nothing known pending.
   const [tidyPreview, setTidyPreview] = useState<TidyMove[] | null>(null);
   const [tidyBusy, setTidyBusy] = useState(false);
-  // FR-23 Option C: the folder-structure import. `importOffer` is how many untagged notes
-  // sit in named folders (0 = nothing to offer, so no button); `importRows` is non-null
-  // only while the user has the per-folder checklist open. Kept beside the tidy state
-  // deliberately -- they are two answers to the same situation and share one strip.
-  const [importOffer, setImportOffer] = useState(0);
-  const [importRows, setImportRows] = useState<ImportRow[] | null>(null);
-  const [importBusy, setImportBusy] = useState(false);
+  // FR-32: the folder-structure import (FR-23 Option C) is now one shared hook
+  // (FolderImportPanel.tsx) so this state/logic can never again exist in only one of the
+  // two project-tidy hosts -- that was the bug. Kept beside the tidy state deliberately --
+  // they are two answers to the same situation and share one strip.
+  const folderImport = useFolderImport({
+    onApplied: async () => {
+      await load();
+      // The tags just written are exactly what the pending tidy moves were missing, so the
+      // tidy plan has to be recomputed -- most of it should now be empty.
+      checkTidyPreview();
+    },
+    onError: setActionError,
+  });
   // F-1: bulk conflict badge set (one request instead of one per row).
   const [conflictPaths, setConflictPaths] = useState<Set<string>>(new Set());
   // F-5: local-only sync-ignore set (vault-relative posix paths).
@@ -944,53 +941,14 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
     getTidyPreview()
       .then((preview) => setTidyPreview(preview.count > 0 ? preview.moves : null))
       .catch(() => { /* best-effort; see comment above */ });
-    // FR-23 Option C: the same moment is the only honest place to offer the OTHER repair.
-    // The tidy strip is telling the user their tree is about to flatten; "keep the folders
-    // and tag them instead" belongs in that sentence, not in a settings row they never open.
-    // Best-effort like the check above -- a failed probe just means no offer is shown.
-    getFolderImportPreview()
-      .then((preview) => setImportOffer(preview.count))
-      // Best-effort, but NEVER silent: a swallowed failure here makes the import button
-      // simply not appear, which is indistinguishable from "nothing to import" -- s140 lost
-      // a live QA round to exactly that. The offer is still optional; the diagnosis is not.
-      .catch((e) => console.error("[VaultManager] folder-import preview failed:", e));
+    // FR-23 Option C / FR-32: the same moment is the only honest place to offer the OTHER
+    // repair. The tidy strip is telling the user their tree is about to flatten; "keep the
+    // folders and tag them instead" belongs in that sentence, not in a settings row they
+    // never open. `folderImport.probe()` is best-effort but never silent -- see its own doc.
+    folderImport.probe();
   };
 
-  const handleDeclineTidy = () => { setTidyPreview(null); setImportRows(null); };
-
-  // FR-23 Option C. Re-fetches rather than reusing the count from `checkTidyPreview` --
-  // time has passed and the vault may have changed underneath, and this list is what the
-  // user is about to consent to.
-  const handleOpenImport = async () => {
-    setActionError(null);
-    try {
-      const preview = await getFolderImportPreview();
-      setImportRows(rowsFrom(preview.folders));
-    } catch (e) {
-      setActionError(e instanceof Error ? e.message : "Failed to read folders");
-    }
-  };
-
-  // THE ONLY PLACE THIS CLIENT WRITES A NOTE BODY OUTSIDE THE EDITOR. Runs only from the
-  // explicit per-folder confirmation below, never automatically. Files are not moved.
-  const handleApplyImport = async () => {
-    if (!importRows) return;
-    setImportBusy(true);
-    setActionError(null);
-    try {
-      await applyFolderImport(selection(importRows));
-      setImportRows(null);
-      setImportOffer(0);
-      await load();
-      // The tags just written are exactly what the pending moves were missing, so the
-      // tidy plan has to be recomputed -- most of it should now be empty.
-      checkTidyPreview();
-    } catch (e) {
-      setActionError(e instanceof Error ? e.message : "Failed to import folder structure");
-    } finally {
-      setImportBusy(false);
-    }
-  };
+  const handleDeclineTidy = () => { setTidyPreview(null); folderImport.close(); };
 
   const handleApplyTidy = async () => {
     setTidyBusy(true);
@@ -1314,19 +1272,16 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
               >
                 Not now
               </button>
-              {/* FR-23 Option C: the other answer to the same situation -- keep the tree and
-                  make it legitimate. Only offered when there is actually something to import
-                  (importOffer > 0) and the checklist is not already open. */}
-              {importOffer > 0 && importRows === null && (
-                <button
-                  onClick={handleOpenImport}
-                  disabled={tidyBusy || importBusy}
-                  className="btn-hover"
-                  style={{ ...BTN_GHOST, color: "var(--text-1)", fontSize: 12, padding: "5px 10px" }}
-                >
-                  Keep my folders — add the tags
-                </button>
-              )}
+              {/* FR-23 Option C / FR-32: the other answer to the same situation -- keep the
+                  tree and make it legitimate. Shared with ProjectsPane's identical strip
+                  (FolderImportPanel.tsx) -- gates itself on offer>0 && checklist-not-open. */}
+              <FolderImportOffer
+                offer={folderImport.offer}
+                checklistOpen={folderImport.rows !== null}
+                busy={tidyBusy || folderImport.busy}
+                onOpen={folderImport.open}
+                variant="card"
+              />
               <button
                 onClick={handleApplyTidy}
                 disabled={tidyBusy}
@@ -1342,103 +1297,18 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
           </div>
         )}
 
-        {/* FR-23 Option C: the per-folder import checklist. The folder is the unit of
-            consent, the count is stated in the button, and an unusable folder name gets an
-            editable field prefilled with a SUGGESTION rather than being a dead end or being
-            silently renamed. Nothing here is applied without a tick and a click. */}
-        {importRows && (
-          <div
-            style={{
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-              padding: "10px 12px",
-              display: "flex",
-              flexDirection: "column",
-              gap: 8,
-            }}
-          >
-            <span style={{ fontSize: 12, color: "var(--text-2)" }}>
-              {"Each folder becomes a project by adding one "}
-              <strong style={{ color: "var(--text-1)" }}>#project@name</strong>
-              {" line to the notes inside it. Nothing moves and nothing is deleted."}
-            </span>
-            <div
-              style={{
-                display: "flex", flexDirection: "column", gap: 2, maxHeight: 160, overflowY: "auto",
-                border: "1px solid var(--border)", background: "var(--bg)", padding: "4px 8px",
-              }}
-            >
-              {importRows.length === 0 && (
-                <span style={{ fontSize: 11, color: "var(--text-3)", padding: "4px 0" }}>
-                  No folders left to import — every note in a named folder already carries a project tag.
-                </span>
-              )}
-              {importRows.map((row) => (
-                <div
-                  key={row.folder}
-                  style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, padding: "3px 0" }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={row.checked}
-                    disabled={!row.valid || importBusy}
-                    onChange={() => setImportRows((rows) => (rows ? toggle(rows, row.folder) : rows))}
-                    style={{ flex: "0 0 auto", accentColor: "var(--text-1)" }}
-                  />
-                  <span style={{
-                    flex: "0 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis",
-                    whiteSpace: "nowrap", color: "var(--text-1)",
-                  }}>
-                    {row.folder}
-                  </span>
-                  {!isValidProjectName(row.folder) && (
-                    <input
-                      value={row.name}
-                      disabled={importBusy}
-                      placeholder="project name"
-                      onChange={(e) =>
-                        setImportRows((rows) => (rows ? rename(rows, row.folder, e.target.value) : rows))
-                      }
-                      style={{
-                        flex: "0 1 130px", minWidth: 0, fontSize: 11, padding: "2px 6px",
-                        fontFamily: "inherit", background: "var(--surface-2)", color: "var(--text-1)",
-                        border: `1px solid ${row.valid ? "var(--border)" : "var(--red)"}`,
-                        borderRadius: "var(--radius)",
-                      }}
-                    />
-                  )}
-                  <span style={{ marginLeft: "auto", flex: "0 0 auto", color: "var(--text-3)", textAlign: "right" }}>
-                    {row.count} {row.count === 1 ? "note" : "notes"}
-                    {row.phoneCount > 0 && ` · includes ${row.phoneCount} from your phone`}
-                    {row.existing && " · joins existing project"}
-                    {!row.valid && ` · ${INVALID_NAME_MESSAGE}`}
-                  </span>
-                </div>
-              ))}
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
-              <button
-                onClick={() => setImportRows(null)}
-                disabled={importBusy}
-                className="btn-hover"
-                style={{ ...BTN_GHOST, color: "var(--text-2)", fontSize: 12, padding: "5px 10px" }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleApplyImport}
-                disabled={importBusy || selectedNoteCount(importRows) === 0}
-                className="btn-hover"
-                style={{
-                  padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: "var(--radius)",
-                  border: "1px solid var(--text-1)", background: "var(--bg)", color: "var(--text-1)", cursor: "pointer",
-                }}
-              >
-                {importBusy ? "Adding…" : `Add tags to ${selectedNoteCount(importRows)} notes`}
-              </button>
-            </div>
-          </div>
+        {/* FR-23 Option C / FR-32: the per-folder import checklist, shared with
+            ProjectsPane's identical checklist (FolderImportPanel.tsx). */}
+        {folderImport.rows && (
+          <FolderImportChecklist
+            rows={folderImport.rows}
+            busy={folderImport.busy}
+            onToggle={folderImport.toggleRow}
+            onRename={folderImport.renameRow}
+            onCancel={folderImport.close}
+            onApply={folderImport.apply}
+            variant="card"
+          />
         )}
 
         {/* Folder list */}

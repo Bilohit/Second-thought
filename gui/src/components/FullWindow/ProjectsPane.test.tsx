@@ -31,6 +31,8 @@ vi.mock("../../lib/api", async (importOriginal) => {
     moveToTrash: vi.fn(),
     getTidyPreview: vi.fn(),
     applyTidy: vi.fn(),
+    getFolderImportPreview: vi.fn(),
+    applyFolderImport: vi.fn(),
   };
 });
 
@@ -65,6 +67,8 @@ beforeEach(() => {
   vi.mocked(api.moveToTrash).mockResolvedValue({ ok: true, filename: "a.md", trashed_path: "_trash/a.md" });
   vi.mocked(api.getTidyPreview).mockResolvedValue({ moves: [], count: 0 });
   vi.mocked(api.applyTidy).mockResolvedValue({ moved: 0, skipped: 0, removed_dirs: 0 });
+  vi.mocked(api.getFolderImportPreview).mockResolvedValue({ folders: [], count: 0 });
+  vi.mocked(api.applyFolderImport).mockResolvedValue({ tagged: 0, registered: [], skipped: [] });
   vi.mocked(clipboard.writeText).mockResolvedValue(undefined);
 });
 
@@ -464,6 +468,42 @@ describe("ProjectsPane — FR-23 Option A: project-tidy confirm/preview", () => 
     fireEvent.keyDown(input, { key: "Enter" });
     await vi.waitFor(() => expect(api.renameProject).toHaveBeenCalled());
     await screen.findByText("a.md");
+  });
+
+  it("FR-32 regression: a delete ALSO probes the folder-import offer, not just tidy -- this is the exact call ProjectsPane's own tidy-preview check used to skip, so the 'Keep my folders' offer never rendered here even though it rendered in VaultManager for the identical action", async () => {
+    renderPane({ projects: [project({ name: "trip-japan" })], selectedId: "trip-japan" });
+    await screen.findByText("trip-japan");
+    fireEvent.click(screen.getByRole("button", { name: "Delete project" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete project only" }));
+    await vi.waitFor(() => expect(api.getTidyPreview).toHaveBeenCalled());
+    await vi.waitFor(() => expect(api.getFolderImportPreview).toHaveBeenCalled());
+  });
+
+  it("FR-32 regression: a rename also probes the folder-import offer", async () => {
+    renderPane({ projects: [project({ name: "onboarding-v2" })], selectedId: "onboarding-v2" });
+    await screen.findByText("onboarding-v2");
+    fireEvent.click(screen.getByRole("button", { name: "Rename project" }));
+    const input = screen.getByLabelText("New project name");
+    fireEvent.change(input, { target: { value: "onboarding-v3" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await vi.waitFor(() => expect(api.renameProject).toHaveBeenCalled());
+    await vi.waitFor(() => expect(api.getFolderImportPreview).toHaveBeenCalled());
+  });
+
+  it("FR-32: when the probe finds something to offer, 'Keep my folders — add the tags' actually renders in THIS pane's tidy strip", async () => {
+    vi.mocked(api.getTidyPreview).mockResolvedValue({
+      moves: [{ from: "personal/diary.md", to: "_loose/diary.md" }],
+      count: 1,
+    });
+    vi.mocked(api.getFolderImportPreview).mockResolvedValue({
+      folders: [{ folder: "recipes", suggested: "recipes", valid: true, existing: false, count: 3, phone_count: 0 }],
+      count: 3,
+    });
+    renderPane({ projects: [project({ name: "trip-japan" })], selectedId: "trip-japan" });
+    await screen.findByText("trip-japan");
+    fireEvent.click(screen.getByRole("button", { name: "Delete project" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete project only" }));
+    expect(await screen.findByRole("button", { name: /Keep my folders/ })).toBeTruthy();
   });
 });
 
