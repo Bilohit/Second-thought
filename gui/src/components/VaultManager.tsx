@@ -950,7 +950,10 @@ export default function VaultManager({ visible, onClose, openResult, onConsumeOp
     // Best-effort like the check above -- a failed probe just means no offer is shown.
     getFolderImportPreview()
       .then((preview) => setImportOffer(preview.count))
-      .catch(() => { /* best-effort */ });
+      // Best-effort, but NEVER silent: a swallowed failure here makes the import button
+      // simply not appear, which is indistinguishable from "nothing to import" -- s140 lost
+      // a live QA round to exactly that. The offer is still optional; the diagnosis is not.
+      .catch((e) => console.error("[VaultManager] folder-import preview failed:", e));
   };
 
   const handleDeclineTidy = () => { setTidyPreview(null); setImportRows(null); };
