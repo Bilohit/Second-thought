@@ -258,12 +258,15 @@ def approve_scratchpad_item(
         stamped_body = body.replace(f"#project@{current}", f"#project@{target_project}")
     else:
         stamped_body = _stamp_project_tag(body, target_project)
-    project = resolve_project(stamped_body, load_registry(vault_root))
+    reg = load_registry(vault_root)
+    project = resolve_project(stamped_body, reg)
 
     # SRV-03: safe_subdir stays on the join even though `note_dir_for` can only return a
-    # registry-eligible name or `_loose` -- defence in depth at the one place every caller
-    # (server, CLI, tests) converges, since this used to be reached by hub-supplied data.
-    dest_dir = safe_subdir(vault_root, note_dir_for(project))
+    # registry-eligible name, a validated `dir` or `_loose` -- defence in depth at the one place
+    # every caller (server, CLI, tests) converges, since this used to be reached by hub-supplied
+    # data. `reg` is passed to note_dir_for too so a project with an OPTIONAL `dir` (contract
+    # §13.1 v3.2) files into its real home rather than a directory named after its tag.
+    dest_dir = safe_subdir(vault_root, note_dir_for(project, reg))
 
     init_vault(vault_root, scratchpad_folder)
     dest_dir.mkdir(parents=True, exist_ok=True)

@@ -555,10 +555,14 @@ async def folder_import_apply_endpoint(req: FolderImportRequest):
 
     An unusable name is REFUSED, never silently sanitised -- the folder is reported in
     `skipped` and its notes are left byte-identical, because guessing a project name is
-    the user's answer to give, not the product's.
+    the user's answer to give, not the product's. A home the registry cannot accept
+    (`unavailable-dir`) is refused the same way, for the same reason.
 
-    Files are NOT moved. This makes the folders legitimate; project_tidy stays the only
-    code that re-paths a note."""
+    Files are NOT moved, and the folder KEEPS ITS OWN NAME: when the ticked folder is not
+    spelled like the project name it becomes the entry's `dir` (contract §13.1 v3.2), so
+    `My Notes/` stays `My Notes/` while its tag is the whitespace-free `#project@My-Notes`.
+    Without that the tidy pass would read the mismatch as mis-filing and drain the folder one
+    note at a time. project_tidy stays the only code that re-paths a note."""
     import folder_import
     from atomic_io import atomic_write_verbatim
     from note_editor import _reindex
@@ -579,12 +583,43 @@ async def folder_import_apply_endpoint(req: FolderImportRequest):
             skipped.append({"folder": sel.folder, "reason": "invalid-name"})
             continue
 
-        # `setdefault`, not `__setitem__`: a folder whose name already exists JOINS that
-        # project (resolved decision 2), and re-registering would reset its created/description.
-        # The default-arg binding is what stops the lambda capturing the loop variable late.
-        project_registry.update(
-            root, lambda r, n=sel.name: r["projects"].setdefault(n, new_project_entry())
-        )
+        # Create-or-join, plus the `dir` decision, INSIDE the mutate callback so the whole
+        # read-decide-write runs under project_registry.update's lock (contract §13.2).
+        #
+        # Join semantics are unchanged from the `setdefault` this replaces: a folder whose name
+        # already exists JOINS that project (resolved decision 2), and re-registering would reset
+        # its created/description. `dir` follows the SAME rule and it matters more -- a project's
+        # home is where its notes already live, so overwriting it here would relocate notes the
+        # user never discussed. `dir` is therefore written ONLY on a newly-created entry.
+        #
+        # The default-arg binding is what stops the closure capturing the loop variable late.
+        outcome: dict = {}
+
+        def _register(r, n=sel.name, folder=sel.folder, out=outcome):
+            if n in r["projects"]:
+                return                                  # JOIN: existing entry left exactly as is
+            if any(e.get("dir") == n for e in r["projects"].values()):
+                # The name is already some OTHER project's home. Registering it would leave two
+                # projects claiming one directory, which `dumps` refuses to write at all.
+                out["refused"] = True
+                return
+            entry = new_project_entry()
+            if folder != n:
+                # The folder is not spelled like the project name (`My Notes` -> `My-Notes`), so
+                # record its real home rather than renaming the user's directory or leaving a
+                # mismatch for the tidy pass to "resolve" one file at a time (contract §13.1 v3.2).
+                if not project_registry.is_dir_available(r, n, folder):
+                    out["refused"] = True
+                    return
+                entry["dir"] = folder
+            r["projects"][n] = entry
+
+        project_registry.update(root, _register)
+        if outcome.get("refused"):
+            # Same refusal shape as an unusable name: the folder is reported and its notes are
+            # left byte-identical. A partial or guessed home is never written.
+            skipped.append({"folder": sel.folder, "reason": "unavailable-dir"})
+            continue
         registered.append(sel.name)
         reg = project_registry.load(root)
 

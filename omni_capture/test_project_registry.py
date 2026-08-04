@@ -339,3 +339,98 @@ def test_rename_through_update_leaves_every_other_project_byte_for_byte(tmp_path
     assert reg["projects"]["beta"]["description"] == "Beta description."
     assert reg["projects"]["gamma"]["description"] == "Gamma description."
     assert gamma_block in after
+
+
+# -- FR-33: `dir` -- a project's HOME, separate from its HANDLE (contract §13.1 v3.2) ----------
+
+def _dir_entry(dirname, **kw):
+    entry = _entry(**kw)
+    entry["dir"] = dirname
+    return entry
+
+
+def test_dir_round_trips_through_dumps_and_parse():
+    reg = _reg(**{"My-Notes": _dir_entry("My Notes"), "plain": _entry()})
+    back = pr.parse(pr.dumps(reg))
+    assert back["projects"]["My-Notes"]["dir"] == "My Notes"
+    assert "dir" not in back["projects"]["plain"]
+
+
+@pytest.mark.parametrize(
+    "dirname",
+    ["../evil", "a/b", "a\b", "_loose", "_trash", ".hidden", "", "Ideas.", "R&D"],
+)
+def test_dumps_refuses_an_ineligible_dir(dirname):
+    # Same rule `name` already has: a writer MUST reject an invalid `dir` rather than write it,
+    # because this value names a real directory on the user's disk.
+    reg = _reg(research=_dir_entry(dirname))
+    with pytest.raises(ValueError):
+        pr.dumps(reg)
+
+
+def test_dumps_refuses_a_dir_that_is_another_projects_name():
+    # A directory belongs to at most ONE project: `research`'s notes and `Work`'s notes cannot
+    # both live in `Work/`.
+    reg = _reg(research=_dir_entry("Work"), Work=_entry())
+    with pytest.raises(ValueError):
+        pr.dumps(reg)
+
+
+def test_dumps_refuses_two_projects_claiming_the_same_dir():
+    reg = _reg(alpha=_dir_entry("Shared"), beta=_dir_entry("Shared"))
+    with pytest.raises(ValueError):
+        pr.dumps(reg)
+
+
+def test_a_project_may_state_its_own_name_as_its_dir():
+    # Redundant but harmless -- the entry is exempt from its own uniqueness check.
+    assert pr.parse(pr.dumps(_reg(research=_dir_entry("research"))))["projects"]["research"]["dir"] == "research"
+
+
+def test_is_dir_available():
+    reg = _reg(**{"My-Notes": _dir_entry("My Notes"), "Work": _entry()})
+    assert pr.is_dir_available(reg, "other", "Ideas") is True
+    assert pr.is_dir_available(reg, "other", "My Notes") is False     # claimed as a dir
+    assert pr.is_dir_available(reg, "other", "Work") is False         # claimed as a name
+    assert pr.is_dir_available(reg, "other", "../evil") is False      # shape
+    assert pr.is_dir_available(reg, "My-Notes", "My Notes") is True   # its own home stays its own
+
+
+def test_parse_drops_an_unusable_dir_rather_than_bricking_every_later_save(tmp_path):
+    # The read-side valve that makes `dumps`' refusal safe: a hand-edited or foreign-peer value
+    # must degrade to "no dir" (directory == name, today's behaviour), never make the file
+    # unwritable. `dir` is a KNOWN key, so this is the same treatment `parse` gives an
+    # ineligible project NAME -- it is not the unknown-key round-trip rule (§13.1).
+    _write(
+        tmp_path,
+        'schema = 1\n\n'
+        '[projects."research"]\n'
+        'description = "d"\n'
+        'dir = "../evil"\n',
+    )
+    reg = pr.load(tmp_path)
+    assert "dir" not in reg["projects"]["research"]
+    pr.dumps(reg)          # must not raise
+
+
+def test_merge_cannot_produce_a_registry_that_dumps_refuses_to_write():
+    # `dir` merges as an ordinary per-entry field (§13.2, no special case), but two INDIVIDUALLY
+    # valid registries can merge into a collision: device A gives `P` the home `X` while device B
+    # creates a project literally named `X`. Without a prune the pair of entirely legal edits
+    # would make every subsequent registry save raise.
+    base = _reg(P=_entry())
+    local = _reg(P=_dir_entry("X", modified="2026-08-02T00:00:00Z"))
+    remote = _reg(P=_entry(), X=_entry())
+
+    merged = pr.merge(base, local, remote)
+
+    assert set(merged["projects"]) == {"P", "X"}
+    assert "dir" not in merged["projects"]["P"]
+    pr.dumps(merged)       # must not raise
+
+
+def test_merge_keeps_a_dir_that_collides_with_nothing():
+    base = _reg(P=_entry())
+    local = _reg(P=_dir_entry("My Notes", modified="2026-08-02T00:00:00Z"))
+    remote = _reg(P=_entry())
+    assert pr.merge(base, local, remote)["projects"]["P"]["dir"] == "My Notes"

@@ -15,7 +15,7 @@ from typing import Any, Dict
 import tomlkit
 from tomlkit.items import KeyType, SingleKey
 
-from projects import is_valid_project_name, parse_project_tag
+from projects import is_valid_project_dir, is_valid_project_name, parse_project_tag
 
 REGISTRY_FILENAME = ".projects.toml"
 SCHEMA = 1
@@ -40,6 +40,59 @@ def empty_registry() -> Registry:
     return {"schema": SCHEMA, "projects": {}}
 
 
+def is_dir_available(reg: Registry, name: str, dirname: str) -> bool:
+    """May `dirname` be project `name`'s home in `reg`? (contract §13.1, v3.2)
+
+    Two halves: the per-value shape rule (`projects.is_valid_project_dir`) and the cross-entry
+    rule that needs the whole registry — a directory belongs to at most ONE project, so it may
+    not equal another entry's `name` NOR another entry's `dir`. `name`'s own entry is exempt, so
+    re-asserting a project's existing home is always available to it.
+    """
+    if not is_valid_project_dir(dirname):
+        return False
+    for other, entry in reg.get("projects", {}).items():
+        if other == name:
+            continue
+        if other == dirname or entry.get("dir") == dirname:
+            return False
+    return True
+
+
+def _prune_conflicting_dirs(projects: Dict[str, dict]) -> Dict[str, dict]:
+    """Drop every `dir` that is not writable, so `load -> dumps` and `merge -> save` can never
+    raise on data this build produced or read.
+
+    This is the read/normalize-side valve that makes `dumps`' refusal safe, exactly parallel to
+    `parse` dropping an ineligible project NAME while `dumps` raises on one. It is not merely a
+    hand-edit guard: `merge` can SYNTHESIZE a collision from two clean registries — device A
+    gives project `P` the home `X` while device B creates a project literally named `X`, and the
+    merged result holds both. Without this, that entirely legal pair of edits would make every
+    subsequent registry save raise.
+
+    Resolution is first-wins in sorted name order, so both peers prune identically and converge.
+    Entry order is otherwise preserved, because `parse` hands its result straight back to callers.
+    """
+    drop: set = set()
+    claimed: set = set()
+    for name in sorted(projects):                       # sorted => both peers prune identically
+        dirname = projects[name].get("dir")
+        if dirname is None:
+            continue
+        if (not is_valid_project_dir(dirname)
+                or (dirname != name and (dirname in projects or dirname in claimed))):
+            drop.add(name)
+        else:
+            claimed.add(dirname)
+
+    out: Dict[str, dict] = {}
+    for name, entry in projects.items():
+        entry = dict(entry)
+        if name in drop:
+            entry.pop("dir", None)
+        out[name] = entry
+    return out
+
+
 def parse(text: str) -> Registry:
     """Registry from TOML TEXT. Malformed text is an empty registry, never an error — same rule
     `load` applies to a malformed file. Split out for the sync pass, which holds the hub copy's
@@ -56,7 +109,7 @@ def parse(text: str) -> Registry:
         for name, entry in entries.items()
         if isinstance(entry, dict) and is_valid_project_name(name)
     }
-    return {"schema": schema, "projects": projects}
+    return {"schema": schema, "projects": _prune_conflicting_dirs(projects)}
 
 
 def load(vault_root: Path) -> Registry:
@@ -82,6 +135,12 @@ def dumps(reg: Registry) -> str:
     for name in sorted(reg.get("projects", {})):
         if not is_valid_project_name(name):
             raise ValueError(f"refusing to write ineligible project name {name!r}")
+        # Contract §13.1 (v3.2): a writer MUST reject an invalid `dir` rather than write it, the
+        # same rule `name` already has. `dir` names a real directory on the user's disk, so a bad
+        # or double-claimed value would silently relocate files.
+        dirname = reg["projects"][name].get("dir")
+        if dirname is not None and not is_dir_available(reg, name, dirname):
+            raise ValueError(f"refusing to write ineligible project dir {dirname!r} for {name!r}")
         entry = tomlkit.table()
         # Unknown keys are round-tripped verbatim: a future field written by the phone must
         # survive a desktop rewrite (contract §13.1, mirroring §10's frontmatter rule).
@@ -177,7 +236,10 @@ def merge(base: Registry, local: Registry, remote: Registry) -> Registry:
                 out[name] = dict(r[name])                            # row 6
         # deleted on both sides -> gone (row 4 with the delete on either side)
 
-    return {"schema": SCHEMA, "projects": out}
+    # `dir` merges as an ordinary per-entry field (§13.1, no special case) -- but merging two
+    # individually-valid registries can leave two entries claiming the same directory, which
+    # `dumps` refuses to write. Prune here so the merge result is always savable.
+    return {"schema": SCHEMA, "projects": _prune_conflicting_dirs(out)}
 
 
 def resolve_project(body: str, reg: Registry) -> str | None:
@@ -205,7 +267,14 @@ def rebuild_from_vault(vault_root: Path) -> Registry:
     """Contract §13.3: if the registry is lost, rebuild it by scanning bodies for `#project@`.
     Every project reappears with an EMPTY description; `renamed_from` cannot be reconstructed and
     is simply absent, so a note still carrying an old name reads as loose — the correct fallback,
-    no special case. No note is lost, no note changes project, no grouping breaks."""
+    no special case. No note is lost, no note changes project, no grouping breaks.
+
+    ponytail: `dir` is not recovered either — contract §13.3 names that degradation as acceptable
+    ("a rebuild that does not bother degrades to `dir` absent -> directory == name -> the tidy
+    pass proposes the moves again, which is precisely today's behaviour"). Upgrade path if a
+    rebuild ever needs to keep the user's folder names: this loop already knows each tagged
+    note's `path`, so take the modal `path.parent.name` per project name and set it as `dir`
+    when it differs from the name and `is_dir_available` says it is free."""
     names: set = set()
     for path in Path(vault_root).rglob("*.md"):
         try:

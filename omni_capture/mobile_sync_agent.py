@@ -285,7 +285,7 @@ def read_vault_notes(vault_path: str, mirror_captures: bool = False,
             # v3.0 (§1.3): the note's directory is DERIVED from its `#project@` body tag, not read
             # off disk. Legacy `category:` frontmatter and the file's current parent are both
             # ignored — the tag is the only truth.
-            "folder": note_dir_for(resolve_project(body, reg)),
+            "folder": note_dir_for(resolve_project(body, reg), reg),
             "title": fields.get("title", ""),
             "created": fields.get("created", ""),
         }
@@ -980,7 +980,7 @@ def reconcile_changes(
                 # editing one). Desktop alone re-paths; the phone never moves a file.
                 pull_path = _maybe_refile_local(
                     local["path"],
-                    note_dir_for(resolve_project(strip_frontmatter(_strip_bom(remote_text)), reg)),
+                    note_dir_for(resolve_project(strip_frontmatter(_strip_bom(remote_text)), reg), reg),
                     note_id,
                 )
                 write_file(pull_path, remote_text)
@@ -1041,7 +1041,7 @@ def reconcile_changes(
             )
             # The MERGED body decides the directory (its `#project@` tag may have come from either
             # side), so re-path the local mirror before writing it.
-            merged_folder = note_dir_for(resolve_project(merged_result.merged.body, reg))
+            merged_folder = note_dir_for(resolve_project(merged_result.merged.body, reg), reg)
             local_path = _maybe_refile_local(local_path, merged_folder, note_id)
             write_file(local_path, merged_text)
             dest = _resolve_dest_folder(drive, hub_folder_id, merged_folder, folder_cache)
@@ -1258,7 +1258,7 @@ def pull_new_hub_notes(
             # v3.0 (§1.3): the note's directory comes from its own body tag, resolved against the
             # registry — its project, or `_loose`. The hub's parent folder and any legacy
             # `category:`/`project:` frontmatter are both ignored.
-            sub = note_dir_for(resolve_project(strip_frontmatter(_strip_bom(content)), reg))
+            sub = note_dir_for(resolve_project(strip_frontmatter(_strip_bom(content)), reg), reg)
             # `note_id` is untrusted hub input and becomes a path component (B-12 class); `sub` is
             # ours by construction but is asserted with it rather than trusted silently.
             _safe_path_component(note_id)
@@ -1526,7 +1526,7 @@ def enrich_notes(
         # The tag it may have just written re-derives the note's directory; mirror_to_hub reads
         # this to place/re-parent the hub file in the same pass. The FILE is moved by the tidy
         # pass, not here — enrichment never re-paths (K-1 retired, §1.2).
-        entry["folder"] = note_dir_for(resolve_project(entry["body"], reg))
+        entry["folder"] = note_dir_for(resolve_project(entry["body"], reg), reg)
         enriched_count += 1
 
         # Embedding is best-effort — a failure here must not un-enrich the note.

@@ -31,8 +31,13 @@ class Move(NamedTuple):
 
 
 def plan_tidy(entries: List[NoteLoc], vault_root: Path, reg: Registry) -> List[Move]:
-    """Every note's target is `vault_root / note_dir_for(resolve_project(body, reg))` — a project
-    directory, or `_loose/`. Notes already in place are not moved."""
+    """Every note's target is `vault_root / note_dir_for(resolve_project(body, reg), reg)` — a
+    project directory, or `_loose/`. Notes already in place are not moved.
+
+    `reg` is passed to `note_dir_for` too, not just to `resolve_project`: a project may carry an
+    OPTIONAL `dir` naming a home spelled differently from its tag (contract §13.1 v3.2), and
+    without it this pass would plan a move for every note in `My Notes/` tagged `#project@My-Notes`
+    — relocating the user's own folder one file at a time."""
     vault_root = Path(vault_root)
     taken: Dict[Path, int] = {}
     for entry in entries:
@@ -40,7 +45,7 @@ def plan_tidy(entries: List[NoteLoc], vault_root: Path, reg: Registry) -> List[M
 
     moves: List[Move] = []
     for entry in entries:
-        target_dir = vault_root / note_dir_for(resolve_project(entry.body, reg))
+        target_dir = vault_root / note_dir_for(resolve_project(entry.body, reg), reg)
         dst = target_dir / entry.path.name
         if dst == entry.path:
             continue

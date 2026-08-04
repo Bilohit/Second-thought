@@ -146,7 +146,8 @@ def _note_dir(output: CaptureOutput, vault_root: Path) -> str:
     is LOOSE and is a SUCCESS: the note is still written, still at depth 1.
     """
     body = _stamp_project_tag(output.markdown_content, _project_str(output))
-    return note_dir_for(resolve_project(body, _load_registry(vault_root)))
+    reg = _load_registry(vault_root)
+    return note_dir_for(resolve_project(body, reg), reg)
 
 
 # The registry's `description` field is the ONE thing that exists nowhere else
@@ -660,7 +661,8 @@ def create_youtube_note(
         f"{transcript_md}\n"
     )
     body = _stamp_project_tag(body, youtube_cfg.folder_name)
-    note_dir = note_dir_for(resolve_project(body, _load_registry(vault_root)))
+    reg = _load_registry(vault_root)
+    note_dir = note_dir_for(resolve_project(body, reg), reg)
     (vault_root / note_dir).mkdir(parents=True, exist_ok=True)
     path = _unique_file_path(vault_root / note_dir / (stem + ".md"))
 

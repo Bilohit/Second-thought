@@ -206,3 +206,38 @@ def test_an_index_write_failure_does_not_block_or_undo_the_move(tmp_path, monkey
     assert result.moved == 1
     assert dst.exists()
     assert not src.exists()
+
+
+# -- FR-33: a project whose HOME is not spelled like its HANDLE (contract §13.1 v3.2) ----------
+
+def _reg_with_dir(name, dirname):
+    reg = _reg(name)
+    reg["projects"][name]["dir"] = dirname
+    return reg
+
+
+def test_a_note_in_its_projects_dir_does_not_move():
+    # THE POINT OF FR-33. The user imported their folder `My Notes`; the tag had to become
+    # `#project@My-Notes` because a `#hashtag` ends at the first whitespace. Without `dir`,
+    # plan_tidy reads that as mis-filing and drains the folder into `My-Notes/` one note at a
+    # time, unasked -- mobile_sync_agent._maybe_refile_local does the same on every round-trip.
+    entries = [pt.NoteLoc(VAULT / "My Notes" / "a.md", "body #project@My-Notes")]
+    assert pt.plan_tidy(entries, VAULT, _reg_with_dir("My-Notes", "My Notes")) == []
+
+
+def test_a_note_outside_its_projects_dir_moves_into_the_dir_not_the_name():
+    entries = [pt.NoteLoc(VAULT / "_loose" / "a.md", "body #project@My-Notes")]
+    moves = pt.plan_tidy(entries, VAULT, _reg_with_dir("My-Notes", "My Notes"))
+    assert moves == [pt.Move(VAULT / "_loose" / "a.md", VAULT / "My Notes" / "a.md")]
+
+
+def test_a_project_without_a_dir_still_files_by_name():
+    entries = [pt.NoteLoc(VAULT / "My Notes" / "a.md", "body #project@My-Notes")]
+    moves = pt.plan_tidy(entries, VAULT, _reg("My-Notes"))
+    assert moves == [pt.Move(VAULT / "My Notes" / "a.md", VAULT / "My-Notes" / "a.md")]
+
+
+def test_an_unusable_dir_falls_back_to_the_name_rather_than_leaving_a_note_homeless():
+    entries = [pt.NoteLoc(VAULT / "_loose" / "a.md", "body #project@research")]
+    moves = pt.plan_tidy(entries, VAULT, _reg_with_dir("research", "../evil"))
+    assert moves == [pt.Move(VAULT / "_loose" / "a.md", VAULT / "research" / "a.md")]

@@ -25,6 +25,8 @@ os.environ["OMNI_GUI_SECRET"] = GUI_SECRET
 
 from fastapi.testclient import TestClient
 
+import project_registry
+import project_tidy
 import server
 
 SECRET = "folder-import-test-secret"
@@ -123,6 +125,106 @@ def test_apply_is_idempotent_and_never_double_tags(client, vault):
 
     assert second_res["tagged"] == 0
     assert note.read_text(encoding="utf-8") == first
+
+
+# -- FR-33: the import records the folder's real name as the project's `dir` (§13.1 v3.2) ------
+
+def _register(vault, name, **fields):
+    entry = {"description": "", "created": "2026-08-01T10:00:00Z",
+             "modified": "2026-08-01T10:00:00Z", "device": "desktop"}
+    entry.update(fields)
+    project_registry.update(vault, lambda r: r["projects"].update({name: entry}))
+
+
+def test_apply_records_a_differently_spelled_folder_as_the_projects_dir(client, vault):
+    # `My Notes` cannot be a project NAME: a `#hashtag` ends at the first whitespace, so
+    # `#project@My Notes` would parse as `My`. Before FR-33 the folder was left mismatched and
+    # the tidy pass then drained it into `My-Notes/` one note at a time, unasked.
+    (vault / "My Notes").mkdir()
+    note = vault / "My Notes" / "b.md"
+    note.write_text("---\nid: 2\n---\n# B\nprose\n", encoding="utf-8")
+
+    res = client.post("/vault/folder-import/apply",
+                      json={"folders": [{"folder": "My Notes", "name": "My-Notes"}]}).json()
+
+    assert res["tagged"] == 1 and res["registered"] == ["My-Notes"] and res["skipped"] == []
+    assert project_registry.load(vault)["projects"]["My-Notes"]["dir"] == "My Notes"
+    assert note.exists(), "the import never moves a file"
+
+    # The whole point: the tidy pass now plans nothing for this note.
+    entries = [project_tidy.NoteLoc(note, note.read_text(encoding="utf-8"))]
+    assert project_tidy.plan_tidy(entries, vault, project_registry.load(vault)) == []
+
+
+def test_apply_sets_no_dir_when_the_folder_is_spelled_like_the_project(client, vault):
+    (vault / "Work").mkdir()
+    (vault / "Work" / "a.md").write_text("---\nid: 1\n---\n# A\n", encoding="utf-8")
+
+    client.post("/vault/folder-import/apply",
+                json={"folders": [{"folder": "Work", "name": "Work"}]})
+
+    assert "dir" not in project_registry.load(vault)["projects"]["Work"]
+
+
+def test_joining_an_existing_project_never_overwrites_its_home(client, vault):
+    # A folder whose name matches an existing project JOINS it (resolved decision 2). `dir` is
+    # that project's HOME -- rewriting it here would relocate notes the user never discussed,
+    # which is the exact defect FR-33 exists to fix, inverted.
+    _register(vault, "Docs", description="kept", dir="Old Home")
+    (vault / "New Folder").mkdir()
+    (vault / "New Folder" / "c.md").write_text("---\nid: 3\n---\n# C\n", encoding="utf-8")
+
+    res = client.post("/vault/folder-import/apply",
+                      json={"folders": [{"folder": "New Folder", "name": "Docs"}]}).json()
+
+    entry = project_registry.load(vault)["projects"]["Docs"]
+    assert entry["dir"] == "Old Home", "the existing home must survive a join untouched"
+    assert entry["description"] == "kept"       # created/description untouched too, as before
+    assert res["tagged"] == 1                   # the notes are still tagged into the project
+
+
+def test_joining_a_project_that_has_no_home_does_not_invent_one(client, vault):
+    _register(vault, "Docs")
+    (vault / "New Folder").mkdir()
+    (vault / "New Folder" / "c.md").write_text("---\nid: 3\n---\n# C\n", encoding="utf-8")
+
+    client.post("/vault/folder-import/apply",
+                json={"folders": [{"folder": "New Folder", "name": "Docs"}]})
+
+    assert "dir" not in project_registry.load(vault)["projects"]["Docs"]
+
+
+def test_a_folder_whose_home_is_already_claimed_is_refused_and_its_notes_untouched(client, vault):
+    _register(vault, "Alpha", dir="Shared Home")
+    (vault / "Shared Home").mkdir()
+    note = vault / "Shared Home" / "d.md"
+    before = "---\nid: 4\n---\n# D\nprose\n"
+    note.write_text(before, encoding="utf-8")
+
+    res = client.post("/vault/folder-import/apply",
+                      json={"folders": [{"folder": "Shared Home", "name": "Beta"}]}).json()
+
+    assert res["tagged"] == 0 and res["registered"] == []
+    assert res["skipped"] == [{"folder": "Shared Home", "reason": "unavailable-dir"}]
+    assert note.read_text(encoding="utf-8") == before, "a refused folder is byte-identical"
+    assert "Beta" not in project_registry.load(vault)["projects"]
+
+
+def test_a_name_already_used_as_another_projects_home_is_refused(client, vault):
+    # Registering `Shared` would leave two projects claiming the directory `Shared/`, which
+    # project_registry.dumps refuses to write at all -- catch it here rather than 500ing.
+    _register(vault, "Alpha", dir="Shared")
+    (vault / "Shared").mkdir()
+    note = vault / "Shared" / "e.md"
+    before = "---\nid: 5\n---\n# E\n"
+    note.write_text(before, encoding="utf-8")
+
+    res = client.post("/vault/folder-import/apply",
+                      json={"folders": [{"folder": "Shared", "name": "Shared"}]}).json()
+
+    assert res["skipped"] == [{"folder": "Shared", "reason": "unavailable-dir"}]
+    assert note.read_text(encoding="utf-8") == before
+    assert "Shared" not in project_registry.load(vault)["projects"]
 
 
 if __name__ == "__main__":
