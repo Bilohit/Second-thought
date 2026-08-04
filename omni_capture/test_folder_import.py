@@ -26,6 +26,19 @@ def test_tag_line_goes_first_when_there_is_no_heading():
     assert folder_import.tag_line_insert(body, "Work") == "#project@Work\nKickoff is the 14th.\n"
 
 
+def test_tag_line_goes_under_a_heading_that_carries_a_utf8_bom():
+    """FR-35. Notepad -- the default editor for a Windows user hand-writing a vault -- saves
+    UTF-8 WITH a BOM, the apply route reads with plain `utf-8` (not `utf-8-sig`), and
+    `note_model.parse_note` captures the body verbatim, so the BOM reaches this function.
+    Before the fix `startswith("# ")` missed, the loop fell through, and the tag was prepended
+    ABOVE the heading -- breaking placement pick P1 on exactly the vaults the import adopts.
+    The BOM byte itself must SURVIVE (body-sacred): it is stepped over, never stripped."""
+    body = "\ufeff# Q3 planning\n\nKickoff is the 14th.\n"
+    assert folder_import.tag_line_insert(body, "Work") == (
+        "\ufeff# Q3 planning\n#project@Work\n\nKickoff is the 14th.\n"
+    )
+
+
 def test_plan_skips_exempt_loose_dot_dirs_and_already_tagged_notes(tmp_path):
     (tmp_path / "Work").mkdir()
     (tmp_path / "Work" / "a.md").write_text("---\nid: 1\n---\n# A\n", encoding="utf-8")

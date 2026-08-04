@@ -64,10 +64,19 @@ def tag_line_insert(body: str, name: str) -> str:
 
     The same placement `today_view._daily_body` uses for `#daily`: ordinary body text the
     user can see and delete, deliberately NOT the trailing machine `tags:` line, which
-    enrichment replaces wholesale (mobile_sync_agent.py:1484-1487)."""
+    enrichment replaces wholesale (mobile_sync_agent.py:1484-1487).
+
+    FR-35: the heading match SKIPS a leading UTF-8 BOM. Notepad -- the default editor for a
+    Windows user hand-writing a vault -- saves UTF-8 WITH a BOM, and the apply route reads with
+    plain `utf-8` (not `utf-8-sig`) while `note_model.parse_note` captures the body verbatim, so
+    that BOM survives into `body`. Without this, `"\ufeff# Heading"` fails `startswith("# ")`,
+    the loop falls through, and the tag is prepended ABOVE the heading -- breaking the placement
+    the user chose (P1, s140) on exactly the vaults this import exists to adopt. The BOM is only
+    stepped over for the COMPARISON; the line's bytes are never rewritten (body-sacred). Written
+    as an escape, never a literal: an invisible BOM character in source is unsearchable."""
     lines = body.split("\n")
     for i, line in enumerate(lines):
-        if line.startswith("# "):
+        if line.lstrip("\ufeff").startswith("# "):
             lines.insert(i + 1, f"#project@{name}")
             return "\n".join(lines)
     return f"#project@{name}\n{body}"
