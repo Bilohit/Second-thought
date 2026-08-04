@@ -16,6 +16,7 @@ import {
   FolderImportChecklist,
   type FolderImportVariant,
 } from "./FolderImportPanel";
+import { rowsFrom } from "../lib/folderImport";
 import * as api from "../lib/api";
 import type { FolderImportCandidate } from "../lib/api";
 
@@ -86,6 +87,49 @@ describe("FolderImportOffer — gating", () => {
   it("does not render while the checklist is already open, even with a positive offer", () => {
     render(<FolderImportOffer offer={3} checklistOpen busy={false} onOpen={vi.fn()} variant="strip" />);
     expect(screen.queryByRole("button", { name: /Keep my folders/ })).toBeNull();
+  });
+});
+
+describe("FolderImportChecklist — FR-33 row disclosure", () => {
+  /** Renders the checklist directly (no hook) so each row's meta text can be read in isolation.
+   *  `rowsFrom` is the real mapper, so `name`/`valid` are derived exactly as the host derives them. */
+  function renderRows(cands: FolderImportCandidate[]) {
+    render(
+      <FolderImportChecklist
+        rows={rowsFrom(cands)}
+        busy={false}
+        onToggle={vi.fn()}
+        onRename={vi.fn()}
+        onCancel={vi.fn()}
+        onApply={vi.fn()}
+        variant="card"
+      />,
+    );
+  }
+
+  it("promises unconditionally in the intro — no move warning, because `dir` makes the folder the home", () => {
+    renderRows([candidate({ folder: "Work", suggested: "Work" })]);
+    expect(screen.getByText(/Your folders keep their names, and nothing moves/)).toBeTruthy();
+    expect(screen.queryByText(/will still be offered a move later/)).toBeNull();
+  });
+
+  it("a sanitised folder states the tag and that the folder is unchanged", () => {
+    renderRows([candidate({ folder: "My Notes", suggested: "My-Notes", valid: false })]);
+    expect(screen.getByText(/tagged My-Notes, folder unchanged/)).toBeTruthy();
+    expect(screen.queryByText(/move into it/)).toBeNull();
+  });
+
+  it("★ joining a project under a DIFFERENT name warns that the notes move — the one case that still moves files", () => {
+    // `dir` is written on create only, never on join (vault_admin `_register`), so this folder's
+    // notes really do move into the existing project's own home.
+    renderRows([candidate({ folder: "My Notes", suggested: "Recipes", valid: false, existing: true })]);
+    expect(screen.getByText(/joins existing project — these notes move into it/)).toBeTruthy();
+  });
+
+  it("joining a project of its own name is already home, so it carries no move warning", () => {
+    renderRows([candidate({ folder: "Recipes", suggested: "Recipes", existing: true })]);
+    expect(screen.getByText(/joins existing project/)).toBeTruthy();
+    expect(screen.queryByText(/move into it/)).toBeNull();
   });
 });
 

@@ -273,15 +273,14 @@ export function FolderImportChecklist({
       <span style={s.intro}>
         {"Each folder becomes a project by adding one "}
         <strong style={{ color: "var(--text-1)" }}>#project@name</strong>
-        {" line to the notes inside it. Nothing moves and nothing is deleted."}
-        {/* FR-32: the honest wrinkle, stated before consent. A project name cannot contain a
-            space (a `#hashtag` in body text ends at the first whitespace, projects.py:27), so a
-            folder like `My Notes` is tagged `My-Notes` -- and this import NEVER renames a folder
-            on disk, so project_tidy still plans `My Notes/x.md -> My-Notes/x.md` afterwards. The
-            user picked BOTH placements: the rule here for everyone, the folder named on its own
-            row below. Say it before the tick, because the move is offered from a DIFFERENT strip
-            minutes later where this sentence is no longer on screen. */}
-        {" Folders are never renamed — one whose name had to be adjusted will still be offered a move later."}
+        {/* FR-33 made this an unconditional promise rather than a warning. A project name cannot
+            contain a space (a `#hashtag` ends at the first whitespace, projects.py:27), so a folder
+            `My Notes` is still TAGGED `My-Notes` -- but the registry now records `dir = "My Notes"`
+            (contract §13.1 v3.2), so that folder IS the project's home and nothing is planned to
+            move. The old copy warned about a move that no longer happens; a warning the product
+            then contradicts is worse than none. The one case where files DO still move is a folder
+            joining a project that already lives elsewhere -- said on that row, not here. */}
+        {" line to the notes inside it. Your folders keep their names, and nothing moves."}
       </span>
       <div style={s.list}>
         {rows.length === 0 && (
@@ -311,11 +310,24 @@ export function FolderImportChecklist({
             <span style={s.meta}>
               {row.count} {row.count === 1 ? "note" : "notes"}
               {row.phoneCount > 0 && ` · includes ${row.phoneCount} from your phone`}
-              {row.existing && " · joins existing project"}
-              {/* FR-32: the same disclosure as the intro, attached to the one folder it actually
-                  concerns -- gated on the SAME condition as the editable name field above, so it
-                  appears only where the app had to change the name and never on an ordinary row. */}
-              {!isValidProjectName(row.folder) && " · folder keeps its old name on disk"}
+              {/* FR-33: the ONLY case where this import still causes a file move. Joining a project
+                  that already exists means the registry keeps ITS home -- `dir` is set on create
+                  only, never on join, because overwriting it would relocate notes the user never
+                  discussed (vault_admin.py's `_register`). So when the folder's name differs from
+                  the project it joins, these notes really do move into that project's folder. A
+                  folder joining a project of its OWN name is already home; no warning there.
+                  ponytail: `existing` is computed against the SUGGESTED name at preview time and
+                  is not re-checked after the user edits the field, so typing the name of an
+                  existing project by hand shows no warning -- upgrade path is returning the
+                  registry's names with the preview and testing `row.name` against them. */}
+              {row.existing && (row.folder === row.name
+                ? " · joins existing project"
+                : " · joins existing project — these notes move into it")}
+              {/* FR-32/FR-33: attached to the one folder it concerns, gated on the SAME condition
+                  as the editable name field above, so it appears only where the app had to change
+                  the name and never on an ordinary row. Now a statement of fact, not a caveat. */}
+              {!isValidProjectName(row.folder) && !row.existing &&
+                ` · tagged ${row.name || "…"}, folder unchanged`}
               {!row.valid && ` · ${INVALID_NAME_MESSAGE}`}
             </span>
           </div>
