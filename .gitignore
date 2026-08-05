@@ -16,11 +16,16 @@ logs/
 .DS_Store
 Thumbs.db
 .superpowers/
-CLAUDE.md
 SKILLS.md
-docs/
+skill-observations/
+personal/
+# *.md is the blanket that keeps the live vault + scratch notes out of the repo.
+# The project's own docs are tracked back in below — narrow this, never widen it.
 *.md
 !README.md
+!CLAUDE.md
+!AGENTS.md
+!docs/**/*.md
 .gitignore
 mobile/
 omni_capture/.mobile_sync_state.json
