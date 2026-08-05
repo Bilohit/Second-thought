@@ -230,18 +230,33 @@ The Critic's point stands: a duration assertion catches nothing in the "dead or 
 
 **Goal:** the desktop SYNC tab's four regions have real sources before any UI renders them. **No mock is in scope for this phase.** Contract-first: if any wire shape changes, `data-model-and-contracts.md` is edited and user-approved *before* code.
 
-**What already exists (verified, do not rebuild):**
-- `capture_log.read_log(n)` at `omni_capture/capture_log.py:95` — a real chronological event store. This is the activity feed's source.
-- `SyncStatus.history` — already fetched by the GUI and never rendered. Second activity source.
-- `GET /vault/conflicts` — already backing the Dashboard conflict card. Moves to SYNC, unchanged.
+**Task 1.1 is CLOSED (2026-08-06, investigation VERIFIED at source). Findings, binding on 1.2/1.3:**
 
-**The one genuine gap — the queue.** Desktop writes directly and has **no op-queue concept**; `op_queue` is the phone's. The honest desktop analogue is "files pending the next drain," which must be derived from mirror state.
+| Region | Real source | Status |
+|---|---|---|
+| Activity feed | `capture_log.read_log(n)` — `capture_log.py:95` | ✅ real per-event source |
+| Pass strip | `sync_scheduler.status().history` — `sync_scheduler.py:113-122` | ⚠️ **pass-level counts ONLY** (`uploaded/reconciled/conflicts/pulled/…`), no note ids. Backs a "last N passes" strip, **NOT** an activity feed. The baton's claim that it could was wrong |
+| Conflicts | `GET /vault/conflicts` — **`vault_admin.py:1099`**, not `server.py` | ✅ moves to SYNC unchanged |
+| Deletes pending | `delete_prompts.json` — `delete_detect.py:144-165` | ✅ durable, user-actionable, currently unrendered |
+| Queue | `.omni_capture/mobile_sync_state.json` — `mobile_sync_agent.py:1933` | ✅ **exists**, see below |
 
-- [ ] **Task 1.1 — Investigate before building.** Determine whether a pending-set is derivable from existing mirror/manifest state. Report the finding *before* writing an endpoint. **If no honest source exists, the queue region is reported back to the user as a design question with mock options, not invented.**
-- [ ] **Task 1.2 — Activity endpoint** over `capture_log.read_log` + sync history, newest-first, bounded. Sibling `test_*.py`.
-- [ ] **Task 1.3 — Queue endpoint**, only if 1.1 found a real source.
+**Corrections to the brief the investigation issued:** `vault_sync.py` does not exist (the Drive engine is `mobile_sync_agent.py`, 2020 lines). Desktop has no op-queue *table* but DOES have a durable per-note last-synced sidecar. `lan_sync.py:92-95`'s `_outbound` list is mtime-based and **self-declared non-authoritative — never use it as the queue source.**
 
-**Acceptance:** every SYNC region maps to a named real source, or is explicitly deferred to a user decision. Body-sacred and provenance-gating assertions unchanged and green. `FUZZ=1` if the sync path is touched.
+**The pending-upload set is the negation of the skip at `mobile_sync_agent.py:1135`:** a note is pending when the sidecar has no row, no `drive_file_id`, or `local_hash != sha256(file bytes)` — then filtered through `sync_ignore.filter_ignored_notes`. Local-only, zero Drive calls, zero new state. `mobile_sync_agent.py:1109` states the rule in-source: *"NEVER modifiedTime"* — the `headRevisionId` lock is already honored. Precedent for a read-only API path reading this sidecar without writing it: `note_history.py:41-42`.
+
+**★ USER DECISION (s143): HYBRID.** Two hub-side filters (`:1144` F-1 skip, `:1151` advanced-head guard) and the entire inbound set require a live Drive listing, so local-only can honestly say *"changed since last sync"* but **never** *"will upload next pass"*.
+- **At rest:** local hash-vs-sidecar diff + `delete_prompts.json`, labelled **"Changed since last sync"**. Zero network — safe at `/sync/status` poll cadence.
+- **On explicit user action only** (expand / Sync now): one Drive listing upgrades the panel to exact *will upload · blocked · to pull*. Needs the three-state posture `note_history.py:29-31` already established (`ok` / `offline` / `not_synced`).
+- **The word "queue" is banned from the resting label** — it promises drain semantics the local source cannot honor.
+
+**★ USER DECISION (s143): the refusal state never shows a count.** If `sync_ignore` fails to load it returns `{}` (`sync_ignore.py:114`) — the panel would show **zero pending at the exact moment `run_pass` refuses the whole sync** (`mobile_sync_agent.py:1941-1942` raises). Empty-reads-as-all-synced is the most dangerous failure in this surface. Render an explicit red **"Sync blocked — ignore list unreadable"** state carrying the underlying error. Never a number.
+
+- [ ] **Task 1.2 — Activity endpoint** over `capture_log.read_log`, newest-first, bounded. Sibling `test_*.py`. Do **not** fold pass-history rows in as if they were events.
+- [ ] **Task 1.3 — Pending endpoint**, hybrid per the decision above. **Must reuse `read_vault_notes`** — a second vault walk is a second definition of "what a note is" (`lan_sync.py:95` states this rule).
+
+**Seven ways a naive panel lies (all verified; the implementer must handle each):** F-1 notes pending forever · direction inverted on advanced-head · sidecar loss reads as mass-pending when real behavior is quiet adoption (`:959-974`) · ignore-set corruption reads as all-synced · captures invisible unless `mirror_captures` flips, then +hundreds · `enrich_notes` makes notes pending with no user edit (`:1780-1781`) · attachments structurally invisible (presence-is-state, no sidecar row).
+
+**Acceptance:** every SYNC region maps to a named real source · the resting panel never issues a network call · the refusal state is asserted by a test · body-sacred and provenance-gating assertions unchanged and green. **`FUZZ=1` required — this phase reads the sync path.**
 
 **Trap:** this is the phase where a UI-minded agent can silently violate enrichment provenance-gating. Opus tier, no exceptions.
 
