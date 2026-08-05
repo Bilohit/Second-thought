@@ -1,0 +1,113 @@
+{
+  "capturedAt": "2026-08-06",
+  "exeBuilt": "2026-08-05T00:13:02",
+  "displayScalesCaptured": [100, 125],
+  "displayScale150": "SKIPPED - no monitor configured at 150% and changing global Windows display scale was judged unsafe to reliably restore; not attempted",
+  "environment": {
+    "monitor_100pct": "\\\\.\\DISPLAY5 (primary), bounds 0,0,2560x1440, no scaling (96 DPI)",
+    "monitor_125pct": "\\\\.\\DISPLAY1 (secondary), bounds -2560,0,2048x1280 logical (native 2560x1600 physical), 125% OS scale, verified via window.devicePixelRatio===1.25",
+    "note": "Both scales captured using two REAL, already-configured monitors at different native OS scale settings, by moving the pill window between them via Win32 SetWindowPos. No global Windows display-scale setting was changed at any point."
+  },
+
+  "capsule": {
+    "closedW": 154,
+    "closedH": 36,
+    "openW": 288,
+    "openH": 36,
+    "barH": 36,
+    "radius_closed": "18px",
+    "radius_open": "18px",
+    "labelW_measured_100pct": 100.8125,
+    "labelW_measured_125pct": 100.8,
+    "labelW_hardcoded_constant_CAPSULE_TEXT_W": 98,
+    "labelW_discrepancy_px": 2.8125,
+    "labelW_discrepancy_pct": 2.87,
+    "labelW_FINDING": "MISMATCH: gui/src/components/PillMenu/CapsuleMenu.tsx line 39 hardcodes `export const CAPSULE_TEXT_W = 98; // measured width of \"Second Thought\"`. Actual rendered .capsule-label getBoundingClientRect().width for the text \"Second Thought\" (Geist Mono 12px) measured 100.8125px at both 100% and 125% OS display scale (logical px, DPI-independent as expected). The constant is stale by ~2.8px (~2.9%). CAPSULE_CLOSED_W (=CAPSULE_TEXT_W + CAPSULE_LABEL_CHROME = 98+56=154) is NOT affected because CapsuleMenu.tsx sets the bar's actual CSS width explicitly via inline style (width: CAPSULE_CLOSED_W = 154px) rather than measuring the label at runtime -- the label text visually has ~2.8px less slack on the right than the constant's comment implies, but does not currently overflow or clip (label rect x=35..135.8 sits inside the 154px bar with room to spare). Flagged per task instructions; not fixed (measurement-only task)."
+  },
+
+  "panel": {
+    "w": 288,
+    "h": 320,
+    "radiusTopZone": "0px 0px 12px 12px",
+    "radiusBottomZone": "12px 12px 0px 0px",
+    "note": "Panel is visually fused/seamed to the capsule bar (PANEL_GAP=0, GATE-1 option A) -- top-zone panel has square top corners (meets bar above) and rounded bottom; bottom-zone panel has rounded top and square bottom (meets bar below). Identical at 100% and 125% (logical px, DPI-independent)."
+  },
+
+  "island": {
+    "note": "Minimal-mode 'island morph' panel measured only via its settled open state (compact-panel + island-panel wrapper), not the animation start/end keyframe pair -- see durations below for the CSS transition that drives the morph.",
+    "startRect_pill_closed": { "x": 6, "y": 6, "width": 36, "height": 36 },
+    "endRect_panel_open": { "x": 6, "y": 6, "width": 288, "height": 320 },
+    "radius": "12px",
+    "windowOuter_closed": { "w": 48, "h": 48 },
+    "windowOuter_open": { "w": 300, "h": 332 }
+  },
+
+  "durations": {
+    "pill-drag-handle (minimal orb) -> transition-duration": "0.18s, 0.15s, 0.16s",
+    "pill-drag-handle -> transition-timing-function": "cubic-bezier(0.16,1,0.3,1), ease, cubic-bezier(0.16,1,0.3,1)",
+    "pill-drag-handle -> transition-property": "transform, box-shadow, opacity",
+    "capsule-menu -> transition-duration": "0.26s, 0.12s, 0.12s",
+    "capsule-menu -> transition-timing-function": "cubic-bezier(0.16,1,0.3,1), cubic-bezier(0.16,1,0.3,1), linear",
+    "capsule-menu -> transition-property": "width, transform, border-radius",
+    "compact-panel -> transition-duration": "0.3s, 0.3s, 0.3s",
+    "compact-panel -> transition-timing-function": "cubic-bezier(0.16,1,0.3,1), ease, cubic-bezier(0.16,1,0.3,1)",
+    "compact-panel -> transition-property": "clip-path, opacity, transform",
+    "island-panel -> transition-duration": "0.3s, 0.3s, 0.3s, 0.3s",
+    "island-panel -> transition-timing-function": "cubic-bezier(0.16,1,0.3,1) x4",
+    "island-panel -> transition-property": "left, top, width, height",
+    "source_constants_cross_checked": {
+      "CAPSULE_ANIM_MS (CapsuleMenu.tsx)": 260,
+      "CAPSULE_ITEM_PLAY_MS": 180,
+      "CAPSULE_EXIT_MS": 320,
+      "PANEL_ANIM_MS (compactPanel.ts)": 300,
+      "PANEL_EXIT_MS": 360
+    }
+  },
+
+  "windowOuter": {
+    "100pct": {
+      "minimalClosed": { "w": 48, "h": 48 },
+      "minimalFanOpen": { "w": 248, "h": 248 },
+      "minimalIslandOpen": { "w": 300, "h": 332 },
+      "capsuleClosed": { "w": 166, "h": 48 },
+      "capsuleOpen": { "w": 364, "h": 48 },
+      "capsulePanelTop": { "w": 364, "h": 368 },
+      "capsulePanelBottom": { "w": 364, "h": 368 },
+      "fullWindow": { "w": 920, "h": 560 }
+    },
+    "125pct": {
+      "minimalClosed": { "w": 48, "h": 48 },
+      "minimalFanOpen": { "w": 248, "h": 248 },
+      "minimalIslandOpen": { "w": 301, "h": 332 },
+      "capsuleClosed": { "w": 167, "h": 48 },
+      "capsuleOpen": { "w": 365, "h": 48 },
+      "capsulePanelTop": { "w": 365, "h": 368 },
+      "capsulePanelBottom": { "w": 365, "h": 368 },
+      "fullWindow": "NOT CAPTURED AT 125pct -- see fullWindowNote below"
+    },
+    "note": "All figures are window.outerWidth/outerHeight (Tauri LogicalSize units, per CLAUDE.md's Logical-only rule) -- these are DPI-independent by design, which is why 100pct and 125pct numbers agree to within 1px rounding. devicePixelRatio was the only value that differed (1.0 vs 1.25), confirming correct per-monitor DPI handling.",
+    "fullWindowNote": "Switching displayMode to 'full' always opens/centers the window on the PRIMARY monitor (DISPLAY5, 100% scale) regardless of which monitor the pill was on -- this is the app's own designed behavior, not a scripting artifact. A '125%-scale Full window' screenshot was therefore not obtainable without changing the primary monitor's own OS scale, which was out of scope/skipped per the risk rule below. The 100pct_full_*.png set is the only Full-window pixel corpus."
+  },
+
+  "geometryDetail": {
+    "100pct": {
+      "capsule_closed": { "capsule_menu_rect": {"x":6,"y":6,"width":154,"height":36}, "capsule_label_rect": {"x":35,"y":15,"width":100.8125,"height":18}, "border_radius":"18px" },
+      "capsule_open": { "capsule_menu_rect": {"x":38,"y":6,"width":288,"height":36}, "capsule_item_rect": {"x":51,"y":7,"width":44,"height":34}, "border_radius":"18px" },
+      "capsule_panel_top": { "capsule_menu_rect": {"x":38,"y":6,"width":288,"height":36}, "compact_panel_rect": {"x":38,"y":42,"width":288,"height":320}, "compact_panel_header_rect": {"x":39,"y":42,"width":286,"height":32}, "compact_panel_body_rect": {"x":39,"y":74,"width":286,"height":287}, "capsule_active_ind_rect": {"x":99,"y":11,"width":36,"height":28}, "data_zone":"top", "border_radius":"0px 0px 12px 12px" },
+      "capsule_panel_bottom": { "capsule_menu_rect": {"x":38,"y":326,"width":288,"height":36}, "compact_panel_rect": {"x":38,"y":6,"width":288,"height":320}, "data_zone":"bottom", "border_radius":"12px 12px 0px 0px" },
+      "minimal_closed": { "pill_rect": {"x":6,"y":6,"width":36,"height":36}, "border_radius":"50%" },
+      "minimal_island_open": { "island_panel_rect": {"x":6,"y":6,"width":288,"height":320}, "compact_panel_rect": {"x":7,"y":7,"width":288,"height":320}, "border_radius":"12px" }
+    },
+    "125pct": {
+      "capsule_closed": { "capsule_menu_rect": {"x":6.6,"y":6,"width":154,"height":36}, "capsule_label_rect": {"x":35.4,"y":15,"width":100.8,"height":18}, "border_radius":"18px" },
+      "capsule_open": { "capsule_menu_rect": {"x":38,"y":6,"width":288,"height":36}, "capsule_item_rect": {"x":50.8,"y":6.8,"width":44,"height":34.4}, "border_radius":"18px" },
+      "capsule_panel_top": { "capsule_menu_rect": {"x":38,"y":6,"width":288,"height":36}, "compact_panel_rect": {"x":38,"y":42,"width":288,"height":320}, "data_zone":"top", "border_radius":"0px 0px 12px 12px" },
+      "capsule_panel_bottom": { "capsule_menu_rect": {"x":38,"y":326,"width":288,"height":36}, "compact_panel_rect": {"x":38,"y":6,"width":288,"height":320}, "data_zone":"bottom", "border_radius":"12px 12px 0px 0px" },
+      "minimal_closed": { "pill_rect": {"x":6,"y":6,"width":36,"height":36}, "border_radius":"50%" },
+      "minimal_island_open": { "island_panel_rect": {"x":6,"y":6,"width":288,"height":320}, "compact_panel_rect": {"x":6.8,"y":6.8,"width":288,"height":320}, "border_radius":"0px 0px 12px 12px" }
+    },
+    "conclusion": "Every logical-px geometry number is identical (or within 1px rounding) between 100% and 125% OS display scale. This confirms the app's Tauri LogicalSize/LogicalPosition discipline (per repo CLAUDE.md hard rule) is holding correctly across DPI -- no DPI-driven layout bugs were found."
+  },
+
+  "knownIssue_scriptedWindowMove": "When the pill window was relocated across monitors via raw Win32 SetWindowPos (bypassing Tauri's own drag/move APIs) and then interacted with too soon (<1s), the app's cached window-position/monitor state lagged the real OS position, producing wildly wrong compact-panel offsets (rendered fully off-viewport, blank screenshot). Waiting ~4s after each forced move before the next interaction reliably fixed this every time it was tried. This is a scripting-environment artifact of driving the window via raw OS calls, not a defect verified to reproduce under the app's own drag-to-corner/monitor-follow code paths -- noted for whoever automates this again, not filed as a product bug."
+}
