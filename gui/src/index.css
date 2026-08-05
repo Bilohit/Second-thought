@@ -15,12 +15,12 @@
                  a theme accent.
      · Shape   — radius 0 (sharp). One scale, shared at :root, never redefined
                  per theme.
-     · Font    — Geist Mono everywhere.
+     · Font    — IBM Plex Mono everywhere (was Geist Mono until s144).
      · Shadow  — near-flat; elevation reads from borders + surface, not blur.
 
    PASTEL EXCEPTION: the 7 pastel themes below deliberately relax the
    grayscale-accent lock — each gets its own soft, distinct accent plus
-   gently tinted surfaces. Sharp 0px radii and Geist Mono still apply.
+   gently tinted surfaces. Sharp 0px radii and IBM Plex Mono still apply.
 
    Usage — <html data-theme="...">
      dark         Void        (default dark, grayscale)
@@ -37,6 +37,18 @@
 
 /* ── Shared scale (every theme) ──────────────────────────────────────────── */
 :root {
+  /* ── Typeface (V2, s144) ──────────────────────────────────────────────────
+     IBM Plex Mono replaced Geist Mono 2026-08-06 (DECISIONS §5 s144, option B
+     of the rendered specimen). The two faces are metrically identical — 1000
+     upem, uniform 600-unit advance on every rendering glyph — so the swap moves
+     no character-count-derived width and cannot touch the pill morph. The
+     tracking below is the part that DOES move type: it is the V2 mock's global
+     +0.01em, and it widens "Second Thought" from 100.80px to 102.48px inside
+     the frozen 154px capsule (slack 18.2 → 16.52px). Both values are load-
+     bearing; `phone/src/lib/tokens.ts` vendors this pair and must track it. */
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", "Segoe UI Mono", monospace;
+  --track: 0.01em;
+
   /* Spacing scale */
   --space-1: 4px;
   --space-2: 8px;
@@ -409,7 +421,8 @@ html, body, #root {
   overflow: hidden;
   user-select: none;
   color: var(--text-1);
-  font-family: "Geist Mono", ui-monospace, "Cascadia Mono", "Segoe UI Mono", monospace;
+  font-family: var(--mono);
+  letter-spacing: var(--track);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

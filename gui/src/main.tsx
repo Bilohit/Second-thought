@@ -3,11 +3,13 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { initLogger, logger } from "./lib/logger";
 import { applyMotionVars } from "./lib/motionVars";
-// Geist Mono — bundled locally so the offline desktop app honors the font
+// IBM Plex Mono — bundled locally so the offline desktop app honors the font
 // lock without a network fetch. 400 (body) + 500/600 (emphasis) weights.
-import "@fontsource/geist-mono/400.css";
-import "@fontsource/geist-mono/500.css";
-import "@fontsource/geist-mono/600.css";
+// Replaced Geist Mono 2026-08-06 (DECISIONS §5 s144); the faces are metrically
+// identical, so this changed no layout. See index.css's --mono/--track note.
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
+import "@fontsource/ibm-plex-mono/600.css";
 import "./index.css";
 
 initLogger();

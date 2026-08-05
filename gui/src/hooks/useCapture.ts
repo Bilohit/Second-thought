@@ -23,7 +23,7 @@ export interface CaptureStep {
   id: string;
   label: string;
   /** Shorter label for the capsule pill — must fit the "Second Thought" text
-   *  budget (Geist Mono 12px, see CAPSULE_CLOSED_W). Full overlay keeps `label`. */
+   *  budget (IBM Plex Mono 12px, see CAPSULE_CLOSED_W). Full overlay keeps `label`. */
   pillLabel?: string;
   detail?: string;
 }

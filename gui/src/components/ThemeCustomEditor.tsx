@@ -232,7 +232,7 @@ export default function ThemeCustomEditor({ savedSlots, onSave, compact }: Props
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", opacity: 0.45, fontSize: 11, color: "var(--text-2)" }}>
           <LockIcon />
-          <span>radius 0 · Geist Mono · motion — identity — locked</span>
+          <span>radius 0 · IBM Plex Mono · motion — identity — locked</span>
         </div>
 
         <div style={{ fontSize: 10, color: "var(--red)", minHeight: 15, marginTop: 6 }}>

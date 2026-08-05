@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { CAPSULE_CLOSED_W, CAPSULE_LABEL_CHROME } from "../components/PillMenu/CapsuleMenu";
 
-/** Geist Mono 12px measured text width for the idle default label. */
+/** 12px measured text width for the idle default label. Stale by 2.8px (real
+ *  width 100.80px) — pre-dates s144 and unaffected by the IBM Plex swap, since
+ *  both faces carry a uniform 600/1000-em advance. */
 const PILL_REFERENCE_TEXT_W = 98;
 
 /** Every fixed string pillLabel() can show (done-state project names ellipsize). */

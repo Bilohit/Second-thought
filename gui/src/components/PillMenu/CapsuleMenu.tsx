@@ -29,7 +29,9 @@ import type { VoicePhase } from "../../hooks/useVoiceRecording";
 import { formatElapsed } from "../../lib/voiceLimits";
 import FluidVisualizer from "./FluidVisualizer";
 
-// 154px — "Second Thought" (Geist Mono 12px, 98px text) with symmetric side
+// 154px — "Second Thought" (IBM Plex Mono 12px; the 98px below is a stale Geist
+// measurement, real width 100.80px — s144, and the two faces are metrically
+// identical so the swap did not move it) with symmetric side
 // insets: 28px left (12px pad + 8px dot + 8px gap) = 28px right (12px pad +
 // 16px label slack). pillLabel strings in useCapture.ts stay within the text
 // budget; long project names on done ellipsize instead of widening.
