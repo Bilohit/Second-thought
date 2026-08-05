@@ -49,6 +49,19 @@
   --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", "Segoe UI Mono", monospace;
   --track: 0.01em;
 
+  /* ── Type scale (DECISIONS §5 s145) ─────────────────────────────────────
+     Definition only — no existing font size migrates to these. Mirrors
+     lib/type.ts exactly (type.test.ts asserts the two agree); that file
+     carries the full rationale and the ban on half-steps. */
+  --fs-micro: 9px;
+  --fs-label: 10px;
+  --fs-body: 11px;
+  --fs-read: 12px;
+  --fs-lead: 13px;
+  --fs-title: 16px;
+  --fs-display: 20px;
+  --fs-hero: 22px;
+
   /* Spacing scale */
   --space-1: 4px;
   --space-2: 8px;
