@@ -1237,10 +1237,11 @@ html, body, #root {
   border-radius: 18px;
   overflow: hidden;
   cursor: pointer;
-  /* Must equal CAPSULE_ANIM_MS in CapsuleMenu.tsx — bar width and icon
-     stagger share one timeline (for_sonnet.md §4). */
+  /* Duration comes from CAPSULE_ANIM_MS via --capsule-bar-ms (lib/motionVars.ts)
+     — bar width and icon stagger share one timeline (for_sonnet.md §4). The
+     literal is a fallback only; edit the TS constant, never this number. */
   will-change: width, border-radius;
-  transition: width 260ms cubic-bezier(0.16, 1, 0.3, 1),
+  transition: width var(--capsule-bar-ms, 260ms) cubic-bezier(0.16, 1, 0.3, 1),
               transform 0.12s cubic-bezier(0.16, 1, 0.3, 1),
               border-radius 120ms linear;
 }
@@ -1255,14 +1256,18 @@ html, body, #root {
    the panel's clip-exit (starts immediately, see App.tsx's `closingPanel`
    branch) and the bar's width collapse read as one overlapped stagger:
    100 + 260 = 360ms = PANEL_EXIT_MS, the JS settle timer already covers it
-   exactly — never raise that constant instead of this delay.
+   exactly. s143: that arithmetic is now enforced in code — the delay is
+   PANEL_CLOSE_LAG_MS = PANEL_EXIT_MS - CAPSULE_ANIM_MS (lib/motionVars.ts),
+   published as --panel-close-lag-ms and asserted in motionVars.test.ts, so
+   the old "never raise that constant instead of this delay" warning can no
+   longer be violated silently.
    `data-panel-closing` (App.tsx, armed by closeCompactPanel, cleared by the
    reconcile effect's closingPanel branch after that same PANEL_EXIT_MS wait)
    is deliberately NOT `.capsule-menu:not(.open)` — that selector would also
    lag a stage-1-only close (bar-open -> closed, no panel), which must keep
    its immediate 260ms shrink untouched. */
 [data-panel-closing="true"] .capsule-menu {
-  transition-delay: 100ms, 0ms, 0ms;
+  transition-delay: var(--panel-close-lag-ms, 100ms), 0ms, 0ms;
 }
 
 /* Width collapse must shrink FROM the pinned screen edge inward, mirroring the
@@ -1404,10 +1409,11 @@ html, body, #root {
   background: none;
   font: inherit;
   cursor: pointer;
-  /* Must equal CAPSULE_ITEM_PLAY_MS in CapsuleMenu.tsx. */
-  transition: width 180ms var(--menu-travel-ease),
-              opacity 180ms var(--menu-travel-ease),
-              transform 180ms var(--menu-overshoot-ease),
+  /* Duration comes from CAPSULE_ITEM_PLAY_MS via --capsule-item-ms
+     (lib/motionVars.ts). The literal is a fallback only. */
+  transition: width var(--capsule-item-ms, 180ms) var(--menu-travel-ease),
+              opacity var(--capsule-item-ms, 180ms) var(--menu-travel-ease),
+              transform var(--capsule-item-ms, 180ms) var(--menu-overshoot-ease),
               color var(--hover-dur) var(--hover-ease-out);
 }
 
@@ -1571,8 +1577,9 @@ html, body, #root {
   color: var(--text-1);
   clip-path: inset(0 0 100% 0);
   opacity: 0;
-  transition: clip-path 300ms cubic-bezier(0.16, 1, 0.3, 1), opacity 300ms,
-              transform 300ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: clip-path var(--panel-anim-ms, 300ms) cubic-bezier(0.16, 1, 0.3, 1),
+              opacity var(--panel-anim-ms, 300ms),
+              transform var(--panel-anim-ms, 300ms) cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .compact-panel[data-corner="rounded"] { border-radius: 12px; }
@@ -1611,7 +1618,7 @@ html, body, #root {
    reverses immediately (no delay), matching the capsule's own
    content-fades-immediately-on-close contract. */
 .island-panel .compact-panel.open {
-  transition-delay: 300ms;
+  transition-delay: var(--island-content-delay-ms, 300ms);
 }
 .island-panel .compact-panel:not(.open) {
   transition-delay: 0ms;
@@ -1697,7 +1704,7 @@ html, body, #root {
 .compact-panel.open .compact-swap {
   opacity: 1;
   transform: translateY(0);
-  transition-delay: 140ms;
+  transition-delay: var(--panel-lift-delay-ms, 140ms);
 }
 /* Island already gates its own reveal at the .island-panel level
    (`.island-panel .compact-panel.open { transition-delay: 300ms; }` below,
@@ -1739,10 +1746,10 @@ html, body, #root {
    other morph in the app. */
 .island-panel {
   transition:
-    left 300ms cubic-bezier(0.16, 1, 0.3, 1),
-    top 300ms cubic-bezier(0.16, 1, 0.3, 1),
-    width 300ms cubic-bezier(0.16, 1, 0.3, 1),
-    height 300ms cubic-bezier(0.16, 1, 0.3, 1);
+    left var(--panel-anim-ms, 300ms) cubic-bezier(0.16, 1, 0.3, 1),
+    top var(--panel-anim-ms, 300ms) cubic-bezier(0.16, 1, 0.3, 1),
+    width var(--panel-anim-ms, 300ms) cubic-bezier(0.16, 1, 0.3, 1),
+    height var(--panel-anim-ms, 300ms) cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -24,6 +24,11 @@ export const PANEL_H = 320;
 export const PANEL_GAP = 0; // GATE-1 resolved: option A, fused border
 export const PANEL_ANIM_MS = 300;
 export const PANEL_EXIT_MS = PANEL_ANIM_MS + 60;
+// Capsule-only stage-2 choreography: the clip wipe opens the surface first,
+// then panel content fades+rises starting this long after. Lived only as a
+// bare `140ms` in index.css until s143 — see lib/motionVars.ts for why the
+// CSS literals are now sourced from these constants.
+export const PANEL_CONTENT_LIFT_MS = 140;
 
 export interface Point {
   x: number;

@@ -51,8 +51,13 @@ export const CAPSULE_H = 36;
 
 // One coordinated timeline (for_sonnet.md §4): the bar width transition and
 // the icon stagger now share CAPSULE_ANIM_MS, so the last icon finishes
-// at/just before the bar settles instead of ~300ms after it (must match the
-// `--capsule-bar-ms`/`--capsule-item-ms` transition durations in index.css).
+// at/just before the bar settles instead of ~300ms after it.
+// s143: these two constants are the SINGLE SOURCE for the matching CSS
+// durations — lib/motionVars.ts publishes them as `--capsule-bar-ms` and
+// `--capsule-item-ms`, which index.css consumes. (Until s143 this comment
+// claimed those custom properties already existed; they did not, so the
+// values were duplicated literals kept in sync by hope.) Change a number
+// here and the CSS follows; there is no second copy to update.
 export const CAPSULE_ANIM_MS = 260;
 export const CAPSULE_ITEM_PLAY_MS = 180;
 const CAPSULE_EXIT_BUFFER_MS = 60;
