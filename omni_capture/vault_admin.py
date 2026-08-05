@@ -1247,6 +1247,45 @@ async def set_sync_ignore(body: SyncIgnorePatch):
     return {"ok": True, "ignored": sorted(updated)}
 
 
+# -- Phase-1 SYNC panel data layer (read-only) -------------------------------
+# Both live here rather than in server.py for the same reason /sync/ignore,
+# /trash/delete-prompts and /vault/conflicts do: they are read-only vault/sidecar
+# scans, not scheduler control. server.py keeps the two routes that COMMAND the
+# scheduler (/sync/status, /sync/run); everything the SYNC panel merely reads is
+# on this router, which server.py mounts with the same Depends(_require_secret).
+
+@router.get("/sync/activity")
+async def sync_activity_endpoint(limit: int = 25):
+    """Task 1.2: newest-first capture/note activity, bounded by `limit` and
+    clamped server-side (sync_activity.MAX_LIMIT).
+
+    Deliberately does NOT fold `sync_scheduler.status()["history"]` rows in:
+    those are pass-level aggregate counts with no note ids, so rendering one as
+    an event would invent a row. The pass strip reads /sync/status itself."""
+    from sync_activity import read_activity
+    return read_activity(limit)
+
+
+@router.get("/sync/pending")
+async def sync_pending_endpoint(hub: bool = False):
+    """Task 1.3 (hybrid, user decision s143).
+
+    `hub=false` (default) is the RESTING answer: a local hash-vs-sidecar diff
+    plus held delete prompts, zero network calls, labelled "Changed since last
+    sync". Safe at /sync/status poll cadence.
+
+    `hub=true` is for an explicit user gesture ONLY (expand / Sync now): it adds
+    ONE Drive listing and upgrades the answer to exact will_upload / blocked /
+    to_pull.
+
+    An unreadable sync-ignore set returns `status: "blocked"` with the
+    underlying error and NO counts — never 0, which would read as "all synced"
+    at the exact moment run_pass refuses the whole sync."""
+    from sync_pending import local_pending, pending_with_hub
+    root = _srv()._get_vault_root()
+    return pending_with_hub(root) if hub else local_pending(root)
+
+
 if __name__ == "__main__":
     # Smoke check: _safe_folder_dir accepts a plain name and rejects
     # traversal/separator attempts, independent of any FastAPI wiring.
