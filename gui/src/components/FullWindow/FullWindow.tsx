@@ -4,10 +4,11 @@ import SegmentedToggle from "../ui/SegmentedToggle";
 import LookPanel from "../LookPanel";
 import SettingsPanel from "../SettingsPanel";
 import NotesView from "./NotesView";
-import LibraryView from "./LibraryView";
+import BrowseView from "./BrowseView";
+import TrashView from "./TrashView";
 import HistoryView from "./HistoryView";
 import { railSliderFromElement } from "../../lib/railSelection";
-import { MenuIcon, RefreshIcon, FileIcon, CloudIcon, ChatIcon } from "../PillMenu/icons";
+import { MenuIcon, RefreshIcon, FileIcon, CloudIcon, ChatIcon, ListIcon, StarIcon } from "../PillMenu/icons";
 import { syncVaultIndex, getStats, getInbox } from "../../lib/api";
 import InboxPanel, { type InboxTab } from "../InboxPanel";
 import ErrorBoundary from "../ErrorBoundary";
@@ -208,6 +209,13 @@ export default function FullWindow(props: FullWindowProps) {
   // `viewRouting.ts`, independent of anything NOTES renders.
   const [inboxTab] = useState<InboxTab>("inbox");
   const [browseSection, setBrowseSection] = useState<"vault" | "trash">("vault");
+  // P3-C1: the mock's titlebar LIST/STARS toggle (SecondThoughtV2.html:897-899)
+  // — lives here, not inside BrowseView, for the same reason `browseSection`
+  // does: both are per-tab topbar controls FullWindow already owns (see the
+  // CHAT tab's Search/Chat SegmentedToggle above). Only meaningful over the
+  // vault half of `browseSection` — Trash has no list/stars concept, the
+  // mock doesn't cover it at all (see this task's report).
+  const [browseMode, setBrowseMode] = useState<"list" | "stars">("list");
   const [healthOpen, setHealthOpen] = useState(false);
   const [healthVault, setHealthVault] = useState<number | null>(null);
   const [healthInbox, setHealthInbox] = useState<number | null>(null);
@@ -391,7 +399,7 @@ export default function FullWindow(props: FullWindowProps) {
             </div>
           )}
           {view === "browse" && (
-            <div className="no-drag" style={{ display: "flex", alignItems: "center" }}>
+            <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <SegmentedToggle
                 ariaLabel="Vault section"
                 options={[
@@ -401,6 +409,21 @@ export default function FullWindow(props: FullWindowProps) {
                 value={browseSection}
                 onChange={setBrowseSection}
               />
+              {/* P3-C1: the mock's LIST/STARS toggle — icon-only per the
+                  identity rule (all switches are icon-only), `label` still
+                  supplies the accessible name/tooltip. Only shown over the
+                  vault half of the split — see `browseMode`'s comment. */}
+              {browseSection === "vault" && (
+                <SegmentedToggle
+                  ariaLabel="Browse view"
+                  options={[
+                    { key: "list" as const, label: "List", icon: <ListIcon size={13} /> },
+                    { key: "stars" as const, label: "Constellation", icon: <StarIcon size={13} /> },
+                  ]}
+                  value={browseMode}
+                  onChange={setBrowseMode}
+                />
+              )}
             </div>
           )}
         </div>
@@ -453,12 +476,24 @@ export default function FullWindow(props: FullWindowProps) {
         )}
         {view === "browse" && (
           <div key="browse" className="fw-view-panel">
-            {/* P3-C: BROWSE is entirely net-new (sectioned search + paged
-                4x2 project rects + tag list + a titlebar LIST/STARS toggle —
-                none of that exists today). LibraryView (ProjectsRail +
-                ProjectsPane + Trash) is the nearest equivalent — mounted
-                unmodified. */}
-            <LibraryView visible section={browseSection} onOpenNote={openNote} />
+            {/* P3-C1: BROWSE is now the mock's real interior — sectioned
+                search + paged 4x2 project tiles + tag list, STARS stubbed
+                (BrowseView.tsx). `browseSection` keeps its pre-existing
+                vault/trash split (topbar above) — the mock has no trash
+                concept at all, so Trash renders TrashView directly here
+                exactly as LibraryView used to, instead of going through the
+                now-unmounted LibraryView/ProjectsView/ProjectsRail/
+                ProjectsPane stack (left in place per this task's brief —
+                not deleted, just superseded on this route). */}
+            {browseSection === "vault" ? (
+              <BrowseView visible mode={browseMode} onOpenNote={openNote} />
+            ) : (
+              <div style={{ flex: 1, minHeight: 0, padding: 14, display: "flex" }}>
+                <div style={{ flex: 1, minHeight: 0, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+                  <TrashView visible />
+                </div>
+              </div>
+            )}
           </div>
         )}
         {view === "sync" && (

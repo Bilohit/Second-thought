@@ -500,3 +500,14 @@ export function CalendarIcon({ size = 14 }: { size?: number }): JSX.Element {
     </svg>
   );
 }
+
+/** Five-point star glyph — P3-C's BROWSE titlebar LIST/STARS toggle
+ *  (constellation-view position). Path transcribed 1:1 from the mock's
+ *  `#i-star` symbol (SecondThoughtV2.html:868). */
+export function StarIcon({ size = 14 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3l2.2 5.6L20 10.8l-5.8 2.2L12 19l-2.2-6L4 10.8l5.8-2.2z" />
+    </svg>
+  );
+}

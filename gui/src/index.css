@@ -808,6 +808,39 @@ html, body, #root {
 .pp-note-del:hover { color: var(--red); background: rgba(255,100,103,0.12); }
 .pp-note-del:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
 
+/* BrowseView.tsx (P3-C1, `br-` prefix) — same relocation rule as the
+   PROJECTS block above: a component-local <style> tag is dead in production
+   (CSP style-src 'self', no 'unsafe-inline'), so hover/focus-visible rules
+   live here instead. Text glow uses --accent-glow (the same token the pill's
+   own glow ring uses), never an invented literal rgba. */
+.br-projcard { transition: border-color 160ms var(--hover-ease-out); }
+.br-projcard:hover { border-color: var(--accent); }
+.br-projcard:hover .br-pc-name { text-shadow: 0 0 8px var(--accent-glow); }
+.br-projcard:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.br-tagrow, .br-noterow { transition: background 160ms var(--hover-ease-out), color 160ms var(--hover-ease-out); }
+.br-tagrow:hover, .br-noterow:hover { background: var(--surface-2); color: var(--text-1); }
+.br-tagrow:focus-visible, .br-noterow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.br-parrow { transition: color 160ms var(--hover-ease-out); }
+.br-parrow:hover:not(:disabled) { color: var(--text-1); }
+.br-parrow:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.br-parrow:disabled { opacity: 0.35; cursor: default; }
+.br-pdot { transition: background 160ms var(--hover-ease-out); }
+.br-pdot:hover { background: var(--text-2); }
+.br-pdot:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.br-subback { transition: color 160ms var(--hover-ease-out); }
+.br-subback:hover { color: var(--text-1); }
+.br-subback:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* BrowseStarsView.tsx (P3-C2, `bs-` prefix) — same relocation rule as BrowseView's `br-` block
+   above: a component-local <style> tag is dead in production CSP. Twinkle is SecondThoughtV2.html
+   :210-211 verbatim (3.4s ease-in-out infinite, delay via --twd custom property set per-node inline).
+   Reduced motion: this file's global rule (below, `@media (prefers-reduced-motion: reduce)`) already
+   collapses every animation to a single ~0ms iteration, but the mock also states the intent
+   explicitly (:838 `.star .core{animation:none}`) — restated here for the same reason, on `.bs-core`. */
+@keyframes bsTwinkle { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+.bs-lbl { transition: color 160ms var(--hover-ease-out), text-shadow 160ms var(--hover-ease-out); }
+.bs-star:hover .bs-lbl { color: var(--text-1); text-shadow: 0 0 8px var(--accent-glow); }
+
 /* ═══════════════════════════════════════════════════════════════════════════
    WAVE 6 (O-8c) — animation-pass additions. Same locked vocabulary as above:
    travel cubic-bezier(0.22,1,0.36,1) / settle cubic-bezier(0.16,1,0.3,1),
@@ -921,6 +954,11 @@ html, body, #root {
     transition-duration:       0.01ms !important;
     scroll-behavior:           auto   !important;
   }
+
+  /* BrowseStarsView.tsx — explicit, matching the mock's own explicit rule (SecondThoughtV2.html
+     :838), on top of the blanket 0.01ms collapse above. Drift is disabled in JS (starsSim.ts's
+     `reducedMotion` opt); this is twinkle's other, CSS-only half. */
+  .bs-core { animation: none; }
 
   @keyframes checkPop {
     from { opacity: 0; }
