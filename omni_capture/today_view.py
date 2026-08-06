@@ -110,7 +110,8 @@ def _daily_body(day_iso: str, tag: Optional[str]) -> str:
 
 def _write_note_file(vault_root: Path, folder: str, title: str, body: str,
                       filename_stem: Optional[str] = None,
-                      now_iso: Optional[str] = None) -> dict:
+                      now_iso: Optional[str] = None,
+                      remind_at: Optional[str] = None) -> dict:
     """Shared desktop note-origination write path — the ONE place that mints a note id, builds the
     `Note`, and writes it atomically. `create_daily_note` and `create_note` both call this rather
     than each re-authoring their own write, so the two routes stay locked to the identical
@@ -118,7 +119,12 @@ def _write_note_file(vault_root: Path, folder: str, title: str, body: str,
 
     `filename_stem` defaults to the freshly-minted id; `create_daily_note` overrides it to
     `day_iso` so the file stays discoverable by the S1 title-match convention. `folder=""` writes
-    to the vault root. Returns {"id", "path", "title"}. `now_iso` is injectable for tests."""
+    to the vault root. Returns {"id", "path", "title"}. `now_iso` is injectable for tests.
+
+    `remind_at` (CAL-D): an optional ISO string landing straight in the `remind_at` frontmatter key
+    via the `Note` struct + `serialize_note` — the SAME field `reconcile.py`'s LWW merge and
+    `reminders.sync_reminders_from_notes` already read. `None` (the default, every pre-existing
+    caller) serializes to no `remind_at:` line at all, matching prior output byte-for-byte."""
     from mobile_sync_agent import _atomic_write_note, _mint_capture_id
     from note_model import serialize_note
     from project_registry import load as load_registry
@@ -127,7 +133,7 @@ def _write_note_file(vault_root: Path, folder: str, title: str, body: str,
     ts = now_iso or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())  # UTC-Z, desktop convention
     note = Note(
         id=_mint_capture_id(), created=ts, origin="note", title=title,
-        aliases=[], tags=[], remind_at=None,
+        aliases=[], tags=[], remind_at=remind_at,
         origin_device="desktop", enriched=False, enrich_source=None,
         modified=ts, device="desktop", attachments=[], extra={},
         body=body,
@@ -195,7 +201,8 @@ def create_daily_note(vault_root: Path, day_iso: str, folder: Optional[str] = No
                              filename_stem=day_iso, now_iso=now_iso)
 
 
-def create_note(vault_root: Path, title: Optional[str] = None, now_iso: Optional[str] = None) -> dict:
+def create_note(vault_root: Path, title: Optional[str] = None, now_iso: Optional[str] = None,
+                 body: Optional[str] = None, remind_at: Optional[str] = None) -> dict:
     """Always-new generic note origination — the desktop's SECOND note-origination path, alongside
     `create_daily_note`. Unlike the daily note this is never find-or-create: every call mints a
     fresh note, filed in `_loose/` (never `Daily/`). Invoked from POST `/note`. Reuses
@@ -210,10 +217,17 @@ def create_note(vault_root: Path, title: Optional[str] = None, now_iso: Optional
     re-filed once the user tagged it. A fresh note has an empty body, so it carries no
     `#project@` tag by construction, and the data model's own rule for an unresolved project is
     `projects.note_dir_for(None) == LOOSE_DIR` — the same `_loose/` every other writer already
-    uses (mobile_sync_agent.py:617). Landing it there makes it tidy-visible from birth."""
+    uses (mobile_sync_agent.py:617). Landing it there makes it tidy-visible from birth.
+
+    `body` (CAL-D): optional body text — e.g. an inline `#project@<name>` tag the caller wants
+    resolved into the `project:` frontmatter cache exactly like any other note (body is truth,
+    never a literal project name). `remind_at` (CAL-D): optional ISO string threaded straight to
+    `_write_note_file` → the `remind_at` frontmatter key. Both default to the prior behaviour
+    (empty body, no reminder) so every existing caller is unaffected."""
     from projects import note_dir_for   # function-local, matching this module's import style
 
-    return _write_note_file(vault_root, note_dir_for(None), title or "", "", now_iso=now_iso)
+    return _write_note_file(vault_root, note_dir_for(None), title or "", body or "",
+                             now_iso=now_iso, remind_at=remind_at)
 
 
 def build_today(

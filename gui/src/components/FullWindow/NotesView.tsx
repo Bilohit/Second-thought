@@ -38,20 +38,24 @@
  * `FullWindow` already threads through (see `hooks/useCapture.ts:83-88`
  * for `STEP_DEFS`), not a mock sequence.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import StepIndicator from "../StepIndicator";
 import FluidVisualizer from "../PillMenu/FluidVisualizer";
-import { MicIcon, PencilIcon, ClipboardIcon, ImageIcon, PlusIcon, ChevronRightIcon } from "../PillMenu/icons";
+import {
+  MicIcon, PencilIcon, ClipboardIcon, ImageIcon, PlusIcon, ChevronRightIcon,
+  ChevronLeftIcon, CalendarIcon, CloseIcon,
+} from "../PillMenu/icons";
 import { formatElapsed } from "../../lib/voiceLimits";
 import { captureRadialFan, type CaptureSatelliteId } from "../../lib/captureRadial";
-import { searchCaptures, getConfig, checkHealth, type SearchResult } from "../../lib/api";
+import { monthWeeks, addMonths, todayYearMonth, isoDate, classifyReminder, groupByDay, type ReminderTier } from "../../lib/calendarMonth";
+import { searchCaptures, getConfig, checkHealth, listReminders, createNote, type SearchResult, type Reminder } from "../../lib/api";
 import { fileKind } from "../../lib/fileIngest";
 import { logger } from "../../lib/logger";
 import { formatHotkey, DEFAULT_HOTKEY } from "../../lib/hotkey";
 import { displayProject } from "../../lib/projectsView";
-import { label as fsLabel, body as fsBody, read as fsRead, title as fsTitle } from "../../lib/type";
+import { micro as fsMicro, label as fsLabel, body as fsBody, read as fsRead, title as fsTitle } from "../../lib/type";
 import type { CaptureState, CaptureStep } from "../../hooks/useCapture";
 import type { VoicePhase } from "../../hooks/useVoiceRecording";
 
@@ -81,12 +85,23 @@ const SATELLITE_ICON: Record<CaptureSatelliteId, (size: number) => React.ReactNo
   voice: (size) => <MicIcon size={size} />,
   clip: (size) => <ClipboardIcon size={size} />,
   shot: (size) => <ImageIcon size={size} />,
+  calendar: (size) => <CalendarIcon size={size} />,
 };
 const SATELLITE_TITLE: Record<CaptureSatelliteId, string> = {
   note: "Blank note",
   voice: "Voice capture",
   clip: "Capture clipboard",
   shot: "Capture a screenshot file",
+  calendar: "Calendar",
+};
+
+const WEEKDAY_LABELS = ["S", "M", "T", "W", "T", "F", "S"];
+
+/** CAL-D: red=overdue, dim=already fired, plain=upcoming — the calendar's one semantic-colour rule. */
+const TIER_COLOR: Record<ReminderTier, string> = {
+  overdue: "var(--red)",
+  fired: "var(--text-3)",
+  upcoming: "var(--text-2)",
 };
 
 const IMAGE_FILTER = { name: "Image", extensions: ["png", "jpg", "jpeg", "gif", "webp"] };
@@ -101,10 +116,92 @@ export default function NotesView({
   const [ffmpegOk, setFfmpegOk] = useState(true);
   const [dragOver, setDragOver] = useState(false);
 
+  // -- CAL-D: calendar morph state ---------------------------------------------------------
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [calYear, setCalYear] = useState(() => todayYearMonth(new Date()).year);
+  const [calMonth, setCalMonth] = useState(() => todayYearMonth(new Date()).month);
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [composerTitle, setComposerTitle] = useState("");
+  const [composerBody, setComposerBody] = useState("");
+  const [composerTime, setComposerTime] = useState("08:00");
+  const [composerProject, setComposerProject] = useState("");
+  const [composerBusy, setComposerBusy] = useState(false);
+
   useEffect(() => {
     getConfig().then((cfg) => setHotkey(cfg.gui?.hotkey ?? DEFAULT_HOTKEY)).catch(() => {});
     checkHealth().then((h) => setFfmpegOk(h.ffmpeg)).catch(() => setFfmpegOk(true));
   }, []);
+
+  // Read source: GET /reminders (via listReminders), NOT notes' remind_at directly. The
+  // reminders table is already reconciled from every note's remind_at (reminders.py
+  // sync_reminders_from_notes, one-way notes -> table) AND carries the `status` field
+  // (pending/fired) the "dim = already fired" tier needs -- a bit that exists ONLY in this
+  // table, never in note frontmatter. Reading notes directly would need a second index of
+  // remind_at across the whole vault and could never show fired state at all.
+  useEffect(() => {
+    if (!calendarOpen) return;
+    listReminders().then(setReminders).catch((err) => logger.warn("notes", "reminders fetch failed", err));
+  }, [calendarOpen]);
+
+  const weeks = useMemo(() => monthWeeks(calYear, calMonth, new Date()), [calYear, calMonth]);
+  const remindersByDay = useMemo(() => groupByDay(reminders), [reminders]);
+  const monthLabel = useMemo(
+    () => new Date(calYear, calMonth, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+    [calYear, calMonth],
+  );
+  const selectedDayReminders = useMemo(() => {
+    if (!selectedDay) return [];
+    return (remindersByDay.get(selectedDay) ?? []).slice().sort((a, b) => a.fire_at.localeCompare(b.fire_at));
+  }, [remindersByDay, selectedDay]);
+  const selectedDayLabel = selectedDay
+    ? new Date(`${selectedDay}T00:00`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })
+    : "";
+
+  const goMonth = (delta: number) => {
+    const next = addMonths(calYear, calMonth, delta);
+    setCalYear(next.year);
+    setCalMonth(next.month);
+  };
+  const goToday = () => {
+    const t = todayYearMonth(new Date());
+    setCalYear(t.year);
+    setCalMonth(t.month);
+    selectDay(isoDate(new Date()));
+  };
+  const selectDay = (iso: string) => {
+    setSelectedDay(iso);
+    setComposerTitle("");
+    setComposerBody("");
+    setComposerProject("");
+    setComposerTime("08:00");
+  };
+  const closeCalendar = () => {
+    setCalendarOpen(false);
+    setSelectedDay(null);
+  };
+  const submitComposer = async () => {
+    const title = composerTitle.trim();
+    if (!selectedDay || !title || composerBusy) return;
+    setComposerBusy(true);
+    try {
+      const remindAt = `${selectedDay}T${composerTime || "08:00"}`;
+      const lines: string[] = [];
+      if (composerBody.trim()) lines.push(composerBody.trim());
+      const project = composerProject.trim().replace(/^#?project@/i, "").replace(/^@/, "").trim();
+      if (project) lines.push(`#project@${project}`);
+      const body = lines.length ? lines.join("\n") + "\n" : "";
+      await createNote(title, { body, remindAt });
+      setReminders(await listReminders());
+      setComposerTitle("");
+      setComposerBody("");
+      setComposerProject("");
+    } catch (err) {
+      logger.warn("notes", "calendar reminder create failed", err);
+    } finally {
+      setComposerBusy(false);
+    }
+  };
 
   // Refetch on open and whenever a capture just settled -- same trigger
   // DashboardView already used for its Recent-activity card.
@@ -138,13 +235,15 @@ export default function NotesView({
   const isIdle = captureState.phase === "idle";
   const showAction = !isIdle;
   const showVoice = isIdle && voicePhase !== "idle";
-  const showFan = isIdle && voicePhase === "idle";
+  const showCalendar = isIdle && voicePhase === "idle" && calendarOpen;
+  const showFan = isIdle && voicePhase === "idle" && !calendarOpen;
 
   const runSatellite = (id: CaptureSatelliteId) => {
     setRadialOpen(false);
     if (id === "note") { onOpenFile(null); return; }
     if (id === "voice") { if (ffmpegOk) onVoiceToggle(); return; }
     if (id === "clip") { onCaptureNow(); return; }
+    if (id === "calendar") { setCalendarOpen(true); return; }
     // shot: no live screen-grab API anywhere in this app -- pick an
     // already-captured screenshot file and ingest it via the real
     // captureFile path (see file header for the honest-substitute note).
@@ -218,6 +317,142 @@ export default function NotesView({
           </div>
         )}
 
+        {showCalendar && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flex: "none" }}>
+              <span style={{ fontSize: fsLabel, letterSpacing: "0.18em", color: "var(--text-3)" }}>CALENDAR</span>
+              <button type="button" className="icon-close-btn" aria-label="Close calendar" onClick={closeCalendar}>
+                <CloseIcon size={12} />
+              </button>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flex: "none" }}>
+              <button type="button" className="btn-hover icon-btn" aria-label="Previous month" onClick={() => goMonth(-1)}>
+                <ChevronLeftIcon size={12} />
+              </button>
+              <span style={{ fontSize: fsBody, color: "var(--text-1)" }}>{monthLabel}</span>
+              <button type="button" className="btn-hover icon-btn" aria-label="Next month" onClick={() => goMonth(1)}>
+                <ChevronRightIcon size={12} />
+              </button>
+            </div>
+            <button
+              type="button"
+              className="btn-hover"
+              onClick={goToday}
+              style={{ flex: "none", fontSize: fsLabel, color: "var(--text-2)", background: "none", border: "1px solid var(--border)", padding: "4px 10px", cursor: "pointer", alignSelf: "center" }}
+            >
+              Today
+            </button>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, flex: "none" }}>
+              {WEEKDAY_LABELS.map((w, i) => (
+                <div key={i} style={{ fontSize: fsMicro, color: "var(--text-3)", textAlign: "center" }}>{w}</div>
+              ))}
+              {weeks.flat().map((day) => {
+                const dayReminders = (remindersByDay.get(day.iso) ?? []).slice().sort((a, b) => a.fire_at.localeCompare(b.fire_at));
+                const dots = dayReminders.slice(0, 3);
+                const overflow = dayReminders.length - dots.length;
+                const isSelected = selectedDay === day.iso;
+                return (
+                  <button
+                    key={day.iso}
+                    type="button"
+                    className="btn-hover"
+                    aria-current={day.isToday ? "date" : undefined}
+                    aria-pressed={isSelected}
+                    aria-label={day.date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+                    onClick={() => selectDay(day.iso)}
+                    style={{
+                      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-start",
+                      gap: 1, minHeight: 34, padding: "3px 0", cursor: "pointer", fontFamily: "inherit",
+                      border: `1px solid ${isSelected ? "var(--accent)" : "var(--border-2)"}`,
+                      background: day.isToday ? "var(--accent-d)" : "transparent",
+                      color: day.inMonth ? "var(--text-1)" : "var(--text-3)",
+                      opacity: day.inMonth ? 1 : 0.4,
+                    }}
+                  >
+                    <span style={{ fontSize: fsMicro, fontVariantNumeric: "tabular-nums" }}>{day.date.getDate()}</span>
+                    <span style={{ display: "flex", gap: 2, height: 4, alignItems: "center" }}>
+                      {dots.map((r) => (
+                        <span key={r.id} style={{ width: 4, height: 4, borderRadius: "50%", background: TIER_COLOR[classifyReminder(r.status, r.fire_at, new Date())] }} />
+                      ))}
+                    </span>
+                    {overflow > 0 && <span style={{ fontSize: fsMicro, color: "var(--text-3)" }}>+{overflow}</span>}
+                  </button>
+                );
+              })}
+            </div>
+
+            {selectedDay && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--border-2)", paddingTop: 8, flex: "none" }}>
+                <span style={{ fontSize: fsLabel, color: "var(--text-2)" }}>{selectedDayLabel}</span>
+
+                {selectedDayReminders.length === 0 && (
+                  <span style={{ fontSize: fsBody, color: "var(--text-3)" }}>No reminders</span>
+                )}
+                {selectedDayReminders.map((r) => (
+                  <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0, background: TIER_COLOR[classifyReminder(r.status, r.fire_at, new Date())] }} />
+                    <span style={{ fontSize: fsBody, color: "var(--text-1)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.label}</span>
+                    <span style={{ fontSize: fsLabel, color: "var(--text-3)", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>{r.fire_at.slice(11, 16) || r.fire_at}</span>
+                  </div>
+                ))}
+
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 2 }}>
+                  <label htmlFor="cal-composer-title" style={fieldLabelStyle}>Title</label>
+                  <input
+                    id="cal-composer-title"
+                    type="text"
+                    value={composerTitle}
+                    onChange={(e) => setComposerTitle(e.target.value)}
+                    placeholder="Reminder title"
+                    style={fieldInputStyle}
+                  />
+
+                  <label htmlFor="cal-composer-body" style={fieldLabelStyle}>Note (optional)</label>
+                  <textarea
+                    id="cal-composer-body"
+                    value={composerBody}
+                    onChange={(e) => setComposerBody(e.target.value)}
+                    placeholder="Add detail…"
+                    rows={2}
+                    style={{ ...fieldInputStyle, resize: "none" }}
+                  />
+
+                  <label htmlFor="cal-composer-time" style={fieldLabelStyle}>Time — defaults to 08:00</label>
+                  <input
+                    id="cal-composer-time"
+                    type="time"
+                    value={composerTime}
+                    onChange={(e) => setComposerTime(e.target.value || "08:00")}
+                    style={fieldInputStyle}
+                  />
+
+                  <label htmlFor="cal-composer-project" style={fieldLabelStyle}>Project (optional)</label>
+                  <input
+                    id="cal-composer-project"
+                    type="text"
+                    value={composerProject}
+                    onChange={(e) => setComposerProject(e.target.value)}
+                    placeholder="#project@name"
+                    style={fieldInputStyle}
+                  />
+
+                  <button
+                    type="button"
+                    className="btn-hover"
+                    disabled={!composerTitle.trim() || composerBusy}
+                    onClick={submitComposer}
+                    style={captureBtnStyle(true)}
+                  >
+                    {composerBusy ? "Creating…" : "Create reminder"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {showFan && (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16, flex: 1 }}>
             <div style={{ position: "relative", width: "100%", height: 160, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
@@ -287,3 +522,10 @@ function captureBtnStyle(primary: boolean): React.CSSProperties {
     padding: "5px 12px", cursor: "pointer", fontFamily: "inherit",
   };
 }
+
+// CAL-D: inline composer field chrome — shared by the title/body/time/project inputs.
+const fieldLabelStyle: React.CSSProperties = { fontSize: fsMicro, color: "var(--text-3)" };
+const fieldInputStyle: React.CSSProperties = {
+  fontSize: fsBody, color: "var(--text-1)", background: "var(--bg)", border: "1px solid var(--border)",
+  padding: "5px 7px", fontFamily: "inherit", width: "100%", boxSizing: "border-box",
+};

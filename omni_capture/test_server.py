@@ -1370,6 +1370,29 @@ def test_post_note_creates_note_with_daily_note_frontmatter_shape(tmp_path: Path
     assert note_path.stem != daily_path.stem
 
 
+def test_post_note_with_remind_at_writes_frontmatter(tmp_path: Path):
+    """CAL-D: POST /note's new optional remind_at lands in the note's own frontmatter through the
+    same writer every note-origination path uses -- never the SQLite reminders table (that table
+    only ever reads FROM notes)."""
+    from note_model import parse_note
+
+    client, cfg = _note_client(tmp_path)
+    with mock.patch("config.get_config", lambda: cfg):
+        made = client.post("/note", json={"title": "call mom", "remind_at": "2026-08-10T08:00"})
+        assert made.status_code == 200, made.text
+        note_path = Path(made.json()["path"])
+
+    note = parse_note(note_path.read_text(encoding="utf-8", newline=""))
+    assert note.remind_at == "2026-08-10T08:00"
+
+
+def test_post_note_rejects_unparseable_remind_at(tmp_path: Path):
+    client, cfg = _note_client(tmp_path)
+    with mock.patch("config.get_config", lambda: cfg):
+        made = client.post("/note", json={"title": "bad", "remind_at": "not-a-date"})
+    assert made.status_code == 400
+
+
 def test_post_note_lands_where_project_tidy_can_actually_see_it(tmp_path: Path):
     """FR-29: /note used to write straight into the vault ROOT, and `_filed_notes` checks
     `entry.is_dir()` before it ever looks at a file -- so a brand-new note was structurally

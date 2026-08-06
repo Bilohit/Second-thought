@@ -981,11 +981,17 @@ export async function createDailyNote(day?: string): Promise<TodayDailyNote> {
 // Always-new generic note origination (POST /note, Task 1) — `_loose/`, not Daily/, and never
 // find-or-create (unlike createDailyNote above). Same response shape as /today/daily-note.
 // (FR-27/FR-29: it used to land in the vault root, where project-tidy could never see it.)
-export async function createNote(title?: string): Promise<TodayDailyNote> {
+// CAL-D: `opts.body`/`opts.remindAt` thread straight to the server's NoteCreate.body/remind_at —
+// remindAt lands in the note's own `remind_at` frontmatter (the LWW-merged field that crosses
+// devices with the note), the ONLY way a desktop-set reminder reaches the phone.
+export async function createNote(
+  title?: string,
+  opts?: { body?: string; remindAt?: string },
+): Promise<TodayDailyNote> {
   const r = await fetch(`${BASE}/note`, {
     method: "POST",
     headers: await authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ title: title ?? null }),
+    body: JSON.stringify({ title: title ?? null, body: opts?.body ?? null, remind_at: opts?.remindAt ?? null }),
   });
   await assertOk(r, "Failed to create note");
   return r.json() as Promise<TodayDailyNote>;

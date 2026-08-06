@@ -154,3 +154,40 @@ def test_create_daily_note_matches_existing_elsewhere(tmp_path):
     res = create_daily_note(tmp_path, "2026-07-26")
     assert res["id"] == "d1"
     assert not (tmp_path / "Daily" / "2026-07-26.md").exists()   # no second file minted
+
+
+# -- CAL-D: create_note(remind_at=..., body=...) -----------------------------------------------
+
+def test_create_note_with_remind_at_lands_in_frontmatter(tmp_path):
+    """The one new capability: create_note can mint a note whose remind_at frontmatter is already
+    set, through the SAME writer every other note-origination path uses -- never the SQLite
+    reminders table (that table only ever reads FROM notes, via sync_reminders_from_notes)."""
+    from today_view import create_note
+
+    res = create_note(tmp_path, title="Pay rent", remind_at="2026-08-10T08:00")
+    note = parse_note(Path(res["path"]).read_text(encoding="utf-8", newline=""))
+    assert note.remind_at == "2026-08-10T08:00"
+    assert note.title == "Pay rent"
+
+
+def test_create_note_without_remind_at_omits_the_key_entirely(tmp_path):
+    """Default (no reminder) must stay byte-identical to pre-CAL-D behaviour -- no `remind_at:`
+    line at all, not `remind_at: null` or similar."""
+    from today_view import create_note
+
+    res = create_note(tmp_path, title="No reminder")
+    raw = Path(res["path"]).read_text(encoding="utf-8", newline="")
+    assert "remind_at" not in raw
+    note = parse_note(raw)
+    assert note.remind_at is None
+
+
+def test_create_note_with_body_carries_a_project_tag(tmp_path):
+    """`body` (e.g. from the calendar composer's optional `#project@<name>`) is passed straight
+    through to the shared writer -- project resolution is body-authoritative, never a literal
+    name baked into the note-create call."""
+    from today_view import create_note
+
+    res = create_note(tmp_path, title="Ship the thing", body="#project@launch\n")
+    note = parse_note(Path(res["path"]).read_text(encoding="utf-8", newline=""))
+    assert note.body == "#project@launch\n"

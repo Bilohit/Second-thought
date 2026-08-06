@@ -648,6 +648,10 @@ class NoteBodyUpdate(BaseModel):
 
 class NoteCreate(BaseModel):
     title: Optional[str] = None
+    # CAL-D: optional body text (e.g. an inline `#project@<name>` tag) and an optional ISO
+    # `remind_at` — both thread straight through to today_view.create_note's new params.
+    body: Optional[str] = None
+    remind_at: Optional[str] = None
 
 class NoteAttachmentCreate(BaseModel):
     path: str
@@ -1918,11 +1922,24 @@ async def create_note_route(body: NoteCreate, _: None = Depends(_require_secret)
     action, alongside POST /today/daily-note above — unlike that route this is never
     find-or-create (two calls make two distinct notes) and never lands in `Daily/`. Reuses
     `create_daily_note`'s write path (`today_view._write_note_file`), so it emits the identical
-    frontmatter key set (origin:note, origin_device:desktop, ...). Returns {id,path,title}."""
+    frontmatter key set (origin:note, origin_device:desktop, ...). Returns {id,path,title}.
+
+    CAL-D: `body.remind_at`, when given, lands in the note's `remind_at` frontmatter (validated
+    here the same way POST /reminders validates `when_iso` — fail fast on a bad ISO string rather
+    than writing an unparseable value into the note). This is the ONLY write path for a
+    desktop-authored reminder that survives to the phone (LWW-merged via `reconcile.py`); the
+    SQLite `reminders` table is scheduling state only and picks this note up on its own via
+    `sync_reminders_from_notes`, never the reverse."""
+    from datetime import datetime
     from config import get_config
     from today_view import create_note
+    if body.remind_at is not None:
+        try:
+            datetime.fromisoformat(body.remind_at)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid remind_at: {body.remind_at!r}")
     cfg = get_config()
-    return create_note(Path(cfg.vault.root), body.title)
+    return create_note(Path(cfg.vault.root), body.title, body=body.body, remind_at=body.remind_at)
 
 
 # -- Full-window note editor (F-7) ---------------------------------------------
