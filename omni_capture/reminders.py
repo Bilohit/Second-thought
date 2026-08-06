@@ -201,13 +201,47 @@ def delete_reminder(db_path: Path, reminder_id: int) -> None:
         )
 
 
-def sync_reminders_from_notes(db_path: Path, notes: list[tuple[str, str]]) -> dict:
+def _normalize_fire_at(iso: str) -> str:
+    """Canonical form of a fire_at ISO string, for value-equality comparisons that must not
+    false-positive on cosmetic formatting differences between writers -- e.g. the desktop editor's
+    `datetime-local` input (NoteEditor.tsx:1145) emits "YYYY-MM-DDTHH:MM" (no seconds, no offset)
+    while another writer could emit seconds or a trailing "Z" for the very same instant. Without
+    this, sync_reminders_from_notes's dedup compared raw strings, so two spellings of the same
+    instant looked like a real change on EVERY pass -- delete+recreate forever, re-registering the
+    Windows scheduled task each time (the REM-1 churn regression this function exists to kill).
+    Falls back to the raw string on anything unparseable, so a bad/legacy value still compares
+    (and behaves) as itself rather than crashing sync."""
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).replace(microsecond=0).isoformat()
+    except ValueError:
+        return iso
+
+
+def sync_reminders_from_notes(
+    db_path: Path, notes: list[tuple[str, str]], default_delivery: str = "os"
+) -> dict:
     """Reconcile the reminders table against note `remind_at` frontmatter.
 
     Files are the source of truth; this table is scheduling state only. For each
     (note_path, raw_text): if the note has a remind_at, ensure exactly one pending
     reminder with that fire_at (label from the note title); if not, drop any
     pending reminder for that note. Idempotent. Never writes note files.
+
+    `default_delivery` (REM-1): delivery assigned to a FRESH row (cur is None). Defaults to "os"
+    -- unchanged behaviour for the periodic full-vault caller
+    (mobile_sync_agent._build_reminders_fn), which WS-4 intentionally biases toward exact
+    Task-Scheduler delivery for reminders discovered by a background scan. server.py's
+    POST /reminders passes the request's own delivery (or the user's configured default) through
+    here instead, so setting a reminder from the editor still honors what the user asked for.
+
+    On a fire_at MISMATCH (an existing pending row whose fire_at no longer matches the note), the
+    row is deleted and recreated with a NEW id -- but its `delivery` is now carried over from the
+    OLD row rather than reset to `default_delivery`, so a reminder the user chose 'app' delivery
+    for is never silently flipped to 'os' by a later sync pass (this used to hardcode "os" here
+    unconditionally). fire_at itself is compared via `_normalize_fire_at` so cosmetic ISO
+    formatting differences never read as a real change.
     """
     from note_model import parse_note
 
@@ -220,15 +254,13 @@ def sync_reminders_from_notes(db_path: Path, notes: list[tuple[str, str]]) -> di
         cur = existing.get(note_path)
         if want:
             label = note.title or Path(note_path).stem
-            # WS-4: prefer exact 'os' (Task Scheduler) delivery for synced reminders -- fires on the
-            # scheduled minute even with the app closed. create_reminder() falls back to 'app'
-            # automatically on non-Windows (its own guard), so this stays cross-platform-safe.
             if cur is None:
-                create_reminder(db_path, note_path=note_path, label=label, fire_at_iso=want, delivery="os")
+                create_reminder(db_path, note_path=note_path, label=label, fire_at_iso=want, delivery=default_delivery)
                 created += 1
-            elif cur["fire_at"] != want:
+            elif _normalize_fire_at(cur["fire_at"]) != _normalize_fire_at(want):
+                # Preserve delivery across the recreate -- see docstring.
                 delete_reminder(db_path, cur["id"])
-                create_reminder(db_path, note_path=note_path, label=label, fire_at_iso=want, delivery="os")
+                create_reminder(db_path, note_path=note_path, label=label, fire_at_iso=want, delivery=cur["delivery"])
                 updated += 1
         elif cur is not None:
             delete_reminder(db_path, cur["id"])

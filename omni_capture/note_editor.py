@@ -208,6 +208,64 @@ def write_note_body(vault_root: Path, path_str: str, new_body: str, expected_mti
     return {"mtime": path.stat().st_mtime}
 
 
+def set_note_remind_at(vault_root: Path, path_str: str, remind_at: Optional[str]) -> dict:
+    """Patch the `remind_at` frontmatter key on an EXISTING note -- the write half of
+    POST/DELETE /reminders (server.py, REM-1). Frontmatter is the cross-device source of truth
+    for a reminder: reconcile.py:160-173 LWW-merges `remind_at` with no origin-device check
+    (unlike enrichment), and reminders.sync_reminders_from_notes reads it back into the SQLite
+    scheduling table -- files are the source of truth, that table is a derived, rebuildable cache
+    (workspace CLAUDE.md "Shared locks"). The caller re-derives the table row immediately after
+    calling this (sync_reminders_from_notes), never the reverse.
+
+    Modelled on mobile_sync_agent.enrich_notes's write shape (parse_note -> mutate ONE field ->
+    serialize_note -> atomic write) rather than this module's own regex frontmatter splice
+    (_upsert_attachments_field): `remind_at` is a known note_model key with its own quoting rule
+    (note_model._emit_scalar quotes any value containing ':', which every ISO timestamp does), so
+    going through the real codec is correct here, not a shortcut. Unlike enrich_notes there is NO
+    enrichment/provenance gate: `remind_at` is deliberately OUTSIDE the machine-authored
+    tags/project/embedding triad that gate protects (reconcile.py:160-173) -- either device may
+    set or clear a reminder on either note, origin-agnostic.
+
+    THE BODY IS SACRED: only frontmatter may change here. Byte-identity of the body before/after
+    is asserted, not just assumed -- a note_model bug that touched the body must fail loudly
+    instead of silently corrupting the note.
+
+    `remind_at=None` clears the key (DELETE /reminders/{id}'s symmetric frontmatter clear) --
+    serialize_note omits the `remind_at:` line entirely when the field is None, same as a note
+    that never had one.
+
+    Returns {"mtime": ..., "content": <new file text, on-disk newline convention>} -- callers pass
+    `content` straight to reminders.sync_reminders_from_notes so the derived row is created with
+    no extra file read."""
+    from mobile_sync_agent import _atomic_write_note
+    from note_model import parse_note, serialize_note
+    from project_registry import load as load_registry
+
+    path = resolve_note_path(vault_root, path_str)
+    if not path.is_file():
+        raise FileNotFoundError(str(path))
+
+    raw = _read_verbatim(path)
+    newline = _newline_of(raw)
+    text = _to_lf(raw)
+    note = parse_note(text)
+    original_body = note.body
+    note.remind_at = remind_at
+    # v3.1: pass the registry so the derived `project:` cache line (present on every note since
+    # s125) survives this write -- serialize_note without a registry omits `project:` entirely,
+    # which would silently DELETE that line from every note this function ever touches.
+    new_content = serialize_note(note, load_registry(vault_root))
+
+    _new_fm, new_body = _split(new_content)
+    if new_body != original_body:
+        raise RuntimeError(f"set_note_remind_at would alter body of {path}")
+
+    out_text = _apply_newlines(new_content, newline)
+    _write_verbatim(path, out_text)
+    _reindex(vault_root, path, "remind_at")
+    return {"mtime": path.stat().st_mtime, "content": out_text}
+
+
 def _reindex(vault_root: Path, path: Path, what: str) -> None:
     """FR-30: re-sync captures.db after a note write. Editing a note is a pure file write, so
     the row keeps the excerpt, hash and tags it had when the note was last indexed -- and the
@@ -429,5 +487,33 @@ if __name__ == "__main__":
         assert ("![voice memo](../_attachments/n1/memo.m4a)" in after2
                 and "![photo](../_attachments/n1/photo.jpg)" in after2)
         print("[T6] add_attachment second file  PASS")
+
+        # T7: set_note_remind_at sets remind_at without touching the body (REM-1).
+        # newline="" on both the fixture write and every readback pins LF deterministically --
+        # Path.write_text's DEFAULT mode translates "\n" to os.linesep on write (CRLF on
+        # Windows), which would make a naive byte comparison here fail for a reason that has
+        # nothing to do with set_note_remind_at.
+        note3 = cat / "with_reminder.md"
+        note3.write_text(
+            "---\nid: n2\ntitle: Reminder note\norigin: note\ntags: [work]\n---\n"
+            "# Reminder note\n\nBody untouched.\n",
+            encoding="utf-8", newline="",
+        )
+        before_body = note3.read_text(encoding="utf-8", newline="").split("---\n", 2)[2]
+        r3 = set_note_remind_at(vault, str(note3), "2026-08-10T08:00")
+        after3 = note3.read_text(encoding="utf-8", newline="")
+        assert 'remind_at: "2026-08-10T08:00"' in after3
+        assert "Body untouched." in after3
+        assert after3.split("---\n", 2)[2] == before_body  # body byte-identical
+        assert r3["content"] == after3
+        print("[T7] set_note_remind_at set  PASS")
+
+        # T8: set_note_remind_at(None) clears the key symmetrically, body still untouched.
+        set_note_remind_at(vault, str(note3), None)
+        after4 = note3.read_text(encoding="utf-8", newline="")
+        assert "remind_at:" not in after4
+        assert "Body untouched." in after4
+        assert after4.split("---\n", 2)[2] == before_body
+        print("[T8] set_note_remind_at clear  PASS")
 
     print("\nAll note_editor.py smoke tests passed.")

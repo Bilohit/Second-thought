@@ -1458,6 +1458,116 @@ def test_put_note_reindexes_the_edited_body(tmp_path: Path):
     assert [r["path"] for r in hits] == [str(note_path)]
 
 
+# ============================================================================
+# REM-1: POST /reminders derives the SQLite row from note frontmatter
+# ============================================================================
+def test_post_reminders_writes_frontmatter_and_derives_row(tmp_path: Path):
+    """REM-1: POST /reminders now writes remind_at into the note's OWN frontmatter and
+    immediately derives the SQLite scheduling row from it -- so the row exists (delivery is not
+    silently dead) with no wait for a periodic sync. Wire shape (request fields, `{"id": ...}`
+    response) is unchanged from the old direct-SQLite-insert implementation."""
+    from index_writer import get_db_path
+    from note_model import parse_note
+    from reminders import list_reminders
+
+    client, cfg = _note_client(tmp_path)
+    with mock.patch("config.get_config", lambda: cfg):
+        made = client.post("/note", json={"title": "call mom"})
+        note_path = Path(made.json()["path"])
+
+        resp = client.post("/reminders", json={
+            "note_path": str(note_path), "label": "custom label",
+            "when_iso": "2026-08-10T08:00",
+        })
+        assert resp.status_code == 200, resp.text
+        payload = resp.json()
+        assert set(payload.keys()) == {"id"}   # wire shape unchanged
+        rid = payload["id"]
+        assert isinstance(rid, int)
+
+    note = parse_note(note_path.read_text(encoding="utf-8", newline=""))
+    assert note.remind_at == "2026-08-10T08:00"
+
+    db = get_db_path(cfg.vault.root)
+    rows = list_reminders(db)
+    assert len(rows) == 1
+    assert rows[0]["id"] == rid
+    assert rows[0]["fire_at"] == "2026-08-10T08:00"
+    assert rows[0]["note_path"] == str(note_path)
+    assert rows[0]["delivery"] == "app"   # cfg.reminders default, honored on first create
+    assert rows[0]["status"] == "pending"
+    # Documented REM-1 consequence: the row's label is derived from the note's OWN title
+    # (sync_reminders_from_notes), not the request's custom `label` -- a scalar frontmatter
+    # field has no room for a label independent of the note it lives on.
+    assert rows[0]["label"] == "call mom"
+
+
+def test_delete_reminders_clears_frontmatter_symmetrically(tmp_path: Path):
+    """REM-1: DELETE /reminders/{id} must clear the note's remind_at, not just the SQLite row --
+    otherwise the note still carries the old remind_at and the very next sync_reminders_from_notes
+    pass would recreate the row, reviving a reminder the user just dismissed."""
+    from note_model import parse_note
+
+    client, cfg = _note_client(tmp_path)
+    with mock.patch("config.get_config", lambda: cfg):
+        made = client.post("/note", json={"title": "dentist"})
+        note_path = Path(made.json()["path"])
+        created = client.post("/reminders", json={
+            "note_path": str(note_path), "label": "dentist", "when_iso": "2026-09-01T09:00",
+        })
+        rid = created.json()["id"]
+
+        deleted = client.delete(f"/reminders/{rid}")
+        assert deleted.status_code == 204
+
+    note = parse_note(note_path.read_text(encoding="utf-8", newline=""))
+    assert note.remind_at is None
+
+
+def test_deleted_reminder_does_not_revive_on_next_sync(tmp_path: Path):
+    """REM-1: the symmetric clear above must actually stop the s147-flagged bug ("a dismissed
+    reminder comes back") -- prove it by running the exact periodic-sync entry point right after
+    the delete and asserting a no-op, not a resurrection."""
+    from index_writer import get_db_path
+    from reminders import list_reminders, sync_reminders_from_notes
+
+    client, cfg = _note_client(tmp_path)
+    with mock.patch("config.get_config", lambda: cfg):
+        made = client.post("/note", json={"title": "revive check"})
+        note_path = Path(made.json()["path"])
+        created = client.post("/reminders", json={
+            "note_path": str(note_path), "label": "x", "when_iso": "2026-09-01T09:00",
+        })
+        rid = created.json()["id"]
+        assert client.delete(f"/reminders/{rid}").status_code == 204
+
+    db = get_db_path(cfg.vault.root)
+    raw = note_path.read_text(encoding="utf-8", newline="")
+    r = sync_reminders_from_notes(db, [(str(note_path), raw)])
+    assert r == {"created": 0, "updated": 0, "removed": 0}
+    assert list_reminders(db) == []
+
+
+def test_post_reminders_requires_secret_no_header():
+    """Asserted BY HAND (REM-1 brief): test_api_surface.py's two reflection tests are blind to
+    router-mounted routes, so auth coverage for THIS route must never be inferred from them."""
+    bare = TestClient(server.app)   # no default X-Omni-Secret header
+    resp = bare.post("/reminders", json={
+        "note_path": "does-not-matter.md", "label": "x", "when_iso": "2030-01-01T00:00",
+    })
+    assert resp.status_code == 403
+
+
+def test_post_reminders_requires_secret_wrong_header():
+    bare = TestClient(server.app)
+    resp = bare.post(
+        "/reminders",
+        headers={"X-Omni-Secret": "definitely-the-wrong-secret"},
+        json={"note_path": "does-not-matter.md", "label": "x", "when_iso": "2030-01-01T00:00"},
+    )
+    assert resp.status_code == 403
+
+
 def test_note_write_survives_an_index_failure(tmp_path: Path):
     """The file is the source of truth: a failing derived-cache write must never fail, undo or
     500 the note write. Same guarantee project_tidy's index sync carries."""

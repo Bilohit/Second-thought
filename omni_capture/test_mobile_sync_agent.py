@@ -17,6 +17,7 @@ from mobile_sync_agent import (
     _reap_tmp_orphans,
     _upload_note,
     _FOLDER_MIME,
+    _maybe_refile_local,
 )
 from frontmatter import read_all_fields, strip_frontmatter
 from projects import LOOSE_DIR
@@ -1779,6 +1780,73 @@ def test_reconcile_pull_relocates_local_file_when_the_incoming_body_changes_proj
     assert not old_path.exists()                        # moved out of _loose/
     assert (tmp_path / "work" / "T.md").read_text(encoding="utf-8") == remote  # remote bytes verbatim
     assert new_state["n1"]["base_parent"] == LOOSE_DIR  # the hub parent we pulled from, unchanged
+
+
+# FR-34: a folder the user made BY HAND (nesting depth >= 2 below vault_root, e.g.
+# `vault/Work/Clients/note.md`) is never refiled -- no move, no mkdir -- mirroring the same rule
+# already binding on body/tag edits. Depth is computed against `vault_root`, an optional param
+# threaded down from run_once/reconcile_changes; passing it is what turns the guard on.
+
+def test_maybe_refile_local_noops_below_depth_1_when_tagged(tmp_path):
+    nested = tmp_path / "Work" / "Clients"
+    nested.mkdir(parents=True)
+    note = nested / "note.md"
+    note.write_text("---\nid: n1\norigin: note\n---\nBody #project@Personal", encoding="utf-8")
+
+    result = _maybe_refile_local(str(note), "Personal", "n1", vault_root=str(tmp_path))
+
+    assert result == str(note)                       # path returned unchanged
+    assert note.exists()                              # file not moved
+    assert not (tmp_path / "Personal").exists()        # no directory created at the root
+    assert not (nested / "Personal").exists()          # nor mid-tree (the old fabricated dest)
+    assert list(nested.iterdir()) == [note]            # the hand-made folder itself untouched
+
+
+def test_maybe_refile_local_noops_below_depth_1_when_untagged(tmp_path):
+    # The specific case the ruling calls out by name: an UNTAGGED note nested >= 2 deep must not
+    # be yanked into `vault/Work/_loose/` (which would empty the folder the user deliberately made).
+    nested = tmp_path / "Work" / "Clients"
+    nested.mkdir(parents=True)
+    note = nested / "untagged.md"
+    note.write_text("---\nid: n2\norigin: note\n---\nNo project tag here", encoding="utf-8")
+
+    result = _maybe_refile_local(str(note), LOOSE_DIR, "n2", vault_root=str(tmp_path))
+
+    assert result == str(note)
+    assert note.exists()
+    assert not (tmp_path / LOOSE_DIR).exists()
+    assert not (nested / LOOSE_DIR).exists()
+    assert list(nested.iterdir()) == [note]
+
+
+def test_maybe_refile_local_still_refiles_at_depth_1_without_vault_root(tmp_path):
+    # Regression guard (old call shape, no vault_root -- e.g. an untouched caller): the depth-1
+    # (`vault/<project>/note.md`) refile this function exists for must be byte-for-byte unchanged.
+    src = tmp_path / "Personal"
+    src.mkdir()
+    note = src / "note.md"
+    note.write_text("---\nid: n3\norigin: note\n---\nBody #project@Work", encoding="utf-8")
+
+    result = _maybe_refile_local(str(note), "Work", "n3")
+
+    assert result == str(tmp_path / "Work" / "note.md")
+    assert (tmp_path / "Work" / "note.md").exists()
+    assert not note.exists()
+
+
+def test_maybe_refile_local_still_refiles_at_depth_1_with_vault_root(tmp_path):
+    # Same depth-1 move, now WITH vault_root supplied (the real reconcile_changes/run_once shape)
+    # -- depth == 1 so the new guard must be a no-op and let the existing move through unchanged.
+    src = tmp_path / "Personal"
+    src.mkdir()
+    note = src / "note.md"
+    note.write_text("---\nid: n3\norigin: note\n---\nBody #project@Work", encoding="utf-8")
+
+    result = _maybe_refile_local(str(note), "Work", "n3", vault_root=str(tmp_path))
+
+    assert result == str(tmp_path / "Work" / "note.md")
+    assert (tmp_path / "Work" / "note.md").exists()
+    assert not note.exists()
 
 
 def test_pull_new_hub_notes_records_base_parent(tmp_path):

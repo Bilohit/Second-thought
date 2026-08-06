@@ -701,7 +701,8 @@ def _maybe_rename_local(local_path: str, hub_name: Optional[str],
     return new_path
 
 
-def _maybe_refile_local(local_path: str, dest_folder: Optional[str], note_id: str) -> str:
+def _maybe_refile_local(local_path: str, dest_folder: Optional[str], note_id: str,
+                         vault_root: Optional[str] = None) -> str:
     """Keep the local mirror in the directory the note's project TAG implies.
 
     v3.0 (§1.3): `dest_folder` is `note_dir_for(resolve_project(body, reg))` — the note's project,
@@ -718,14 +719,30 @@ def _maybe_refile_local(local_path: str, dest_folder: Optional[str], note_id: st
     A falsy `dest_folder` is a defensive NO-OP (a caller that could not resolve one at all); the
     real loose case is the string `_loose`, which does move.
 
-    ponytail: derives the vault root as the file's grandparent (vault/<project>/<name>), the
-    depth-1 layout read_vault_notes and the pull path both maintain; a genuine vault-root note
-    would resolve wrong, but this sync model never files a note at the root. Returns the (possibly
-    new) path. A path not yet on disk (injected-write_file unit tests, or a not-yet-materialized note)
-    is only RESOLVED — no folder created, no file moved — so the compute stays side-effect-free."""
+    A folder the user made BY HAND (nesting depth >= 2 below `vault_root`, e.g.
+    `vault/Work/Clients/note.md`) is never refiled — no body/tag edit, ever, and this is the same
+    rule applied to a move: leaving the file exactly where the user put it is smaller AND correct,
+    where "fixing" the destination arithmetic would still yank it out to `vault/_loose/` and empty
+    the folder they deliberately made. `vault_root` is optional — `reconcile_changes`/`run_once`
+    thread it down (it is already computed there); omitted (e.g. an unrelated/older caller), this
+    guard is a no-op and the old grandparent-assumption arithmetic below runs unguarded, exactly as
+    before — so passing `vault_root` is what turns the guard on, never a change in shape.
+
+    ponytail: derives the MOVE TARGET as the file's grandparent (vault/<project>/<name>), the
+    depth-1 layout read_vault_notes and the pull path both maintain; correct at depth 0-1, which is
+    the only range this function ever files INTO. Returns the (possibly new) path. A path not yet
+    on disk (injected-write_file unit tests, or a not-yet-materialized note) is only RESOLVED — no
+    folder created, no file moved — so the compute stays side-effect-free."""
     if not dest_folder:
         return local_path  # unresolvable — leave the file where it is (see docstring)
     p = Path(local_path)
+    if vault_root is not None:
+        try:
+            depth = len(p.parent.relative_to(Path(vault_root)).parts)
+        except ValueError:
+            depth = None  # p isn't under vault_root at all — can't judge, fall through unguarded
+        if depth is not None and depth >= 2:
+            return local_path  # user hand-made folder (see docstring) — never written, never moved
     if p.parent.name == dest_folder:
         return local_path  # already in the directory its tag implies
     new_path = p.parent.parent / dest_folder / p.name
@@ -878,6 +895,7 @@ def reconcile_changes(
     write_file: Optional[Callable[[str, str], None]] = None,
     new_id: Optional[Callable[[], str]] = None,
     reg: Optional[Registry] = None,
+    vault_root: Optional[str] = None,
 ) -> Tuple[int, int, int, Dict[str, Dict]]:
     """Pull + field-aware three-way reconcile every note whose hub head advanced past our base_rev.
 
@@ -982,6 +1000,7 @@ def reconcile_changes(
                     local["path"],
                     note_dir_for(resolve_project(strip_frontmatter(_strip_bom(remote_text)), reg), reg),
                     note_id,
+                    vault_root=vault_root,
                 )
                 write_file(pull_path, remote_text)
                 new_state[note_id] = {
@@ -1042,7 +1061,7 @@ def reconcile_changes(
             # The MERGED body decides the directory (its `#project@` tag may have come from either
             # side), so re-path the local mirror before writing it.
             merged_folder = note_dir_for(resolve_project(merged_result.merged.body, reg), reg)
-            local_path = _maybe_refile_local(local_path, merged_folder, note_id)
+            local_path = _maybe_refile_local(local_path, merged_folder, note_id, vault_root=vault_root)
             write_file(local_path, merged_text)
             dest = _resolve_dest_folder(drive, hub_folder_id, merged_folder, folder_cache)
             up = _upload_note(
@@ -1750,7 +1769,7 @@ def run_once(
     # in either direction of outbound sync (see sync_ignore.py docstring).
     reconciled, conflicts, r_failed, state = reconcile_changes(
         filter_ignored_notes(vault_notes, Path(vault_root)), hub_files, state, drive, hub_id,
-        reg=reg,
+        reg=reg, vault_root=vault_root,
     )
     # ISS-046: a note sitting in the local `_trash/` must never be re-pulled as a fresh active copy
     # (peer restore / out-of-order delete after the state row was dropped) — that leaves a duplicate

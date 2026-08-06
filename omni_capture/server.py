@@ -1837,11 +1837,31 @@ async def get_reminders(_: None = Depends(_require_secret)):
 
 @app.post("/reminders")
 async def create_reminder_endpoint(body: ReminderCreate, _: None = Depends(_require_secret)):
-    """Create a reminder for a note. Validates when_iso; defaults delivery from config."""
+    """Create a reminder for a note. Validates when_iso; defaults delivery from config.
+
+    REM-1: frontmatter is the write, the SQLite row is derived (workspace lock: files are the
+    source of truth, every table is a rebuildable cache in front of them). This writes
+    `remind_at` into the note's OWN frontmatter (note_editor.set_note_remind_at) -- the same
+    field reconcile.py's LWW merge and sync_reminders_from_notes already read, and POST /note's
+    CAL-D `remind_at` param already writes on note CREATION -- then immediately runs
+    sync_reminders_from_notes for JUST this note so the scheduling row (and, on Windows, the
+    Task Scheduler entry) exists before this call returns, with no wait for the next periodic
+    vault scan. Wire shape (request fields, response `{"id": ...}`) is unchanged from the prior
+    direct-SQLite-insert implementation.
+
+    Known consequence of deriving the row from frontmatter (a single scalar field per note):
+    `body.label` is no longer stored on the row -- sync_reminders_from_notes always derives the
+    label from the note's OWN title, exactly as it already does for every reminder that arrives
+    via a note edited outside this call (phone-authored, hand-edited). A custom label typed into
+    NoteEditor.tsx's "Label" field is accepted by the request but not persisted past this call
+    (it still reaches the optional `notify` toast text below). Same reasoning collapses
+    App.tsx's multi-date-mention auto-offer (several `createReminder` calls against the SAME
+    note_path) to whichever call runs LAST -- `remind_at` has room for exactly one instant."""
     from datetime import datetime
     from config import get_config
     from index_writer import get_db_path
-    from reminders import create_reminder
+    from note_editor import set_note_remind_at
+    from reminders import list_reminders, sync_reminders_from_notes
 
     try:
         datetime.fromisoformat(body.when_iso)
@@ -1851,10 +1871,18 @@ async def create_reminder_endpoint(body: ReminderCreate, _: None = Depends(_requ
     cfg = get_config()
     db = get_db_path(cfg.vault.root)
     delivery = body.delivery or cfg.reminders.delivery
-    rid = create_reminder(
-        db, note_path=body.note_path, label=body.label,
-        fire_at_iso=body.when_iso, delivery=delivery,
-    )
+
+    write = set_note_remind_at(Path(cfg.vault.root), body.note_path, body.when_iso)
+    sync_reminders_from_notes(db, [(body.note_path, write["content"])], default_delivery=delivery)
+    # sync_reminders_from_notes dedups on note_path -> at most one pending row for this note;
+    # take the newest (highest id) match in case an orphaned row under a differently-formatted
+    # note_path string also exists (pre-existing characteristic of note_path-keyed dedup, not
+    # introduced here -- see REM-1 report).
+    matches = [r for r in list_reminders(db) if r["note_path"] == body.note_path]
+    if not matches:
+        raise HTTPException(status_code=500, detail="reminder row was not derived from the note")
+    rid = matches[-1]["id"]
+
     if body.notify:
         try:
             from notifier import send_notification
@@ -1866,12 +1894,28 @@ async def create_reminder_endpoint(body: ReminderCreate, _: None = Depends(_requ
 
 @app.delete("/reminders/{reminder_id}", status_code=204)
 async def delete_reminder_endpoint(reminder_id: int, _: None = Depends(_require_secret)):
-    """Delete a reminder."""
+    """Delete a reminder AND symmetrically clear the note's `remind_at` frontmatter (REM-1).
+
+    Without the frontmatter clear, the note still carries the old remind_at and the next
+    background sync_reminders_from_notes pass (mobile_sync_agent's periodic vault scan) finds a
+    note with remind_at set but no matching pending row, and RECREATES it -- reviving a reminder
+    the user just dismissed. Best-effort on the clear: the SQLite delete is the primary,
+    already-committed effect of this call, so a clear failure (note file missing/unreadable) is
+    logged and swallowed rather than surfaced as an error for a delete that already succeeded."""
     from config import get_config
     from index_writer import get_db_path
-    from reminders import delete_reminder
-    db = get_db_path(get_config().vault.root)
+    from note_editor import set_note_remind_at
+    from reminders import delete_reminder, list_reminders
+
+    cfg = get_config()
+    db = get_db_path(cfg.vault.root)
+    row = next((r for r in list_reminders(db, include_done=True) if r["id"] == reminder_id), None)
     delete_reminder(db, reminder_id)
+    if row is not None:
+        try:
+            set_note_remind_at(Path(cfg.vault.root), row["note_path"], None)
+        except Exception as exc:
+            print(f"[server] clear remind_at on delete failed: {exc}", file=sys.stderr)
 
 
 # -- TODAY / agenda view (PARCHMENT-BOOST D-A) ---------------------------------
