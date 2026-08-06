@@ -11,7 +11,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   revealItemInDir: vi.fn(),
 }));
 
-import { listProjects, notesForProject, notesForTag } from "./api";
+import { listProjects, notesForProject, notesForTag, listHandMadeFolders } from "./api";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return {
@@ -74,6 +74,67 @@ describe("listProjects", () => {
     fetchMock.mockResolvedValue(jsonResponse({}, false, 500));
 
     await expect(listProjects()).rejects.toThrow("Failed to list projects");
+  });
+});
+
+describe("listHandMadeFolders", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  it("requests GET /vault/hand-made-folders and returns the folder rows", async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        folders: [
+          { path: "Work/Clients", depth: 2, note_count: 3 },
+          { path: "Reading", depth: 1, note_count: 0 },
+        ],
+      }),
+    );
+
+    const result = await listHandMadeFolders();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://localhost:7070/vault/hand-made-folders");
+    expect(result.folders).toEqual([
+      { path: "Work/Clients", depth: 2, note_count: 3 },
+      { path: "Reading", depth: 1, note_count: 0 },
+    ]);
+  });
+
+  it("defensively unwraps to an empty array when the body is malformed (missing/non-array folders)", async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+    expect((await listHandMadeFolders()).folders).toEqual([]);
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ folders: "nope" }));
+    expect((await listHandMadeFolders()).folders).toEqual([]);
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(null));
+    expect((await listHandMadeFolders()).folders).toEqual([]);
+  });
+
+  it("returns folders: [] on an empty payload", async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(jsonResponse({ folders: [] }));
+
+    expect((await listHandMadeFolders()).folders).toEqual([]);
+  });
+
+  it("rejects via the existing error path on a non-OK response", async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(jsonResponse({ detail: "boom" }, false, 500));
+
+    await expect(listHandMadeFolders()).rejects.toThrow("boom");
+  });
+
+  it("rejects when the fetch itself rejects (network failure)", async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockRejectedValue(new Error("network down"));
+
+    await expect(listHandMadeFolders()).rejects.toThrow("network down");
   });
 });
 

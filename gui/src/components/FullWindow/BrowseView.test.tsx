@@ -33,6 +33,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     applyTidy: vi.fn(),
     getFolderImportPreview: vi.fn(),
     applyFolderImport: vi.fn(),
+    listHandMadeFolders: vi.fn(),
   };
 });
 
@@ -82,6 +83,7 @@ beforeEach(() => {
   vi.mocked(api.applyTidy).mockResolvedValue({ moved: 0, skipped: 0, removed_dirs: 0 });
   vi.mocked(api.getFolderImportPreview).mockResolvedValue({ folders: [], count: 0 });
   vi.mocked(api.applyFolderImport).mockResolvedValue({ tagged: 0, registered: [], skipped: [] });
+  vi.mocked(api.listHandMadeFolders).mockResolvedValue({ folders: [] });
 });
 
 function renderBrowse() {
@@ -97,6 +99,56 @@ async function openDrillIn() {
   await screen.findByRole("heading", { name: "trip-japan" });
   await screen.findByText("plan.md");
 }
+
+describe("BrowseView — FR-34 hand-made folder rows (s146 #4, display-only)", () => {
+  it("renders a row per folder from a good payload, showing path and note_count", async () => {
+    vi.mocked(api.listHandMadeFolders).mockResolvedValue({
+      folders: [
+        { path: "Work/Clients", depth: 2, note_count: 3 },
+        { path: "Reading", depth: 1, note_count: 0 },
+      ],
+    });
+    renderBrowse();
+    await screen.findByText("Work/Clients");
+    expect(screen.getByText("3")).toBeTruthy();
+    expect(screen.getByText("Reading")).toBeTruthy();
+    expect(screen.getByText("0")).toBeTruthy();
+  });
+
+  it("renders exactly zero rows and throws nothing on an empty payload", async () => {
+    vi.mocked(api.listHandMadeFolders).mockResolvedValue({ folders: [] });
+    renderBrowse();
+    await screen.findByText("trip-japan"); // page finished its normal render
+    expect(screen.queryByText("Work/Clients")).toBeNull();
+  });
+
+  it("renders exactly zero rows and throws nothing on a malformed payload", async () => {
+    // Simulates a body that doesn't match the contract shape reaching the
+    // component (defense-in-depth beyond api.ts's own arrayField unwrap).
+    vi.mocked(api.listHandMadeFolders).mockResolvedValue({ folders: "not-an-array" } as unknown as {
+      folders: import("../../lib/api").HandMadeFolder[];
+    });
+    renderBrowse();
+    await screen.findByText("trip-japan");
+    expect(screen.queryByText("Work/Clients")).toBeNull();
+  });
+
+  it("renders exactly zero rows and throws nothing when the fetch rejects", async () => {
+    vi.mocked(api.listHandMadeFolders).mockRejectedValue(new Error("network down"));
+    renderBrowse();
+    await screen.findByText("trip-japan");
+    expect(screen.queryByText("Work/Clients")).toBeNull();
+  });
+
+  it("is display-only: the row is not a button and has no click handler", async () => {
+    vi.mocked(api.listHandMadeFolders).mockResolvedValue({
+      folders: [{ path: "Work/Clients", depth: 2, note_count: 3 }],
+    });
+    renderBrowse();
+    const row = await screen.findByText("Work/Clients");
+    expect(row.closest("button")).toBeNull();
+  });
+});
 
 describe("BrowseView — P3-C3 kebab menu (mirrors NoteEditor.tsx's 'More' menu exactly)", () => {
   it("renders exactly Rename / Set description / Delete project, in that order, Delete last and danger-styled", async () => {

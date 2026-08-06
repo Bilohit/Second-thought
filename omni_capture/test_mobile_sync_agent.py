@@ -1965,6 +1965,19 @@ def _patch_main_seams(monkeypatch, vault: Path, lan_enabled: bool):
     monkeypatch.setattr("config.reload_config", lambda *a, **k: _fake_cfg(vault, lan_enabled))
     monkeypatch.setattr("drive_auth.get_drive_service", lambda: MagicMock())
     monkeypatch.setattr("main.run_pipeline", lambda **kw: {})
+    # FR-34: the hand-made-folder census is a NEW collaborator main() reaches out to, and it
+    # is deliberately NOT gated on lan_enabled (Drive is its plane, not the LAN accelerator).
+    # It must be stubbed here like every other: against a bare MagicMock drive the real
+    # helpers never terminate -- `.get("files", [])` returns a truthy MagicMock, so
+    # `_list_children`'s pagination sees an always-truthy nextPageToken and loops forever,
+    # growing unboundedly (measured: 126 MB -> 3+ GB before an external cap killed it).
+    uploads: list = []
+    monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
+    monkeypatch.setattr(
+        "mobile_sync_agent.upload_sync_file",
+        lambda drive, hub_id, filename, content, **kw: uploads.append((filename, content)),
+    )
+    return uploads
 
 
 def test_main_wires_provisional_fn_and_refreshes_outbound_when_lan_enabled(tmp_path, monkeypatch):
@@ -1972,7 +1985,7 @@ def test_main_wires_provisional_fn_and_refreshes_outbound_when_lan_enabled(tmp_p
     vault.mkdir()
     monkeypatch.setenv("OMNI_VAULT", str(vault))
     monkeypatch.setenv("OMNI_SYNC_STATE", str(tmp_path / "state.json"))
-    _patch_main_seams(monkeypatch, vault, lan_enabled=True)
+    uploads = _patch_main_seams(monkeypatch, vault, lan_enabled=True)
 
     captured = {}
 
@@ -1996,6 +2009,8 @@ def test_main_wires_provisional_fn_and_refreshes_outbound_when_lan_enabled(tmp_p
     assert captured["provisional_fn"] is not None      # LAN enabled -> provisional_fn wired
     assert refreshed == [str(vault)]                    # refresh_outbound fired once
     assert swept and swept[0][0] == str(vault / ".sync")  # TTL sweep fired once
+    # FR-34 (contract §2.1): the census publishes on a normal pass.
+    assert [f for f, _ in uploads] == ["hand_made_folders.json"]
 
 
 def test_main_no_lan_work_when_disabled(tmp_path, monkeypatch):
@@ -2003,7 +2018,7 @@ def test_main_no_lan_work_when_disabled(tmp_path, monkeypatch):
     vault.mkdir()
     monkeypatch.setenv("OMNI_VAULT", str(vault))
     monkeypatch.setenv("OMNI_SYNC_STATE", str(tmp_path / "state.json"))
-    _patch_main_seams(monkeypatch, vault, lan_enabled=False)
+    uploads = _patch_main_seams(monkeypatch, vault, lan_enabled=False)
 
     captured = {}
 
@@ -2023,6 +2038,10 @@ def test_main_no_lan_work_when_disabled(tmp_path, monkeypatch):
 
     assert captured["provisional_fn"] is None    # LAN disabled -> exactly the old behavior
     assert refreshed == []                        # no refresh_outbound call
+    # FR-34: the census rides Drive, NOT the LAN accelerator -- it must still publish with
+    # LAN off. Gating it on lan_enabled would blank the phone's folder rows for every user
+    # who never turned LAN on.
+    assert [f for f, _ in uploads] == ["hand_made_folders.json"]
     assert swept == []                            # no sweep call
 
 

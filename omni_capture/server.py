@@ -1697,6 +1697,18 @@ async def vault_sync_index(_: None = Depends(_require_secret)):
     return result
 
 
+@app.get("/vault/hand-made-folders")
+async def get_hand_made_folders(_: None = Depends(_require_secret)):
+    """FR-34 (s146 ruling; contract §2.1): the hand-made-folder census, read fresh off disk
+    for the GUI's BROWSE panel (the desktop side of the same read-only surfacing the phone
+    gets from the hub-mirrored `.sync/hand_made_folders.json`). Never the vault root -- only
+    the relative `folders` array. Missing/malformed vault is zero rows, never an error."""
+    from hand_made_folders import build_census
+    root = _get_vault_root()
+    census = build_census(root, "desktop")  # device id is irrelevant to this in-process read
+    return {"folders": census["folders"]}
+
+
 # -- LAN provisional overlay endpoint (contract §11, desktop GUI read side) --
 
 @app.get("/provisional")

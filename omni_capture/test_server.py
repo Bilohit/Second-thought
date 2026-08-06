@@ -1654,3 +1654,32 @@ def test_post_note_twice_creates_two_distinct_notes(tmp_path: Path):
         b = client.post("/note", json={"title": "one"}).json()["path"]
     assert a != b
     assert Path(a).exists() and Path(b).exists()
+
+
+def test_get_hand_made_folders_returns_relative_paths_only(tmp_path: Path):
+    """FR-34 (s146; contract §2.1): GET /vault/hand-made-folders returns just the census's
+    `folders` array -- no vault root, guarded the same way as GET /reminders."""
+    (tmp_path / "Work" / "Clients").mkdir(parents=True)
+    (tmp_path / "Work" / "note.md").write_text("x", encoding="utf-8")
+    (tmp_path / "_trash").mkdir()  # reserved -- must not appear
+
+    server._get_vault_root = lambda: tmp_path  # type: ignore[attr-defined]
+    client = TestClient(server.app, headers=_AUTH)
+
+    r = client.get("/vault/hand-made-folders")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert set(body.keys()) == {"folders"}
+    by_path = {f["path"]: f for f in body["folders"]}
+    assert by_path.keys() == {"Work", "Work/Clients"}
+    assert by_path["Work"]["note_count"] == 1
+    assert by_path["Work/Clients"]["depth"] == 2
+    for f in body["folders"]:
+        assert str(tmp_path) not in f["path"]
+
+
+def test_get_hand_made_folders_requires_secret(tmp_path: Path):
+    server._get_vault_root = lambda: tmp_path  # type: ignore[attr-defined]
+    client = TestClient(server.app)  # no auth header
+    r = client.get("/vault/hand-made-folders")
+    assert r.status_code == 403

@@ -2022,6 +2022,26 @@ def run_pass() -> dict:
         except Exception as e:
             print(f"[mobile_sync_agent] lan endpoint hint write failed: {e}")
 
+    try:
+        # FR-34 (s146 ruling; contract §2.1): the hand-made-folder census. Deliberately
+        # OUTSIDE the `if lan_enabled:` block above -- Drive is the reachability plane this
+        # rides (always-on), not the LAN accelerator. Read-only: writes nothing into any
+        # listed folder, only the one census file. `write_census` skips the write when the
+        # folder list is unchanged, so `changed` gates the upload too -- a steady-state vault
+        # costs zero Drive calls here. Same failure posture as the lan-endpoint hint above:
+        # never raise into the sync loop, a failed write/upload is a logged no-op.
+        import hand_made_folders
+        import lan_discovery
+        device_id = lan_discovery.get_or_create_device_id(vault_path)
+        census_path, changed = hand_made_folders.write_census(vault_path, device_id)
+        if changed:
+            upload_sync_file(
+                drive, ensure_hub_folder(drive), hand_made_folders.CENSUS_FILENAME,
+                Path(census_path).read_text(encoding="utf-8"),
+            )
+    except Exception as e:
+        print(f"[mobile_sync_agent] hand-made-folders census failed: {e}")
+
     return {
         "uploaded": uploaded, "pushed": uploaded, "reconciled": reconciled,
         "conflicts": conflicts, "pulled": pulled, "inbox_ingested": ingested,

@@ -764,6 +764,27 @@ export async function listProjects(): Promise<{ projects: ProjectEntry[]; vault_
   };
 }
 
+/** FR-34 (data-model-and-contracts.md §2.1) — a user-made folder census the
+ *  desktop's own `mobile_sync_agent.py` writes for the phone to read
+ *  (`hand_made_folders.json`); this endpoint reads the SAME on-disk classification
+ *  live rather than that derived cache. `path` is vault-relative, `/`-separated,
+ *  never absolute; `depth` is its segment count; `note_count` is `.md` files
+ *  DIRECTLY in that folder, not descendants. Display only — see BrowseView.tsx's
+ *  `HandFolderRow` for the read-only, no-click-handler render of this shape;
+ *  neither peer ever writes into a listed folder. */
+export interface HandMadeFolder {
+  path: string;
+  depth: number;
+  note_count: number;
+}
+
+export async function listHandMadeFolders(): Promise<{ folders: HandMadeFolder[] }> {
+  const r = await fetch(`${BASE}/vault/hand-made-folders`, { headers: await authHeaders() });
+  await assertOk(r, "Failed to list hand-made folders");
+  const body = await r.json();
+  return { folders: arrayField<HandMadeFolder>(body, "folders") };
+}
+
 export async function getVaultFolderFiles(
   folder: string,
 ): Promise<{ folder: string; files: VaultFile[] }> {

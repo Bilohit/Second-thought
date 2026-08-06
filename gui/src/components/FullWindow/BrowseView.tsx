@@ -42,7 +42,8 @@ import type { CSSProperties } from "react";
 import {
   listProjects, getStats, getTagTree, searchCaptures, notesForProject, notesForTag,
   renameProject, updateProjectDescription, deleteProject, getTidyPreview, applyTidy,
-  type ProjectEntry, type SearchResult, type TidyMove,
+  listHandMadeFolders,
+  type ProjectEntry, type SearchResult, type TidyMove, type HandMadeFolder,
 } from "../../lib/api";
 import {
   filterMachineTags, flattenTagTree, tagDisplayLabel, excludeProvisional, formatAgo,
@@ -84,6 +85,10 @@ export default function BrowseView({ visible, mode, onOpenNote }: Props) {
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
   const [projectCounts, setProjectCounts] = useState<Record<string, number>>({});
   const [tags, setTags] = useState<FlatTag[]>([]);
+  // FR-34 (s146 #4): read-only census of the user's own hand-made vault
+  // folders, surfaced under TAGS so the desktop panel mirrors the phone's.
+  // See HandFolderRow below for the render.
+  const [handFolders, setHandFolders] = useState<HandMadeFolder[]>([]);
   const [page, setPage] = useState(1);
 
   const [query, setQuery] = useState("");
@@ -111,6 +116,12 @@ export default function BrowseView({ visible, mode, onOpenNote }: Props) {
       setProjectCounts(counts);
     }).catch(() => setProjectCounts({}));
     getTagTree().then((r) => setTags(flattenTagTree(filterMachineTags(r.tags)))).catch(() => setTags([]));
+    // FR-34: failure is silent, never a visible error state, never a blocking
+    // dependency (data-model-and-contracts.md §2.1) — a missing/malformed/
+    // rejected fetch just means zero folder rows, same as an empty vault.
+    listHandMadeFolders()
+      .then((r) => setHandFolders(Array.isArray(r.folders) ? r.folders : []))
+      .catch(() => setHandFolders([]));
   }, []);
 
   useEffect(() => {
@@ -615,11 +626,12 @@ export default function BrowseView({ visible, mode, onOpenNote }: Props) {
           )}
 
           <div style={sectionHeadStyle}>TAGS</div>
-          {/* FR-34: a read-only, non-interactive hand-made-folder row lands
-              here in a follow-up (scope owned by the user, not this task) —
-              structured additively, right below the tag list, so it slots
-              in without reshaping this section. Build nothing for it yet:
-              no endpoint call, no diff logic, no row. */}
+          {/* FR-34 (s146 #4): hand-made folders are display-only — no empty-
+              state row when there are none, since a missing/malformed/failed
+              fetch must render exactly like "the user made no folders". */}
+          {handFolders.map((f) => (
+            <HandFolderRow key={f.path} path={f.path} noteCount={f.note_count} />
+          ))}
           {tags.length === 0 ? (
             <div style={emptyStyle}>No tags yet.</div>
           ) : (
@@ -654,6 +666,30 @@ function TagRow({ label, count, onClick }: { label: string; count: number; onCli
       <span style={tagRowLabelStyle}>{label}</span>
       <span style={tagRowCountStyle}>{count}</span>
     </button>
+  );
+}
+
+/** FR-34 (s146 #4) — a hand-made vault folder, surfaced read-only so the
+ *  desktop panel mirrors the phone's (data-model-and-contracts.md §2.1).
+ *  Same visual weight as `TagRow` (border-bottom row, same type scale), but
+ *  a plain `<div>`, not a `<button>`: it carries no click handler and no
+ *  hover/focus styling — a quiet reference row, not a new focal element.
+ *
+ *  ponytail: no click handler, no drill-in, no navigation — deliberate, not
+ *  a stub. The phone has no per-folder note listing to drill into (its only
+ *  view of the vault is Drive, filed by project tag; a hand-made folder at
+ *  depth>=2 never gets a matching Drive folder — see the endpoint's doc
+ *  comment in lib/api.ts), so a desktop-only drill-in would make the two
+ *  BROWSE panels diverge, which s146 #4 rules out. Upgrade path: once a
+ *  contract gives the phone an actual per-folder note list (a
+ *  `notesForTag`-shaped endpoint scoped to `path`), wire a drill-in here to
+ *  match it on both sides at once — never desktop-only. */
+function HandFolderRow({ path, noteCount }: { path: string; noteCount: number }) {
+  return (
+    <div style={handFolderRowStyle}>
+      <span style={handFolderPathStyle}>{path}</span>
+      <span style={handFolderCountStyle}>{noteCount}</span>
+    </div>
   );
 }
 
@@ -692,6 +728,14 @@ const tagRowStyle: CSSProperties = {
 };
 const tagRowLabelStyle: CSSProperties = { color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const tagRowCountStyle: CSSProperties = { marginLeft: "auto", fontSize: fsLabel, color: "var(--text-3)", flex: "0 0 auto" };
+// FR-34: same row geometry/weight as tagRowStyle, minus the interactive
+// affordances (no cursor, no button) — a plain non-interactive reference row.
+const handFolderRowStyle: CSSProperties = {
+  display: "flex", alignItems: "baseline", gap: 10, width: "100%",
+  borderBottom: "1px solid var(--border-2)", padding: "9px 14px", fontSize: fsRead,
+};
+const handFolderPathStyle: CSSProperties = { color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const handFolderCountStyle: CSSProperties = { marginLeft: "auto", fontSize: fsLabel, color: "var(--text-3)", flex: "0 0 auto" };
 const subWrapStyle: CSSProperties = { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" };
 const subHeadStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderBottom: "1px solid var(--border-2)", flex: "0 0 auto" };
 const subBackBtnStyle: CSSProperties = { background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", padding: 2, display: "inline-flex" };
