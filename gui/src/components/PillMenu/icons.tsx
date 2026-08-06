@@ -501,6 +501,22 @@ export function CalendarIcon({ size = 14 }: { size?: number }): JSX.Element {
   );
 }
 
+/** Three-dot "kebab" overflow glyph — P3-C3's BROWSE drill-in header menu
+ *  trigger (Rename / Set description / Delete project). Byte-identical to
+ *  NoteEditor.tsx's local `MoreIcon` (its own "More" corner menu) — hoisted
+ *  here so a second consumer doesn't duplicate the glyph inline, per this
+ *  module's own rule. NoteEditor.tsx keeps its local copy untouched (out of
+ *  this task's scope); the two are visually identical by construction. */
+export function MoreIcon({ size = 16 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+      <circle cx="12" cy="5.5" r="1.3" fill="currentColor" />
+      <circle cx="12" cy="12" r="1.3" fill="currentColor" />
+      <circle cx="12" cy="18.5" r="1.3" fill="currentColor" />
+    </svg>
+  );
+}
+
 /** Five-point star glyph — P3-C's BROWSE titlebar LIST/STARS toggle
  *  (constellation-view position). Path transcribed 1:1 from the mock's
  *  `#i-star` symbol (SecondThoughtV2.html:868). */
