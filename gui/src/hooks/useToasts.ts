@@ -5,6 +5,13 @@ export interface ToastItem {
   tone: "success" | "error" | "info";
   message: string;
   action?: { label: string; run: () => void };
+  /** Mutually-exclusive alternatives — the toast renders these as a chip row and
+   *  picking one dismisses the toast. Added for the reminder date-mention offer,
+   *  where the note's `remind_at` holds exactly one instant so the surface has to
+   *  be a single choice among the detected dates (DECISIONS §5 s148.6). `action`
+   *  is the single-option case and stays the shape every other toast uses; when
+   *  both are set `choices` wins. */
+  choices?: { label: string; run: () => void }[];
   ttlMs?: number;
 }
 

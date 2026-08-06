@@ -56,7 +56,7 @@ import { getInbox, getConfig, openFilePath, createReminder, deleteReminder } fro
 import { isFirstRun } from "./lib/vaultSetup";
 import VaultSetup from "./components/Onboarding/VaultSetup";
 import { makeReminderUndoState, reminderUndoRemainingMs, type ReminderUndoState } from "./lib/reminderUndoToast";
-import { formatWhen } from "./lib/reminderFormat";
+import { pickReminderChoices, REMINDER_CHOICE_CAP } from "./lib/reminderFormat";
 import { type PillAnchor, anchorPosition, anchoredMenuPosition, capsuleZoneFromPillAnchor, isPillDraggable } from "./lib/pillAnchor";
 import { getActiveWorkArea, getActiveMonitorBounds, listMonitors, resolveTargetMonitor, type MonitorInfo } from "./lib/monitor";
 import { computeMenuGeometry, clampPillWindowToMonitor, computeCapsuleMenuGeometry, computeProportionalMonitorMove, computeMinimalMenuWindow, resolveCapsuleZone } from "./lib/menuGeometry";
@@ -652,7 +652,7 @@ export default function App() {
   }, []);
   const undoReminderCreate = useCallback(() => {
     setReminderUndo((current) => {
-      if (current) void Promise.all(current.ids.map((id) => deleteReminder(id).catch(() => {})));
+      if (current) void deleteReminder(current.id).catch(() => {});
       return null;
     });
     clearReminderUndoTimer();
@@ -895,40 +895,59 @@ export default function App() {
     const offer = captureState.reminderOffer;
     if (offer && offer !== prevReminderOfferRef.current) {
       const { events, note_path } = offer;
-      if (events.length > 0) {
+      // ONE reminder per note is the data model (s148 REM-1: `remind_at` is a
+      // single frontmatter scalar), so the offer is an explicit single choice
+      // among the detected dates — never N calls that silently collapse to
+      // whichever ran last. `all` is every valid distinct instant, earliest
+      // first; `choices` is the capped chip row actually offered.
+      const all = pickReminderChoices(events, new Date(), events.length);
+      const choices = all.slice(0, REMINDER_CHOICE_CAP);
+      if (choices.length > 0) {
+        const setOne = async (c: (typeof choices)[number], notify: boolean) =>
+          createReminder(note_path, c.eventLabel, c.whenIso, notify);
         if (displayMode !== "full") {
-          // Pill modes have no room for the full toast (window is
-          // pill-sized) — auto-create instead, but show a brief undo
+          // Pill modes have no room for the chooser (window is pill-sized) —
+          // auto-create the EARLIEST date instead, but show a brief undo
           // affordance in the pill/capsule bar itself (reminderUndo state
           // above) so consent stays opt-out-with-a-visible-escape-hatch
           // rather than silent. Windows notification also confirms it.
           void (async () => {
             try {
-              const ids: number[] = [];
-              for (const e of events) ids.push(await createReminder(note_path, e.label, e.when_iso, true));
-              setReminderUndo(makeReminderUndoState(ids, events.map((e) => e.label), Date.now()));
+              const first = choices[0];
+              const id = await setOne(first, true);
+              setReminderUndo(makeReminderUndoState(id, first.label, Date.now()));
             } catch { /* server notification path already reports; nothing to render here */ }
           })();
         } else {
-          const more = events.length > 1 ? ` (+${events.length - 1} more)` : "";
-          pushToast({
-            tone: "info",
-            message: `⏰ ${events[0].label} — ${formatWhen(events[0].when_iso, new Date())}${more}`,
-            ttlMs: 12000,
-            action: {
-              label: "Set reminder",
-              run: () => {
-                void (async () => {
-                  try {
-                    for (const e of events) await createReminder(note_path, e.label, e.when_iso);
-                    pushToast({ tone: "success", message: "Reminder set" });
-                  } catch (err) {
-                    pushToast({ tone: "error", message: `Reminder failed — ${err instanceof Error ? err.message : "server error"}` });
-                  }
-                })();
-              },
-            },
-          });
+          const pick = (c: (typeof choices)[number]) => () => {
+            void (async () => {
+              try {
+                await setOne(c, false);
+                pushToast({ tone: "success", message: `Reminder set — ${c.label}` });
+              } catch (err) {
+                pushToast({ tone: "error", message: `Reminder failed — ${err instanceof Error ? err.message : "server error"}` });
+              }
+            })();
+          };
+          pushToast(
+            choices.length === 1
+              // One date needs no chooser — keep the single-action shape every
+              // other toast uses rather than rendering a chip row of one.
+              ? {
+                  tone: "info",
+                  message: `${choices[0].eventLabel} — ${choices[0].label}`,
+                  ttlMs: 12000,
+                  action: { label: "Set reminder", run: pick(choices[0]) },
+                }
+              : {
+                  tone: "info",
+                  message: all.length > choices.length
+                    ? `${all.length} dates — earliest ${choices.length}`
+                    : `${all.length} dates in this note`,
+                  ttlMs: 12000,
+                  choices: choices.map((c) => ({ label: c.label, run: pick(c) })),
+                },
+          );
         }
       }
     }

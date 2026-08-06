@@ -8,8 +8,8 @@
  */
 
 export interface ReminderUndoState {
-  /** IDs of the reminders just auto-created — Undo deletes all of them. */
-  ids: number[];
+  /** ID of the reminder just auto-created — Undo deletes it. */
+  id: number;
   /** Short label shown in the pill/capsule bar in place of its normal text. */
   message: string;
   /** Epoch ms when the toast should auto-dismiss (undo no longer offered). */
@@ -18,18 +18,23 @@ export interface ReminderUndoState {
 
 const DEFAULT_TTL_MS = 5000;
 
-/** Builds the toast state right after auto-create succeeds. `labels` is the
- *  per-event reminder label list (same order as `ids`); only the first is
- *  shown, with a "+N more" suffix mirroring the full-mode toast's wording. */
+/** Builds the toast state right after auto-create succeeds.
+ *
+ *  Singular by construction since s148's REM-1: a note's `remind_at` frontmatter
+ *  holds exactly ONE instant, so the compact shells auto-create exactly one
+ *  reminder — the earliest detected date. This used to take `ids`/`labels` arrays
+ *  and render a "+N more" suffix, which was false twice over once the scalar
+ *  became authoritative: N were attempted, one survived, and it was not the one
+ *  the suffix implied. `whenLabel` is the human due-time (formatWhen's output),
+ *  so the bar names the instant it actually set rather than just asserting one. */
 export function makeReminderUndoState(
-  ids: number[],
-  labels: string[],
+  id: number,
+  whenLabel: string,
   nowMs: number,
   ttlMs: number = DEFAULT_TTL_MS,
 ): ReminderUndoState {
-  const more = labels.length > 1 ? ` (+${labels.length - 1} more)` : "";
-  const message = labels.length > 0 ? `Reminder set${more}` : "Reminder set";
-  return { ids, message, expiresAt: nowMs + ttlMs };
+  const message = whenLabel ? `Reminder set — ${whenLabel}` : "Reminder set";
+  return { id, message, expiresAt: nowMs + ttlMs };
 }
 
 /** True once `nowMs` has reached the toast's expiry — App.tsx's dismiss
