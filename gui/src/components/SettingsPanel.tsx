@@ -20,6 +20,7 @@ import { getVaultFolders } from "../lib/api";
 import { DEFAULT_CHAT_SYSTEM_PROMPT } from "../lib/lookChatDefaults";
 import { logger, LogLevel } from "../lib/logger";
 import { isGeoDebugEnabled, setGeoDebugEnabled } from "../lib/geoLog";
+import { useSmartConnectionsPref } from "../lib/smartConnectionsPref";
 import { THEMES, THEME_LABELS, type Theme, type LookChatPersist } from "../App";
 import type { EditableSlot } from "../lib/themeCode";
 import ThemeCustomEditor from "./ThemeCustomEditor";
@@ -412,6 +413,11 @@ export default function SettingsPanel({
   const [dailyTag, setDailyTag] = useState("daily");
   const [chatSystemPrompt, setChatSystemPrompt] = useState("");
   const [reminderDelivery, setReminderDelivery] = useState<"app" | "os">("app");
+  // STARS "Smart connections" (s152 follow-up, the user's own ruling) — a client-only pref, NOT part
+  // of config.toml, so it deliberately does not touch `dirty`/`markDirty`/`flush`/`patchConfig` below.
+  // Shared with BrowseStarsView.tsx via lib/smartConnectionsPref.ts so the two surfaces stay in sync
+  // live, in either direction, while both happen to be mounted.
+  const [smartConnections, setSmartConnections] = useSmartConnectionsPref();
 
   // Form (look/placement) vs Function (behavior) vs Sync (Drive + the same-WiFi
   // shortcut, which absorbed the old "Pairing" tab). Always reopens on Form so
@@ -969,6 +975,18 @@ export default function SettingsPanel({
                 label="Auto-describe New Folders"
                 checked={autoDescribe}
                 onChange={(v) => { setAutoDescribe(v); markDirty(); }}
+              />
+            </Field>
+
+            {/* STARS "Smart connections" (s152 follow-up) — a client-only pref shared live with
+                BrowseStarsView.tsx via lib/smartConnectionsPref.ts. Never calls markDirty(): this
+                never reaches config.toml, so it must never ride the server save/auto-save cycle
+                every other Field on this tab does. */}
+            <Field label="Smart Connections (Stars)" inline>
+              <Toggle
+                label="Smart Connections"
+                checked={smartConnections}
+                onChange={setSmartConnections}
               />
             </Field>
 

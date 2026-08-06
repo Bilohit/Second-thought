@@ -393,6 +393,31 @@ export function buildStarEdges(
   }
   return [...keep].sort().map((k) => scored.get(k) as SimEdge);
 }
+/**
+ * Why an empty sky is empty (DECISIONS §5 s152). The whole point of shipping smart connections OFF
+ * by default was to avoid a state the user cannot tell apart from a broken feature — so every way a
+ * sky can end up with zero edges has to name ITSELF, and the two that have a fix have to offer it.
+ *
+ * `sparse` and `needsEmbeddings` are deliberately NOT collapsed into one message: one of them the
+ * user can act on, the other one they cannot, and telling someone to turn on a setting that is
+ * already on is worse than saying nothing.
+ */
+export type StarsEmptyState = "offer-smart" | "needs-embeddings" | "sparse" | null;
+
+export interface StarsEmptyInput {
+  starCount: number;
+  edgeCount: number;
+  smartOn: boolean;
+  /** Whether embeddings actually exist to score against — NOT whether the setting is on. */
+  embeddingsAvailable: boolean;
+}
+
+export function starsEmptyState(s: StarsEmptyInput): StarsEmptyState {
+  // No stars at all is the view's own pre-existing empty state, not this one.
+  if (s.starCount === 0 || s.edgeCount > 0) return null;
+  if (!s.smartOn) return "offer-smart";
+  return s.embeddingsAvailable ? "sparse" : "needs-embeddings";
+}
 // ══ END OF THE SHARED EDGE MODEL ═════════════════════════════════════════════════════════════════
 
 // ── degree = wikilink-edge count only (mirrors the mock: `n.links.length`, :1784) ────────────────

@@ -29,6 +29,7 @@ import { StarIcon } from "../PillMenu/icons";
 import { BTN_PRIMARY, BTN_SECONDARY } from "../ui/styles";
 import { Toggle } from "../ui/Toggle";
 import { micro, label as fsLabel, read as fsRead } from "../../lib/type";
+import { useSmartConnectionsPref } from "../../lib/smartConnectionsPref";
 import {
   buildStarEdges,
   computeDegrees,
@@ -39,6 +40,7 @@ import {
   parseTagsField,
   releaseMomentum,
   selectRecentIds,
+  starsEmptyState,
   stepSimulation,
   type SimEdge,
   type SimEdgeKind,
@@ -47,21 +49,9 @@ import {
 
 // s152: "Smart connections" — the opt-in semantic pass. Default OFF (the user's own call, DECISIONS
 // §5 s152): it costs a ~1MB vector payload per browse fetch, so it only runs when the user asks for
-// it. Persisted the same way every other client-only UI pref in this app is (App.tsx's own
-// localStorage getters/setters, e.g. LOOK_MODE_KEY) — module-level key + try/catch get/set, the same
-// shape as useLookChat.ts's IGNORE_HISTORY_KEY, kept local to this file since nothing else reads it.
-const SMART_CONNECTIONS_KEY = "omni-stars-smart-connections";
-function getSmartConnectionsPref(): boolean {
-  try {
-    return localStorage.getItem(SMART_CONNECTIONS_KEY) === "1";
-  } catch { /* ignore */ }
-  return false;
-}
-function setSmartConnectionsPref(enabled: boolean): void {
-  try {
-    localStorage.setItem(SMART_CONNECTIONS_KEY, enabled ? "1" : "0");
-  } catch { /* ignore */ }
-}
+// it. The pref itself now lives in lib/smartConnectionsPref.ts, shared with SettingsPanel.tsx so
+// flipping it in either surface updates the other live (the user's follow-up ruling — the setting
+// belongs in Settings too, not only here).
 const SMART_CONNECTIONS_EXPLANATION =
   "Groups notes by meaning using embeddings that already exist on this device. Nothing leaves your device.";
 
@@ -112,12 +102,8 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [peekId, setPeekId] = useState<string | null>(null);
   const [peekPos, setPeekPos] = useState({ x: 0, y: 0 });
-  // s152: default OFF — see the module-level comment above the pref helpers.
-  const [smartConnections, setSmartConnectionsState] = useState<boolean>(() => getSmartConnectionsPref());
-  const setSmartConnections = useCallback((enabled: boolean) => {
-    setSmartConnectionsState(enabled);
-    setSmartConnectionsPref(enabled);
-  }, []);
+  // s152: default OFF — see the module-level comment above. Shared with SettingsPanel.tsx.
+  const [smartConnections, setSmartConnections] = useSmartConnectionsPref();
 
   // ── data: refetched on every `visible` transition to true, same convention as BrowseView.tsx's own
   // project/tag fetch. searchCaptures("", ...) is the server's documented "browse everything" blank
@@ -175,6 +161,10 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
   );
   const degrees = useMemo(() => computeDegrees(recentIds, edges), [recentIds, edges]);
   edgesRef.current = edges;
+  // "we asked for vectors and at least one row came back non-null" — NOT "the setting is on". When
+  // smart connections is off the fetch above never requests `include_vectors`, so every `n.vec` is
+  // already `undefined` and this is false for free; no separate `smartConnections` gate needed here.
+  const embeddingsAvailable = useMemo(() => notes.some((n) => n.vec != null), [notes]);
 
   const getNode = useCallback((id: string): SimNode | undefined => nodesRef.current.find((n) => n.id === id), []);
 
@@ -308,10 +298,18 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
 
   const empty = loaded && notes.length === 0;
   const peekNote = peekId ? byId.get(peekId) : undefined;
-  // ★ THE EMPTY-SKY AFFORDANCE (DECISIONS §5 s152, the user's own ruling): stars with zero drawn
-  // edges and the setting off are indistinguishable from "broken" without this — it must disappear
-  // the instant either condition stops holding (setting flips on, or a real edge appears).
-  const showEnableOffer = loaded && notes.length > 0 && edges.length === 0 && !smartConnections;
+  // ★ THE EMPTY-SKY AFFORDANCE (DECISIONS §5 s152, the user's own follow-up ruling): stars with zero
+  // drawn edges is indistinguishable from "broken" without this. THREE distinct reasons collapse to
+  // "no edges", and only one of them has a fix — see starsSim.ts's `starsEmptyState` header comment
+  // for why `sparse` and `needs-embeddings` are deliberately not merged into one message.
+  const emptyState = loaded
+    ? starsEmptyState({
+        starCount: notes.length,
+        edgeCount: edges.length,
+        smartOn: smartConnections,
+        embeddingsAvailable,
+      })
+    : null;
 
   // hostRef stays mounted on every branch (empty or populated) so the ResizeObserver effect above —
   // deps [visible] only — never misses attaching just because the FIRST visible render happened to
@@ -328,7 +326,7 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
 
       {!empty && size.w > 0 && size.h > 0 && (
         <>
-          {showEnableOffer && (
+          {emptyState === "offer-smart" && (
             <button
               type="button"
               className="btn-hover"
@@ -337,6 +335,19 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
             >
               No connections yet <span style={enableOfferActionStyle}>· Enable smart connections</span>
             </button>
+          )}
+          {/* Smart connections is already ON — offering to flip a setting the user already flipped
+              would be worse than saying nothing, so this one names the real, unfixable-by-the-user
+              cause instead of repeating the offer above. No button: there is nothing to click. */}
+          {emptyState === "needs-embeddings" && (
+            <div style={skyNoticeStyle}>
+              No connections yet — this vault has no embedding index to score against
+            </div>
+          )}
+          {/* Smart connections is ON, embeddings exist, and still nothing cleared the scoring bar.
+              Stated plainly, no invented fix — see starsSim.ts's starsEmptyState header comment. */}
+          {emptyState === "sparse" && (
+            <div style={skyNoticeStyle}>No connections found yet</div>
           )}
 
           <div style={smartRowStyle} title={SMART_CONNECTIONS_EXPLANATION}>
@@ -514,13 +525,15 @@ const smartRowStyle: CSSProperties = {
   position: "absolute", top: 12, right: 14, display: "flex", alignItems: "center", gap: 8, zIndex: 3,
 };
 const smartLabelStyle: CSSProperties = { fontSize: fsLabel, color: "var(--text-3)" };
-// ★ the empty-sky affordance (task 3) — an offer, not an error: quiet border + glass surface, no
-// semantic colour, dismissed simply by it no longer applying (setting on, or an edge appears).
-const enableOfferStyle: CSSProperties = {
+// ★ the empty-sky notice (3 states, DECISIONS §5 s152 follow-up) — quiet border + glass surface, no
+// semantic colour, same slot for all three so the sky never jumps as the state changes underneath.
+const skyNoticeStyle: CSSProperties = {
   position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 3,
   background: "var(--glass-bg)", border: "1px solid var(--border)", padding: "6px 12px",
-  fontSize: fsLabel, color: "var(--text-3)", cursor: "pointer", whiteSpace: "nowrap",
+  fontSize: fsLabel, color: "var(--text-3)", whiteSpace: "nowrap",
 };
+// offer-smart is the one state with an action — it alone is a real button (cursor + underline hint).
+const enableOfferStyle: CSSProperties = { ...skyNoticeStyle, cursor: "pointer" };
 const enableOfferActionStyle: CSSProperties = { color: "var(--text-1)", textDecoration: "underline" };
 const cardStyle: CSSProperties = {
   position: "absolute", width: CARD_W, background: "var(--glass-bg)", border: "1px solid var(--border)",
