@@ -37,10 +37,11 @@ Every task's requirements implicitly include this section. Values are verbatim.
 7. **Desktop SYNC is built to the plan, gaps filled for real** — no stubbed panels, no invented rows.
 8. **A shared type scale is introduced** in both repos.
 
-**Gate values to match (last measured s141, must be re-run on a quiet tree before the first commit of any phase):**
-- desktop `python -m pytest -q` → **1384 passed · 4 skipped**
-- gui `npm test` → **808 passed · 73 files**; `npm run build` → **exit 0**
-- phone `npm test` → **1835 passed · 6 skipped**; `npm run typecheck` + `npm run typecheck:app` → exit 0
+**Gate values to match (★ REFRESHED — last measured s145, 2026-08-06, on a quiet tree. The s141 numbers this table used to carry are two phases stale; every delta since has been additive):**
+- desktop `python -m pytest -q` → **1411 passed · 4 skipped**
+- gui `npm test` → **841 passed · 77 files**; `npm run build` → **exit 0** (the >500kB chunk warning is pre-existing, not a failure)
+- phone `npm test` → **1844 passed · 6 skipped**; `npm run typecheck` + `npm run typecheck:app` → exit 0
+- ★ **Noise, not a red row:** the gui suite prints an `ECONNREFUSED 127.0.0.1:7070` stack to stderr on every run, passing or not — a test probes the local server.
 - `FUZZ=1 pytest test_fuzz_races.py -q` → **4 passed** — required only if a phase touches the op-queue/sync/reconcile path. **Phase 3 does.**
 
 **Frozen constants — changing any of these is a plan violation, not a judgment call:**
@@ -267,7 +268,20 @@ The Critic's point stands: a duration assertion catches nothing in the "dead or 
 
 **Goal:** Geist Mono → IBM Plex Mono, and the type scale *defined*. **No call-site migration in this phase.**
 
-**Checkpoint before any code:** a side-by-side type-specimen mock — both fonts, real surfaces, rendered — for the user to approve the flip. The user approves the specimen, not the idea. Decision recorded in `DECISIONS.md` §5.
+> **★★★ PHASE 2 IS COMPLETE (s144 typeface, s145 scale). THE SCALE IS DEFINED — do not treat it as an open question.**
+>
+> **`micro 9 · label 10 · body 11 · read 12 · lead 13 | title 16 · display 20 · hero 22`. Half-steps are banned.**
+> Desktop carries it twice — `gui/src/lib/type.ts` for the 350 inline TSX sizings and `--fs-*` at `:root` for the 8
+> CSS ones, with `type.test.ts` parsing `index.css` off disk to assert the two agree. The phone vendors it as
+> **`font.scale`, a NEW key** — `font.size` collides at two names with different numbers (`label` 11 vs 10,
+> `body` 14 vs 11), so redefining in place would have silently re-rendered 97 call sites. **`font.size` keeps its
+> exact values and a test guards them; Phase 4 migrates the last call site, then deletes it. Not before.**
+>
+> **Migration is what remains: 99 call sites (desktop 58, phone 41) + the phone's `font.size.body 14 → font.scale.lead 13`
+> across 25 uses. It rides per-surface with Phases 3/4 — never as a big-bang sweep. A raw px in a touched file is
+> rejected at review from Phase 4 onward.**
+
+**Checkpoint before any code:** a side-by-side type-specimen mock — both fonts, real surfaces, rendered — for the user to approve the flip. The user approves the specimen, not the idea. Decision recorded in `DECISIONS.md` §5. **DONE s144 — the user picked option B.**
 
 **Lands together, one commit per repo:** `gui/src/index.css` · `phone/src/lib/tokens.ts` · `Second Thought - Android App/design-system.md`.
 
@@ -299,7 +313,27 @@ The Critic's point stands: a duration assertion catches nothing in the "dead or 
 
 **Type-scale migration rides along here** — each rewritten file adopts the tokens defined in Phase 2. Raw px in a touched file is rejected at review.
 
-**Acceptance:** gui green · `npm run build` exit 0 · live CDP round on a fresh exe · settings pixel-diffed against Phase 0's corpus to prove the no-fly zone held.
+**Acceptance:** gui green · `npm run build` exit 0 · **`FUZZ=1 pytest test_fuzz_races.py -q`** (Phase 3 touches the sync path) · live CDP round on a fresh exe · settings pixel-diffed against Phase 0's corpus to prove the no-fly zone held.
+
+### Phase 3 task breakdown (s146) — five sequential runners, then a live round
+
+**Why sequential:** TS agents cannot be parallelised *within one repo*. Phone Phase 4 runs concurrently throughout — different repo, zero shared files, separate runners.
+
+**Every runner inherits:** the Global Constraints above · **the cardinal rule — reskin the CONTENTS, never the MOTION** · **SET is a VISUAL NO-FLY ZONE** · agents never commit and never run the full gate.
+
+**Frozen across all five — an agent that "cleans up" any of these has broken the brief even with a green gate:**
+- `compactPanel.ts`, `reconcileEdges.ts`, `reconcileApply.ts`, `CapsuleMenu.tsx`, `App.tsx`'s reconcile effect.
+- **`ProjectsPane.tsx:314-387`'s FLIP reorder** — it reads rects and mutates `style.transform` **outside React** and **must stay `path`-keyed**.
+- **`FluidVisualizer` is SHARED WITH THE PILL** — editing it reaches into Phase 5's frozen surface.
+- **`CAPSULE_TEXT_W = 98` is stale by 2.8px ON PURPOSE. Do not "fix" it.** The real label is 100.80px; the constant is **not load-bearing** (`CapsuleMenu` sets the bar width explicitly). Changing it moves the morph. Comments at all four sites say so.
+- Both `ponytail:` 2000-note ceilings stand.
+
+- [ ] **P3-A — the rail: 4 views → 5 tabs.** Dashboard·Look·Vault·History + footer becomes **NOTES·BROWSE·CHAT·SYNC·SET**, evenly split, with a sliding indicator and a screen slide. **Reuse `railSelection.ts`'s measured-geometry indicator — do not reinvent it.**
+- [ ] **P3-B — NOTES + the editor.** List + a **280px morphing capture pane** (radial → purpose-built blank-note / voice / clip / screenshot views; hotkey → a live StepIndicator over the **real `STEP_DEFS`**, not a mock sequence). Note that **the radial is pill-only today and has never mounted in the full window.** The editor becomes a **window-level slide-over from the right** with a view/edit icon toggle, an open-in-OS-editor button and a 3-dot menu (**Reminder · Set as template · Outline · History · Delete (danger, last)**). **★ s145 override of the mock: the editor closes on EVERY tab switch, BROWSE included.** The mock leaves it open over BROWSE; that was a mock bug.
+- [ ] **P3-C — BROWSE, entirely net-new.** Sectioned search (notes + tags + projects) + **paged 4×2 project rects** (phone tile ratio) + tag list + a **LIST/STARS toggle in the titlebar**. **No pager and no LIST/STARS exists anywhere in the app today.** **★ s145 ruling: the desktop pager gets dots AND clickable arrows; the pill keeps dots only.** **★ Fold in FR-36 here** (`CURRENT.md` §4.2h): today the projects tile list is stale until you navigate away and back — two independent live-QA agents saw it, in two different flows, while `.projects.toml` was already correct. The new tile list must **refetch on project-create and on folder-import-applied** without a navigation round-trip. It is a refetch-timing gap in the host's own reload step, not a write defect; `FolderImportPanel.tsx`'s `onApplied` callback is the seam.
+- [ ] **P3-D — CHAT splits from Search into its own tab.** **`--swap-dir` is coupled to the Search=0 / Chat=1 ordering — reordering the tabs flips the slide direction SILENTLY, with no test failure.** Assert the direction after the split.
+- [ ] **P3-E — SYNC becomes its own tab**, leaving Settings, rendering over **Phase 1's real endpoints** (`GET /sync/activity`, `GET /sync/pending`). Conflicts leave Dashboard. **Gaps are filled for real — no stubbed panels, no invented rows** (user decision, s143). **Binding copy rules:** at rest the panel is the local diff labelled ***"Changed since last sync"*** — **the word "queue" is BANNED there**, because it promises drain semantics only a live Drive listing can honour; it upgrades to exact *will upload · blocked · to pull* **only on an explicit user gesture** (`hub=true`, which spends one Drive listing). **The refusal state NEVER shows a count** — a corrupt ignore set returns `{}` and would render *zero pending* at the exact moment `run_pass` refuses the entire sync, and empty-reads-as-all-synced is the most dangerous failure this surface has. It renders a red ***"Sync blocked — ignore list unreadable"*** instead.
+- [ ] **P3-F — glyphs + scale sweep over what Phases 3A–E touched.** Replace `→` with `»` in the 8 shipping strings and the block caret `▌` with a **blinking `_`**. Confirm every file touched by A–E adopted the scale: **a raw px in a touched file is rejected at review.** Desktop has **47** half-step sites and **58** migration sites — and note the census instrument itself: **`grep -r` reports "Binary file matches" and silently drops every hit in `NoteEditor.tsx`** (it holds a literal `\x00`), which is how an earlier count came out at 22 instead of 47. **Use Python for any census; `Grep -a` fixes the tool, a `grep -rho | sort | uniq -c` pipeline silently does not.**
 
 ---
 
@@ -315,9 +349,23 @@ The Critic's point stands: a duration assertion catches nothing in the "dead or 
 | Toolbar / swipe | Bold·Checklist·Link·Tag·Mic·Camera, 46×44; swipe 100/70/0.25 | **Already match the mock exactly. Do not touch.** |
 | Settings | 6 sections | **VISUAL NO-FLY ZONE.** Already carries Activity and Sync-status rows |
 
-**Doc fix owed:** repo-root `CLAUDE.md` calls `chat.tsx` a placeholder. It is a real on-device Qwen2.5-1.5B engine with real RAG. Correct the doctrine.
+**Doc fix owed:** repo-root `CLAUDE.md` calls `chat.tsx` a placeholder. It is a real on-device Qwen2.5-1.5B engine with real RAG. Correct the doctrine. — **★ DONE s146, in the main thread, before any agent read it.**
 
 **Acceptance:** phone green + both typechecks · emulator round (Sonnet subagent, screenshots stay there) · device burn-in per `FACTS.md` §6 before "device-done".
+
+### Phase 4 task breakdown (s146) — three sequential runners, then an emulator round
+
+**Why sequential:** TS agents cannot be parallelised *within one repo* — they share one worktree and collide. Desktop Phase 3 runs concurrently with all of these because it is a different repo with zero shared files.
+
+**Every runner inherits:** the Global Constraints above · Settings is a **visual no-fly zone** · toolbar (46×44) and swipe (100/70/0.25) **already match the mock — do not touch** · no hover states on phone · inline SVG only, never emoji · `ponytail:` ceilings preserved · agents never commit and never run the full gate (the main thread does both, on a quiet tree).
+
+- [ ] **P4-A — IA restructure.** Delete the **Today** tab and its daily-digest logic entirely (user instruction 5, a sanctioned subtraction). Tabs become **NOTES·BROWSE·CHAT**; the pager indicator math is updated for **3 cells, not 4**. BROWSE absorbs `search.tsx` and `tags.tsx` into a sectioned search + swipe-paged project rects + tags + LIST/STARS.
+  **Check:** phone `npm test` + both typechecks · **and a grep proving no importer of the deleted digest module survives** — a green gate proves neither that new code ran nor that nothing was orphaned.
+- [ ] **P4-B — FAB radial + editor menu + templates.** Radial becomes **Photo·Voice·Template·Quick-Sync**, Quick-Sync keeping its current further-out position. **Arc mechanics and measurements are FROZEN** — assert the arc constants are byte-identical before and after. Editor (`app/note/[id].tsx`, **not** `editor/[id].tsx`) 3-dot becomes **Reminder · Set as template · Outline · History · Delete (danger, last)**; **Connections is replaced there and survives on the row long-press menu** — it is moved, not deleted. "Set as template" is net-new and must respect the existing `ponytail:`-marked 3-hardcoded-skeletons ceiling rather than silently lifting it.
+  **Check:** phone green + typechecks · one new runnable assertion per net-new branch.
+- [ ] **P4-C — type-scale migration + the two glyph swaps.** Migrate the **41** raw-px sites to `font.scale`, and `font.size.body 14 → font.scale.lead 13` across its **25** call sites. **Delete `font.size` only when the last call site has moved**, and remove its value-guard test in the same commit — not before, and never by merging the two objects. Replace `→` with `»` in the shipping strings and the block caret `▌` with a **blinking `_`** (both are in the 229-glyph subset; the full 930-glyph face was offered and declined).
+  **Check:** phone green + typechecks · **a raw-px sweep over every touched file — a raw px in a touched file is rejected at review.**
+- [ ] **P4-D — emulator round.** Sonnet subagent, low/medium effort. **Screenshots stay in the subagent**; the main thread reads a short verdict plus at most one failing image. Device burn-in per `FACTS.md` §6 before anything is called "device-done".
 
 ---
 
@@ -341,13 +389,17 @@ Full gates both repos · `FUZZ=1` if Phase 1 touched the sync path · live CDP r
 
 ---
 
-## Checkpoint questions — each returns as a rendered mock, never prose
+## Checkpoint questions — ★★★ ALL FIVE ARE ANSWERED. DO NOT RE-RAISE ANY OF THEM.
 
-1. **Type specimen** (Phase 2, blocking) — Geist vs IBM Plex on real surfaces.
-2. **BROWSE project pager** (Phase 3) — desktop has clickable arrows, the pill has indicator dots only. Same or different?
-3. **Editor over BROWSE** (Phase 3) — the mock leaves an open slide-over on top of BROWSE while closing it for every other tab. Intentional or a mock bug?
-4. **Android settings vs the mock** (Phase 4) — the mock's phone settings is a reduced read-mostly subset; constraint 2 says keep what ships. Confirmed: constraint wins, mock loses.
-5. **Queue region** (Phase 1) — only if Task 1.1 finds no honest source.
+Each was returned as a rendered mock, never prose. Rulings are binding; `DECISIONS.md` §5 is authoritative.
+
+1. **Type specimen** (Phase 2, was blocking) — **ANSWERED s144: option B, IBM Plex Mono at `+0.01em`.** Both faces are metrically identical (every glyph 600/1000 upem), so the swap moves no width. `DECISIONS.md` §5 s144.
+2. **BROWSE project pager** (Phase 3) — **ANSWERED s145: desktop gets dots AND clickable arrows; the pill keeps dots only.** `DECISIONS.md` §5 s145.
+3. **Editor over BROWSE** (Phase 3) — **ANSWERED s145: mock bug. The editor closes on EVERY tab switch, BROWSE included.** This overrides `SecondThoughtV2.html`. `DECISIONS.md` §5 s145.
+4. **Android settings vs the mock** (Phase 4) — **ANSWERED: constraint 2 wins, the mock loses.** Settings is a visual no-fly zone on both platforms.
+5. **Queue region** (Phase 1) — **ANSWERED s143 and BUILT s144.** An honest source exists (`.omni_capture/mobile_sync_state.json`); the panel is hybrid, labelled *"changed since last sync"* at rest, and the refusal state shows no count. `GET /sync/pending` ships.
+
+**Two further s145 rulings ride with Phases 3/4 and are not on this list because they were never checkpoint questions:** `→` becomes `»` in the 8 shipping strings, and the block caret `▌` becomes a blinking `_`.
 
 ---
 
