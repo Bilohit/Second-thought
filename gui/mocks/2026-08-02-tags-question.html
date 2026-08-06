@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>One question about tags, with pictures</title>
+<style>
+  :root {
+    --bg: #0a0a0a; --surface: #262626; --surface-2: #404040;
+    --border: #383838; --border-2: #262626;
+    --text-1: #fafafa; --text-2: #a1a1a1; --text-3: #7a7a7a;
+    --accent: #737373; --accent-d: rgba(115,115,115,0.18);
+    --ctl-face: #404040;
+    --green: #4ade80; --yellow: #facc15; --red: #ff6467;
+    --ease-settle: cubic-bezier(0.16,1,0.3,1);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; background:var(--bg); color:var(--text-1);
+    font-family:"Geist Mono", ui-monospace, "Cascadia Mono", "Segoe UI Mono", monospace; }
+  body { padding:32px 40px 90px; }
+  .page { max-width:1180px; margin:0 auto; }
+  h1 { font-size:20px; font-weight:600; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:14px; font-weight:600; margin:0 0 6px; }
+  h3 { font-size:12px; font-weight:600; margin:0 0 8px; color:var(--text-1); }
+  p { margin:0; }
+  .lede { font-size:12px; color:var(--text-2); line-height:1.7; max-width:80ch; }
+  section { margin-top:40px; }
+  code { background:var(--surface); padding:1px 5px; font-size:0.92em; }
+
+  .fact { border:1px solid var(--green); background:rgba(74,222,128,0.07); padding:12px 15px;
+    font-size:11.5px; color:var(--text-2); line-height:1.75; margin-top:16px; max-width:88ch; }
+  .fact b { color:var(--text-1); }
+
+  .two { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:20px; margin-top:16px; }
+  .three { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:16px; margin-top:18px; }
+  .card { border:1px solid var(--border); background:var(--surface); padding:15px; display:flex;
+    flex-direction:column; gap:11px; }
+  .card.pick { border-color:var(--green); }
+  .badge { font-size:8.5px; letter-spacing:0.09em; text-transform:uppercase; color:var(--text-3); }
+  .card.pick .badge { color:var(--green); }
+  .why { font-size:10.5px; color:var(--text-2); line-height:1.7; }
+  .why b { color:var(--text-1); }
+  .cost { font-size:10.5px; line-height:1.7; color:var(--yellow); }
+  .good { font-size:10.5px; line-height:1.7; color:var(--green); }
+
+  /* a small honest slice of real UI */
+  .demo { background:var(--bg); border:1px solid var(--border); }
+  .demo-cap { font-size:9px; color:var(--text-3); margin-top:7px; letter-spacing:0.03em; line-height:1.6; }
+  .win { display:flex; height:210px; }
+  .rail { width:150px; border-right:1px solid var(--border); display:flex; flex-direction:column;
+    background:var(--surface); }
+  .rail.wide { width:100%; border-right:none; }
+  .seg { display:grid; grid-template-columns:1fr 1fr; margin:6px; border:1px solid var(--border);
+    padding:2px; position:relative; background:var(--bg); }
+  .seg span { font-size:9px; text-align:center; padding:3px 2px; color:var(--text-2); z-index:1; }
+  .seg span.on { color:var(--text-1); }
+  .seg .pill { position:absolute; top:2px; bottom:2px; width:calc((100% - 4px)/2); background:var(--accent); }
+  .seg .pill.r { left:calc(50% + 0px); }
+  .tagrow { display:flex; align-items:center; justify-content:space-between; padding:5px 8px;
+    font-size:10px; color:var(--text-2); border-bottom:1px solid var(--border-2); }
+  .tagrow .c { font-size:9px; color:var(--text-3); }
+  .tagrow.kid { padding-left:20px; color:var(--text-2); }
+  .tagrow.parent { color:var(--text-1); }
+  .tagrow.sel { background:var(--accent-d); border-left:2px solid var(--accent); padding-left:6px; color:var(--text-1); }
+  .tagrow.sel.kid { padding-left:18px; }
+  .hash { color:var(--text-3); }
+  .pane { flex:1 1 auto; display:flex; flex-direction:column; min-width:0; }
+  .pane-head { padding:9px 11px; border-bottom:1px solid var(--border); font-size:11px; font-weight:600; }
+  .pane-head .sub { font-size:9px; color:var(--text-3); font-weight:400; margin-left:6px; }
+  .noterow { display:flex; align-items:center; gap:8px; padding:6px 11px; font-size:10px;
+    color:var(--text-2); border-bottom:1px solid var(--border-2); }
+  .noterow .t { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pj { font-size:8px; color:var(--text-3); border:1px solid var(--border); padding:0 4px; }
+  .pj.loose { border-style:dashed; }
+  .empty { padding:14px 11px; font-size:10px; color:var(--text-3); line-height:1.7; }
+  .dupe { outline:2px solid var(--yellow); outline-offset:-2px; }
+  .dupe-note { font-size:9px; color:var(--yellow); margin-top:6px; }
+
+  .qbox { border:1px solid var(--accent); background:var(--accent-d); padding:16px 18px; margin-top:34px; }
+  .qbox h2 { margin-bottom:8px; }
+  .qbox p { font-size:12px; color:var(--text-2); line-height:1.8; max-width:84ch; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>One question about tags. No jargon this time.</h1>
+  <p class="lede">You approved the projects screen. It has a switch in the left rail with two positions:
+  <b style="color:var(--text-1)">Projects</b> and <b style="color:var(--text-1)">Tags</b>. The problem is
+  that the app <i>already</i> has a separate Tags page somewhere else. So tags would exist in two places.
+  I need you to pick which one survives.</p>
+
+  <div class="fact">
+    <b>First, a fact that makes this smaller than I made it sound.</b> I just read your actual vault:
+    <b>24 notes, and exactly two tags in the whole thing</b> &mdash; <code>#intentions</code> and
+    <code>#log</code>. The only thing the old Tags page can do that the new rail cannot is
+    <b>group tags that have a slash in the name</b>, like <code>work/urgent</code> sitting underneath
+    <code>work</code>. <b>You have none of those.</b> So that feature is currently drawing nothing at
+    all on your screen, and would keep drawing nothing until the day you start naming tags with slashes.
+  </div>
+
+  <section>
+    <h2>What the two things look like</h2>
+
+    <div class="two">
+      <div>
+        <h3>The old Tags page (exists today)</h3>
+        <div class="demo">
+          <div class="win">
+            <div class="rail wide">
+              <div class="tagrow parent"><span><span class="hash">#</span>work</span><span class="c">9</span></div>
+              <div class="tagrow kid"><span><span class="hash">#</span>work/urgent</span><span class="c">4</span></div>
+              <div class="tagrow kid"><span><span class="hash">#</span>work/later</span><span class="c">5</span></div>
+              <div class="tagrow parent"><span><span class="hash">#</span>reading</span><span class="c">11</span></div>
+              <div class="tagrow parent"><span><span class="hash">#</span>invoice</span><span class="c">6</span></div>
+            </div>
+          </div>
+        </div>
+        <p class="demo-cap"><b style="color:var(--text-2)">The one thing it can do:</b> a tag with a
+        slash gets tucked under its parent, indented. Full width, its own page.
+        <b style="color:var(--text-2)">On your vault today it shows two flat rows and no indenting</b>,
+        because you have no slash tags.</p>
+      </div>
+
+      <div>
+        <h3>The new rail (what you approved)</h3>
+        <div class="demo">
+          <div class="win">
+            <div class="rail">
+              <div class="seg"><div class="pill r"></div><span>Projects</span><span class="on">Tags</span></div>
+              <div class="tagrow sel"><span><span class="hash">#</span>reading</span><span class="c">11</span></div>
+              <div class="tagrow"><span><span class="hash">#</span>invoice</span><span class="c">6</span></div>
+              <div class="tagrow"><span><span class="hash">#</span>idea</span><span class="c">5</span></div>
+            </div>
+            <div class="pane">
+              <div class="pane-head">#reading<span class="sub">11 notes</span></div>
+              <div class="noterow"><span class="t">Q3 lit review outline</span><span class="pj">research</span></div>
+              <div class="noterow"><span class="t">Reading list, Q3</span><span class="pj loose">loose</span></div>
+              <div class="noterow"><span class="t">Book notes, Thinking in Systems</span><span class="pj loose">loose</span></div>
+            </div>
+          </div>
+        </div>
+        <p class="demo-cap"><b style="color:var(--text-2)">What it can do that the old page cannot:</b>
+        it sits next to your projects, and clicking a tag shows the notes right there with the project
+        each note belongs to. Every tag is one flat row &mdash; nothing tucked under anything.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Your three choices</h2>
+
+    <div class="three">
+      <div class="card pick">
+        <span class="badge">Option A &mdash; my recommendation</span>
+        <h3>Delete the old Tags page. Keep the new rail.</h3>
+        <div class="demo">
+          <div class="win" style="height:130px;">
+            <div class="rail">
+              <div class="seg"><div class="pill r"></div><span>Projects</span><span class="on">Tags</span></div>
+              <div class="tagrow sel"><span><span class="hash">#</span>intentions</span><span class="c">1</span></div>
+              <div class="tagrow"><span><span class="hash">#</span>log</span><span class="c">1</span></div>
+            </div>
+            <div class="pane">
+              <div class="pane-head">#intentions<span class="sub">1 note</span></div>
+              <div class="noterow"><span class="t">Intentions</span><span class="pj loose">loose</span></div>
+            </div>
+          </div>
+        </div>
+        <p class="demo-cap">Drawn with your two real tags.</p>
+        <p class="why">Tags live in <b>one place only</b>. This is exactly the screen you approved, built
+        as drawn, nothing extra.</p>
+        <p class="good">Costs nothing today. You have no slash tags, so nothing you can currently see
+        disappears.</p>
+        <p class="cost">The catch: if you ever start naming tags <code>work/urgent</code>, they show as
+        plain flat rows instead of grouped. Tell me then and I add grouping.</p>
+      </div>
+
+      <div class="card">
+        <span class="badge">Option B</span>
+        <h3>Delete the old page, but rebuild the grouping into the rail first.</h3>
+        <div class="demo">
+          <div class="win" style="height:130px;">
+            <div class="rail">
+              <div class="seg"><div class="pill r"></div><span>Projects</span><span class="on">Tags</span></div>
+              <div class="tagrow parent"><span><span class="hash">#</span>work</span><span class="c">9</span></div>
+              <div class="tagrow kid sel"><span><span class="hash">#</span>work/urgent</span><span class="c">4</span></div>
+              <div class="tagrow kid"><span><span class="hash">#</span>work/later</span><span class="c">5</span></div>
+            </div>
+            <div class="pane">
+              <div class="pane-head">#work/urgent<span class="sub">4 notes</span></div>
+              <div class="noterow"><span class="t">Plumber availability</span><span class="pj">kitchen-remodel</span></div>
+            </div>
+          </div>
+        </div>
+        <p class="demo-cap">Drawn with invented slash tags, since you have none.</p>
+        <p class="why">Same as A, but the rail also indents slash tags under their parent, so
+        <b>nothing is lost even in theory</b>.</p>
+        <p class="good">Loses nothing, ever.</p>
+        <p class="cost">The catch: it is work and a design round you do not need yet, for tags that do
+        not exist in your vault. Indenting inside a narrow 260px rail is tighter than on a full page,
+        so I would want to mock it with you before building.</p>
+      </div>
+
+      <div class="card">
+        <span class="badge">Option C</span>
+        <h3>Keep both.</h3>
+        <div class="demo">
+          <div class="win" style="height:130px;">
+            <div class="rail dupe">
+              <div class="seg"><div class="pill r"></div><span>Projects</span><span class="on">Tags</span></div>
+              <div class="tagrow"><span><span class="hash">#</span>intentions</span><span class="c">1</span></div>
+              <div class="tagrow"><span><span class="hash">#</span>log</span><span class="c">1</span></div>
+            </div>
+            <div class="pane">
+              <div class="pane-head" style="color:var(--yellow);">Tags page<span class="sub">the old one, still here</span></div>
+              <div class="tagrow dupe" style="border-left:none;"><span><span class="hash">#</span>intentions</span><span class="c">1</span></div>
+              <div class="tagrow"><span><span class="hash">#</span>log</span><span class="c">1</span></div>
+            </div>
+          </div>
+        </div>
+        <p class="dupe-note">Both boxes are the same list of tags, on one screen.</p>
+        <p class="why">Nothing is deleted. Nothing is designed.</p>
+        <p class="good">Zero risk of losing anything.</p>
+        <p class="cost">The catch: the same tags appear twice in the same window, and you would have to
+        remember which one to use. That duplication is the exact thing this whole rework exists to
+        remove.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="qbox">
+    <h2>So: which one?</h2>
+    <p><b style="color:var(--text-1)">A</b> = build what you approved, accept that slash-tags would show
+    flat if you ever make any.<br />
+    <b style="color:var(--text-1)">B</b> = same, but I first design and build slash-tag grouping into the
+    rail so nothing is ever lost.<br />
+    <b style="color:var(--text-1)">C</b> = leave the old page alone and have tags in two places.</p>
+    <p style="margin-top:10px;"><b style="color:var(--green)">I recommend A</b>, because your vault has
+    two tags and neither has a slash, so B is work for a case that does not exist yet and C leaves a
+    duplicate on screen permanently. If you ever want grouping, it is a small addition later, not a
+    rebuild.</p>
+  </div>
+
+</div>
+</body>
+</html>

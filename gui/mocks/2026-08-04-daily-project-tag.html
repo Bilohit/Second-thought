@@ -1,0 +1,238 @@
+<title>Void — SP3 Task 10: where does the Daily project tag live?</title>
+
+<style>
+  :root {
+    --bg:#0a0a0a; --surface:#191919; --surface-2:#262626; --border:#383838; --border-2:#262626;
+    --text-1:#fafafa; --text-2:#a1a1a1; --text-3:#7a7a7a;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.18);
+    --green:#4ade80; --yellow:#facc15; --red:#ff6467;
+    --mono: "Geist Mono", ui-monospace, "Cascadia Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px;
+    --ease: cubic-bezier(0.16,1,0.3,1);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg:#ffffff; --surface:#f5f5f5; --surface-2:#e8e8e8; --border:#c7c7c7; --border-2:#d2d2d2;
+      --text-1:#0a0a0a; --text-2:#4f4f4f; --text-3:#636363;
+      --accent:#737373; --accent-d:rgba(115,115,115,0.10);
+      --green:#16a34a; --yellow:#92660a; --red:#e7000b;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:#ffffff; --surface:#f5f5f5; --surface-2:#e8e8e8; --border:#c7c7c7; --border-2:#d2d2d2;
+    --text-1:#0a0a0a; --text-2:#4f4f4f; --text-3:#636363;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.10);
+    --green:#16a34a; --yellow:#92660a; --red:#e7000b;
+  }
+  :root[data-theme="dark"] {
+    --bg:#0a0a0a; --surface:#191919; --surface-2:#262626; --border:#383838; --border-2:#262626;
+    --text-1:#fafafa; --text-2:#a1a1a1; --text-3:#7a7a7a;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.18);
+    --green:#4ade80; --yellow:#facc15; --red:#ff6467;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--text-1);
+    font-family:var(--mono); font-size:14px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap { max-width:1120px; margin:0 auto; padding:var(--s6) var(--s4) var(--s7); }
+  @media (max-width:640px){ .wrap { padding:var(--s5) var(--s3) var(--s6); } }
+
+  h1 { font-size:clamp(22px,5vw,34px); line-height:1.2; margin:0 0 var(--s3); font-weight:500; letter-spacing:-0.02em; text-wrap:balance; }
+  h2 { font-size:clamp(16px,3.4vw,20px); margin:0; font-weight:500; letter-spacing:-0.01em; }
+  h3 { font-size:13px; margin:0; font-weight:500; }
+  p  { margin:0 0 var(--s3); color:var(--text-2); max-width:70ch; text-wrap:pretty; }
+  strong { color:var(--text-1); font-weight:500; }
+  code { background:var(--surface-2); padding:1px 5px; font-size:0.9em; color:var(--text-1); }
+
+  .meta { display:flex; flex-wrap:wrap; gap:var(--s3); font-size:12px; color:var(--text-3); margin-bottom:var(--s5); }
+  .meta span { display:inline-flex; align-items:center; gap:6px; }
+  .dot { width:6px; height:6px; background:var(--accent); display:inline-block; }
+
+  .locks { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1px; background:var(--border); border:1px solid var(--border); margin:var(--s5) 0 var(--s7); }
+  .lock { background:var(--surface); padding:var(--s3) var(--s4); }
+  .lock b { display:block; font-weight:500; font-size:12px; color:var(--text-1); margin-bottom:2px; }
+  .lock span { font-size:12px; color:var(--text-3); line-height:1.5; }
+
+  .sec { margin:0 0 var(--s7); }
+  .sechead { display:flex; align-items:baseline; gap:var(--s3); border-bottom:1px solid var(--border); padding-bottom:var(--s2); margin-bottom:var(--s4); }
+  .sechead .tag { font-size:11px; color:var(--text-3); }
+
+  .opts { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:var(--s4); }
+
+  .opt { border:1px solid var(--border); background:var(--surface); display:flex; flex-direction:column; }
+  .opt.current { border-color:var(--red); }
+  .opt.rec { border-color:var(--accent); }
+  .opt > header { padding:var(--s3) var(--s4); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:var(--s2); }
+  .opt > header b { font-weight:500; font-size:13px; }
+  .badge { font-size:10px; padding:2px 6px; border:1px solid var(--border); color:var(--text-3); white-space:nowrap; }
+  .badge.bad { color:var(--red); border-color:var(--red); }
+  .badge.good { color:var(--green); border-color:var(--green); }
+  .badge.warn { color:var(--yellow); border-color:var(--yellow); }
+
+  /* the note surface: what the user actually sees in the editor */
+  .note { background:var(--bg); border-bottom:1px solid var(--border); padding:var(--s4); font-size:13px; line-height:1.7; overflow-x:auto; }
+  .note pre { margin:0; font-family:var(--mono); white-space:pre; }
+  .fm { color:var(--text-3); }
+  .h1line { color:var(--text-1); font-weight:500; }
+  .h2line { color:var(--text-2); }
+  .ptag { color:var(--accent); background:var(--accent-d); padding:0 3px; }
+  .cursor { color:var(--text-3); }
+
+  .why { padding:var(--s3) var(--s4); font-size:12px; color:var(--text-2); line-height:1.6; flex:1; }
+  .why ul { margin:0; padding-left:16px; }
+  .why li { margin-bottom:4px; }
+  .why li:last-child { margin-bottom:0; }
+  .why .no { color:var(--red); }
+  .why .yes { color:var(--green); }
+
+  .fold { border:1px solid var(--border); background:var(--surface); padding:var(--s4); margin-top:var(--s5); }
+  .fold b { color:var(--text-1); font-weight:500; }
+  table { border-collapse:collapse; width:100%; font-size:12px; margin-top:var(--s3); }
+  th, td { text-align:left; padding:6px 10px; border:1px solid var(--border); vertical-align:top; }
+  th { color:var(--text-3); font-weight:500; background:var(--surface-2); }
+</style>
+
+<div class="wrap">
+
+  <h1>Where does the <code>#project@Daily</code> tag live in a daily note?</h1>
+  <div class="meta">
+    <span><i class="dot"></i>SP3 Task 10</span>
+    <span><i class="dot"></i>2026-08-04 · s139</span>
+    <span><i class="dot"></i>decision recorded s127, mechanism verified at source today</span>
+  </div>
+
+  <p>You already decided daily notes get a <strong>real registered <code>Daily</code> project</strong>
+  rather than going loose. Probing it at source today found that decision is <strong>necessary but not
+  sufficient</strong>: registering <code>Daily</code> in <code>.projects.toml</code> changes nothing on its
+  own. A note&rsquo;s project is its body tag, so a tagless daily note resolves to <code>None</code>, gets
+  <code>project: [-]</code> in frontmatter, and the next tidy pass moves it out of <code>Daily/</code> into
+  <code>_loose/</code>.</p>
+
+  <p><strong>So the tag has to be in the body, and you can see it.</strong> That is the only open question
+  here &mdash; everything else is forced by the architecture. Three placements below, current state first.</p>
+
+  <div class="locks">
+    <div class="lock"><b>The tag is the only truth</b><span>Frontmatter <code>project:</code> and the index column are derived caches of it. No tag means loose, whatever folder the file sits in.</span></div>
+    <div class="lock"><b>Body is sacred &mdash; this is the exception</b><span>The originating device may author the content it creates. The desktop mints this note and its template; it never edits a note the phone wrote.</span></div>
+    <div class="lock"><b>One-time, at creation only</b><span>The template is written once. After that the note is yours, and <code>create_daily_note</code> is find-or-create &mdash; it never rewrites an existing body.</span></div>
+    <div class="lock"><b>Every note stays at depth 1</b><span><code>Daily/</code> is a real directory sibling to any other project, so <code>../_attachments/</code> refs survive every move.</span></div>
+  </div>
+
+  <div class="sec">
+    <div class="sechead"><h2>The three options</h2><span class="tag">rendered as the note reads in the editor</span></div>
+
+    <div class="opts">
+
+      <div class="opt current">
+        <header><b>Current &mdash; ships today</b><span class="badge bad">broken</span></header>
+        <div class="note"><pre><span class="fm">---
+title: 2026-08-04
+project: [-]
+tags: []
+---</span>
+<span class="h1line"># 2026-08-04</span>
+
+<span class="h2line">## Intentions</span>
+- [ ] <span class="cursor">|</span>
+
+<span class="h2line">## Log</span>
+</pre></div>
+        <div class="why"><ul>
+          <li><span class="no">Resolves to <code>_loose</code></span> &mdash; verified, not assumed.</li>
+          <li><span class="no">Tidy moves it out of <code>Daily/</code></span>, silently.</li>
+          <li>The <code>Daily</code> registry entry would sit there matching nothing.</li>
+        </ul></div>
+      </div>
+
+      <div class="opt rec">
+        <header><b>A &mdash; under the heading</b><span class="badge good">recommended</span></header>
+        <div class="note"><pre><span class="fm">---
+title: 2026-08-04
+project: [Daily]
+tags: []
+---</span>
+<span class="h1line"># 2026-08-04</span>
+<span class="ptag">#project@Daily</span>
+
+<span class="h2line">## Intentions</span>
+- [ ] <span class="cursor">|</span>
+
+<span class="h2line">## Log</span>
+</pre></div>
+        <div class="why"><ul>
+          <li><span class="yes">Reads as metadata about the note</span>, sitting with the title it belongs to.</li>
+          <li>Above everything you type, so it never drifts as the Log grows.</li>
+          <li>Costs one line of vertical space before your first intention.</li>
+        </ul></div>
+      </div>
+
+      <div class="opt">
+        <header><b>B &mdash; trailing line</b><span class="badge">alternative</span></header>
+        <div class="note"><pre><span class="fm">---
+title: 2026-08-04
+project: [Daily]
+tags: []
+---</span>
+<span class="h1line"># 2026-08-04</span>
+
+<span class="h2line">## Intentions</span>
+- [ ] <span class="cursor">|</span>
+
+<span class="h2line">## Log</span>
+
+<span class="ptag">#project@Daily</span>
+</pre></div>
+        <div class="why"><ul>
+          <li><span class="yes">Mirrors the one trailing-tag convention</span> the contract already sanctions (ISS-051).</li>
+          <li>Nothing between the heading and your first intention.</li>
+          <li><span class="no">It is where you write.</span> The Log grows downward into it, so the tag drifts mid-note and you will eventually type past or over it.</li>
+        </ul></div>
+      </div>
+
+      <div class="opt">
+        <header><b>C &mdash; on the heading</b><span class="badge warn">compact</span></header>
+        <div class="note"><pre><span class="fm">---
+title: 2026-08-04
+project: [Daily]
+tags: []
+---</span>
+<span class="h1line"># 2026-08-04 </span><span class="ptag">#project@Daily</span>
+
+<span class="h2line">## Intentions</span>
+- [ ] <span class="cursor">|</span>
+
+<span class="h2line">## Log</span>
+</pre></div>
+        <div class="why"><ul>
+          <li><span class="yes">Zero extra lines.</span></li>
+          <li><span class="no">Puts machine syntax inside a heading you read as a date.</span> Rendered anywhere that shows H1s, the tag is part of the title.</li>
+          <li>Any editor deriving a display title from the H1 inherits the tag.</li>
+        </ul></div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sechead"><h2>What ships either way</h2><span class="tag">not part of the choice</span></div>
+    <table>
+      <tr><th>Piece</th><th>Behaviour</th></tr>
+      <tr><td><code>Daily</code> registry entry</td><td>Created on first daily-note creation if absent, the same way Inbox approve registers a new project. Never hardcoded as a category.</td></tr>
+      <tr><td>Existing daily notes</td><td><strong>Untouched.</strong> <code>create_daily_note</code> is find-or-create; an existing note is returned as-is, body byte-identical. Old tagless daily notes stay tagless and go loose on tidy &mdash; the same as today.</td></tr>
+      <tr><td><code>project: [Daily]</code> frontmatter</td><td>Falls out of the tag automatically via <code>serialize_note</code>. Not written by hand.</td></tr>
+      <tr><td>Tidy</td><td>Now agrees with the folder instead of fighting it: tag <code>Daily</code> &rarr; directory <code>Daily/</code> &rarr; no move planned.</td></tr>
+    </table>
+  </div>
+
+  <div class="fold">
+    <b>Why A is recommended.</b> B and C both put the tag somewhere the user is going to be typing or
+    reading as prose &mdash; B into the Log they write down into, C inside the date heading they read as a
+    title. A puts it in the one place that is already machine-adjacent: directly under the title, above the
+    first thing you author. It is also the only one of the three where the tag&rsquo;s position is stable for
+    the life of the note.
+  </div>
+
+</div>

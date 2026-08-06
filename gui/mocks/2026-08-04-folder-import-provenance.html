@@ -1,0 +1,228 @@
+<title>Void — folder import and phone-authored notes</title>
+
+<style>
+  :root {
+    --bg:#0a0a0a; --surface:#191919; --surface-2:#262626; --border:#383838; --border-2:#262626;
+    --text-1:#fafafa; --text-2:#a1a1a1; --text-3:#7a7a7a;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.18);
+    --green:#4ade80; --yellow:#facc15; --red:#ff6467;
+    --mono: "Geist Mono", ui-monospace, "Cascadia Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg:#ffffff; --surface:#f5f5f5; --surface-2:#e8e8e8; --border:#c7c7c7; --border-2:#d2d2d2;
+      --text-1:#0a0a0a; --text-2:#4f4f4f; --text-3:#636363;
+      --accent:#737373; --accent-d:rgba(115,115,115,0.10);
+      --green:#16a34a; --yellow:#92660a; --red:#e7000b;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:#ffffff; --surface:#f5f5f5; --surface-2:#e8e8e8; --border:#c7c7c7; --border-2:#d2d2d2;
+    --text-1:#0a0a0a; --text-2:#4f4f4f; --text-3:#636363;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.10);
+    --green:#16a34a; --yellow:#92660a; --red:#e7000b;
+  }
+  :root[data-theme="dark"] {
+    --bg:#0a0a0a; --surface:#191919; --surface-2:#262626; --border:#383838; --border-2:#262626;
+    --text-1:#fafafa; --text-2:#a1a1a1; --text-3:#7a7a7a;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.18);
+    --green:#4ade80; --yellow:#facc15; --red:#ff6467;
+  }
+
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text-1); font-family:var(--mono); font-size:14px; line-height:1.6; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:1180px; margin:0 auto; padding:var(--s6) var(--s4) var(--s7); }
+  @media (max-width:640px){ .wrap { padding:var(--s5) var(--s3) var(--s6); } }
+
+  h1 { font-size:clamp(22px,5vw,32px); line-height:1.2; margin:0 0 var(--s3); font-weight:500; letter-spacing:-0.02em; text-wrap:balance; }
+  h2 { font-size:clamp(15px,3vw,19px); margin:0; font-weight:500; letter-spacing:-0.01em; }
+  p  { margin:0 0 var(--s3); color:var(--text-2); max-width:72ch; text-wrap:pretty; }
+  strong { color:var(--text-1); font-weight:500; }
+  code { background:var(--surface-2); padding:1px 5px; font-size:0.9em; color:var(--text-1); }
+
+  .meta { display:flex; flex-wrap:wrap; gap:var(--s3); font-size:12px; color:var(--text-3); margin-bottom:var(--s5); }
+  .meta span { display:inline-flex; align-items:center; gap:6px; }
+  .dot { width:6px; height:6px; background:var(--accent); display:inline-block; }
+
+  .settled { border:1px solid var(--green); background:var(--surface); padding:var(--s3) var(--s4); margin:0 0 var(--s6); font-size:12px; color:var(--text-2); }
+  .settled b { color:var(--green); font-weight:500; }
+  .settled ul { margin:var(--s2) 0 0; padding-left:16px; }
+  .settled li { margin-bottom:4px; }
+  .settled li:last-child { margin-bottom:0; }
+
+  .sec { margin:0 0 var(--s7); }
+  .sechead { display:flex; align-items:baseline; gap:var(--s3); border-bottom:1px solid var(--border); padding-bottom:var(--s2); margin-bottom:var(--s4); flex-wrap:wrap; }
+  .sechead .q { font-size:11px; color:var(--text-3); }
+
+  .two { display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:var(--s4); }
+  .card { border:1px solid var(--border); background:var(--surface); display:flex; flex-direction:column; }
+  .card.rec { border-color:var(--accent); }
+  .card > header { padding:var(--s3) var(--s4); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:var(--s2); }
+  .card > header b { font-weight:500; font-size:13px; }
+  .badge { font-size:10px; padding:2px 6px; border:1px solid var(--border); color:var(--text-3); white-space:nowrap; }
+  .badge.good { color:var(--green); border-color:var(--green); }
+  .badge.bad { color:var(--red); border-color:var(--red); }
+  .badge.warn { color:var(--yellow); border-color:var(--yellow); }
+
+  .why { padding:var(--s3) var(--s4); font-size:12px; color:var(--text-2); line-height:1.65; flex:1; }
+  .why ul { margin:0; padding-left:16px; }
+  .why li { margin-bottom:4px; }
+  .why li:last-child { margin-bottom:0; }
+  .why .no { color:var(--red); }
+  .why .yes { color:var(--green); }
+
+  .stage { background:var(--bg); border-bottom:1px solid var(--border); padding:var(--s4); }
+  .panel { background:var(--bg); border:1px solid var(--border-2); }
+  .ptitle { padding:var(--s2) var(--s3); border-bottom:1px solid var(--border-2); font-size:11px; color:var(--text-3); }
+  .lrow { display:flex; align-items:center; justify-content:space-between; gap:var(--s3); padding:7px var(--s3); border-bottom:1px solid var(--border-2); font-size:12px; }
+  .lrow:last-child { border-bottom:0; }
+  .lrow .n { color:var(--text-3); font-size:11px; text-align:right; }
+  .lrow .sub { display:block; color:var(--text-3); font-size:10.5px; margin-top:1px; }
+  .box { width:12px; height:12px; border:1px solid var(--border); flex:none; display:inline-block; position:relative; margin-right:var(--s2); vertical-align:-1px; }
+  .box.on { border-color:var(--accent); background:var(--accent-d); }
+  .box.on::after { content:""; position:absolute; inset:2px; background:var(--text-1); }
+  .strip { padding:var(--s3); border-top:1px solid var(--border-2); font-size:12px; color:var(--text-2); display:flex; flex-direction:column; gap:var(--s2); }
+  .strip .msg { color:var(--text-1); }
+  .btns { display:flex; gap:var(--s2); flex-wrap:wrap; }
+  .btn { border:1px solid var(--border); background:var(--surface-2); color:var(--text-1); font-family:var(--mono); font-size:11.5px; padding:4px 10px; }
+  .btn.pri { border-color:var(--accent); background:var(--accent-d); }
+  .btn.quiet { color:var(--text-3); background:transparent; }
+
+  .after { border:1px solid var(--border-2); background:var(--bg); padding:var(--s3); font-size:11.5px; color:var(--text-2); }
+  .after .ok { color:var(--green); }
+  .after .nag { color:var(--yellow); }
+
+  .foot { border:1px solid var(--border); background:var(--surface); padding:var(--s4); font-size:13px; color:var(--text-2); }
+  .foot b { color:var(--text-1); font-weight:500; }
+  .foot ol { margin:var(--s2) 0 0; padding-left:18px; }
+  .foot li { margin-bottom:3px; }
+</style>
+
+<div class="wrap">
+
+  <h1>Folder import &amp; notes your phone wrote</h1>
+  <div class="meta">
+    <span><i class="dot"></i>FR-23 Option C &mdash; the last open choice</span>
+    <span><i class="dot"></i>2026-08-04 &middot; s140</span>
+  </div>
+
+  <p>Your folders hold notes written on both peers. The import adds one
+  <code>#project@&lt;name&gt;</code> line to each note in a folder you tick. The question is whether it
+  is allowed to add that line to a note the phone authored.</p>
+
+  <div class="settled">
+    <b>Checked at source before designing this &mdash; the constraint is smaller than it reads:</b>
+    <ul>
+      <li>The provenance gate lives <strong>inside the enrichment pass only</strong>
+        (<code>mobile_sync_agent.py:1459-1466</code>) &mdash; a <code>continue</code> that makes the
+        desktop's automatic LLM pass skip phone-authored notes. It is <strong>not</strong> a global
+        write barrier: nothing blocks, reverts or conflicts with a write from elsewhere.</li>
+      <li>Both peers derive <code>project:</code> from the body by the <strong>identical rule</strong>
+        (binding contract lock), so after a sync the phone reads the tag and agrees. No ping-pong.</li>
+      <li>The import <strong>skips notes that already carry a tag</strong>, so running it twice
+        changes nothing. It is idempotent by construction.</li>
+      <li>The line is ordinary body text, one line, visible, and the user can delete it like any
+        other tag they typed.</li>
+    </ul>
+  </div>
+
+  <!-- ============================================================ the fork, drawn -->
+  <div class="sec">
+    <div class="sechead">
+      <h2>What you would actually see</h2>
+      <span class="q">same vault, same tick, two rules</span>
+    </div>
+
+    <div class="two">
+
+      <div class="card">
+        <header><b>Skip phone-authored notes</b><span class="badge warn">partial result</span></header>
+        <div class="stage">
+          <div class="panel">
+            <div class="ptitle">Import folder structure</div>
+            <div class="lrow">
+              <span><i class="box on"></i>Work
+                <span class="sub">3 notes authored on your phone &mdash; not tagged from here</span>
+              </span>
+              <span class="n">9 of 12</span>
+            </div>
+            <div class="lrow"><span><i class="box on"></i>Recipes</span><span class="n">6 of 6</span></div>
+            <div class="strip">
+              <span class="msg">Adds one line to 15 notes.</span>
+              <div class="btns"><button class="btn pri">Add tags to 15 notes</button><button class="btn quiet">Cancel</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="why">
+          <div class="after" style="margin-bottom:10px">
+            <b>Afterwards:</b> <span class="nag">the tidy pass still proposes moving 3 notes out of
+            <code>Work/</code></span> &mdash; the exact prompt this feature exists to stop, now
+            narrowed to the three notes with no visible difference from the other nine.
+          </div>
+          <ul>
+            <li><span class="yes">The lock keeps its absolute wording.</span> No exception exists to cite later.</li>
+            <li><span class="no">The folder is not migrated.</span> The user ticked <code>Work</code> and got most of <code>Work</code>.</li>
+            <li><span class="no">The leftover is invisible in the vault.</span> Nothing on a note says why it was left out; the only explanation was one line of preview text, already dismissed.</li>
+            <li><span class="no">The fix is on the phone</span>, which has no import surface and no plan for one.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="card rec">
+        <header><b>Tag every note, name the source</b><span class="badge good">recommended</span></header>
+        <div class="stage">
+          <div class="panel">
+            <div class="ptitle">Import folder structure</div>
+            <div class="lrow">
+              <span><i class="box on"></i>Work
+                <span class="sub">includes 3 notes written on your phone</span>
+              </span>
+              <span class="n">12 notes</span>
+            </div>
+            <div class="lrow"><span><i class="box on"></i>Recipes</span><span class="n">6 notes</span></div>
+            <div class="strip">
+              <span class="msg">Adds one line to 18 notes. Nothing moves, nothing is deleted.</span>
+              <div class="btns"><button class="btn pri">Add tags to 18 notes</button><button class="btn quiet">Cancel</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="why">
+          <div class="after" style="margin-bottom:10px">
+            <b>Afterwards:</b> <span class="ok">the tidy pass proposes nothing.</span> The folder is a
+            real project on both peers, and the phone reads the same tag on its next sync.
+          </div>
+          <ul>
+            <li><span class="yes">The folder the user ticked is the folder they get.</span> One rule, no asterisk in the result.</li>
+            <li><span class="yes">The source is disclosed, not hidden</span> &mdash; the row says which notes came from the phone before anything is written.</li>
+            <li><span class="yes">No second consent step</span> for a distinction the user did not make when they filed the notes.</li>
+            <li><span class="no">It carves an exception into a lock written absolutely</span> &mdash; the cost, and the reason for the three preconditions below.</li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============================================================ the guard -->
+  <div class="sec">
+    <div class="sechead">
+      <h2>The exception, written so nothing else can claim it</h2>
+      <span class="q">this is what keeps it from spreading</span>
+    </div>
+    <div class="foot">
+      <b>Recorded in <code>DECISIONS.md</code> §5 as a narrow carve-out, not a softening.</b> A surface
+      may write into a note it did not author only when <b>all three</b> hold:
+      <ol>
+        <li><b>User-initiated per item</b> &mdash; the user selected this specific set, in this session. Never a scheduled or background pass.</li>
+        <li><b>Shown before written</b> &mdash; the exact count and the affected folders are on screen at the moment of consent.</li>
+        <li><b>Idempotent</b> &mdash; running it again is a no-op, so it can never oscillate against the other peer.</li>
+      </ol>
+      <div style="margin-top:10px">No enrichment pass, sync pass, or reconcile path can satisfy the
+      first condition, which is what makes this non-transferable. <b>The enrichment gate at
+      <code>mobile_sync_agent.py:1459-1466</code> is untouched and stays exactly as strict as it is
+      today.</b></div>
+    </div>
+  </div>
+
+</div>

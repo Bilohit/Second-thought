@@ -1,0 +1,1054 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Projects in compact mode: the project screen, rebuilt around V2</title>
+<style>
+  :root {
+    --bg: #0a0a0a; --surface: #262626; --surface-2: #404040;
+    --border: #383838; --border-2: #262626;
+    --text-1: #fafafa; --text-2: #a1a1a1; --text-3: #7a7a7a;
+    --accent: #737373; --accent-d: rgba(115,115,115,0.18); --accent-glow: rgba(115,115,115,0.30);
+    --green: #4ade80; --yellow: #facc15; --red: #ff6467;
+    --on-accent: #fafafa;
+    --radius: 0px; --radius-sm: 0px;
+    /* == gui/src/index.css --menu-travel-ease / SegmentedToggle.tsx's pill transition curve */
+    --ease-travel: cubic-bezier(0.22,1,0.36,1);
+    --ease-settle: cubic-bezier(0.16,1,0.3,1);
+    /* .btn-hover's own tokens, copied verbatim from index.css (dark theme block) so the
+       ported utility class below renders identically. */
+    --hover-dur: 260ms;
+    --hover-ease: cubic-bezier(0.34, 1.3, 0.64, 1);
+    --hover-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --hover-bg: color-mix(in srgb, var(--accent) 5%, var(--surface));
+    --hover-border: color-mix(in srgb, var(--accent) 90%, var(--border));
+    --hover-lift: -2px;
+    --hover-scale: 1.03;
+    --hover-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; background:var(--bg); color:var(--text-1);
+    font-family:"Geist Mono", ui-monospace, "Cascadia Mono", "Segoe UI Mono", monospace; }
+  body { padding:32px 40px 90px; }
+  .page { max-width:1240px; margin:0 auto; }
+  h1 { font-size:20px; font-weight:600; margin:0 0 6px; letter-spacing:-0.01em; }
+  h2 { font-size:14px; font-weight:600; margin:0 0 4px; }
+  p { margin:0; }
+  .lede { font-size:12px; color:var(--text-2); line-height:1.6; max-width:78ch; }
+  .principles { margin-top:16px; border:1px solid var(--border); background:var(--surface); padding:10px 14px; font-size:10.5px; color:var(--text-2); line-height:1.7; }
+  .principles b { color:var(--text-1); font-weight:600; }
+  .simulate-row { margin-top:14px; display:flex; align-items:center; gap:8px; font-size:10.5px; color:var(--text-2); }
+  .simulate-row input { accent-color: var(--accent); }
+  section { margin-top:48px; }
+  .section-head { display:flex; align-items:baseline; justify-content:space-between; gap:16px; margin-bottom:14px; flex-wrap:wrap; }
+  .section-tag { font-size:9.5px; color:var(--text-3); border:1px solid var(--border); padding:2px 6px; }
+  svg.ic { display:block; flex:0 0 auto; }
+
+  .flag-box { border:1px solid var(--yellow); background:rgba(250,204,21,0.06); padding:10px 14px; margin-top:16px; font-size:10.5px; color:var(--text-2); line-height:1.7; }
+  .flag-box b { color:var(--text-1); font-weight:600; }
+  .flag-box .flag-row { display:flex; gap:8px; align-items:flex-start; margin-top:8px; }
+  .flag-box .flag-row:first-of-type { margin-top:10px; }
+  .flag-box svg { color:var(--yellow); flex:0 0 auto; margin-top:1px; }
+
+  .mockrow { display:flex; gap:22px; flex-wrap:wrap; align-items:flex-start; }
+  .mockcol { display:flex; flex-direction:column; align-items:center; }
+  .mocklabel { margin-top:8px; font-size:9.5px; color:var(--text-3); text-align:center; letter-spacing:0.02em; max-width:332px; }
+  .mocklabel b { color:var(--text-2); }
+  .dim-badge { font-size:8.5px; color:var(--text-3); letter-spacing:0.03em; margin-top:2px; }
+
+  /* exact 332x320 panel, dashed neutral dimension guide (never a semantic color) */
+  .cbox { width:332px; height:320px; background:var(--surface); border:1px solid var(--border);
+    outline:2px dashed var(--text-3); outline-offset:2px;
+    display:flex; flex-direction:column; overflow:hidden; position:relative; flex:0 0 auto; }
+  .cbox-header { flex:0 0 auto; height:32px; display:flex; align-items:center; justify-content:space-between; padding:0 8px; border-bottom:1px solid var(--border); gap:6px; }
+  .cbox-title { display:flex; align-items:center; gap:6px; min-width:0; flex:1 1 auto; }
+  .cbox-title span { font-size:11px; font-weight:500; color:var(--text-1); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .cbox-actions { display:flex; align-items:center; gap:2px; flex:0 0 auto; }
+  .hicon-btn { width:22px; height:22px; display:flex; align-items:center; justify-content:center; color:var(--text-3);
+    background:none; border:1px solid transparent; cursor:pointer;
+    transition:color 160ms var(--ease-settle), background 160ms var(--ease-settle), transform 120ms var(--ease-settle); }
+  .hicon-btn:hover { color:var(--text-1); background:var(--surface-2); }
+  .hicon-btn:active { transform:scale(0.88); }
+  .hicon-btn.danger { color:var(--red); opacity:0.85; }
+  .hicon-btn.danger:hover { opacity:1; background:rgba(255,100,103,0.12); }
+  .hicon-btn[data-active="true"] { color:var(--text-1); background:var(--accent-d); }
+  .cbox-body { flex:1 1 auto; min-height:0; position:relative; overflow:hidden; }
+
+  /* .btn-hover, ported verbatim from index.css (lines ~910-929): lift + scale + bg + border,
+     the same utility the app uses on buttons, segmented toggles and theme swatches. Split
+     enter/leave easing (overshoot on hover-in via --hover-ease, plain ease-out on the base
+     rule) is the real repo's asymmetric-easing recipe, not a simplification. */
+  .btn-hover { transition: background var(--hover-dur) var(--hover-ease-out), border-color var(--hover-dur) var(--hover-ease-out),
+      color var(--hover-dur) var(--hover-ease-out), box-shadow var(--hover-dur) var(--hover-ease-out), transform var(--hover-dur) var(--hover-ease-out); }
+  .btn-hover:hover { transition: background var(--hover-dur) var(--hover-ease), border-color var(--hover-dur) var(--hover-ease),
+      color var(--hover-dur) var(--hover-ease), box-shadow var(--hover-dur) var(--hover-ease), transform var(--hover-dur) var(--hover-ease);
+    transform:translateY(var(--hover-lift)) scale(var(--hover-scale)); background:var(--hover-bg); border-color:var(--hover-border); color:var(--text-1); box-shadow:var(--hover-shadow); }
+
+  /* Tile/rows header toggle: the SAME SegmentedToggle.tsx markup and motion used for
+     capsule Inbox's Inbox/Reminders switch and Look's search/chat switch, not a bespoke
+     control. Structure, values and the sliding pill copied from
+     gui/src/components/ui/SegmentedToggle.tsx; the pill position math is
+     lib/segmentedToggle.ts:indicatorWidth/indicatorTransform (n=2, so width is
+     calc((100% - 4px)/2) and the pill steps in whole 100% translateX increments); the pill's
+     own transition (0.2s cubic-bezier(0.16,1,0.3,1)) and the .btn-hover reuse for the segment
+     buttons both come from index.css (--ease-settle here is that identical curve). The DOM
+     node persists across toggles (see toggle-tile/toggle-list in the click handler) so the
+     transform transition below actually has a "from" state to animate out of. */
+  .seg-toggle { position:relative; display:grid; grid-template-columns:repeat(2,1fr); background:var(--surface); border-radius:var(--radius); padding:2px; }
+  .seg-pill { position:absolute; top:2px; bottom:2px; left:2px; width:calc((100% - 4px) / 2); background:var(--accent); border-radius:var(--radius-sm);
+    transition:transform 0.2s var(--ease-settle); pointer-events:none; }
+  .seg-item { position:relative; z-index:1; display:flex; align-items:center; justify-content:center; font-size:11px; padding:5px 8px; min-width:0;
+    border-radius:var(--radius-sm); border:none; background:transparent; color:var(--text-2); cursor:pointer; font-family:inherit;
+    transition:color 0.2s var(--ease-settle); }
+  .seg-item[aria-selected="true"] { color:var(--on-accent); }
+
+  /* Content swap for the tile-grid <-> rows-list body region: the SAME entrance-only,
+     keyed-remount pattern as .seg-swap-panel in index.css (segSwapIn keyframes, 220ms,
+     --menu-travel-ease == --ease-travel here), driven by lib/segmentedToggle.ts's
+     slideDirection (+1 tile->rows, -1 rows->tile, written into --swap-dir inline). Old
+     content is simply replaced, not simultaneously animated out, matching the source
+     comment that this is "entrance-only... not a simultaneous two-panel slide". */
+  @keyframes segSwapIn { from { opacity:0; transform:translateX(calc(var(--swap-dir, 0) * 24px)); } to { opacity:1; transform:translateX(0); } }
+  .seg-swap-panel { animation:segSwapIn 220ms var(--ease-travel) both; }
+
+  /* the editable project-name title field (kills the redundant body name field) */
+  .title-input { flex:1 1 auto; min-width:0; font:inherit; font-size:11px; font-weight:500; color:var(--text-1);
+    background:none; border:1px solid transparent; padding:2px 4px; margin:0 -4px; cursor:text;
+    transition:background 160ms var(--ease-settle), border-color 160ms var(--ease-settle); }
+  .title-input:hover { background:var(--surface-2); }
+  .title-input:focus { background:var(--bg); border-color:var(--accent); outline:none; }
+
+  .cbar { width:332px; height:36px; background:var(--surface); border:1px solid var(--border); border-bottom:none;
+    display:flex; align-items:center; padding:0 6px; gap:2px; flex:0 0 auto; }
+  .cbar-item { width:44px; height:100%; display:flex; align-items:center; justify-content:center; color:var(--text-3); }
+  .cbar-item.active { color:var(--text-1); background:var(--accent-d); }
+  .cbar-item.live { cursor:pointer; transition:color 160ms var(--ease-settle), transform 120ms var(--ease-settle); }
+  .cbar-item.live:hover { color:var(--text-1); }
+  .cbar-item.live:active { transform:scale(0.88); }
+  .cbar-item:not(.live) { cursor:default; opacity:0.55; }
+
+  /* screen stack: push / pop / fade, one CSS-driven mechanism.
+     scrollbar-gutter:stable reserves the scrollbar's width whether or not a
+     scrollbar is currently showing, so the horizontal budget below (tile
+     grid math) never shifts when content grows past one screen's height. */
+  .screen { position:absolute; inset:0; padding:8px; overflow-y:auto; overflow-x:hidden; scrollbar-gutter:stable; opacity:0; transform:translateX(0);
+    transition:transform 280ms var(--ease-travel), opacity 220ms var(--ease-settle); }
+  .screen.enter-push { transform:translateX(100%); }
+  .screen.enter-pop { transform:translateX(-100%); }
+  .screen.settled { opacity:1; transform:translateX(0); }
+  .screen.settled.exit-push { transform:translateX(-24%); opacity:0; }
+  .screen.settled.exit-pop { transform:translateX(24%); opacity:0; }
+  .screen.settled.exit-fade { opacity:0; }
+
+  /* the project screen's own layout: notes scroll, description stays pinned above the footer.
+     Collapsed/expanded heights are set inline by JS (setDescExpanded); these two transitions
+     are the only thing that makes that a genuine grow instead of a cut. */
+  .detail-flex { display:flex; flex-direction:column; height:100%; }
+  .notes-scroll { flex:0 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; scrollbar-gutter:stable;
+    transition:height 280ms var(--ease-travel), opacity 220ms var(--ease-settle), transform 280ms var(--ease-travel); }
+  .notes-scroll.collapsed { opacity:0; transform:translateY(-8px); pointer-events:none; }
+  .desc-pin { flex:0 0 auto; display:flex; flex-direction:column; overflow:hidden; border-top:1px solid var(--border-2); padding-top:6px; margin-top:4px;
+    transition:height 280ms var(--ease-travel); }
+  .desc-textarea { flex:1 1 auto; min-height:0; height:52px; resize:none; }
+  .field-label-row { display:flex; align-items:center; justify-content:space-between; margin:6px 0 3px; flex:0 0 auto; }
+  .field-label-row .field-label { margin:0; }
+  .hicon-btn.expand-toggle[data-active="true"] svg { transform:rotate(180deg); }
+  .hicon-btn.expand-toggle svg { transition:transform 200ms var(--ease-settle); }
+
+  /* A2 tile grid (from projects-rework.html), forced to two columns, hairline seams.
+     minmax(0,1fr) is load-bearing: plain 1fr lets a track's automatic minimum grow to its
+     content's min-content width (an unbroken project name or description string), which is
+     exactly how this overflowed before. minmax(0,...) plus min-width:0 on the item below
+     caps that at zero so ellipsis truncation inside actually gets to run. */
+  .tile-grid-a2 { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:1px; background:var(--border-2); border:1px solid var(--border-2); }
+  .tile { min-width:0; background:var(--bg); padding:8px 8px; min-height:56px; display:flex; flex-direction:column; justify-content:space-between; gap:4px;
+    cursor:pointer; transition:background 160ms var(--ease-settle), transform 120ms var(--ease-settle); position:relative; }
+  .tile:hover { background:var(--accent-d); }
+  .tile:active { transform:scale(0.98); }
+  .tile.loose-tile { cursor:pointer; }
+  .tile-top { display:flex; align-items:flex-start; justify-content:space-between; gap:6px; min-width:0; }
+  .tile-name { font-size:10.5px; font-weight:600; color:var(--text-1); line-height:1.3; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:1 1 auto; }
+  .tile-desc { font-size:8.5px; color:var(--text-3); line-height:1.4; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tile-topright { position:relative; width:16px; height:14px; flex:0 0 auto; }
+  .tile-count-badge { font-size:9px; color:var(--text-2); position:absolute; right:0; top:0; transition:opacity 160ms var(--ease-settle); }
+  .tile-edit-icon { position:absolute; right:0; top:0; opacity:0; color:var(--text-3); transition:opacity 160ms var(--ease-settle), color 160ms var(--ease-settle), transform 120ms var(--ease-settle); cursor:pointer; }
+  .tile:hover .tile-count-badge { opacity:0; }
+  .tile:hover .tile-edit-icon { opacity:1; }
+  .tile-edit-icon:hover { color:var(--text-1); }
+  .tile-edit-icon:active { transform:scale(0.85); }
+  .tile-topright.rename-active { width:auto; display:flex; gap:4px; }
+  .mini-ic { color:var(--text-3); cursor:pointer; display:flex; transition:color 160ms var(--ease-settle), transform 120ms var(--ease-settle); }
+  .mini-ic:hover { color:var(--text-1); }
+  .mini-ic:active { transform:scale(0.85); }
+  .tile-rename-input { flex:1 1 auto; min-width:0; background:var(--bg); border:1px solid var(--accent); color:var(--text-1); font-family:inherit; font-size:10.5px; padding:1px 3px; }
+  .tile-rename-input:focus { outline:none; }
+  .tile-enter { opacity:0; transform:scale(0.85); }
+  .tile-enter.settle { opacity:1; transform:scale(1); transition:opacity 220ms var(--ease-settle), transform 220ms var(--ease-travel); }
+  @keyframes tilePulse { 0%,100%{ transform:scale(1); } 40%{ transform:scale(1.06); } }
+  .tile-pulse { animation:tilePulse 420ms var(--ease-settle); }
+
+  .taglist { display:flex; flex-direction:column; }
+  .tagrow { height:26px; display:flex; align-items:center; justify-content:space-between; padding:0 4px; border-bottom:1px solid var(--border-2); }
+  .tagrow .name { font-size:10.5px; color:var(--text-1); }
+  .tagrow .name b { color:var(--text-3); font-weight:400; }
+  .tagrow .count { font-size:9px; color:var(--text-3); }
+
+  .field-label { font-size:8.5px; color:var(--text-3); text-transform:uppercase; letter-spacing:0.05em; margin:6px 0 3px; }
+  .field-input { width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text-1); font-family:inherit; font-size:10px; padding:5px 6px; }
+  .field-input:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+  textarea.field-input { resize:none; height:46px; line-height:1.4; }
+
+  .detail-notes { display:flex; flex-direction:column; margin-bottom:4px; }
+  .noterow { min-height:20px; flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; font-size:9.5px; color:var(--text-2); border-bottom:1px solid var(--border-2); padding:2px 4px; gap:6px;
+    transition:background 160ms var(--ease-settle); }
+  .noterow:hover { background:var(--surface-2); }
+  .noterow .note-title { cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1 1 auto; transition:color 160ms var(--ease-settle); }
+  .noterow .note-title:hover { color:var(--text-1); text-decoration:underline; }
+  .noterow .note-title:active { opacity:0.7; }
+  .noterow .move-btn { color:var(--text-3); cursor:pointer; flex:0 0 auto; transition:color 160ms var(--ease-settle), transform 120ms var(--ease-settle); }
+  .noterow .move-btn:hover { color:var(--text-1); }
+  .noterow .move-btn:active { transform:scale(0.85); }
+  .empty-note-row { font-size:9px; color:var(--text-3); padding:4px 0; }
+  .assign-picker { display:flex; gap:4px; flex-wrap:wrap; padding:4px 0 6px; }
+  .btn { flex:1; font-size:10px; padding:6px 0; text-align:center; border:1px solid var(--border); background:var(--bg); color:var(--text-2); cursor:pointer;
+    transition:border-color 160ms var(--ease-settle), color 160ms var(--ease-settle), background 160ms var(--ease-settle), transform 120ms var(--ease-settle); display:flex; align-items:center; justify-content:center; gap:4px; }
+  .btn:hover { color:var(--text-1); border-color:var(--accent); }
+  .btn:active { transform:scale(0.96); }
+  .btn.primary { background:var(--accent-d); color:var(--text-1); border-color:var(--accent); }
+  .btn.small { flex:0 0 auto; padding:3px 6px; font-size:8.5px; }
+  .btn-mini { display:flex; align-items:center; gap:4px; font-size:9.5px; color:var(--text-2); border:1px solid var(--border); background:var(--bg); padding:3px 6px; cursor:pointer;
+    transition:color 160ms var(--ease-settle), border-color 160ms var(--ease-settle), transform 120ms var(--ease-settle); width:fit-content; }
+  .btn-mini:hover { color:var(--text-1); border-color:var(--accent); }
+  .btn-mini:active { transform:scale(0.96); }
+
+  .create-row { display:flex; align-items:center; gap:4px; margin-bottom:6px; }
+  .create-row .field-input { flex:1; }
+
+  .confirm-wrap { display:flex; flex-direction:column; align-items:center; text-align:center; padding-top:18px; height:100%; }
+  .confirm-wrap svg { color:var(--red); margin-bottom:10px; }
+  .confirm-title { font-size:11px; color:var(--text-1); font-weight:600; margin-bottom:4px; }
+  .confirm-body { font-size:9.5px; color:var(--text-2); line-height:1.5; max-width:250px; }
+
+  .inbox-card { border:1px solid var(--accent); background:var(--accent-d); padding:7px 8px; }
+  .inbox-meta { font-size:9.5px; color:var(--text-2); margin-bottom:4px; }
+  .inbox-text { font-size:10.5px; color:var(--text-1); margin-bottom:6px; }
+  .inbox-hint { font-size:8.5px; color:var(--text-3); margin-bottom:4px; }
+  .inbox-chips { display:flex; gap:5px; }
+  .inbox-resolved { display:flex; align-items:center; gap:6px; font-size:10px; color:var(--green); margin-top:4px; }
+
+  /* pinned bottom bar, reveals only in editing contexts (V2's action model) */
+  .cbox-footer { min-height:34px; height:34px; flex:0 0 auto; display:flex; align-items:center; justify-content:flex-end; gap:8px; padding:0 8px; border-top:1px solid var(--border); }
+  .disclose { display:grid; grid-template-rows:0fr; transition:grid-template-rows 260ms var(--ease-travel); flex:0 0 auto; }
+  .disclose.open { grid-template-rows:1fr; }
+  .disclose > .cbox-footer { overflow:hidden; min-height:0; height:auto; }
+
+  /* asymmetric bottom row: delete is a quiet square icon, save is the inviting rectangle with a label */
+  .footer-save { display:flex; align-items:center; gap:5px; padding:6px 13px; font-size:10.5px; font-weight:600;
+    background:var(--accent-d); border:1px solid var(--accent); color:var(--text-1); cursor:pointer;
+    transition:background 160ms var(--ease-settle), border-color 160ms var(--ease-settle), transform 120ms var(--ease-settle); }
+  .footer-save:hover { background:var(--accent-glow); }
+  .footer-save:active { transform:scale(0.96); }
+  .footer-save svg { flex:0 0 auto; }
+
+  /* note-open handoff overlay, confined to the body's own bounds */
+  .handoff-overlay { position:absolute; inset:0; background:var(--surface); display:flex; align-items:center; justify-content:center; opacity:0; transition:opacity 220ms var(--ease-settle); z-index:5; }
+  .handoff-overlay.open { opacity:1; }
+  .handoff-card { text-align:center; padding:0 22px; display:flex; flex-direction:column; align-items:center; gap:6px; }
+  .handoff-card svg { color:var(--text-3); }
+  .handoff-title { font-size:10.5px; color:var(--text-1); font-weight:600; }
+  .handoff-sub { font-size:8.5px; color:var(--text-3); line-height:1.5; max-width:240px; }
+
+  .build-card { border:1px solid var(--border-2); padding:20px 22px 24px; margin-top:4px; }
+  .build-name { font-size:15px; font-weight:600; margin-bottom:6px; }
+  .build-desc { font-size:11.5px; color:var(--text-2); line-height:1.6; max-width:74ch; }
+  .reset-btn { margin-top:8px; font-size:9.5px; color:var(--text-3); border:1px solid var(--border); background:none; padding:4px 9px; cursor:pointer;
+    transition:color 160ms var(--ease-settle), border-color 160ms var(--ease-settle), transform 120ms var(--ease-settle); }
+  .reset-btn:hover { color:var(--text-1); border-color:var(--accent); }
+  .reset-btn:active { transform:scale(0.96); }
+
+  .fw-frame { display:flex; width:100%; max-width:980px; height:600px; border:1px solid var(--border); background:var(--surface); }
+  .fw-rail { width:230px; flex:0 0 auto; border-right:1px solid var(--border); display:flex; flex-direction:column; padding:14px 10px; }
+  .fw-rail-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .fw-rail-title { font-size:12px; font-weight:600; display:flex; align-items:center; gap:6px; }
+  .fw-toggle { display:flex; border:1px solid var(--border); }
+  .fw-toggle-item { width:26px; height:24px; display:flex; align-items:center; justify-content:center; color:var(--text-3); cursor:pointer; }
+  .fw-toggle-item.active { color:var(--text-1); background:var(--accent-d); }
+  .fw-rail-list { display:flex; flex-direction:column; gap:2px; overflow:hidden; }
+  .fw-rail-row { display:flex; align-items:center; justify-content:space-between; padding:7px 8px; font-size:11.5px; color:var(--text-2); cursor:pointer; border:1px solid transparent; }
+  .fw-rail-row:hover { background:var(--surface-2); }
+  .fw-rail-row.active { color:var(--text-1); background:var(--accent-d); border-color:var(--accent); }
+  .fw-rail-row .count { font-size:9.5px; color:var(--text-3); }
+  .fw-rail-new { margin-top:10px; font-size:10.5px; color:var(--text-3); display:flex; align-items:center; gap:6px; cursor:pointer; }
+  .fw-rail-new:hover { color:var(--text-1); }
+  .fw-main { flex:1 1 auto; padding:20px 26px; display:flex; flex-direction:column; min-width:0; }
+  .fw-main-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:4px; }
+  .fw-main-title { font-size:17px; font-weight:600; }
+  .fw-main-desc { font-size:11.5px; color:var(--text-2); max-width:60ch; line-height:1.6; margin-bottom:18px; }
+  .fw-note-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .fw-note-card { border:1px solid var(--border); padding:12px; height:88px; display:flex; flex-direction:column; justify-content:space-between; }
+  .fw-note-card .t { font-size:11px; color:var(--text-1); }
+  .fw-note-card .m { font-size:9.5px; color:var(--text-3); }
+
+  footer { margin-top:60px; border-top:1px solid var(--border-2); padding-top:24px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration:0.01ms !important; animation-duration:0.01ms !important; transition-delay:0ms !important; }
+  }
+  :root.force-reduced-motion *, :root.force-reduced-motion *::before, :root.force-reduced-motion *::after {
+    transition-duration:0.01ms !important; animation-duration:0.01ms !important; transition-delay:0ms !important;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <h1>Projects in compact mode: the project screen, rebuilt around V2</h1>
+    <p class="lede">
+      The user drove the composite build, picked V2's reveal-footer action model, and specified exact
+      changes to the project screen. This is that rebuild, one live panel. Every panel is exactly
+      PANEL_W by PANEL_H from gui/src/lib/compactPanel.ts, at true 1:1 scale, no scale transform. The
+      capsule bar above it is unchanged: ALL_TARGETS in gui/src/components/PillMenu/icons.tsx is
+      search, today, vault, settings, inbox, stats, hide, shared by the capsule bar and the minimal
+      radial, and PANEL_W is exactly 7 targets by 44 plus 24 padding. Its Inbox icon was already real
+      and stays real.
+    </p>
+    <div class="principles">
+      A note's project comes from a body tag like <b>#project@research</b>, one project per note, no tag
+      means the note is <b>loose</b> at vault root (a normal state). Both apps group by tag, never by
+      path. <b>Tile mode</b> shows project groupings; <b>rows mode</b> shows individual non-action tags
+      only. Auto-assignment only ever picks an existing project; unsure captures land in the Inbox with
+      two candidates offered as one-click choices; deleting a project never deletes its notes, they go
+      loose.
+    </div>
+    <label class="simulate-row">
+      <input type="checkbox" id="simulate-reduced" />
+      Simulate prefers-reduced-motion (collapses every transition below to an instant snap)
+    </label>
+  </header>
+
+  <!-- ══════════════════════════ FULL WINDOW ══════════════════════════ -->
+  <section>
+    <div class="section-head">
+      <h2>Full window: A3 split, rail carries the same toggle</h2>
+      <span class="section-tag">not scale-critical, realistic proportion, unchanged</span>
+    </div>
+    <p class="lede" style="margin-bottom:16px;">
+      The left rail of the already-picked A3 split panel opens with the identical tile/list toggle used
+      everywhere else. Tile mode (shown) lists project groupings with counts; list mode swaps the same
+      rail to individual tags.
+    </p>
+    <div class="fw-frame">
+      <div class="fw-rail">
+        <div class="fw-rail-head">
+          <span class="fw-rail-title">
+            <svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            Vault
+          </span>
+          <div class="fw-toggle">
+            <div class="fw-toggle-item active" title="Tile mode"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg></div>
+            <div class="fw-toggle-item" title="List mode"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg></div>
+          </div>
+        </div>
+        <div class="fw-rail-list">
+          <div class="fw-rail-row active"><span>research</span><span class="count">14</span></div>
+          <div class="fw-rail-row"><span>kitchen-remodel</span><span class="count">7</span></div>
+          <div class="fw-rail-row"><span>onboarding-v2</span><span class="count">22</span></div>
+          <div class="fw-rail-row"><span>trip-japan</span><span class="count">5</span></div>
+          <div class="fw-rail-row" style="border-style:dashed;color:var(--text-3);"><span>loose</span><span class="count">9</span></div>
+        </div>
+        <div class="fw-rail-new">
+          <svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+          New project
+        </div>
+      </div>
+      <div class="fw-main">
+        <div class="fw-main-head">
+          <span class="fw-main-title">research</span>
+          <span style="font-size:10.5px;color:var(--text-3);">14 notes</span>
+        </div>
+        <p class="fw-main-desc">Papers, outlines and interview notes for the current literature review. Embedded on the phone for semantic capture matching.</p>
+        <div class="fw-note-grid">
+          <div class="fw-note-card"><span class="t">Q3 lit review outline</span><span class="m">edited 2h ago</span></div>
+          <div class="fw-note-card"><span class="t">Interview transcript, P. Alvarez</span><span class="m">edited yesterday</span></div>
+          <div class="fw-note-card"><span class="t">Related work, citation map</span><span class="m">edited 3d ago</span></div>
+          <div class="fw-note-card"><span class="t">Methodology draft</span><span class="m">edited 4d ago</span></div>
+          <div class="fw-note-card"><span class="t">Survey response notes</span><span class="m">edited 5d ago</span></div>
+          <div class="fw-note-card"><span class="t">Figures, working set</span><span class="m">edited 6d ago</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════ WHAT CHANGED IN THE PROJECT SCREEN ══════════════════════════ -->
+  <section>
+    <div class="section-head"><h2>What the project screen does now</h2></div>
+    <p class="lede">
+      The panel title itself is the editable project-name field: the redundant name field that used to
+      sit in the body is gone, renaming from inside a project happens by editing the title directly. At
+      rest it reads as plain text, no border, no fill; hovering tints it, focusing it turns on a border
+      and background so it is unmistakably a field the moment you touch it. Enter or clicking away
+      commits, Escape reverts. The body now holds only two things: the notes list and the description
+      box.
+    </p>
+    <p class="lede" style="margin-top:14px;">
+      <b style="color:var(--text-1);">Layout behavior, the important part.</b> The description box sits
+      directly below the notes list in normal document flow and gets pushed down as notes are added.
+      Once that combined content reaches the bottom bar, the notes list stops growing and starts
+      scrolling on its own, while the description box stays pinned directly above the save and delete
+      row. This is one CSS rule, not a scroll listener: the notes list is a flex item that takes its
+      natural height until the flex container runs out of room, then shrinks and scrolls; the
+      description box never grows, so it never gets pushed off screen. Try both seeded projects below:
+      <b style="color:var(--text-1);">research</b> has three notes and shows the pushed-down state with
+      room to spare; <b style="color:var(--text-1);">onboarding-v2</b> has nine and shows the pinned,
+      scrolling state.
+    </p>
+    <p class="lede" style="margin-top:14px;">
+      <b style="color:var(--text-1);">Bottom row.</b> Save is the rectangle on the bottom right, labeled
+      and in the accent fill, the easiest thing on the panel to hit. Delete is a small square icon with
+      no label, sitting quietly to save's left. The description box also carries its own small expand
+      icon; it no longer pushes a separate screen. Clicking it grows the textbox in place to take over
+      the body, the note rows slide out (not a snap-hide) as it grows, and the title stays the project
+      name, still editable, the whole time. Pressing back (the header chevron, or the same icon again)
+      plays the reverse: the textbox shrinks to its pinned size and the notes slide back in. It is a
+      measured two-pane height swap, not a screen transition, and it honors reduced motion the same way
+      everything else here does.
+    </p>
+    <p class="lede" style="margin-top:14px;">
+      <b style="color:var(--text-1);">Opening a note.</b> Tapping a note title briefly overlays "Opening
+      in the full note editor" inside the panel, then returns to where you were. That overlay is a
+      stand-in: the compact panel is fixed at 332 by 320, and Second Thought's native note editor is a
+      full document surface with a toolbar, wikilinks and more. It cannot be hosted inline at this size.
+      The real behavior this represents is the same compact-to-full promotion the app already uses
+      elsewhere, not a new mechanism.
+    </p>
+    <div class="flag-box">
+      <b>Two problems the rules create, flagged rather than quietly designed around.</b>
+      <div class="flag-row">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16.5v.01"/></svg>
+        <span><b>Hover has no touch equivalent.</b> The tile rename icon only appears on hover, and the
+        title field's own "reads as editable on hover or focus" behavior is the same assumption one
+        level up: a pointer that can hover before it commits. Capsule and minimal compact modes are
+        desktop, mouse-driven overlays, so this is likely fine as designed. It would need a tap-and-hold
+        or an always-visible affordance the moment this UI has to run on anything touch-first.</span>
+      </div>
+      <div class="flag-row">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16.5v.01"/></svg>
+        <span><b>The hover edit icon collides with A2's own count badge.</b> A2's tile already puts the
+        note count in the top right corner; putting the rename icon there too means two things want the
+        same 16px slot. Resolved by swapping the count for the edit icon on hover, in the same slot,
+        rather than stacking both or shrinking the tile further.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════ THE BUILD ══════════════════════════ -->
+  <section>
+    <div class="section-head"><h2>The build</h2></div>
+    <div class="build-card">
+      <div class="build-name">V2's action model, project screen rebuilt to spec</div>
+      <p class="build-desc">
+        Reveal footer (grows in only in an editing context), A2 two-column tiles sized to fit the panel
+        with no horizontal scroll even on an unbroken 40-character project name, a real segmented
+        toggle for tiles/rows (the same control and motion as capsule Inbox's Inbox/Reminders switch),
+        plus icon in the header, header limited to exactly three icons with no Inbox among them,
+        B-style drill-in with a back chevron, hover-to-rename on the grid crossfading with the note
+        count, editable title field for in-project rename, pinned description over scrolling notes,
+        asymmetric save and delete, an in-place description takeover, and the note-open handoff.
+      </p>
+      <p class="build-desc" style="margin-top:10px;">
+        <b style="color:var(--text-1);">Tile/rows toggle.</b> This was two separate icon buttons; it is
+        now gui/src/components/ui/SegmentedToggle.tsx's own markup, a role="tablist" with one sliding
+        pill behind two role="tab" buttons. The pill's width and step come from
+        lib/segmentedToggle.ts (indicatorWidth/indicatorTransform, n=2 equal segments), its transition
+        is the real 0.2s cubic-bezier(0.16,1,0.3,1), and the segment buttons reuse index.css's
+        .btn-hover utility rather than a bespoke hover style. Switching modes swaps the tile grid or
+        rows list underneath with index.css's own .seg-swap-panel/segSwapIn keyframes (220ms,
+        --menu-travel-ease), directional per lib/segmentedToggle.ts's slideDirection: tiles to rows
+        enters from the right, rows to tiles enters from the left. The pill and buttons are patched in
+        place rather than rebuilt on every toggle, the same way the description takeover is, because a
+        freshly rebuilt pill has no prior position to visibly slide from.
+      </p>
+      <div class="mockrow" style="margin-top:16px;">
+        <div class="mockcol">
+          <div id="v2-shell">
+            <div class="cbar" id="v2-bar"></div>
+            <div class="cbox" style="border-top:none;">
+              <div class="cbox-header">
+                <div class="cbox-title" id="v2-title"><span>Vault</span></div>
+                <div class="cbox-actions" id="v2-actions"></div>
+              </div>
+              <div class="cbox-body" id="v2-body"></div>
+              <div class="disclose" id="v2-footerwrap"><div class="cbox-footer" id="v2-footer"></div></div>
+            </div>
+          </div>
+          <div class="mocklabel">Live: flip the tiles/rows segmented toggle back and forth to see the pill slide and the body swap direction reverse. Open <b>research</b> (few notes, description sits right below them) and <b>onboarding-v2</b> (nine notes, notes scroll, description stays pinned). Open <b>quarterly-infrastructure-overhaul-plan-x</b> to see the 40-character name truncate cleanly instead of overflowing. Edit the title in place, expand the description in place, save, delete, assign, open a note, switch the bar to Inbox.</div>
+          <div class="dim-badge">332 x 320, no scale, footer reveals on demand</div>
+          <button class="reset-btn" id="v2-reset">Reset flow</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <h2>What this locks in</h2>
+    <p class="lede" style="margin-top:10px;">
+      The project screen no longer says the project's name twice. Renaming, describing, saving and
+      deleting all live where they now belong: identity in the title, content in the body, commitment in
+      a bottom row weighted so the safe default (save) is the easy target and the destructive one
+      (delete) is deliberately smaller and quieter. The notes-scroll-under-pinned-description behavior
+      needed no JavaScript layout math, a single flex rule does it. The one open question that stays
+      open on purpose is hover-only discoverability, which is a reasonable bet for a desktop, mouse-driven
+      surface but not a free one.
+    </p>
+  </footer>
+
+</div>
+
+<script>
+/* ═══════════════════ shared icons, utils, motion primitives ═══════════════════ */
+function svg(w,h,inner,style){ return '<svg class="ic" width="'+w+'" height="'+h+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"'+(style?' style="'+style+'"':'')+'>'+inner+'</svg>'; }
+var ICON = {
+  GRID: svg(13,13,'<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/>'),
+  LIST: svg(13,13,'<line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/>'),
+  PLUS: svg(12,12,'<path d="M12 5v14"/><path d="M5 12h14"/>'),
+  CLOSE: svg(12,12,'<path d="M18 6 6 18"/><path d="M6 6l12 12"/>'),
+  CHEVRON_L: svg(12,12,'<path d="M9 6l6 6-6 6"/>','transform:scaleX(-1);margin-right:4px;'),
+  CHEVRON_R: svg(10,10,'<path d="M9 6l6 6-6 6"/>'),
+  MOVE: svg(11,11,'<path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4"/><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/><path d="M13 8l4 4-4 4"/>'),
+  SAVE: svg(13,13,'<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/>'),
+  TRASH: svg(13,13,'<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>'),
+  PENCIL_S: svg(10,10,'<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
+  EXPAND: svg(11,11,'<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>'),
+  WARN_BIG: svg(30,30,'<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'),
+  CHECK: svg(11,11,'<polyline points="4 12 9 17 20 6"/>'),
+  LOOK: svg(16,16,'<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>'),
+  TODAY: svg(16,16,'<rect x="3" y="4" width="18" height="18" rx="0"/><path d="M3 10h18M8 2v4M16 2v4"/>'),
+  VAULT: svg(16,16,'<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>'),
+  SETTINGS: svg(16,16,'<circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M2 12h2m16 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>'),
+  INBOX: svg(16,16,'<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>'),
+  STATS: svg(16,16,'<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'),
+  HIDE: svg(16,16,'<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><path d="M2 2l20 20"/>')
+};
+function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+function byId(id){ return document.getElementById(id); }
+function hbtn(action, title, iconHtml, extraCls, extraAttrs){ return '<div class="hicon-btn'+(extraCls?(' '+extraCls):'')+'" data-action="'+action+'"'+(extraAttrs?(' '+extraAttrs):'')+' title="'+title+'">'+iconHtml+'</div>'; }
+
+/** The tiles/rows header control: gui/src/components/ui/SegmentedToggle.tsx's own markup
+ *  (role="tablist", grid of role="tab" buttons, one absolutely-positioned sliding pill
+ *  behind them), not a pair of icon buttons. indicatorWidth/indicatorTransform come from
+ *  lib/segmentedToggle.ts (n=2 options here). Ids are stable so the toggle handler can
+ *  patch the pill and aria-selected in place instead of tearing the node down. */
+function segToggleHtml(mode){
+  var idx = mode === 'tile' ? 0 : 1;
+  return '<div class="seg-toggle" id="mode-seg-toggle" role="tablist" aria-label="View mode">'
+    + '<span class="seg-pill" id="mode-seg-pill" aria-hidden="true" style="transform:translateX('+(idx*100)+'%)"></span>'
+    + '<button type="button" class="seg-item btn-hover" id="seg-tile" role="tab" aria-selected="'+(mode==='tile'?'true':'false')+'" title="Tile view" data-action="toggle-tile">'+ICON.GRID+'</button>'
+    + '<button type="button" class="seg-item btn-hover" id="seg-list" role="tab" aria-selected="'+(mode==='list'?'true':'false')+'" title="Rows view" data-action="toggle-list">'+ICON.LIST+'</button>'
+    + '</div>';
+}
+
+function swapScreen(el, html, mode){
+  mode = mode || 'fade';
+  var old = el.querySelector(':scope > .screen');
+  var next = document.createElement('div');
+  next.className = 'screen';
+  next.innerHTML = html;
+  if (mode === 'push') next.classList.add('enter-push');
+  else if (mode === 'pop') next.classList.add('enter-pop');
+  el.appendChild(next);
+  requestAnimationFrame(function(){
+    requestAnimationFrame(function(){ next.classList.add('settled'); next.classList.remove('enter-push','enter-pop'); });
+  });
+  if (old){
+    old.classList.add(mode === 'push' ? 'exit-push' : mode === 'pop' ? 'exit-pop' : 'exit-fade');
+    setTimeout(function(){ if (old.parentNode) old.remove(); }, 340);
+  }
+  markTileEnter(next);
+  return next;
+}
+function markTileEnter(root){
+  root.querySelectorAll('.tile-enter').forEach(function(t){ requestAnimationFrame(function(){ requestAnimationFrame(function(){ t.classList.add('settle'); }); }); });
+}
+function pulseLoose(root){
+  var t = root.querySelector('[data-action="open-loose"]');
+  if (!t) return;
+  t.classList.remove('tile-pulse');
+  void t.offsetWidth;
+  t.classList.add('tile-pulse');
+}
+function focusById(root, id){ var el = root.querySelector('#'+id); if (el){ el.focus(); if (el.select) el.select(); } }
+
+/** Note-open handoff: the real behavior is a promotion to the full native note editor,
+ *  which cannot be hosted inside a 332x320 panel. This overlay stands in for that
+ *  promotion, confined to the body's own bounds, then auto-dismisses back to the
+ *  screen the user was on. */
+function flashHandoff(bodyEl, title){
+  var existing = bodyEl.querySelector('.handoff-overlay');
+  if (existing) existing.remove();
+  var ov = document.createElement('div');
+  ov.className = 'handoff-overlay';
+  ov.innerHTML = '<div class="handoff-card">'+ICON.VAULT+'<div class="handoff-title">Opening &quot;'+esc(title)+'&quot;</div><div class="handoff-sub">Handing off to the full note editor. Compact mode does not host it inline.</div></div>';
+  bodyEl.appendChild(ov);
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){ ov.classList.add('open'); }); });
+  setTimeout(function(){
+    ov.classList.remove('open');
+    setTimeout(function(){ if (ov.parentNode) ov.remove(); }, 260);
+  }, 900);
+}
+
+/* ═══════════════════ seed data: two note counts, to show both layout states ═══════════════════ */
+function seedState(){
+  return {
+    projects: [
+      { id:'research', name:'research', desc:'Papers, outlines and interview notes for the current literature review.' },
+      { id:'onboarding-v2', name:'onboarding-v2', desc:'Draft flows and copy for the new onboarding sequence.' },
+      { id:'kitchen-remodel', name:'kitchen-remodel', desc:'Contractor quotes, tile samples and measurements.' },
+      { id:'trip-japan', name:'trip-japan', desc:'Itinerary drafts and packing notes.' },
+      /* deliberately 40 characters, no spaces, to prove the tile grid does not overflow
+         on an unbroken string. See "What the project screen does now" for the measured
+         before/after numbers. */
+      { id:'quarterly-infrastructure-overhaul-plan-x', name:'quarterly-infrastructure-overhaul-plan-x', desc:'Server migration timeline and rollback plan.' }
+    ],
+    notes: [
+      { id:'n1', title:'Q3 lit review outline', project:'research' },
+      { id:'n2', title:'Interview transcript, Alvarez', project:'research' },
+      { id:'n3', title:'Citation map', project:'research' },
+      { id:'o1', title:'Signup flow wireframes', project:'onboarding-v2' },
+      { id:'o2', title:'Welcome email copy, v2', project:'onboarding-v2' },
+      { id:'o3', title:'Empty-state illustrations brief', project:'onboarding-v2' },
+      { id:'o4', title:'Progress indicator options', project:'onboarding-v2' },
+      { id:'o5', title:'Permission prompts audit', project:'onboarding-v2' },
+      { id:'o6', title:'Sample data seeding plan', project:'onboarding-v2' },
+      { id:'o7', title:'First-run checklist draft', project:'onboarding-v2' },
+      { id:'o8', title:'A/B test plan, v1', project:'onboarding-v2' },
+      { id:'o9', title:'Support macros for new users', project:'onboarding-v2' },
+      { id:'n4', title:'Contractor quote, Vasquez Bros', project:'kitchen-remodel' },
+      { id:'n5', title:'Tile sample photos', project:'kitchen-remodel' },
+      { id:'n6', title:'Packing checklist', project:'trip-japan' },
+      { id:'n7', title:'Sourdough starter notes', project:null },
+      { id:'n8', title:'Reading list, 2026', project:null }
+    ],
+    tags: [ {name:'recipe',count:11}, {name:'idea',count:23}, {name:'reading',count:8}, {name:'travel',count:5}, {name:'health',count:6}, {name:'finance',count:4} ],
+    inbox: { text:'Sear the fish skin-side down for 4 minutes before flipping.', kind:'clipboard', candidates:['kitchen-remodel','trip-japan'], suggestedNew:'recipe-box', resolved:null },
+    lastCreatedId: null
+  };
+}
+function noteCount(state,id){ return state.notes.filter(function(n){ return n.project===id; }).length; }
+function looseCount(state){ return state.notes.filter(function(n){ return !n.project; }).length; }
+
+/* ═══════════════════ shared content renderers ═══════════════════ */
+function renderProjectTiles(state, renamingId){
+  var html = '<div class="tile-grid-a2">';
+  state.projects.forEach(function(p){
+    var cnt = noteCount(state,p.id);
+    var enter = state.lastCreatedId===p.id ? ' tile-enter' : '';
+    if (renamingId === p.id){
+      html += '<div class="tile'+enter+'">'
+        + '<div class="tile-top"><input class="tile-rename-input" id="tile-rename-input" value="'+esc(p.name)+'" />'
+        + '<span class="tile-topright rename-active">'
+        + '<span class="mini-ic" data-action="tile-rename-commit" data-id="'+p.id+'" title="Save name">'+ICON.CHECK+'</span>'
+        + '<span class="mini-ic" data-action="tile-rename-cancel" data-id="'+p.id+'" title="Cancel">'+ICON.CLOSE+'</span>'
+        + '</span></div>'
+        + '<div class="tile-desc">'+esc(p.desc||'No description yet')+'</div>'
+        + '</div>';
+    } else {
+      html += '<div class="tile'+enter+'" data-action="open-project" data-id="'+p.id+'">'
+        + '<div class="tile-top"><span class="tile-name">'+esc(p.name)+'</span>'
+        + '<span class="tile-topright">'
+        + '<span class="tile-count-badge">'+cnt+'</span>'
+        + '<span class="tile-edit-icon" data-action="tile-rename-start" data-id="'+p.id+'" title="Rename">'+ICON.PENCIL_S+'</span>'
+        + '</span></div>'
+        + '<div class="tile-desc">'+esc(p.desc||'No description yet')+'</div>'
+        + '</div>';
+    }
+  });
+  html += '<div class="tile loose-tile" data-action="open-loose"><div class="tile-top"><span class="tile-name" style="color:var(--text-3);">loose</span><span class="tile-topright"><span class="tile-count-badge">'+looseCount(state)+'</span></span></div><div class="tile-desc">No project tag</div></div>';
+  html += '</div>';
+  state.lastCreatedId = null;
+  return html;
+}
+function renderTags(state){
+  var html = '<div class="taglist">';
+  state.tags.forEach(function(t){ html += '<div class="tagrow"><span class="name"><b>#</b>'+esc(t.name)+'</span><span class="count">'+t.count+'</span></div>'; });
+  html += '</div>';
+  return html;
+}
+function renderNoteRowsOpenable(state, projectId, assignOpen){
+  var notes = state.notes.filter(function(n){ return n.project===projectId; });
+  if (!notes.length) return '<div class="empty-note-row">No notes yet</div>';
+  return notes.map(function(n){
+    var row = '<div class="noterow"><span class="note-title" data-action="open-note" data-note="'+n.id+'">'+esc(n.title)+'</span><span class="move-btn" data-action="toggle-assign" data-note="'+n.id+'" title="Move to another project">'+ICON.MOVE+'</span></div>';
+    if (assignOpen === n.id) row += renderAssignPicker(state, n.id, projectId);
+    return row;
+  }).join('');
+}
+function renderAssignPicker(state, noteId, currentId){
+  var opts = state.projects.filter(function(p){ return p.id !== currentId; });
+  var html = '<div class="assign-picker">';
+  opts.forEach(function(p){ html += '<div class="btn small" data-action="do-assign" data-note="'+noteId+'" data-target="'+p.id+'">'+esc(p.name)+'</div>'; });
+  if (currentId !== null) html += '<div class="btn small" data-action="do-assign" data-note="'+noteId+'" data-target="">loose</div>';
+  html += '</div>';
+  return html;
+}
+function renderLooseNotes(state, assignOpen){
+  var notes = state.notes.filter(function(n){ return !n.project; });
+  var html = '<div class="field-label">'+notes.length+' loose notes, no project tag</div><div class="detail-notes">';
+  if (!notes.length) html += '<div class="empty-note-row">Nothing loose right now</div>';
+  notes.forEach(function(n){
+    html += '<div class="noterow"><span class="note-title" data-action="open-note" data-note="'+n.id+'">'+esc(n.title)+'</span><span class="move-btn" data-action="toggle-assign" data-note="'+n.id+'" title="Move to a project">'+ICON.MOVE+'</span></div>';
+    if (assignOpen === n.id) html += renderAssignPicker(state, n.id, null);
+  });
+  html += '</div>';
+  return html;
+}
+function renderConfirm(state, id){
+  var p = state.projects.find(function(x){ return x.id===id; });
+  return '<div class="confirm-wrap">'+ICON.WARN_BIG+
+    '<div class="confirm-title">Delete '+esc(p.name)+'?</div>'+
+    '<div class="confirm-body">Its '+noteCount(state,id)+' notes are not deleted. They become loose, with no project tag.</div></div>';
+}
+function renderInbox(state){
+  var inbox = state.inbox;
+  if (inbox.resolved){
+    var label = inbox.resolved.type==='existing' ? ('Filed to '+esc(inbox.resolved.target)) : ('Approved as new project: '+esc(inbox.resolved.target));
+    return '<div class="inbox-card"><div class="inbox-meta">'+inbox.kind+', captured</div>'+
+      '<div class="inbox-text">"'+esc(inbox.text)+'"</div>'+
+      '<div class="inbox-resolved">'+ICON.CHECK+'<span>'+label+'</span></div></div>'+
+      '<div class="btn-mini" style="margin-top:8px;" data-action="reset-inbox">Replay this capture</div>';
+  }
+  var chips = inbox.candidates.map(function(c){ return '<div class="btn" data-action="inbox-pick" data-target="'+c+'">'+esc(c)+'</div>'; }).join('');
+  return '<div class="inbox-card"><div class="inbox-meta">'+inbox.kind+', captured 2m ago</div>'+
+    '<div class="inbox-text">"'+esc(inbox.text)+'"</div>'+
+    '<div class="inbox-hint">Not sure which project. Pick one, or approve a new one:</div>'+
+    '<div class="inbox-chips">'+chips+'</div>'+
+    '<div class="btn primary" style="margin-top:5px;" data-action="inbox-approve-new">'+ICON.PLUS+esc(inbox.suggestedNew)+'</div></div>';
+}
+function renderCreateRow(){
+  return '<div class="create-row"><input class="field-input" id="create-input" placeholder="project-name" />'+
+    hbtn('commit-create','Create',ICON.CHECK)+hbtn('cancel-create','Cancel',ICON.CLOSE)+'</div>';
+}
+
+/** The project screen itself: title carries the name (rendered by the header, not here),
+ *  body holds only notes (scrollable) and the pinned description. One flex rule makes the
+ *  notes list take its natural height until the container runs out of room, then shrink
+ *  and scroll while the description box (flex:0 0 auto, never grows on its own) stays put.
+ *  Always renders collapsed; the in-place expand is a runtime DOM mutation handled by
+ *  setDescExpanded, never a re-render, so the grow reads as continuous. */
+function detailBody(state, s, assignOpen){
+  var p = state.projects.find(function(x){ return x.id === s.id; });
+  var out = '<div class="detail-flex" id="detail-flex">';
+  out += '<div class="notes-scroll" id="notes-scroll"><div class="field-label">'+noteCount(state,s.id)+' notes</div>'
+    + '<div class="detail-notes">'+renderNoteRowsOpenable(state, s.id, assignOpen)+'</div></div>';
+  out += '<div class="desc-pin" id="desc-pin">';
+  out += '<div class="field-label-row"><span class="field-label">Description</span>'
+    + hbtn('toggle-desc-expand', 'Expand description', ICON.EXPAND, 'expand-toggle', 'data-id="'+s.id+'" data-active="false"') + '</div>';
+  out += '<textarea class="field-input desc-textarea" data-field="desc">'+esc(p.desc||'')+'</textarea>';
+  out += '</div></div>';
+  return out;
+}
+
+/** Grows or shrinks the description box in place, sliding the notes list out or back in.
+ *  A tiny FLIP: measure the two panes' current heights, lock them as explicit inline
+ *  heights, then on the next frame set the target heights so the browser transitions
+ *  between two real pixel values (never "auto"), which is what makes this animatable at
+ *  all. Total height is conserved (notes + desc = detail-flex's own height), so expanding
+ *  is exactly "notes to 0, desc to total" and collapsing restores the measured collapsed
+ *  heights, then clears the inline styles so natural flex sizing resumes for future
+ *  renders. Reduced motion needs no branch here: the global override already collapses
+ *  every transition-duration to 0.01ms, so this same code path is already instant then. */
+function setDescExpanded(bodyEl, expand){
+  var flexEl = bodyEl.querySelector('#detail-flex');
+  var notesEl = bodyEl.querySelector('#notes-scroll');
+  var descEl = bodyEl.querySelector('#desc-pin');
+  var toggleEl = bodyEl.querySelector('[data-action="toggle-desc-expand"]');
+  if (!flexEl || !notesEl || !descEl) return;
+  if (toggleEl) toggleEl.setAttribute('data-active', expand ? 'true' : 'false');
+  if (expand){
+    var notesH = notesEl.getBoundingClientRect().height;
+    var descH = descEl.getBoundingClientRect().height;
+    var total = flexEl.clientHeight;
+    notesEl.setAttribute('data-collapsed-h', String(notesH));
+    descEl.setAttribute('data-collapsed-h', String(descH));
+    notesEl.style.height = notesH + 'px';
+    descEl.style.height = descH + 'px';
+    void notesEl.offsetHeight;
+    /* A macrotask boundary (not requestAnimationFrame) forces the browser to commit the
+       locked-in "from" heights above as their own style recalc before the "to" heights
+       land, which is what makes this a genuine two-keyframe transition instead of both
+       writes coalescing into one. rAF is the idiomatic choice for this, but headless
+       Chrome's virtual-time-budget mode does not reliably drive it forward (verified:
+       the synchronous lock-in above always lands, the rAF-deferred half did not, even
+       after 500ms); a short setTimeout hits the same reflow boundary and is confirmed to
+       fire there, so this stays testable without changing what a real browser renders. */
+    setTimeout(function(){
+      notesEl.classList.add('collapsed');
+      notesEl.style.height = '0px';
+      descEl.style.height = total + 'px';
+    }, 20);
+  } else {
+    var rn = parseFloat(notesEl.getAttribute('data-collapsed-h') || '0');
+    var rd = parseFloat(descEl.getAttribute('data-collapsed-h') || '0');
+    notesEl.classList.remove('collapsed');
+    notesEl.style.height = rn + 'px';
+    descEl.style.height = rd + 'px';
+    setTimeout(function(){
+      if (!bodyEl.contains(notesEl)) return;
+      notesEl.style.height = '';
+      descEl.style.height = '';
+    }, 320);
+  }
+}
+
+/* ═══════════════════ the panel controller ═══════════════════ */
+function makePanel(prefix){
+  var state = seedState();
+  var ui;
+  function resetUi(){ ui = { target:'vault', mode:'tile', stack:[{type:'root'}], assignOpen:null, creating:false, renamingId:null, descExpanded:false }; }
+  resetUi();
+
+  var shell = byId(prefix+'-shell');
+  var bar = byId(prefix+'-bar');
+  var titleEl = byId(prefix+'-title');
+  var actionsEl = byId(prefix+'-actions');
+  var bodyEl = byId(prefix+'-body');
+  var footerWrap = byId(prefix+'-footerwrap');
+  var footerEl = byId(prefix+'-footer');
+
+  function top(){ return ui.stack[ui.stack.length-1]; }
+
+  function paintBar(){
+    bar.innerHTML = ['LOOK','TODAY','VAULT','SETTINGS','INBOX','STATS','HIDE'].map(function(k){
+      var isVault = k==='VAULT', isInbox = k==='INBOX';
+      var active = (isVault && ui.target==='vault') || (isInbox && ui.target==='inbox');
+      var live = isVault || isInbox;
+      var attrs = live ? (' data-action="bar-target" data-target="'+(isVault?'vault':'inbox')+'"') : '';
+      var cls = 'cbar-item' + (active?' active':'') + (live?' live':'');
+      return '<div class="'+cls+'"'+attrs+' title="'+(isVault?'Vault':isInbox?'Inbox':k.charAt(0)+k.slice(1).toLowerCase())+'">'+ICON[k]+'</div>';
+    }).join('');
+  }
+
+  function commitTitleInput(el){
+    var id = el.getAttribute('data-id');
+    var p = state.projects.find(function(x){ return x.id === id; });
+    if (p && el.value.trim()) p.name = el.value.trim();
+  }
+
+  function headerContent(){
+    if (ui.target === 'inbox'){
+      titleEl.innerHTML = hbtn('bar-target','Back to Vault',ICON.CHEVRON_L,null,'data-target="vault"') + '<span>Inbox</span>';
+      actionsEl.innerHTML = '';
+      return;
+    }
+    var s = top();
+    if (s.type === 'root'){
+      titleEl.innerHTML = '<span>Vault</span>';
+      actionsEl.innerHTML = segToggleHtml(ui.mode) + hbtn('start-create', 'New project', ICON.PLUS);
+      return;
+    }
+    if (s.type === 'detail'){
+      var p = state.projects.find(function(x){ return x.id === s.id; }) || { name: '?' };
+      titleEl.innerHTML = hbtn('pop', 'Back', ICON.CHEVRON_L) +
+        '<input class="title-input" id="title-rename-input" data-id="'+s.id+'" value="'+esc(p.name)+'" spellcheck="false" />';
+      actionsEl.innerHTML = '';
+      return;
+    }
+    var titleText = 'Vault';
+    if (s.type === 'loose') titleText = 'loose';
+    else if (s.type === 'confirm') titleText = 'Delete ' + (state.projects.find(function(x){ return x.id===s.id; }) || {name:'?'}).name;
+    titleEl.innerHTML = hbtn('pop', 'Back', ICON.CHEVRON_L) + '<span>' + esc(titleText) + '</span>';
+    actionsEl.innerHTML = '';
+  }
+
+  function bodyContent(){
+    if (ui.target === 'inbox') return renderInbox(state);
+    var s = top();
+    if (s.type === 'root'){
+      var createRow = ui.creating ? renderCreateRow() : '';
+      var inner = ui.mode === 'tile' ? renderProjectTiles(state, ui.renamingId) : renderTags(state);
+      /* --swap-dir:0 on first mount/generic re-render == slideDirection's "unchanged /
+         first mount -> plain fade, no horizontal travel" case. The toggle-tile/toggle-list
+         click handler patches this mount's content directly afterward with the real
+         direction; this initial markup is never itself mid-toggle. */
+      return createRow + '<div id="seg-content-mount"><div class="seg-swap-panel" style="--swap-dir:0;">'+inner+'</div></div>';
+    }
+    if (s.type === 'loose') return renderLooseNotes(state, ui.assignOpen);
+    if (s.type === 'detail') return detailBody(state, s, ui.assignOpen);
+    if (s.type === 'confirm') return renderConfirm(state, s.id);
+    return '';
+  }
+
+  function footerContent(){
+    if (ui.target === 'inbox') return '';
+    var s = top();
+    if (s.type === 'detail'){
+      return hbtn('ask-delete', 'Delete', ICON.TRASH, 'danger', 'data-id="'+s.id+'"') +
+        '<div class="footer-save" data-action="save-project" data-id="'+s.id+'">'+ICON.SAVE+'<span>Save</span></div>';
+    }
+    if (s.type === 'confirm'){
+      return hbtn('cancel-delete', 'Cancel', ICON.CLOSE) + hbtn('confirm-delete', 'Delete', ICON.TRASH, 'danger', 'data-id="'+s.id+'"');
+    }
+    return '';
+  }
+  function applyFooter(html){
+    footerEl.innerHTML = html;
+    if (html.trim().length > 0) requestAnimationFrame(function(){ requestAnimationFrame(function(){ footerWrap.classList.add('open'); }); });
+    else footerWrap.classList.remove('open');
+  }
+
+  function render(mode){
+    paintBar();
+    headerContent();
+    swapScreen(bodyEl, bodyContent(), mode || 'fade');
+    applyFooter(footerContent());
+    focusById(bodyEl, 'create-input');
+    focusById(bodyEl, 'tile-rename-input');
+  }
+
+  shell.addEventListener('click', function(e){
+    var t = e.target.closest('[data-action]'); if (!t) return;
+    var a = t.getAttribute('data-action'), id = t.getAttribute('data-id'), note = t.getAttribute('data-note'), target = t.getAttribute('data-target');
+
+    if (a === 'bar-target'){
+      ui.target = target;
+      if (target === 'vault'){ ui.stack = [{type:'root'}]; ui.renamingId = null; ui.assignOpen = null; ui.creating = false; ui.descExpanded = false; }
+      render('fade'); return;
+    }
+    if (ui.target === 'inbox'){
+      if (a === 'inbox-pick'){ state.inbox.resolved = { type:'existing', target:target }; render('fade'); return; }
+      if (a === 'inbox-approve-new'){ state.inbox.resolved = { type:'new', target:state.inbox.suggestedNew }; render('fade'); return; }
+      if (a === 'reset-inbox'){ state.inbox.resolved = null; render('fade'); return; }
+      return;
+    }
+    if (a === 'toggle-tile' || a === 'toggle-list'){
+      var newMode = a === 'toggle-tile' ? 'tile' : 'list';
+      if (newMode === ui.mode) return;
+      var oldIdx = ui.mode === 'tile' ? 0 : 1;
+      var newIdx = newMode === 'tile' ? 0 : 1;
+      /* lib/segmentedToggle.ts:slideDirection, verbatim: +1 forward (tile -> rows), -1
+         backward (rows -> tile). ui.mode has only two values so 0 (unchanged) never
+         actually happens here (guarded by the early return above), but the same helper
+         logic is kept intact rather than hand-simplified to a ternary. */
+      var dir = newIdx === oldIdx ? 0 : (newIdx > oldIdx ? 1 : -1);
+      ui.mode = newMode;
+      /* Patch the existing pill + aria-selected in place (index.css/SegmentedToggle.tsx's
+         own transform transition, not a rebuild) and re-key the body's content mount so
+         segSwapIn plays with the real direction. No render() call: this is the same
+         in-place-mutation discipline as setDescExpanded, for the same reason (a full
+         swapScreen rebuild would recreate the pill with no "from" state to animate out of). */
+      var pill = actionsEl.querySelector('#mode-seg-pill');
+      if (pill) pill.style.transform = 'translateX(' + (newIdx * 100) + '%)';
+      var tileBtn = actionsEl.querySelector('#seg-tile'), listBtn = actionsEl.querySelector('#seg-list');
+      if (tileBtn) tileBtn.setAttribute('aria-selected', newMode === 'tile' ? 'true' : 'false');
+      if (listBtn) listBtn.setAttribute('aria-selected', newMode === 'list' ? 'true' : 'false');
+      var mount = bodyEl.querySelector('#seg-content-mount');
+      if (mount){
+        var html = newMode === 'tile' ? renderProjectTiles(state, ui.renamingId) : renderTags(state);
+        mount.innerHTML = '<div class="seg-swap-panel" style="--swap-dir:' + dir + ';">' + html + '</div>';
+        markTileEnter(mount);
+      }
+      return;
+    }
+    if (a === 'start-create'){ ui.creating = true; ui.renamingId = null; render('fade'); return; }
+    if (a === 'cancel-create'){ ui.creating = false; render('fade'); return; }
+    if (a === 'commit-create'){
+      var ci = bodyEl.querySelector('#create-input'); var name = ci ? ci.value.trim() : '';
+      if (name){ var nid = 'p'+Date.now(); state.projects.push({id:nid,name:name,desc:''}); state.lastCreatedId = nid; }
+      ui.creating = false; render('fade'); return;
+    }
+    if (a === 'tile-rename-start'){ ui.renamingId = id; ui.creating = false; render('fade'); return; }
+    if (a === 'tile-rename-cancel'){ ui.renamingId = null; render('fade'); return; }
+    if (a === 'tile-rename-commit'){
+      var ri = bodyEl.querySelector('#tile-rename-input');
+      var p0 = state.projects.find(function(x){ return x.id===id; });
+      if (ri && ri.value.trim()) p0.name = ri.value.trim();
+      ui.renamingId = null; render('fade'); return;
+    }
+    if (a === 'open-project'){ ui.descExpanded = false; ui.stack.push({type:'detail', id:id}); render('push'); return; }
+    if (a === 'open-loose'){ ui.stack.push({type:'loose'}); render('push'); return; }
+    if (a === 'pop'){
+      /* "back" reverses the most recent thing: if the description is expanded, back
+         collapses it in place first (no stack pop, no re-render) before it ever leaves
+         the project screen. */
+      if (ui.descExpanded){ ui.descExpanded = false; setDescExpanded(bodyEl, false); return; }
+      if (ui.stack.length > 1) ui.stack.pop(); ui.assignOpen = null; render('pop'); return;
+    }
+    if (a === 'toggle-desc-expand'){
+      ui.descExpanded = !ui.descExpanded;
+      setDescExpanded(bodyEl, ui.descExpanded);
+      return;
+    }
+    if (a === 'ask-delete'){ ui.descExpanded = false; ui.stack.push({type:'confirm', id:id}); render('push'); return; }
+    if (a === 'cancel-delete'){ ui.stack.pop(); render('pop'); return; }
+    if (a === 'confirm-delete'){
+      state.projects = state.projects.filter(function(x){ return x.id !== id; });
+      state.notes.forEach(function(n){ if (n.project === id) n.project = null; });
+      ui.stack = [{type:'root'}]; render('pop'); pulseLoose(bodyEl); return;
+    }
+    if (a === 'save-project'){
+      var p1 = state.projects.find(function(x){ return x.id===id; });
+      var titleInput = titleEl.querySelector('#title-rename-input');
+      if (titleInput && titleInput.value.trim()) p1.name = titleInput.value.trim();
+      var descEl = bodyEl.querySelector('[data-field="desc"]');
+      if (descEl) p1.desc = descEl.value;
+      ui.stack = [{type:'root'}]; render('pop'); return;
+    }
+    if (a === 'toggle-assign'){ ui.assignOpen = ui.assignOpen === note ? null : note; render('fade'); return; }
+    if (a === 'do-assign'){
+      var n = state.notes.find(function(x){ return x.id===note; });
+      n.project = target || null; ui.assignOpen = null; render('fade'); pulseLoose(bodyEl); return;
+    }
+    if (a === 'open-note'){
+      var noteObj = state.notes.find(function(x){ return x.id===note; });
+      flashHandoff(bodyEl, noteObj ? noteObj.title : 'Note');
+      return;
+    }
+  });
+
+  shell.addEventListener('keydown', function(e){
+    if (e.target && e.target.id === 'title-rename-input'){
+      if (e.key === 'Enter'){ e.preventDefault(); commitTitleInput(e.target); e.target.blur(); }
+      else if (e.key === 'Escape'){
+        var id2 = e.target.getAttribute('data-id');
+        var p = state.projects.find(function(x){ return x.id===id2; });
+        if (p) e.target.value = p.name;
+        e.target.blur();
+      }
+    }
+    if (e.target && e.target.id === 'tile-rename-input'){
+      if (e.key === 'Enter'){
+        e.preventDefault();
+        var p2 = state.projects.find(function(x){ return x.id===ui.renamingId; });
+        if (p2 && e.target.value.trim()) p2.name = e.target.value.trim();
+        ui.renamingId = null; render('fade');
+      } else if (e.key === 'Escape'){ ui.renamingId = null; render('fade'); }
+    }
+    if (e.target && e.target.id === 'create-input'){
+      if (e.key === 'Enter'){
+        e.preventDefault();
+        var name = e.target.value.trim();
+        if (name){ var nid = 'p'+Date.now(); state.projects.push({id:nid,name:name,desc:''}); state.lastCreatedId = nid; }
+        ui.creating = false; render('fade');
+      } else if (e.key === 'Escape'){ ui.creating = false; render('fade'); }
+    }
+  });
+
+  /* blur doesn't bubble, so this listener is registered on the capture phase */
+  shell.addEventListener('blur', function(e){
+    if (e.target && e.target.id === 'title-rename-input') commitTitleInput(e.target);
+  }, true);
+
+  render('fade');
+  return { reset: function(){ state = seedState(); resetUi(); render('fade'); } };
+}
+
+/* ═══════════════════ boot ═══════════════════ */
+var panel = makePanel('v2');
+byId('v2-reset').addEventListener('click', function(){ panel.reset(); });
+byId('simulate-reduced').addEventListener('change', function(e){
+  document.documentElement.classList.toggle('force-reduced-motion', e.target.checked);
+});
+</script>
+</body>
+</html>

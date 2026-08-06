@@ -1,0 +1,520 @@
+<title>Void — shell rework decisions</title>
+
+<style>
+  :root {
+    --bg:#0a0a0a; --surface:#191919; --surface-2:#262626; --border:#383838; --border-2:#262626;
+    --text-1:#fafafa; --text-2:#a1a1a1; --text-3:#7a7a7a;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.18);
+    --green:#4ade80; --yellow:#facc15; --red:#ff6467;
+    --mono: "Geist Mono", ui-monospace, "Cascadia Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px;
+    --ease: cubic-bezier(0.16,1,0.3,1);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg:#ffffff; --surface:#f5f5f5; --surface-2:#e8e8e8; --border:#c7c7c7; --border-2:#d2d2d2;
+      --text-1:#0a0a0a; --text-2:#4f4f4f; --text-3:#636363;
+      --accent:#737373; --accent-d:rgba(115,115,115,0.10);
+      --green:#16a34a; --yellow:#92660a; --red:#e7000b;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:#ffffff; --surface:#f5f5f5; --surface-2:#e8e8e8; --border:#c7c7c7; --border-2:#d2d2d2;
+    --text-1:#0a0a0a; --text-2:#4f4f4f; --text-3:#636363;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.10);
+    --green:#16a34a; --yellow:#92660a; --red:#e7000b;
+  }
+  :root[data-theme="dark"] {
+    --bg:#0a0a0a; --surface:#191919; --surface-2:#262626; --border:#383838; --border-2:#262626;
+    --text-1:#fafafa; --text-2:#a1a1a1; --text-3:#7a7a7a;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.18);
+    --green:#4ade80; --yellow:#facc15; --red:#ff6467;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--text-1);
+    font-family:var(--mono); font-size:14px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap { max-width:1120px; margin:0 auto; padding:var(--s6) var(--s4) var(--s7); }
+  @media (max-width:640px){ .wrap { padding:var(--s5) var(--s3) var(--s6); } }
+
+  h1 { font-size:clamp(22px,5vw,34px); line-height:1.2; margin:0 0 var(--s3); font-weight:500; letter-spacing:-0.02em; text-wrap:balance; }
+  h2 { font-size:clamp(16px,3.4vw,20px); margin:0; font-weight:500; letter-spacing:-0.01em; }
+  h3 { font-size:13px; margin:0; font-weight:500; }
+  p  { margin:0 0 var(--s3); color:var(--text-2); max-width:68ch; }
+  strong { color:var(--text-1); font-weight:500; }
+  code { background:var(--surface-2); padding:1px 5px; font-size:0.9em; color:var(--text-1); }
+
+  .stand { border-left:0; border-top:1px solid var(--border); padding-top:var(--s4); margin-top:var(--s4); }
+  .meta { display:flex; flex-wrap:wrap; gap:var(--s3); font-size:12px; color:var(--text-3); margin-bottom:var(--s5); }
+  .meta span { display:inline-flex; align-items:center; gap:6px; }
+  .dot { width:6px; height:6px; background:var(--accent); display:inline-block; }
+
+  /* ---- locked constraints ---- */
+  .locks { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1px; background:var(--border); border:1px solid var(--border); margin:var(--s5) 0 var(--s7); }
+  .lock { background:var(--surface); padding:var(--s3) var(--s4); }
+  .lock b { display:block; font-weight:500; font-size:12px; color:var(--text-1); margin-bottom:2px; }
+  .lock span { font-size:12px; color:var(--text-3); line-height:1.5; }
+
+  /* ---- fork ---- */
+  .fork { margin:0 0 var(--s7); }
+  .fork-head { display:flex; align-items:baseline; gap:var(--s3); flex-wrap:wrap; padding-bottom:var(--s2); border-bottom:1px solid var(--border); margin-bottom:var(--s4); }
+  .fork-id { font-size:12px; color:var(--text-3); letter-spacing:0.08em; }
+  .fork-q { font-size:13px; color:var(--text-2); margin:0 0 var(--s4); max-width:72ch; }
+
+  .opts { display:grid; grid-template-columns:repeat(auto-fit,minmax(268px,1fr)); gap:var(--s4); align-items:start; }
+  .opt { border:1px solid var(--border); background:var(--surface); display:flex; flex-direction:column; }
+  .opt.rec { border-color:var(--green); }
+  .opt.cur { border-style:dashed; background:transparent; }
+  .opt-top { display:flex; align-items:center; justify-content:space-between; gap:var(--s2); padding:var(--s3) var(--s3) var(--s2); }
+  .tag { font-size:10px; letter-spacing:0.1em; padding:2px 6px; border:1px solid var(--border); color:var(--text-3); white-space:nowrap; }
+  .tag.rec { color:var(--green); border-color:var(--green); }
+  .tag.cur { color:var(--text-3); }
+  .opt-why { font-size:12px; color:var(--text-3); line-height:1.55; padding:0 var(--s3) var(--s3); margin:0; }
+  .opt-body { padding:0 var(--s3) var(--s3); margin-top:auto; }
+
+  /* ---- wireframe primitives ---- */
+  .wf { background:var(--bg); border:1px solid var(--border); font-size:11px; color:var(--text-2); }
+  .wf-bar { display:flex; align-items:center; gap:var(--s2); padding:6px var(--s2); border-bottom:1px solid var(--border); background:var(--surface-2); color:var(--text-1); font-size:11px; }
+  .wf-bar .sp { flex:1; }
+  .wf-row { display:flex; align-items:center; gap:var(--s2); padding:6px var(--s2); border-bottom:1px solid var(--border-2); }
+  .wf-row:last-child { border-bottom:0; }
+  .wf-sec { padding:6px var(--s2); font-size:10px; letter-spacing:0.08em; color:var(--text-3); background:var(--surface); border-bottom:1px solid var(--border-2); }
+  .wf-canvas { padding:var(--s2); min-height:78px; color:var(--text-3); font-size:11px; line-height:1.7; }
+  .wf-canvas em { color:var(--text-2); font-style:normal; }
+  .wf-note { font-size:10px; color:var(--text-3); padding:4px var(--s2); border-top:1px dashed var(--border); }
+  .pillbtn { border:1px solid var(--border); padding:2px 6px; font-size:10px; color:var(--text-2); white-space:nowrap; }
+  .pillbtn.on { border-color:var(--accent); color:var(--text-1); background:var(--accent-d); }
+  .pillbtn.danger { color:var(--red); border-color:var(--red); }
+  .badge { font-size:10px; color:var(--text-1); border:1px solid var(--border); padding:0 5px; margin-left:auto; }
+
+  .ic { width:15px; height:15px; flex:none; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+  .ic.lg { width:19px; height:19px; }
+  .ic.xl { width:23px; height:23px; }
+  .ic.mute { color:var(--text-3); }
+
+  /* menu strip: the radial/capsule item list */
+  .strip { display:flex; flex-wrap:wrap; gap:1px; background:var(--border); border:1px solid var(--border); }
+  .strip i { font-style:normal; background:var(--surface); padding:6px var(--s2); font-size:11px; display:flex; align-items:center; gap:6px; flex:1 1 auto; justify-content:center; color:var(--text-2); }
+  .strip i.new { color:var(--text-1); background:var(--surface-2); }
+  .strip i.gone { color:var(--text-3); text-decoration:line-through; opacity:0.55; }
+  .strip i.merged { color:var(--text-1); }
+
+  /* rail wireframe */
+  .rail { display:flex; gap:0; border:1px solid var(--border); background:var(--bg); }
+  .rail-col { width:56px; flex:none; border-right:1px solid var(--border); background:var(--surface); display:flex; flex-direction:column; align-items:center; padding:var(--s2) 0; gap:var(--s1); }
+  .rail-col .rb { width:34px; height:30px; display:flex; align-items:center; justify-content:center; color:var(--text-3); border:1px solid transparent; }
+  .rail-col .rb.act { color:var(--text-1); background:var(--accent-d); border-color:var(--border); }
+  .rail-col .rb.hi { color:var(--text-1); border-color:var(--accent); }
+  .rail-col .div { width:26px; height:1px; background:var(--border); margin:var(--s1) 0; }
+  .rail-col .grow { flex:1; }
+  .rail-body { flex:1; padding:var(--s2); font-size:11px; color:var(--text-3); }
+  .rail-lab { font-size:9px; color:var(--text-3); letter-spacing:0.06em; }
+
+  .callout { border:1px solid var(--border); border-top:2px solid var(--green); background:var(--surface); padding:var(--s3) var(--s4); margin-top:var(--s4); font-size:12px; color:var(--text-2); }
+  .callout b { color:var(--text-1); font-weight:500; }
+
+  .sizes { display:flex; gap:var(--s4); flex-wrap:wrap; }
+  .size { border:1px solid var(--border); background:var(--surface); padding:var(--s3); text-align:center; min-width:96px; }
+  .size .box { display:flex; align-items:center; justify-content:center; gap:var(--s2); height:44px; color:var(--text-1); }
+  .size small { font-size:10px; color:var(--text-3); display:block; }
+
+  footer { border-top:1px solid var(--border); margin-top:var(--s6); padding-top:var(--s4); font-size:12px; color:var(--text-3); }
+  ol { padding-left:1.3em; margin:var(--s2) 0 0; }
+  ol li { margin-bottom:var(--s1); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .opt { transition: border-color 200ms var(--ease); }
+  }
+</style>
+
+<div class="wrap">
+
+  <div class="meta">
+    <span><i class="dot"></i>Second Thought · desktop shell</span>
+    <span>2026-08-03</span>
+    <span>session s135</span>
+  </div>
+
+  <h1>Five picks before the shell rework</h1>
+  <p>Everything below is a real fork — I can build any option. The <span style="color:var(--green)">green-bordered</span> card is what I'd pick and why. The dashed card is what ships today, for comparison.</p>
+  <p style="font-size:12px;color:var(--text-3)">Recon corrected the brief in five places: radial and capsule already share one array, so a 6-item cap is one edit; <code>today</code> is the only target that force-opens the full window; Daily rhythm is in History, not Library; FullWindow has no right rail (those controls are inside the note editor); and the left rail <em>is</em> clickable while the editor is open — the editor overlay just never closes.</p>
+
+  <div class="locks">
+    <div class="lock"><b>Settled — 6 items max</b><span>Radial and capsule both read <code>ALL_TARGETS</code>. One array, one edit.</span></div>
+    <div class="lock"><b>Settled — no full window from compact</b><span>Minimal and capsule share their own panel sizes. Nothing escapes to full.</span></div>
+    <div class="lock"><b>Settled — hide leaves the menu</b><span>Tray icon + Esc keep it reachable. Its slot goes to New Note.</span></div>
+    <div class="lock"><b>Settled — quick pad is in-shell</b><span>One Tauri window still. Pin toggles always-on-top on it.</span></div>
+    <div class="lock"><b>Settled — asymmetric new note</b><span>Full window opens the real editor as a tab. Compact opens the quick pad.</span></div>
+    <div class="lock"><b>Settled — daily rhythm dies</b><span>The sparkline goes. "Start today's note" survives the merge.</span></div>
+  </div>
+
+  <!-- ================= FORK A ================= -->
+  <section class="fork">
+    <div class="fork-head">
+      <span class="fork-id">FORK A</span>
+      <h2>What absorbs Today</h2>
+    </div>
+    <p class="fork-q">Today holds three things: reminders due, a scratchpad count, and "start today's note". It has to fold into an existing destination so the menu lands on six. Whichever wins also gets a compact panel built for it, because Today is the one target with none today.</p>
+
+    <div class="opts">
+
+      <div class="opt cur">
+        <div class="opt-top"><h3>Today ships alone</h3><span class="tag cur">TODAY</span></div>
+        <p class="opt-why">Seven items. Today has no compact panel, so picking it from the pill throws you into the full window — the exact behaviour you're removing.</p>
+        <div class="opt-body">
+          <div class="strip">
+            <i>Look</i><i class="gone">Today</i><i>Vault</i><i>Settings</i><i>Inbox</i><i>History</i><i class="gone">Hide</i>
+          </div>
+        </div>
+      </div>
+
+      <div class="opt rec">
+        <div class="opt-top"><h3>A1 · Inbox absorbs it</h3><span class="tag rec">RECOMMENDED</span></div>
+        <p class="opt-why">One place for everything waiting on you: reminders due, captures to approve, today's note. The scratchpad card on Today already points at Inbox — this stops it being a link between two screens and makes it one screen. Closest to the phone's ideology, where there is no agenda tab at all.</p>
+        <div class="opt-body">
+          <div class="strip" style="margin-bottom:var(--s3)">
+            <i>Look</i><i>Vault</i><i class="merged">Inbox</i><i>History</i><i>Settings</i><i class="new">New Note</i>
+          </div>
+          <div class="wf">
+            <div class="wf-bar">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M3 12h5l2 3h4l2-3h5"/><path d="M5 5h14l2 7v7H3v-7z"/></svg>
+              Inbox<span class="sp"></span><span style="color:var(--text-3)">6 waiting</span>
+            </div>
+            <div class="wf-sec">DUE TODAY</div>
+            <div class="wf-row"><svg class="ic mute" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Call the dentist<span class="badge">14:00</span></div>
+            <div class="wf-row"><svg class="ic mute" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Ship the sync fix<span class="badge" style="color:var(--red);border-color:var(--red)">late</span></div>
+            <div class="wf-sec">NEEDS REVIEW</div>
+            <div class="wf-row"><svg class="ic mute" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h5"/></svg>4 captures in scratchpad<span class="badge">open</span></div>
+            <div class="wf-sec">TODAY'S NOTE</div>
+            <div class="wf-row"><svg class="ic mute" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>2026-08-03 — not started<span class="pillbtn on" style="margin-left:auto">Start</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="opt">
+        <div class="opt-top"><h3>A2 · History absorbs it</h3><span class="tag">TIMELINE</span></div>
+        <p class="opt-why">Today becomes the top of a timeline that runs backwards. Reads well as a story, but History is where the sparkline you're deleting lives — folding an agenda into a half-emptied screen is a lot of churn on one surface, and due reminders stop being urgent when they sit above a scroll of old activity.</p>
+        <div class="opt-body">
+          <div class="strip" style="margin-bottom:var(--s3)">
+            <i>Look</i><i>Vault</i><i>Inbox</i><i class="merged">Timeline</i><i>Settings</i><i class="new">New Note</i>
+          </div>
+          <div class="wf">
+            <div class="wf-bar">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg>
+              Timeline<span class="sp"></span><span style="color:var(--text-3)">by project</span>
+            </div>
+            <div class="wf-sec">TODAY</div>
+            <div class="wf-row">2 reminders due<span class="badge">1 late</span></div>
+            <div class="wf-row">Today's note — not started<span class="pillbtn" style="margin-left:auto">Start</span></div>
+            <div class="wf-sec">EARLIER</div>
+            <div class="wf-row">Yesterday · 7 notes touched</div>
+            <div class="wf-row">Aug 1 · 3 notes touched</div>
+            <div class="wf-note">Daily-rhythm sparkline removed from this screen.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="opt">
+        <div class="opt-top"><h3>A3 · Vault absorbs it</h3><span class="tag">PINNED STRIP</span></div>
+        <p class="opt-why">Today becomes a strip pinned above the note list, so writing and agenda live together. Fewest new screens — but Vault is already the busiest panel (notes/trash toggle, project chips, tag rows) and this makes the pill's smallest surface the most crowded one.</p>
+        <div class="opt-body">
+          <div class="strip" style="margin-bottom:var(--s3)">
+            <i>Look</i><i class="merged">Vault</i><i>Inbox</i><i>History</i><i>Settings</i><i class="new">New Note</i>
+          </div>
+          <div class="wf">
+            <div class="wf-bar">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M3 7l2-3h5l2 3h9v13H3z"/></svg>
+              Vault<span class="sp"></span><span class="pillbtn on">Notes</span><span class="pillbtn">Trash</span>
+            </div>
+            <div class="wf-sec">TODAY · 2 due · note not started</div>
+            <div class="wf-row">sync-agent-notes.md<span class="badge">#project@void</span></div>
+            <div class="wf-row">reconcile trace.md<span class="badge">2h ago</span></div>
+            <div class="wf-row">hub layout.md<span class="badge">yest</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="callout"><b>Why A1.</b> It is the only option where the merge removes a hop instead of adding a section. Today's scratchpad card is already a pointer at Inbox; A1 deletes the pointer. It also leaves History free to just lose the sparkline and shrink, rather than gaining an agenda while losing a chart.</div>
+  </section>
+
+  <!-- ================= FORK B ================= -->
+  <section class="fork">
+    <div class="fork-head">
+      <span class="fork-id">FORK B</span>
+      <h2>The quick pad</h2>
+    </div>
+    <p class="fork-q">Sticky-note behaviour: one pad, reopens to the last note you made, plus makes a fresh one, discard throws it away unsaved, pin toggles always-on-top. Bold and checklist only. The catch is size — the minimal island is 332×320, so every band of chrome is writing space you don't get back.</p>
+
+    <div class="opts">
+
+      <div class="opt">
+        <div class="opt-top"><h3>B1 · Two bands</h3><span class="tag">HEADER + FOOTER</span></div>
+        <p class="opt-why">Identity on top, formatting on the bottom. Clearest separation of "which note" from "how it looks" — but two bands cost roughly a fifth of the island's height.</p>
+        <div class="opt-body">
+          <div class="wf">
+            <div class="wf-bar">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+              <span style="color:var(--text-2)">Quick note · 14:22</span><span class="sp"></span>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M12 17v4"/><path d="M9 3h6l-1 7 3 3v2H7v-2l3-3z"/></svg>
+            </div>
+            <div class="wf-canvas"><em>ring back re: hub layout</em><br>— check <em>_loose</em> folder first<br><span style="color:var(--text-3)">|</span></div>
+            <div class="wf-row" style="border-top:1px solid var(--border);border-bottom:0">
+              <span class="pillbtn" style="font-weight:700">B</span>
+              <span class="pillbtn"><svg class="ic" viewBox="0 0 24 24" style="width:11px;height:11px"><path d="M4 7l2 2 3-4"/><path d="M12 8h8M4 16l2 2 3-4M12 17h8"/></svg></span>
+              <span class="pillbtn danger" style="margin-left:auto">Discard</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="opt rec">
+        <div class="opt-top"><h3>B2 · One band</h3><span class="tag rec">RECOMMENDED</span></div>
+        <p class="opt-why">Everything in a single top strip — new, bold, checklist on the left; pin and discard on the right. Maximum canvas, and it lands straight into <code>CompactShell</code>'s existing <code>headerActions</code> slot, so it inherits the panel chrome every other compact panel already uses instead of inventing a second layout.</p>
+        <div class="opt-body">
+          <div class="wf">
+            <div class="wf-bar">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+              <span style="font-weight:700;font-size:12px">B</span>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M4 7l2 2 3-4"/><path d="M12 8h8M4 16l2 2 3-4M12 17h8"/></svg>
+              <span class="sp"></span>
+              <svg class="ic" viewBox="0 0 24 24" style="color:var(--text-1)"><path d="M12 17v4"/><path d="M9 3h6l-1 7 3 3v2H7v-2l3-3z"/></svg>
+              <svg class="ic mute" viewBox="0 0 24 24"><path d="M5 7h14M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/></svg>
+            </div>
+            <div class="wf-canvas" style="min-height:104px"><em>ring back re: hub layout</em><br>— check <em>_loose</em> folder first<br>&#9744; back up the sidecar<br><span style="color:var(--text-3)">|</span></div>
+            <div class="wf-note">Pinned — stays above other windows</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="opt">
+        <div class="opt-top"><h3>B3 · Chromeless</h3><span class="tag">FADE-IN</span></div>
+        <p class="opt-why">Text fills the whole panel; controls fade in on hover or focus. The most pad-like and the most writing space — but every control is invisible until you go looking, which is the wrong trade on a surface you use for three seconds at a time.</p>
+        <div class="opt-body">
+          <div class="wf">
+            <div class="wf-canvas" style="min-height:118px;position:relative;padding-top:var(--s3)">
+              <span style="position:absolute;top:6px;right:8px;color:var(--text-1)"><svg class="ic" viewBox="0 0 24 24"><path d="M12 17v4"/><path d="M9 3h6l-1 7 3 3v2H7v-2l3-3z"/></svg></span>
+              <em>ring back re: hub layout</em><br>— check <em>_loose</em> folder first<br>&#9744; back up the sidecar<br><span style="color:var(--text-3)">|</span>
+            </div>
+            <div class="wf-row" style="border-top:1px dashed var(--border);opacity:0.5">
+              <span class="pillbtn" style="font-weight:700">B</span>
+              <span class="pillbtn"><svg class="ic" viewBox="0 0 24 24" style="width:11px;height:11px"><path d="M4 7l2 2 3-4"/><path d="M12 8h8M4 16l2 2 3-4M12 17h8"/></svg></span>
+              <span class="pillbtn">+</span>
+              <span class="pillbtn danger" style="margin-left:auto">Discard</span>
+            </div>
+            <div class="wf-note">controls shown at 50% — they only appear on hover</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="callout"><b>Why B2.</b> The pad has to work at 332×320 in minimal and inside a slide-out sheet in capsule. One band is the only version that doesn't change shape between the two, and reusing <code>headerActions</code> means the pin and discard sit exactly where every other compact panel puts its controls.</div>
+  </section>
+
+  <!-- ================= FORK C ================= -->
+  <section class="fork">
+    <div class="fork-head">
+      <span class="fork-id">FORK C</span>
+      <h2>Note editor top bar</h2>
+    </div>
+    <p class="fork-q">"Open in external editor" and the three-dot menu currently live in a floating corner column on the right of the note editor. They move up to the top bar beside the edit/view toggle. Three ways to order that group.</p>
+
+    <div class="opts">
+
+      <div class="opt cur">
+        <div class="opt-top"><h3>Corner column</h3><span class="tag cur">TODAY</span></div>
+        <p class="opt-why">A vertical stack floating over the note's top-right corner, separate from the toggle. Two control clusters doing one job, in two different places.</p>
+        <div class="opt-body">
+          <div class="wf">
+            <div class="wf-bar"><svg class="ic" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>reconcile trace.md<span class="sp"></span><svg class="ic" viewBox="0 0 24 24"><path d="M4 20l4-1 10-10-3-3L5 16z"/></svg></div>
+            <div class="wf-canvas" style="min-height:86px;position:relative">
+              <span style="position:absolute;top:6px;right:6px;display:flex;flex-direction:column;gap:4px;border:1px solid var(--border);padding:4px;background:var(--surface)">
+                <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                <svg class="ic" viewBox="0 0 24 24"><path d="M14 4h6v6"/><path d="M20 4l-8 8"/><path d="M18 14v6H4V6h6"/></svg>
+              </span>
+              <em>All 17 local hashes match the sidecar…</em>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="opt rec">
+        <div class="opt-top"><h3>C1 · Right-aligned trio</h3><span class="tag rec">RECOMMENDED</span></div>
+        <p class="opt-why">Mode first, then the two escape hatches, all hard right. Reads as one group in frequency order — you flip modes constantly, open externally rarely, and the menu is the catch-all. Matches how the full window's own top bar already right-aligns its controls.</p>
+        <div class="opt-body">
+          <div class="wf">
+            <div class="wf-bar">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>reconcile trace.md<span class="sp"></span>
+              <span class="pillbtn on"><svg class="ic" viewBox="0 0 24 24" style="width:11px;height:11px"><path d="M4 20l4-1 10-10-3-3L5 16z"/></svg></span>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M14 4h6v6"/><path d="M20 4l-8 8"/><path d="M18 14v6H4V6h6"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+            </div>
+            <div class="wf-canvas" style="min-height:86px"><em>All 17 local hashes match the sidecar, so every note hits the content-equality skip before the re-parent call…</em></div>
+            <div class="wf-note">right edge free of floating chrome</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="opt">
+        <div class="opt-top"><h3>C2 · Split by a rule</h3><span class="tag">DIVIDED</span></div>
+        <p class="opt-why">External + menu grouped, a hairline, then the mode toggle isolated at the far right. Makes the toggle unmissable, but a divider inside a four-item bar is more structure than four items need.</p>
+        <div class="opt-body">
+          <div class="wf">
+            <div class="wf-bar">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>reconcile trace.md<span class="sp"></span>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M14 4h6v6"/><path d="M20 4l-8 8"/><path d="M18 14v6H4V6h6"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+              <span style="width:1px;height:16px;background:var(--border)"></span>
+              <span class="pillbtn on"><svg class="ic" viewBox="0 0 24 24" style="width:11px;height:11px"><path d="M4 20l4-1 10-10-3-3L5 16z"/></svg></span>
+            </div>
+            <div class="wf-canvas" style="min-height:86px"><em>All 17 local hashes match the sidecar…</em></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="opt">
+        <div class="opt-top"><h3>C3 · Left cluster</h3><span class="tag">BESIDE TITLE</span></div>
+        <p class="opt-why">All three sit right after the back arrow, leaving the right edge empty. Shortest travel from the back button, but it crowds the note's title — the one thing on that bar you actually read.</p>
+        <div class="opt-body">
+          <div class="wf">
+            <div class="wf-bar">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
+              <span class="pillbtn on"><svg class="ic" viewBox="0 0 24 24" style="width:11px;height:11px"><path d="M4 20l4-1 10-10-3-3L5 16z"/></svg></span>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M14 4h6v6"/><path d="M20 4l-8 8"/><path d="M18 14v6H4V6h6"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+              <span style="color:var(--text-3)">reconcile trace.md</span>
+            </div>
+            <div class="wf-canvas" style="min-height:86px"><em>All 17 local hashes match the sidecar…</em></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ================= FORK D ================= -->
+  <section class="fork">
+    <div class="fork-head">
+      <span class="fork-id">FORK D</span>
+      <h2>Full-window rail order</h2>
+    </div>
+    <p class="fork-q">Hide leaves the rail, New Note joins it as a real tab that opens the note editor as a view — which is also what fixes the rail going dead behind the editor. Settings ends up at the bottom either way; the question is where New Note sits.</p>
+
+    <div class="opts">
+
+      <div class="opt cur">
+        <div class="opt-top"><h3>Rail today</h3><span class="tag cur">TODAY</span></div>
+        <p class="opt-why">Five tabs, then Settings, then Hide at the bottom. Opening a note covers the content column with an overlay that never closes, so rail clicks land but appear to do nothing.</p>
+        <div class="opt-body">
+          <div class="rail">
+            <div class="rail-col">
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/></svg></span>
+              <span class="div"></span>
+              <span class="rb act"><svg class="ic" viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></svg></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15"/><path d="M4 10h16M9 3v4M15 3v4"/></svg></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><path d="M3 7l2-3h5l2 3h9v13H3z"/></svg></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg></span>
+              <span class="div"></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M6 6l2 2M16 16l2 2M18 6l-2 2M8 16l-2 2"/></svg></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 6.2A9 9 0 0121 12a17 17 0 01-3 3.7M6.3 6.4A17 17 0 003 12a9 9 0 0012.5 5.3"/></svg></span>
+            </div>
+            <div class="rail-body"><span class="rail-lab">DASHBOARD · TODAY · LOOK · VAULT · HISTORY</span><br><br><span style="color:var(--red)">settings mid-rail · hide at the bottom</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="opt rec">
+        <div class="opt-top"><h3>D1 · New Note above Settings</h3><span class="tag rec">RECOMMENDED</span></div>
+        <p class="opt-why">Exactly the swap you asked for: New Note takes the slot Settings had, Settings drops to the bottom where Hide was. Destinations stay one uninterrupted group; the two "not a place, an action" buttons sit below the rule together.</p>
+        <div class="opt-body">
+          <div class="rail">
+            <div class="rail-col">
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/></svg></span>
+              <span class="div"></span>
+              <span class="rb act"><svg class="ic" viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></svg></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><path d="M3 12h5l2 3h4l2-3h5"/><path d="M5 5h14l2 7v7H3v-7z"/></svg></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><path d="M3 7l2-3h5l2 3h9v13H3z"/></svg></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg></span>
+              <span class="div"></span>
+              <span class="rb hi"><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M6 6l2 2M16 16l2 2M18 6l-2 2M8 16l-2 2"/></svg></span>
+            </div>
+            <div class="rail-body"><span class="rail-lab">DASHBOARD · INBOX · LOOK · VAULT · HISTORY</span><br><br>New Note opens the editor <em style="color:var(--text-2);font-style:normal">as a view</em> — rail stays live, tabs switch, editor closes.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="opt">
+        <div class="opt-top"><h3>D2 · New Note at the top</h3><span class="tag">ACTION FIRST</span></div>
+        <p class="opt-why">New Note sits directly under the status dot, above every destination — the rail equivalent of the phone's FAB, and the phone treats new-note as the app's primary action. Costs you the clean "destinations, then actions" split, and the top of a rail is where people expect "home".</p>
+        <div class="opt-body">
+          <div class="rail">
+            <div class="rail-col">
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/></svg></span>
+              <span class="rb hi"><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
+              <span class="div"></span>
+              <span class="rb act"><svg class="ic" viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></svg></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><path d="M3 12h5l2 3h4l2-3h5"/><path d="M5 5h14l2 7v7H3v-7z"/></svg></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><path d="M3 7l2-3h5l2 3h9v13H3z"/></svg></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg></span>
+              <span class="grow"></span>
+              <span class="div"></span>
+              <span class="rb"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M6 6l2 2M16 16l2 2M18 6l-2 2M8 16l-2 2"/></svg></span>
+            </div>
+            <div class="rail-body"><span class="rail-lab">NEW NOTE · DASHBOARD · INBOX · LOOK · VAULT · HISTORY</span><br><br>Settings pinned to the true bottom by a spacer.</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ================= FORK E ================= -->
+  <section class="fork">
+    <div class="fork-head">
+      <span class="fork-id">FORK E</span>
+      <h2>Format toolbar icon size</h2>
+    </div>
+    <p class="fork-q">The peek-out format toolbar hides by sliding 46px right — and nothing clips it locally, so its edge shows. I'll fix the clip either way. You also asked for bigger icons; the column's width has to grow with them, which changes how far it travels.</p>
+    <div class="sizes">
+      <div class="size">
+        <div class="box">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M6 4h7a4 4 0 010 8H6zM6 12h8a4 4 0 010 8H6z"/></svg>
+          <svg class="ic" viewBox="0 0 24 24"><path d="M6 5v14M18 5v14M9 5h6M9 19h6"/></svg>
+        </div>
+        <b>15px</b><small>current-ish · 46px column</small>
+      </div>
+      <div class="size">
+        <div class="box">
+          <svg class="ic lg" viewBox="0 0 24 24"><path d="M6 4h7a4 4 0 010 8H6zM6 12h8a4 4 0 010 8H6z"/></svg>
+          <svg class="ic lg" viewBox="0 0 24 24"><path d="M6 5v14M18 5v14M9 5h6M9 19h6"/></svg>
+        </div>
+        <b>19px</b><small>+27% · 52px column</small>
+      </div>
+      <div class="size">
+        <div class="box">
+          <svg class="ic xl" viewBox="0 0 24 24"><path d="M6 4h7a4 4 0 010 8H6zM6 12h8a4 4 0 010 8H6z"/></svg>
+          <svg class="ic xl" viewBox="0 0 24 24"><path d="M6 5v14M18 5v14M9 5h6M9 19h6"/></svg>
+        </div>
+        <b>23px</b><small>+53% · 58px column</small>
+      </div>
+    </div>
+    <div class="callout"><b>I'd take 19px.</b> Big enough to fix the "too small to aim at" complaint without the toolbar starting to compete with the note text it floats over. 23px is a real option if you're using it on a high-DPI display and 19 still reads small — tell me which and I'll set it once, in a token.</div>
+  </section>
+
+  <footer>
+    <b style="color:var(--text-1)">Reply with five letters</b> — one per fork, e.g. <code>A1 B2 C1 D1 E19</code>. Anything you don't name, I build the recommended one. Then I write the spec, the plan, and execute: menus first, quick pad second, full window and note editor last, with gates between.
+    <ol>
+      <li>Six items in the shared array; Today's compact panel built into whatever A wins.</li>
+      <li>Quick pad panel — capsule slides it out, minimal expands into it, matching the existing motion.</li>
+      <li>Full window: rail reorder, New Note as a view, editor top bar, toolbar clip fix, sparkline removed.</li>
+    </ol>
+  </footer>
+
+</div>

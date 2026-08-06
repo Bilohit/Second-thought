@@ -1,0 +1,288 @@
+<title>FR-34 — Nested folders: how much is worth doing?</title>
+<style>
+:root{
+  --space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:24px;--space-6:32px;
+  --bg:#0a0a0a;--surface:#262626;--surface-2:#404040;
+  --border:#383838;--border-2:#262626;
+  --text-1:#fafafa;--text-2:#a1a1a1;--text-3:#737373;
+  --accent:#737373;--accent-d:rgba(115,115,115,0.18);
+  --green:#4ade80;--yellow:#facc15;--red:#ff6467;
+  --track:0.01em;
+  --fs-micro:9px;--fs-label:10px;--fs-body:11px;--fs-read:12px;--fs-lead:13px;
+  --fs-title:16px;--fs-display:20px;--fs-hero:22px;
+}
+*,*::before,*::after{box-sizing:border-box;}
+body{
+  margin:0;background:#050505;color:var(--text-1);
+  font-family:"IBM Plex Mono",ui-monospace,"Cascadia Mono","Segoe UI Mono",monospace;
+  font-size:var(--fs-read);line-height:1.55;letter-spacing:var(--track);
+}
+.head{padding:var(--space-5);border-bottom:1px solid #1c1c1c;}
+.head h1{font-size:var(--fs-display);margin:0 0 var(--space-2);font-weight:600;letter-spacing:-0.01em;text-wrap:balance;}
+.head .sub{color:var(--text-2);font-size:var(--fs-read);max-width:86ch;margin:0 0 var(--space-3);}
+.head .warn{color:var(--yellow);font-size:var(--fs-body);max-width:86ch;margin:0;}
+.wrap{padding:var(--space-5);max-width:1500px;}
+h2{font-size:var(--fs-title);margin:var(--space-6) 0 var(--space-2);font-weight:600;}
+h2:first-child{margin-top:0;}
+h2 .n{color:var(--text-3);font-weight:400;margin-right:var(--space-2);}
+.lede{color:var(--text-2);font-size:var(--fs-read);max-width:92ch;margin:0 0 var(--space-4);}
+.lede b{color:var(--text-1);}
+code{color:var(--text-1);background:#161616;padding:1px 4px;font-size:var(--fs-micro);}
+.tree{border:1px solid var(--border);background:var(--bg);padding:var(--space-4);}
+.tree pre{margin:0;font-size:var(--fs-body);color:var(--text-2);line-height:1.7;overflow-x:auto;}
+.tree pre b{color:var(--text-1);font-weight:600;}
+.tree pre .bad{color:var(--red);}
+.tree pre .ok{color:var(--green);}
+.tree pre .warnc{color:var(--yellow);}
+/* source cards */
+.srcs{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:var(--space-4);}
+.src{border:1px solid var(--border);background:var(--bg);padding:var(--space-4);}
+.src .st{font-size:var(--fs-label);letter-spacing:0.09em;color:var(--text-3);margin:0 0 var(--space-2);}
+.src .sh{font-size:var(--fs-lead);font-weight:600;margin:0 0 var(--space-2);}
+.src p{margin:0;color:var(--text-2);font-size:var(--fs-body);}
+.src.live{border-color:var(--yellow);}
+.src.live .st{color:var(--yellow);}
+.src.parked{border-color:var(--border-2);}
+.src.parked .sh,.src.parked p{color:var(--text-3);}
+.src.parked .st{color:#4a4a4a;}
+/* harm table */
+.tblwrap{overflow-x:auto;}
+table{border-collapse:collapse;width:100%;font-size:var(--fs-body);}
+th,td{text-align:left;padding:var(--space-2) var(--space-3);border:1px solid var(--border);vertical-align:top;}
+th{color:var(--text-3);font-weight:600;font-size:var(--fs-label);letter-spacing:0.08em;}
+td .x{color:var(--red);}td .k{color:var(--green);}td .w{color:var(--yellow);}
+/* options */
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:var(--space-4);align-items:start;}
+.opt{border:1px solid var(--border);background:var(--bg);display:flex;flex-direction:column;}
+.opt.rec{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent-d);}
+.opt-h{padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--border);}
+.opt-h .tag{font-size:var(--fs-label);letter-spacing:0.09em;color:var(--text-3);display:block;margin-bottom:var(--space-1);}
+.opt.rec .opt-h .tag{color:var(--green);}
+.opt-h .name{font-size:var(--fs-lead);font-weight:600;}
+.opt-b{padding:var(--space-4);flex:1;}
+.cap{font-size:var(--fs-label);letter-spacing:0.09em;color:var(--text-3);margin:0 0 var(--space-2);}
+.cap.mt{margin-top:var(--space-4);}
+.touch{border:1px solid var(--border-2);background:var(--surface);padding:var(--space-2) var(--space-3);font-size:var(--fs-micro);color:var(--text-2);line-height:1.9;}
+.touch .f{color:var(--text-1);}
+.touch .no{color:#4a4a4a;}
+.eff{border:1px solid var(--border-2);padding:var(--space-3);}
+.eff pre{margin:0;font-size:var(--fs-body);line-height:1.7;color:var(--text-2);overflow-x:auto;}
+.eff pre .ok{color:var(--green);}
+.eff pre .bad{color:var(--red);}
+.eff pre .warnc{color:var(--yellow);}
+.verdict{margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--border-2);font-size:var(--fs-body);}
+.verdict p{margin:0 0 var(--space-2);color:var(--text-2);}
+.verdict p:last-child{margin-bottom:0;}
+.verdict .k{color:var(--green);}.verdict .x{color:var(--red);}.verdict .w{color:var(--yellow);}
+.cost{display:inline-block;font-size:var(--fs-micro);letter-spacing:0.08em;color:var(--text-3);}
+/* moot section */
+.moot{border:1px solid var(--border-2);background:var(--bg);padding:var(--space-4);}
+.moot h3{font-size:var(--fs-lead);margin:0 0 var(--space-2);color:var(--text-2);font-weight:600;}
+.moot p{margin:0 0 var(--space-3);color:var(--text-3);font-size:var(--fs-body);max-width:92ch;}
+.moot ul{margin:0;padding-left:var(--space-4);color:var(--text-3);font-size:var(--fs-body);}
+.moot li{margin-bottom:var(--space-1);}
+.moot b{color:var(--text-2);}
+.note{border:1px solid var(--border);background:var(--bg);padding:var(--space-4);margin-top:var(--space-5);font-size:var(--fs-body);color:var(--text-2);}
+.note b{color:var(--text-1);font-weight:600;}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;}}
+</style>
+
+<div class="head">
+  <h1>FR-34 &mdash; how much of it is worth doing?</h1>
+  <p class="sub">The original question was <i>&ldquo;what should the import offer for nested folders?&rdquo;</i>. That question turned out to rest on a persona the product cannot currently produce. This board carries the corrected premise and four <b>scope</b> options.</p>
+  <p class="warn">Every claim below was read at source today. The ledger&rsquo;s FR-34 entry overstates itself in three places, noted inline.</p>
+</div>
+
+<div class="wrap">
+
+<h2><span class="n">1</span>Where nesting can actually come from</h2>
+<p class="lede">
+<b>The app never creates a nested project folder.</b> <code>note_dir_for</code> returns a single name, every tidy destination is depth&nbsp;1, and <code>test_project_tidy.py:45-51</code> pins that invariant &mdash; it is what keeps a note&rsquo;s <code>../_attachments/&lt;id&gt;/&lt;file&gt;</code> references resolving. The only nesting the product itself produces is <code>_attachments/&lt;id&gt;/&lt;file&gt;</code>, which sits on <code>_EXEMPT</code> (<code>folder_import.py:24</code>) and can never be an import candidate.
+</p>
+<p class="lede">
+And the import&rsquo;s own docstring (<code>folder_import.py:3-6</code>) says what it was built for: <i>&ldquo;A vault that <b>predates the s127 tag model</b> organises notes in folders and carries no <code>#project@</code> tags at all.&rdquo;</i> A pre-s127 Second Thought vault was <b>also depth&nbsp;1</b> &mdash; the app created those folders too.
+</p>
+<div class="srcs">
+  <div class="src live">
+    <p class="st">SOURCE 1 &mdash; AVAILABLE TODAY</p>
+    <p class="sh">The user makes a subfolder by hand</p>
+    <p>In Explorer, or in Obsidian. Nothing forbids it &mdash; files are the source of truth. This is the only way nesting can appear in a shipped install right now.</p>
+  </div>
+  <div class="src parked">
+    <p class="st">SOURCE 2 &mdash; PARKED, NOT BUILT</p>
+    <p class="sh">vault.root pointed at a foreign tree</p>
+    <p><code>config.toml</code> allows an absolute-path override, so it is technically reachable. But the first-run <b>VaultSetup</b> surface that would make this a real user flow is parked and unbuilt (<code>CURRENT.md</code> §4.1).</p>
+  </div>
+</div>
+<p class="lede" style="margin-top:var(--space-4)">
+<b>Consequence:</b> the ledger&rsquo;s <i>&ldquo;a user with years of nested folders &hellip; a bigger betrayal than FR-33&rdquo;</i> describes someone the product has no supported path to create. The defect is real; the persona is not.
+</p>
+
+<h2><span class="n">2</span>What actually breaks, and only then</h2>
+<p class="lede">
+For a hand-made subfolder, <code>_maybe_refile_local</code> (<code>mobile_sync_agent.py:731</code>) computes <code>p.parent.parent / dest_folder / p.name</code>. At depth&nbsp;&ge;&nbsp;2 that grandparent is <b>not</b> the vault root, so it fabricates a folder one level short &mdash; and the error compounds by one level per extra depth.
+</p>
+<div class="tblwrap">
+<table>
+  <tr><th>Note sits at</th><th>Its tag</th><th>What gets computed</th><th>Result</th></tr>
+  <tr>
+    <td><code>vault/Work/Sub/note.md</code></td><td><code>#project@Work</code></td>
+    <td><code>vault/Work/Work/note.md</code></td><td class="x">a Work/ inside Work/</td>
+  </tr>
+  <tr>
+    <td><code>vault/Work/Sub/note.md</code></td><td>untagged</td>
+    <td><code>vault/Work/_loose/note.md</code></td><td class="x">a _loose/ fabricated mid-tree</td>
+  </tr>
+  <tr>
+    <td><code>vault/Work/note.md</code></td><td>either</td>
+    <td>correct &mdash; grandparent <i>is</i> the root</td><td class="k">fine, today&rsquo;s normal case</td>
+  </tr>
+</table>
+</div>
+<p class="lede" style="margin-top:var(--space-4)">
+<b>It fires only on a pull or a 3-way merge</b> (<code>:983</code> and <code>:1044</code>) &mdash; never on the initial local&rarr;hub push. A nested note the other device never touches stays exactly where the user put it, indefinitely. <b>Second ledger overstatement:</b> §4.2f implies it happens as a matter of course.
+</p>
+<p class="lede">
+<b>Third ledger overstatement:</b> §4.2f names one location. The identical depth-1 walk is duplicated in <code>vault_admin._filed_notes:427-435</code>, which is what feeds <b>tidy</b> &mdash; so nested notes are invisible to tidy as well as to import.
+</p>
+
+<h2><span class="n">3</span>The scope options</h2>
+
+<div class="grid">
+
+  <div class="opt rec">
+    <div class="opt-h"><span class="tag">OPTION 1 &mdash; RECOMMENDED</span><span class="name">Arithmetic fix only</span></div>
+    <div class="opt-b">
+      <p class="cap">WHAT IT TOUCHES</p>
+      <div class="touch">
+        <span class="f">mobile_sync_agent.py</span> &mdash; vault-root derivation + its <code>ponytail:</code> ceiling comment<br>
+        <span class="no">folder_import.py &mdash; untouched</span><br>
+        <span class="no">vault_admin.py &mdash; untouched</span><br>
+        <span class="no">panel copy &mdash; untouched</span>
+      </div>
+      <p class="cap mt">EFFECT ON A HAND-MADE SUBFOLDER</p>
+      <div class="eff"><pre>Work/
+  Sub/
+    <span class="ok">note.md   stays put, always</span>
+
+<span class="ok">No Work/Work/.
+No fabricated _loose/.</span>
+<span class="warnc">Still gets no #project@ tag.</span></pre></div>
+      <div class="verdict">
+        <p><span class="k">Removes the only harm that can actually occur today</span>, and defuses it before VaultSetup could ever ship and make it common.</p>
+        <p><span class="k">Smallest possible diff</span> in the one function where all callers route through. Ships one runnable check.</p>
+        <p><span class="w">Leaves nested notes untagged</span> &mdash; they sync and are searchable, but carry no project until hand-tagged.</p>
+        <p><span class="cost">COST: LOW</span></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="opt">
+    <div class="opt-h"><span class="tag">OPTION 2</span><span class="name">Arithmetic fix + tidy&rsquo;s twin walk</span></div>
+    <div class="opt-b">
+      <p class="cap">WHAT IT TOUCHES</p>
+      <div class="touch">
+        <span class="f">mobile_sync_agent.py</span> &mdash; vault-root derivation<br>
+        <span class="f">vault_admin.py</span> &mdash; <code>_filed_notes</code> recurses<br>
+        <span class="no">folder_import.py &mdash; untouched</span><br>
+        <span class="no">panel copy &mdash; untouched</span>
+      </div>
+      <p class="cap mt">EFFECT ON A HAND-MADE SUBFOLDER</p>
+      <div class="eff"><pre>Work/
+  Sub/
+    note.md
+
+<span class="ok">No fabricated folders.</span>
+<span class="bad">But tidy now SEES it, so it
+starts proposing to move it
+to _loose/ &mdash; and rmdir Sub/.</span></pre></div>
+      <div class="verdict">
+        <p><span class="k">Import and tidy stop disagreeing</span> about what exists.</p>
+        <p><span class="x">Changes what tidy proposes.</span> A subfolder the user deliberately made would start showing up as something to flatten. That is a new, unasked-for behaviour on a shipped surface.</p>
+        <p><span class="cost">COST: MEDIUM</span></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="opt">
+    <div class="opt-h"><span class="tag">OPTION 3</span><span class="name">Defer the code, re-file the ledger</span></div>
+    <div class="opt-b">
+      <p class="cap">WHAT IT TOUCHES</p>
+      <div class="touch">
+        <span class="f">CURRENT.md §4.2f</span> &mdash; corrected to today&rsquo;s findings<br>
+        <span class="no">no code at all</span>
+      </div>
+      <p class="cap mt">EFFECT ON A HAND-MADE SUBFOLDER</p>
+      <div class="eff"><pre>Work/
+  Sub/
+    note.md
+
+<span class="bad">On the next pull or merge:
+Work/Work/note.md
+or Work/_loose/note.md</span>
+<span class="bad">The bug stays live.</span></pre></div>
+      <div class="verdict">
+        <p><span class="k">Honest and free.</span> Records that nesting has no supported source, the harm is pull/merge-only, and the defect sits in two walks not one. Re-open if VaultSetup ships.</p>
+        <p><span class="x">Leaves a known folder-fabricating bug in the sync path</span> &mdash; small blast radius, but it writes to the filesystem.</p>
+        <p><span class="cost">COST: NONE</span></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="opt">
+    <div class="opt-h"><span class="tag">OPTION 4</span><span class="name">Full fix &mdash; the original board&rsquo;s option D</span></div>
+    <div class="opt-b">
+      <p class="cap">WHAT IT TOUCHES</p>
+      <div class="touch">
+        <span class="f">mobile_sync_agent.py</span> &mdash; vault-root derivation<br>
+        <span class="f">vault_admin.py</span> &mdash; <code>_filed_notes</code> recurses<br>
+        <span class="f">FolderImportPanel</span> &mdash; copy covering nested notes<br>
+        <span class="f">folder_import.py</span> &mdash; nested disclosure
+      </div>
+      <p class="cap mt">EFFECT ON A HAND-MADE SUBFOLDER</p>
+      <div class="eff"><pre>Work/
+  Sub/
+    note.md
+
+<span class="ok">No fabricated folders.</span>
+<span class="warnc">Panel explains what happens
+to notes below depth 1.</span>
+<span class="bad">Tidy proposes flattening.</span></pre></div>
+      <div class="verdict">
+        <p><span class="k">Complete</span> &mdash; nothing about nesting is left undocumented or inconsistent.</p>
+        <p><span class="x">Most surface area, for a persona that does not exist yet.</span> Includes a live-QA round on a shipped surface, because it edits the import panel.</p>
+        <p><span class="cost">COST: HIGH</span></p>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<h2><span class="n">4</span>Side by side</h2>
+<div class="tblwrap">
+<table>
+  <tr><th>&nbsp;</th><th>1 &mdash; arithmetic only</th><th>2 &mdash; + tidy walk</th><th>3 &mdash; defer</th><th>4 &mdash; full</th></tr>
+  <tr><td>Stops the fabricated folder</td><td class="k">yes</td><td class="k">yes</td><td class="x">no</td><td class="k">yes</td></tr>
+  <tr><td>User&rsquo;s hand-made subfolder survives</td><td class="k">yes</td><td class="x">tidy offers to flatten it</td><td class="k">yes</td><td class="x">tidy offers to flatten it</td></tr>
+  <tr><td>Nested notes get a project</td><td class="w">no</td><td class="w">no</td><td class="w">no</td><td class="w">no &mdash; only disclosed</td></tr>
+  <tr><td>Changes a shipped surface</td><td class="k">no</td><td class="w">tidy&rsquo;s proposals</td><td class="k">no</td><td class="x">yes, needs live QA</td></tr>
+  <tr><td>Ledger corrected</td><td class="k">yes</td><td class="k">yes</td><td class="k">yes</td><td class="k">yes</td></tr>
+  <tr><td>Build cost</td><td class="k">low</td><td class="w">medium</td><td class="k">none</td><td class="x">high</td></tr>
+</table>
+</div>
+
+<h2><span class="n">5</span>The original offer question &mdash; now moot, kept for context</h2>
+<div class="moot">
+  <h3>&ldquo;Should the import offer <code>Work</code>, <code>Acme</code>, or every level?&rdquo;</h3>
+  <p>This was the first board&rsquo;s A/B/C/D. It is superseded because <b>no supported flow produces the nested vault it assumed</b> &mdash; but two of its findings survive and constrain any future answer, so they are recorded here rather than lost:</p>
+  <ul>
+    <li><b>A project name can never hold a path separator.</b> <code>^[A-Za-z0-9][A-Za-z0-9_-]*$</code> excludes <code>/</code>, and <code>is_valid_project_dir</code> requires <code>safe_name(dir) == dir</code> where <code>safe_name</code> rewrites <code>/</code> to <code>_</code>. <code>Work/Clients</code> is refused as both a name and a <code>dir</code>. Nesting has no representation in the registry.</li>
+    <li><b>Tagging a nested note necessarily flattens it.</b> Tidy destinations are contractually depth&nbsp;1, so every option that tags nested notes ends with <code>Clients/</code> and <code>Acme/</code> <code>rmdir</code>&rsquo;d &mdash; which would falsify the panel&rsquo;s own s141 promise, <i>&ldquo;Your folders keep their names, and nothing moves.&rdquo;</i></li>
+  </ul>
+</div>
+
+<div class="note">
+<p><b>Considered and not offered: relax the grammar so <code>dir</code> can hold <code>Work/Clients</code>.</b> It would preserve nesting exactly &mdash; and it is the change I would argue hardest against. <code>safe_name</code>&rsquo;s round-trip equality is what stops <code>scratchpad.approve_scratchpad_item</code> (which joins through <code>safe_subdir</code>, and <i>neutralises</i> rather than refuses) from filing a note into a different directory than tidy and sync compute. Allowing a separator reintroduces the exact silent-relocation class the <code>dir</code> key was created to kill in FR-33, and breaks <code>../_attachments/</code> reference depth on top. It is a <code>data-model-and-contracts.md</code> §13.1 change with a blast radius well beyond this ticket.</p>
+</div>
+
+</div>

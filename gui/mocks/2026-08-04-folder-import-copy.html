@@ -1,0 +1,268 @@
+<title>Void — FR-32: the sanitised-folder disclosure line</title>
+
+<style>
+  :root {
+    --bg:#0a0a0a; --surface:#191919; --surface-2:#262626; --border:#383838; --border-2:#262626;
+    --text-1:#fafafa; --text-2:#a1a1a1; --text-3:#7a7a7a;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.18);
+    --green:#4ade80; --yellow:#facc15; --red:#ff6467;
+    --mono: "Geist Mono", ui-monospace, "Cascadia Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg:#ffffff; --surface:#f5f5f5; --surface-2:#e8e8e8; --border:#c7c7c7; --border-2:#d2d2d2;
+      --text-1:#0a0a0a; --text-2:#4f4f4f; --text-3:#636363;
+      --accent:#737373; --accent-d:rgba(115,115,115,0.10);
+      --green:#16a34a; --yellow:#92660a; --red:#e7000b;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:#ffffff; --surface:#f5f5f5; --surface-2:#e8e8e8; --border:#c7c7c7; --border-2:#d2d2d2;
+    --text-1:#0a0a0a; --text-2:#4f4f4f; --text-3:#636363;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.10);
+    --green:#16a34a; --yellow:#92660a; --red:#e7000b;
+  }
+  :root[data-theme="dark"] {
+    --bg:#0a0a0a; --surface:#191919; --surface-2:#262626; --border:#383838; --border-2:#262626;
+    --text-1:#fafafa; --text-2:#a1a1a1; --text-3:#7a7a7a;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.18);
+    --green:#4ade80; --yellow:#facc15; --red:#ff6467;
+  }
+
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text-1); font-family:var(--mono); font-size:14px; line-height:1.6; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:1180px; margin:0 auto; padding:var(--s6) var(--s4) var(--s7); }
+  @media (max-width:640px){ .wrap { padding:var(--s5) var(--s3) var(--s6); } }
+
+  h1 { font-size:clamp(22px,5vw,32px); line-height:1.2; margin:0 0 var(--s3); font-weight:500; letter-spacing:-0.02em; text-wrap:balance; }
+  h2 { font-size:clamp(15px,3vw,19px); margin:0; font-weight:500; letter-spacing:-0.01em; }
+  p  { margin:0 0 var(--s3); color:var(--text-2); max-width:72ch; text-wrap:pretty; }
+  strong { color:var(--text-1); font-weight:500; }
+  code { background:var(--surface-2); padding:1px 5px; font-size:0.9em; color:var(--text-1); }
+
+  .meta { display:flex; flex-wrap:wrap; gap:var(--s3); font-size:12px; color:var(--text-3); margin-bottom:var(--s5); }
+  .meta span { display:inline-flex; align-items:center; gap:6px; }
+  .dot { width:6px; height:6px; background:var(--accent); display:inline-block; }
+
+  .why { border:1px solid var(--border); background:var(--surface); padding:var(--s3) var(--s4); margin:0 0 var(--s6); font-size:12px; color:var(--text-2); }
+  .why b { color:var(--text-1); font-weight:500; }
+  .why .after { margin-top:var(--s3); border-top:1px solid var(--border); padding-top:var(--s3); }
+
+  .sec { margin:0 0 var(--s6); }
+  .sechead { display:flex; align-items:baseline; gap:var(--s3); border-bottom:1px solid var(--border); padding-bottom:var(--s2); margin-bottom:var(--s4); flex-wrap:wrap; }
+  .sechead .q { font-size:11px; color:var(--text-3); }
+
+  .opts { display:flex; flex-direction:column; gap:var(--s5); }
+  .opt { border:1px solid var(--border); background:var(--surface); }
+  .opt.rec { border-color:var(--accent); }
+  .opthead { display:flex; align-items:baseline; gap:var(--s3); padding:var(--s3) var(--s4); border-bottom:1px solid var(--border); flex-wrap:wrap; }
+  .tag { font-size:11px; letter-spacing:0.08em; text-transform:uppercase; color:var(--text-3); }
+  .opt.rec .tag { color:var(--accent); }
+  .optname { font-size:13px; color:var(--text-1); }
+  .optnote { font-size:11px; color:var(--text-3); margin-left:auto; }
+  .optbody { padding:var(--s4); }
+  .verdict { font-size:11.5px; color:var(--text-2); padding:0 var(--s4) var(--s4); max-width:78ch; }
+  .verdict .yes { color:var(--green); }
+  .verdict .no  { color:var(--yellow); }
+
+  /* --- replica of the real FolderImportChecklist, variant="card" --- */
+  .panel { background:var(--surface-2); border:1px solid var(--border); padding:10px 12px; display:flex; flex-direction:column; gap:8px; max-width:560px; }
+  .panel .intro { font-size:12px; color:var(--text-2); }
+  .panel .intro strong { color:var(--text-1); font-weight:500; }
+  .panel .list { display:flex; flex-direction:column; gap:2px; max-height:160px; overflow-y:auto; border:1px solid var(--border); background:var(--bg); padding:4px 8px; }
+  .panel .row { display:flex; align-items:center; gap:8px; font-size:11px; padding:3px 0; }
+  .panel .row input[type=checkbox] { flex:0 0 auto; accent-color:var(--text-1); margin:0; }
+  .panel .fname { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-1); }
+  .panel .edit { flex:0 1 130px; min-width:0; font-size:11px; padding:2px 6px; font-family:inherit; background:var(--surface-2); color:var(--text-1); border:1px solid var(--border); }
+  .panel .rowmeta { margin-left:auto; flex:0 0 auto; color:var(--text-3); text-align:right; }
+  .panel .rowmeta em { font-style:normal; color:var(--text-2); }
+  .panel .actions { display:flex; justify-content:flex-end; gap:6px; }
+  .panel button { font-family:inherit; cursor:pointer; }
+  .btn-ghost { font-size:12px; padding:5px 10px; color:var(--text-2); border:1px solid var(--border); background:var(--bg); }
+  .btn-primary { padding:5px 14px; font-size:12px; font-weight:600; border:1px solid var(--text-1); background:var(--bg); color:var(--text-1); }
+  .newcopy { color:var(--text-1); }
+
+  /* --- the strip the user meets AFTERWARDS --- */
+  .tidy { border:1px solid var(--border); background:var(--surface-2); padding:9px 12px; display:flex; flex-direction:column; gap:8px; max-width:560px; font-size:11px; color:var(--text-2); }
+  .tidy .list { display:flex; flex-direction:column; gap:2px; border:1px solid var(--border); background:var(--bg); padding:4px 8px; font-size:10px; }
+  .tidy .mv { display:flex; gap:8px; }
+  .tidy .mv .f { color:var(--text-1); }
+  .tidy .mv .p { color:var(--text-3); }
+
+  .foot { border-top:1px solid var(--border); padding-top:var(--s4); font-size:11.5px; color:var(--text-3); }
+  .foot b { color:var(--text-2); font-weight:500; }
+
+  .themetoggle { position:fixed; top:12px; right:12px; font-family:inherit; font-size:11px; padding:5px 10px; background:var(--surface-2); color:var(--text-2); border:1px solid var(--border); cursor:pointer; }
+</style>
+
+<button class="themetoggle" onclick="document.documentElement.setAttribute('data-theme', document.documentElement.getAttribute('data-theme')==='light'?'dark':'light')">theme</button>
+
+<div class="wrap">
+  <h1>The one line of copy FR-32 still owes the user</h1>
+  <div class="meta">
+    <span><i class="dot"></i> 2026-08-04 · s141</span>
+    <span>FR-32 · folder import, now reachable from both tidy strips</span>
+    <span>Pick one. Everything else in the panel is already built and unchanged.</span>
+  </div>
+
+  <div class="why">
+    <b>The wrinkle, exactly.</b> The import <b>tags notes; it never renames a folder on disk.</b>
+    So a folder whose name is not usable as a project name — <code>My Notes</code> — becomes project
+    <code>My-Notes</code>, and the notes still physically sit in <code>My Notes/</code>.
+    <div class="after">
+      <b>Which means minutes later the user meets this, and today nothing warned them:</b>
+      <div class="tidy" style="margin-top:8px">
+        <span><strong style="color:var(--text-1)">1</strong> note — possibly from other projects too — will move into the folder its own tag already points to.</span>
+        <div class="list">
+          <div class="mv"><span class="f">delta.md</span><span class="p">My Notes → My-Notes</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sechead">
+      <h2>Where does the disclosure go, and in whose words?</h2>
+      <span class="q">Each option below is the REAL panel, rendered with that option's copy in place. Changed text is <span class="newcopy">brighter</span>.</span>
+    </div>
+
+    <div class="opts">
+
+      <!-- ============ OPTION A ============ -->
+      <div class="opt rec">
+        <div class="opthead">
+          <span class="tag">Option A · recommended</span>
+          <span class="optname">State the limit in the intro, once, for everyone</span>
+          <span class="optnote">+1 sentence, always visible</span>
+        </div>
+        <div class="optbody">
+          <div class="panel">
+            <span class="intro">
+              Each folder becomes a project by adding one <strong>#project@name</strong> line to the notes
+              inside it. Nothing moves and nothing is deleted.
+              <span class="newcopy">Folders are never renamed — one whose name had to be adjusted will still be offered a move later.</span>
+            </span>
+            <div class="list">
+              <div class="row">
+                <input type="checkbox" checked>
+                <span class="fname">Work</span>
+                <span class="rowmeta">12 notes</span>
+              </div>
+              <div class="row">
+                <input type="checkbox" checked>
+                <span class="fname">My Notes</span>
+                <input class="edit" value="My-Notes">
+                <span class="rowmeta">4 notes · includes 2 from your phone</span>
+              </div>
+            </div>
+            <div class="actions">
+              <button class="btn-ghost">Cancel</button>
+              <button class="btn-primary">Add tags to 16 notes</button>
+            </div>
+          </div>
+        </div>
+        <div class="verdict">
+          <span class="yes">Reads before consent, not after.</span> The surprise arrives in a
+          <em>different</em> strip minutes later, so the warning has to be where the eye already is —
+          the sentence the user reads before ticking. <span class="no">Costs a line to every user,
+          including the majority whose folder names were all fine.</span>
+        </div>
+      </div>
+
+      <!-- ============ OPTION B ============ -->
+      <div class="opt">
+        <div class="opthead">
+          <span class="tag">Option B</span>
+          <span class="optname">Say it only on the row it actually bites</span>
+          <span class="optnote">intro untouched; suffix on sanitised rows only</span>
+        </div>
+        <div class="optbody">
+          <div class="panel">
+            <span class="intro">
+              Each folder becomes a project by adding one <strong>#project@name</strong> line to the notes
+              inside it. Nothing moves and nothing is deleted.
+            </span>
+            <div class="list">
+              <div class="row">
+                <input type="checkbox" checked>
+                <span class="fname">Work</span>
+                <span class="rowmeta">12 notes</span>
+              </div>
+              <div class="row">
+                <input type="checkbox" checked>
+                <span class="fname">My Notes</span>
+                <input class="edit" value="My-Notes">
+                <span class="rowmeta">4 notes · includes 2 from your phone<span class="newcopy"> · folder keeps its old name on disk</span></span>
+              </div>
+            </div>
+            <div class="actions">
+              <button class="btn-ghost">Cancel</button>
+              <button class="btn-primary">Add tags to 16 notes</button>
+            </div>
+          </div>
+        </div>
+        <div class="verdict">
+          <span class="yes">Zero noise for the common case, and it is attached to the exact folder it
+          concerns — right beside the name field the user is already editing.</span>
+          <span class="no">It is a suffix on an already-crowded meta line, and at a narrow window it
+          wraps or truncates first (see FR-31). Easiest of the three to miss.</span>
+        </div>
+      </div>
+
+      <!-- ============ OPTION C ============ -->
+      <div class="opt">
+        <div class="opthead">
+          <span class="tag">Option C</span>
+          <span class="optname">Scope the promise instead of naming the mechanism</span>
+          <span class="optnote">+1 sentence, no folder mechanics</span>
+        </div>
+        <div class="optbody">
+          <div class="panel">
+            <span class="intro">
+              Each folder becomes a project by adding one <strong>#project@name</strong> line to the notes
+              inside it. Nothing moves and nothing is deleted.
+              <span class="newcopy">This keeps your folders out of the catch-all — it does not settle every future move.</span>
+            </span>
+            <div class="list">
+              <div class="row">
+                <input type="checkbox" checked>
+                <span class="fname">Work</span>
+                <span class="rowmeta">12 notes</span>
+              </div>
+              <div class="row">
+                <input type="checkbox" checked>
+                <span class="fname">My Notes</span>
+                <input class="edit" value="My-Notes">
+                <span class="rowmeta">4 notes · includes 2 from your phone</span>
+              </div>
+            </div>
+            <div class="actions">
+              <button class="btn-ghost">Cancel</button>
+              <button class="btn-primary">Add tags to 16 notes</button>
+            </div>
+          </div>
+        </div>
+        <div class="verdict">
+          <span class="yes">Honest about the boundary of the promise without teaching folder
+          mechanics, and it never goes stale if the rename rule changes.</span>
+          <span class="no">Vague where the user needs specific: it does not tell them <em>which</em>
+          folder will still be asked about, so it explains the later strip only in hindsight.</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="foot">
+    <b>Combining is allowed.</b> A + B is coherent: the intro states the rule for everyone, the row
+    names the folder it applies to. It costs one more line of code than A alone and no extra design
+    decision — say so if you want both.
+    <br><br>
+    <b>Not on the table (already decided, s140):</b> the offer lives in the tidy strip (A1) · the tag
+    goes under the first heading (P1) · consent is per folder (G1) · an unusable name gets an editable
+    prefilled field, never a dead end or a silent rename (N1+N3+N2-prefill).
+    Renaming the folder on disk is <em>not</em> a fourth option here — this panel tags, it does not move
+    or rename files, and that lock is not being reopened for a copy decision.
+  </div>
+</div>

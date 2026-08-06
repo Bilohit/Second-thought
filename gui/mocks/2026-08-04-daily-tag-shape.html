@@ -1,0 +1,299 @@
+<title>Void — the #daily tag: shape, case, and its switch</title>
+
+<style>
+  :root {
+    --bg:#0a0a0a; --surface:#191919; --surface-2:#262626; --border:#383838; --border-2:#262626;
+    --text-1:#fafafa; --text-2:#a1a1a1; --text-3:#7a7a7a;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.18);
+    --green:#4ade80; --yellow:#facc15; --red:#ff6467;
+    --mono: "Geist Mono", ui-monospace, "Cascadia Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg:#ffffff; --surface:#f5f5f5; --surface-2:#e8e8e8; --border:#c7c7c7; --border-2:#d2d2d2;
+      --text-1:#0a0a0a; --text-2:#4f4f4f; --text-3:#636363;
+      --accent:#737373; --accent-d:rgba(115,115,115,0.10);
+      --green:#16a34a; --yellow:#92660a; --red:#e7000b;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:#ffffff; --surface:#f5f5f5; --surface-2:#e8e8e8; --border:#c7c7c7; --border-2:#d2d2d2;
+    --text-1:#0a0a0a; --text-2:#4f4f4f; --text-3:#636363;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.10);
+    --green:#16a34a; --yellow:#92660a; --red:#e7000b;
+  }
+  :root[data-theme="dark"] {
+    --bg:#0a0a0a; --surface:#191919; --surface-2:#262626; --border:#383838; --border-2:#262626;
+    --text-1:#fafafa; --text-2:#a1a1a1; --text-3:#7a7a7a;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.18);
+    --green:#4ade80; --yellow:#facc15; --red:#ff6467;
+  }
+
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text-1); font-family:var(--mono); font-size:14px; line-height:1.6; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:1180px; margin:0 auto; padding:var(--s6) var(--s4) var(--s7); }
+  @media (max-width:640px){ .wrap { padding:var(--s5) var(--s3) var(--s6); } }
+
+  h1 { font-size:clamp(22px,5vw,32px); line-height:1.2; margin:0 0 var(--s3); font-weight:500; letter-spacing:-0.02em; text-wrap:balance; }
+  h2 { font-size:clamp(15px,3vw,19px); margin:0; font-weight:500; letter-spacing:-0.01em; }
+  p  { margin:0 0 var(--s3); color:var(--text-2); max-width:72ch; text-wrap:pretty; }
+  strong { color:var(--text-1); font-weight:500; }
+  code { background:var(--surface-2); padding:1px 5px; font-size:0.9em; color:var(--text-1); }
+
+  .meta { display:flex; flex-wrap:wrap; gap:var(--s3); font-size:12px; color:var(--text-3); margin-bottom:var(--s5); }
+  .meta span { display:inline-flex; align-items:center; gap:6px; }
+  .dot { width:6px; height:6px; background:var(--accent); display:inline-block; }
+
+  .settled { border:1px solid var(--green); background:var(--surface); padding:var(--s3) var(--s4); margin:0 0 var(--s6); font-size:12px; color:var(--text-2); }
+  .settled b { color:var(--green); font-weight:500; }
+
+  .sec { margin:0 0 var(--s7); }
+  .sechead { display:flex; align-items:baseline; gap:var(--s3); border-bottom:1px solid var(--border); padding-bottom:var(--s2); margin-bottom:var(--s4); flex-wrap:wrap; }
+  .sechead .q { font-size:11px; color:var(--text-3); }
+
+  .opts { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:var(--s4); }
+  .opt { border:1px solid var(--border); background:var(--surface); display:flex; flex-direction:column; }
+  .opt.rec { border-color:var(--accent); }
+  .opt > header { padding:var(--s3) var(--s4); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:var(--s2); }
+  .opt > header b { font-weight:500; font-size:13px; }
+  .badge { font-size:10px; padding:2px 6px; border:1px solid var(--border); color:var(--text-3); white-space:nowrap; }
+  .badge.good { color:var(--green); border-color:var(--green); }
+  .badge.bad { color:var(--red); border-color:var(--red); }
+  .badge.warn { color:var(--yellow); border-color:var(--yellow); }
+
+  .note { background:var(--bg); border-bottom:1px solid var(--border); padding:var(--s4); font-size:12.5px; line-height:1.75; overflow-x:auto; }
+  .note pre { margin:0; font-family:var(--mono); white-space:pre; }
+  .fm { color:var(--text-3); }
+  .h1line { color:var(--text-1); font-weight:500; }
+  .h2line { color:var(--text-2); }
+  .tag { color:var(--accent); background:var(--accent-d); padding:0 3px; }
+  .mach { color:var(--yellow); }
+  .cursor { color:var(--text-3); }
+  .strike { color:var(--red); text-decoration:line-through; }
+
+  .why { padding:var(--s3) var(--s4); font-size:12px; color:var(--text-2); line-height:1.65; flex:1; }
+  .why ul { margin:0; padding-left:16px; }
+  .why li { margin-bottom:4px; }
+  .why li:last-child { margin-bottom:0; }
+  .why .no { color:var(--red); }
+  .why .yes { color:var(--green); }
+
+  .later { border-top:1px solid var(--border); padding:var(--s3) var(--s4); font-size:11.5px; color:var(--text-3); background:var(--surface-2); }
+  .later b { color:var(--text-2); font-weight:500; }
+
+  /* tags rail rows */
+  .rail { background:var(--bg); border:1px solid var(--border-2); padding:var(--s2); display:flex; flex-direction:column; gap:var(--s1); }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:var(--s3); padding:6px var(--s2); border:1px solid transparent; font-size:12px; }
+  .row.on { border-color:var(--accent); background:var(--accent-d); }
+  .row .n { color:var(--text-3); font-size:11px; }
+  .row.split { color:var(--red); }
+
+  /* settings field rows, mirroring SettingsPanel's Field idiom */
+  .sp { background:var(--bg); border:1px solid var(--border-2); }
+  .fld { display:flex; align-items:center; justify-content:space-between; gap:var(--s3); padding:var(--s3); border-bottom:1px solid var(--border-2); }
+  .fld:last-child { border-bottom:0; }
+  .fld .lab { font-size:12px; color:var(--text-1); }
+  .fld .hint { display:block; font-size:11px; color:var(--text-3); margin-top:2px; max-width:46ch; }
+  .tgl { width:34px; height:18px; border:1px solid var(--border); background:var(--surface-2); position:relative; flex:none; }
+  .tgl i { position:absolute; top:2px; left:2px; width:12px; height:12px; background:var(--text-3); display:block; }
+  .tgl.on { border-color:var(--accent); background:var(--accent-d); }
+  .tgl.on i { left:auto; right:2px; background:var(--text-1); }
+  .inp { border:1px solid var(--border); background:var(--surface-2); padding:4px 8px; font-family:var(--mono); font-size:12px; color:var(--text-1); min-width:120px; }
+  .inp.dim { color:var(--text-3); }
+
+  .foot { border:1px solid var(--border); background:var(--surface); padding:var(--s4); font-size:13px; color:var(--text-2); }
+  .foot b { color:var(--text-1); font-weight:500; }
+</style>
+
+<div class="wrap">
+
+  <h1>The <code>#daily</code> tag &mdash; shape, case, and its switch</h1>
+  <div class="meta">
+    <span><i class="dot"></i>SP3 Task 10 &mdash; your reframing</span>
+    <span><i class="dot"></i>2026-08-04 &middot; s139</span>
+  </div>
+
+  <div class="settled">
+    <b>Already settled, not up for a vote:</b> daily notes land in <code>_loose/</code> &middot; there is no
+    <code>Daily</code> project and none is invented &middot; <code>#daily</code> is a plain
+    <strong>descriptive</strong> tag, so it flows into the derived <code>tags:</code> frontmatter cache and
+    gets its own row in Tags mode &middot; the switch defaults <strong>on</strong>.
+  </div>
+
+  <p>Three things still have to be decided, and each has a real consequence. Verified at source today:
+  the tag scanner does <strong>no case normalization</strong>, and the trailing <code>tags:</code> line is
+  a <strong>machine-managed region</strong> that another pass already rewrites.</p>
+
+  <!-- ============ Q1 PLACEMENT ============ -->
+  <div class="sec">
+    <div class="sechead"><h2>1 &mdash; Where in the body</h2><span class="q">the note as you open it</span></div>
+    <div class="opts">
+
+      <div class="opt rec">
+        <header><b>P1 &mdash; own line under the heading</b><span class="badge good">recommended</span></header>
+        <div class="note"><pre><span class="fm">---
+title: 2026-08-04
+project: [-]
+tags: [daily]
+---</span>
+<span class="h1line"># 2026-08-04</span>
+<span class="tag">#daily</span>
+
+<span class="h2line">## Intentions</span>
+- [ ] <span class="cursor">|</span>
+
+<span class="h2line">## Log</span>
+</pre></div>
+        <div class="why"><ul>
+          <li><span class="yes">Plain template text.</span> Written once at creation, then it is simply your body &mdash; no machinery owns it.</li>
+          <li><span class="yes">Position is stable</span> for the life of the note.</li>
+          <li><span class="yes">No new code</span> &mdash; one line in the template string.</li>
+          <li>Costs one line above your first intention.</li>
+        </ul></div>
+        <div class="later"><b>If you later delete it:</b> it stays deleted. Nothing rewrites it.</div>
+      </div>
+
+      <div class="opt">
+        <header><b>P2 &mdash; trailing <code>tags:</code> line</b><span class="badge warn">machine region</span></header>
+        <div class="note"><pre><span class="fm">---
+title: 2026-08-04
+project: [-]
+tags: [daily]
+---</span>
+<span class="h1line"># 2026-08-04</span>
+
+<span class="h2line">## Intentions</span>
+- [ ] <span class="cursor">|</span>
+
+<span class="h2line">## Log</span>
+
+<span class="mach">tags: </span><span class="tag">#daily</span>
+</pre></div>
+        <div class="why"><ul>
+          <li><span class="yes">The one body region the contract sanctions</span> a machine to write (ISS-051 &sect;3), and <code>machine_tags.py</code> already implements it.</li>
+          <li><span class="no">Another pass already overwrites this exact line.</span> Desktop enrichment calls <code>apply_trailing_tags_line(body, ["project@X"])</code>, which <strong>replaces the whole line</strong> &mdash; dropping <code>#daily</code>.</li>
+          <li><span class="no">You write down into it.</span> The Log grows toward the tag.</li>
+        </ul></div>
+        <div class="later"><b>The overwrite, drawn:</b> after that pass the last line becomes <span class="mach">tags: </span><span class="tag">#project@work</span> and <span class="strike">#daily</span> is gone. Fixable, but it is new coupling.</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============ Q2 CASE ============ -->
+  <div class="sec">
+    <div class="sechead"><h2>2 &mdash; Which spelling</h2><span class="q">the scanner does not case-fold, so these are two different tags</span></div>
+    <div class="opts">
+
+      <div class="opt rec">
+        <header><b>C1 &mdash; <code>#daily</code></b><span class="badge good">recommended</span></header>
+        <div class="note" style="padding:var(--s3)"><pre><span class="h1line"># 2026-08-04</span>
+<span class="tag">#daily</span></pre></div>
+        <div class="why">
+          <div style="margin-bottom:var(--s2);color:var(--text-3);font-size:11px">Tags mode</div>
+          <div class="rail">
+            <div class="row on"><span>#daily</span><span class="n">31</span></div>
+            <div class="row"><span>#capture</span><span class="n">12</span></div>
+            <div class="row"><span>#wikipedia</span><span class="n">4</span></div>
+          </div>
+          <ul style="margin-top:var(--s3)">
+            <li><span class="yes">Matches every other tag in the vault</span>, which is lowercase.</li>
+            <li>Lowercase is what a user hand-types when adding it to an older note.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="opt">
+        <header><b>C2 &mdash; <code>#Daily</code></b><span class="badge">alternative</span></header>
+        <div class="note" style="padding:var(--s3)"><pre><span class="h1line"># 2026-08-04</span>
+<span class="tag">#Daily</span></pre></div>
+        <div class="why">
+          <div style="margin-bottom:var(--s2);color:var(--text-3);font-size:11px">Tags mode &mdash; if anyone ever types the other one</div>
+          <div class="rail">
+            <div class="row on"><span>#Daily</span><span class="n">31</span></div>
+            <div class="row split"><span>#daily</span><span class="n">2</span></div>
+            <div class="row"><span>#capture</span><span class="n">12</span></div>
+          </div>
+          <ul style="margin-top:var(--s3)">
+            <li>Reads as a proper name, closer to the old <code>Daily</code> project idea.</li>
+            <li><span class="no">Capitalised is the odd one out</span> next to every other tag.</li>
+            <li><span class="no">Splits into two rows</span> the moment anyone types the lowercase form &mdash; the scanner does not fold case.</li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============ Q3 THE SWITCH ============ -->
+  <div class="sec">
+    <div class="sechead"><h2>3 &mdash; The switch</h2><span class="q">drawn in Settings &#9656; Function&rsquo;s real row idiom</span></div>
+    <div class="opts">
+
+      <div class="opt rec">
+        <header><b>S1 &mdash; plain toggle</b><span class="badge good">recommended</span></header>
+        <div class="note" style="padding:var(--s3)">
+          <div class="sp">
+            <div class="fld">
+              <span class="lab">Auto-describe New Folders</span>
+              <span class="tgl on"><i></i></span>
+            </div>
+            <div class="fld">
+              <span class="lab">Tag daily notes
+                <span class="hint">Adds <code>#daily</code> to each new daily note so they group under one tag.</span>
+              </span>
+              <span class="tgl on"><i></i></span>
+            </div>
+            <div class="fld">
+              <span class="lab">Reminders</span>
+              <span class="inp dim">Task Scheduler</span>
+            </div>
+          </div>
+        </div>
+        <div class="why"><ul>
+          <li><span class="yes">One boolean, one row, nothing to validate.</span></li>
+          <li><span class="yes">Sits with the other vault-behaviour toggles</span> already on this tab.</li>
+          <li>If you want a different word, you type it into the note yourself.</li>
+        </ul></div>
+      </div>
+
+      <div class="opt">
+        <header><b>S2 &mdash; toggle + custom name</b><span class="badge warn">more surface</span></header>
+        <div class="note" style="padding:var(--s3)">
+          <div class="sp">
+            <div class="fld">
+              <span class="lab">Auto-describe New Folders</span>
+              <span class="tgl on"><i></i></span>
+            </div>
+            <div class="fld">
+              <span class="lab">Tag daily notes
+                <span class="hint">Adds this tag to each new daily note.</span>
+              </span>
+              <span class="tgl on"><i></i></span>
+            </div>
+            <div class="fld">
+              <span class="lab">Daily tag</span>
+              <span class="inp">daily</span>
+            </div>
+          </div>
+        </div>
+        <div class="why"><ul>
+          <li><span class="yes">Rename it to <code>journal</code>, <code>log</code>, anything.</span></li>
+          <li><span class="no">Needs validation</span> &mdash; the tag grammar rejects spaces and most punctuation, so it needs an error state and a message.</li>
+          <li><span class="no">Two controls for one behaviour</span>, and a second row that is meaningless while the toggle is off.</li>
+          <li><span class="no">Renaming it later does not retag old notes</span>, so the vault ends up with two tags.</li>
+        </ul></div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="foot">
+    <b>The combination I would ship: P1 + C1 + S1.</b> A plain <code>#daily</code> line under the heading,
+    written once as template text, with a single toggle next to the other vault-behaviour switches.
+    It adds one line to a template string, one boolean to config, and one row to a settings tab &mdash; and it
+    touches no machine-managed region, so nothing can quietly rewrite it later.
+  </div>
+
+</div>

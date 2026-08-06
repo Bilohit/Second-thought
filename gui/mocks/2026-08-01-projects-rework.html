@@ -1,0 +1,964 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Projects Rework: Mock Board</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════
+   Tokens, copied verbatim from Second Thought/gui/src/index.css (Void)
+   and Android App/phone/src/lib/tokens.ts. Sharp 0-radius, border elevation,
+   Geist Mono, grayscale accent, green/yellow/red semantic-only.
+   ═══════════════════════════════════════════════════════════════════════ */
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --bg:           #0a0a0a;
+  --surface:      #262626;
+  --surface-2:    #404040;
+  --border:       #383838;
+  --border-2:     #262626;
+  --text-1:       #fafafa;
+  --text-2:       #a1a1a1;
+  --text-3:       #7a7a7a;
+  --accent:       #737373;
+  --accent-d:     rgba(115, 115, 115, 0.18);
+  --accent-glow:  rgba(115, 115, 115, 0.30);
+  --green:        #4ade80;
+  --yellow:       #facc15;
+  --red:          #ff6467;
+  --glass-bg:     #191919;
+  --glass-border: #383838;
+  --scrim:        rgba(0, 0, 0, 0.55);
+  --hover-bg:     color-mix(in srgb, var(--accent) 5%, var(--surface));
+  --hover-border: color-mix(in srgb, var(--accent) 90%, var(--border));
+  --hover-ease:   cubic-bezier(0.34, 1.3, 0.64, 1);
+  --hover-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --travel-ease:  cubic-bezier(0.22, 1, 0.36, 1);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff; --surface: #f5f5f5; --surface-2: #cccccc; --border: #c7c7c7; --border-2: #d2d2d2;
+  --text-1: #0a0a0a; --text-2: #4f4f4f; --text-3: #636363; --accent: #737373;
+  --accent-d: rgba(115,115,115,0.10); --accent-glow: rgba(115,115,115,0.22);
+  --green: #16a34a; --yellow: #92660a; --red: #e7000b;
+  --glass-bg: #ffffff; --glass-border: #c7c7c7; --scrim: rgba(0,0,0,0.25);
+  --hover-bg: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  --hover-border: color-mix(in srgb, var(--accent) 90%, var(--border));
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) { color-scheme: light; }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text-1);
+  font-family: "Geist Mono", ui-monospace, "Cascadia Mono", "Segoe UI Mono", monospace;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Board chrome ─────────────────────────────────────────────────────── */
+.board-head {
+  padding: 28px clamp(20px, 4vw, 48px) 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.board-title { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+.board-sub { color: var(--text-3); font-size: 12px; margin-top: 6px; max-width: 62ch; line-height: 1.6; }
+.theme-switch {
+  display: flex; gap: 2px; border: 1px solid var(--border); padding: 2px; height: 30px; flex-shrink: 0;
+}
+.theme-switch button {
+  font-family: inherit; font-size: 11px; color: var(--text-3); background: none; border: none;
+  padding: 0 12px; cursor: pointer; transition: color 0.15s, background 0.15s;
+}
+.theme-switch button[aria-pressed="true"] { background: var(--surface-2); color: var(--text-1); }
+.reduced-motion-note {
+  padding: 10px clamp(20px, 4vw, 48px); font-size: 11px; color: var(--text-3);
+  border-bottom: 1px solid var(--border-2); background: var(--glass-bg);
+}
+.reduced-motion-note strong { color: var(--text-2); }
+
+.surface-block { padding: 32px clamp(20px, 4vw, 48px) 8px; }
+.surface-label {
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3);
+  display: flex; align-items: center; gap: 8px; margin-bottom: 4px;
+}
+.surface-label .dot { width: 5px; height: 5px; background: var(--text-3); border-radius: 0; }
+.surface-title { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+.surface-copy { color: var(--text-2); font-size: 12.5px; line-height: 1.65; max-width: 74ch; margin-bottom: 4px; }
+.rule-list { color: var(--text-3); font-size: 11px; line-height: 1.8; max-width: 74ch; margin: 10px 0 0; padding-left: 18px; }
+
+.options-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 20px;
+  padding: 20px clamp(20px, 4vw, 48px) 8px;
+  align-items: start;
+}
+.options-row.two-col { grid-template-columns: repeat(2, minmax(340px, 1fr)); }
+.options-row.one-col { grid-template-columns: minmax(340px, 640px); }
+
+/* ── Option card frame ────────────────────────────────────────────────── */
+.option {
+  border: 1px solid var(--border);
+  background: var(--glass-bg);
+  display: flex;
+  flex-direction: column;
+}
+.option-head {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.option-name { font-size: 12.5px; font-weight: 600; }
+.option-tag { font-size: 10px; color: var(--text-3); margin-top: 2px; }
+.pick-btn {
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: none;
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color var(--hover-dur, 0.2s) var(--hover-ease-out), border-color var(--hover-dur, 0.2s) var(--hover-ease-out), background var(--hover-dur, 0.2s) var(--hover-ease-out);
+}
+.pick-btn:hover { color: var(--text-1); border-color: var(--accent); background: var(--hover-bg); }
+.pick-btn[aria-pressed="true"] { color: var(--bg); background: var(--text-1); border-color: var(--text-1); }
+.option-body { padding: 14px; }
+.state-toggle {
+  display: flex; gap: 2px; border: 1px solid var(--border); padding: 2px; margin: 0 14px 14px; width: fit-content;
+}
+.state-toggle button {
+  font-family: inherit; font-size: 10px; color: var(--text-3); background: none; border: none;
+  padding: 5px 10px; cursor: pointer;
+}
+.state-toggle button[aria-pressed="true"] { background: var(--surface-2); color: var(--text-1); }
+.state-pane[hidden] { display: none; }
+
+/* ── Generic rows / cards used across desktop options ────────────────── */
+.desk-frame {
+  background: var(--glass-bg);
+  border: 1px solid var(--border);
+  min-height: 320px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.desk-header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-2);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.desk-header .title { font-size: 13px; font-weight: 600; color: var(--text-1); display: flex; align-items: center; gap: 8px; }
+.desk-actions { display: flex; gap: 4px; }
+.icon-btn {
+  width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; background: none; color: var(--text-3); cursor: pointer;
+  transition: color 0.2s var(--hover-ease-out), background 0.2s var(--hover-ease-out), border-color 0.2s var(--hover-ease-out), transform 0.2s var(--hover-ease-out);
+}
+.icon-btn:hover { color: var(--text-1); background: var(--hover-bg); border-color: var(--hover-border); transform: translateY(-1px); }
+.icon-btn.accent { color: var(--accent); }
+svg { display: block; }
+
+.empty-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 48px 20px; text-align: center; color: var(--text-3);
+}
+.empty-state svg { opacity: 0.5; }
+.empty-state .headline { font-size: 12px; color: var(--text-2); }
+.empty-state .sub { font-size: 11px; max-width: 34ch; line-height: 1.6; }
+.empty-cta {
+  margin-top: 6px; font-family: inherit; font-size: 11px; color: var(--text-1);
+  background: var(--surface-2); border: 1px solid var(--border); padding: 7px 14px; cursor: pointer;
+  transition: border-color 0.2s var(--hover-ease-out), transform 0.2s var(--hover-ease-out);
+}
+.empty-cta:hover { border-color: var(--accent); transform: translateY(-1px); }
+
+/* Option A: list of project rows (VaultManager echo) */
+.proj-row {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--border-2);
+  cursor: pointer; transition: background 0.2s var(--hover-ease-out), transform 0.2s var(--hover-ease-out);
+}
+.proj-row:hover { background: var(--hover-bg); }
+.proj-row-main { display: flex; align-items: center; gap: 10px; }
+.proj-row-main svg { flex-shrink: 0; color: var(--accent); }
+.proj-row-text { flex: 1; min-width: 0; }
+.proj-row-name { font-size: 12px; font-weight: 500; color: var(--text-1); }
+.proj-row-count { font-size: 10px; color: var(--text-3); margin-top: 1px; }
+.proj-row-desc { font-size: 10px; color: color-mix(in srgb, var(--accent) 70%, var(--text-2)); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-row-actions { display: flex; gap: 2px; flex-shrink: 0; opacity: 0; transition: opacity 0.15s; }
+.proj-row:hover .proj-row-actions, .proj-row:focus-within .proj-row-actions { opacity: 1; }
+.proj-row-actions .icon-btn { width: 22px; height: 22px; }
+.loose-row {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  border-bottom: 1px solid var(--border-2); color: var(--text-3); font-size: 12px;
+}
+.loose-row svg { color: var(--text-3); flex-shrink: 0; }
+.section-label {
+  font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3);
+  padding: 12px 12px 4px;
+}
+
+/* Option B: bento tiles (desktop) */
+.tile-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 1px;
+  background: var(--border-2); padding: 1px;
+}
+.tile {
+  background: var(--glass-bg); padding: 14px 12px; min-height: 108px;
+  display: flex; flex-direction: column; justify-content: space-between; gap: 8px;
+  cursor: pointer; transition: background 0.2s var(--hover-ease-out);
+  position: relative;
+}
+.tile:hover { background: var(--surface); }
+.tile-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
+.tile-name { font-size: 12px; font-weight: 500; color: var(--text-1); line-height: 1.3; }
+.tile-count { font-size: 10px; color: var(--text-3); flex-shrink: 0; }
+.tile-desc { font-size: 10px; color: var(--text-3); line-height: 1.5; }
+.tile.loose-tile { background: var(--surface); }
+.tile.loose-tile .tile-name { color: var(--text-2); }
+.tile.new-tile {
+  border: 1px dashed var(--border); background: transparent; align-items: center; justify-content: center;
+  display: flex; flex-direction: row; gap: 6px; color: var(--text-3); min-height: 108px;
+}
+.tile.new-tile:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-d); }
+
+/* Option C: split panel (desktop) */
+.split { display: flex; height: 320px; }
+.split-left { width: 45%; border-right: 1px solid var(--border-2); overflow: hidden auto; }
+.split-right { flex: 1; display: flex; flex-direction: column; }
+.split-right-head { padding: 12px 14px; border-bottom: 1px solid var(--border-2); }
+.split-right-head .name { font-size: 13px; font-weight: 600; color: var(--text-1); }
+.desc-box {
+  margin: 10px 14px 0; padding: 8px 10px; background: var(--surface); border: 1px solid var(--border);
+  font-size: 10.5px; color: var(--text-2); line-height: 1.6; position: relative;
+}
+.desc-box .edit-affordance { position: absolute; top: 6px; right: 6px; }
+.desc-hint { font-size: 9px; color: var(--text-3); margin: 4px 14px 0; }
+.split-file-row {
+  display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid var(--border-2); font-size: 11px; color: var(--text-2);
+}
+.split-file-row svg { flex-shrink: 0; color: var(--text-3); }
+.split-file-row .meta { margin-left: auto; font-size: 10px; color: var(--text-3); }
+
+/* Description editor modal-in-place */
+.desc-editor {
+  margin: 10px 14px 0; padding: 10px 12px; background: var(--surface-2);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  display: flex; flex-direction: column; gap: 8px;
+}
+.desc-editor textarea {
+  width: 100%; box-sizing: border-box; resize: vertical; font-family: inherit; font-size: 11px;
+  background: var(--surface); border: 1px solid var(--border); color: var(--text-1); padding: 8px; line-height: 1.5;
+}
+.desc-editor textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.desc-editor .row { display: flex; justify-content: space-between; align-items: center; }
+.desc-editor .counter { font-size: 9px; color: var(--text-3); }
+.desc-editor .btns { display: flex; gap: 6px; }
+.btn-ghost {
+  font-family: inherit; font-size: 11px; color: var(--text-2); background: none; border: none; padding: 5px 10px; cursor: pointer;
+}
+.btn-ghost:hover { color: var(--text-1); }
+.btn-primary {
+  font-family: inherit; font-size: 11px; font-weight: 600; color: var(--bg); background: var(--text-1);
+  border: none; padding: 5px 14px; cursor: pointer;
+}
+
+/* ── Phone frame ──────────────────────────────────────────────────────── */
+.phone-frame {
+  width: 300px; border: 1px solid var(--border); background: var(--bg);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.phone-status { height: 18px; background: var(--bg); flex-shrink: 0; }
+.phone-header {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  border-bottom: 1px solid var(--border-2);
+}
+.phone-back { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; color: var(--text-2); flex-shrink: 0; }
+.phone-header-text { flex: 1; }
+.phone-h1 { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; color: var(--text-1); }
+.phone-sub { font-size: 10px; color: var(--text-3); margin-top: 2px; }
+.phone-toggle { display: flex; border: 1px solid var(--border); flex-shrink: 0; }
+.phone-toggle button { width: 32px; height: 26px; display: flex; align-items: center; justify-content: center; background: none; border: none; color: var(--text-3); }
+.phone-toggle button[aria-pressed="true"] { background: var(--surface-2); color: var(--text-1); }
+.phone-body { flex: 1; min-height: 380px; display: flex; flex-direction: column; overflow: hidden; }
+.phone-tilegrid { display: flex; flex-wrap: wrap; padding: 6px; overflow-y: auto; }
+.phone-tile-wrap { width: 50%; padding: 5px; }
+.phone-tile {
+  min-height: 96px; border: 1px solid var(--border); background: var(--glass-bg); padding: 12px;
+  display: flex; flex-direction: column; gap: 6px; position: relative;
+}
+.phone-tile-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
+.phone-tile-name { flex: 1; font-size: 12px; color: var(--text-1); line-height: 1.3; }
+.phone-tile-count { font-size: 10px; color: var(--text-3); }
+.phone-tile-peek { border-top: 1px solid var(--border-2); padding-top: 5px; font-size: 9px; color: var(--text-3); line-height: 1.5; }
+.phone-tile.new { border-style: dashed; align-items: center; justify-content: center; flex-direction: row; gap: 6px; color: var(--text-3); }
+.phone-tile.loose { background: var(--surface); }
+.phone-tile.loose .phone-tile-name { color: var(--text-2); }
+.phone-tile-menu { position: absolute; top: 6px; right: 6px; color: var(--text-3); }
+
+.phone-list-row {
+  display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 0 14px;
+  border-bottom: 1px solid var(--border-2); font-size: 12px; color: var(--text-1);
+}
+.phone-list-row .meta { margin-left: auto; font-size: 10px; color: var(--text-3); }
+.phone-note-row {
+  display: flex; align-items: center; gap: 8px; min-height: 50px; padding: 0 14px;
+  border-bottom: 1px solid var(--border-2);
+}
+.phone-note-row .title { flex: 1; font-size: 12px; color: var(--text-1); }
+.phone-note-row .chip {
+  font-size: 9px; color: var(--text-3); border: 1px dashed var(--text-3); padding: 2px 6px; letter-spacing: 0.02em;
+}
+.phone-note-row .chip.solid { border-style: solid; color: var(--accent); border-color: var(--border); background: var(--accent-d); }
+.phone-more-btn { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; color: var(--text-3); flex-shrink: 0; }
+
+/* Phone row menu popover (three-dot affordance) */
+.row-menu-demo { position: relative; }
+.row-menu-popover {
+  position: absolute; right: 14px; top: 44px; width: 190px; background: var(--surface);
+  border: 1px solid var(--border); z-index: 5; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.row-menu-item { display: flex; align-items: center; gap: 8px; padding: 9px 12px; font-size: 11px; color: var(--text-2); border-bottom: 1px solid var(--border-2); cursor: pointer; }
+.row-menu-item:last-child { border-bottom: none; }
+.row-menu-item:hover { background: var(--hover-bg); color: var(--text-1); }
+.row-menu-item svg { color: var(--text-3); flex-shrink: 0; }
+.row-menu-sub { padding: 8px 12px; font-size: 9px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-3); border-bottom: 1px solid var(--border-2); }
+.row-menu-project { display: flex; align-items: center; gap: 8px; padding: 8px 12px; font-size: 11px; color: var(--text-2); cursor: pointer; }
+.row-menu-project:hover { background: var(--hover-bg); color: var(--text-1); }
+.row-menu-project svg { color: var(--accent); flex-shrink: 0; }
+
+.phone-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 30px; text-align: center; color: var(--text-3); }
+.phone-empty svg { opacity: 0.5; }
+.phone-empty .h { font-size: 12px; color: var(--text-2); }
+.phone-empty .s { font-size: 11px; max-width: 30ch; line-height: 1.6; }
+
+/* ── Surface C: inbox row ─────────────────────────────────────────────── */
+.inbox-demo-frame { max-width: 460px; }
+.inbox-row {
+  border: 1px solid var(--border); background: var(--glass-bg); padding: 12px; display: flex; flex-direction: column; gap: 10px;
+}
+.inbox-row-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.inbox-kind { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: 0.03em; color: var(--text-3); }
+.inbox-date { font-size: 10px; color: var(--text-3); }
+.suggest-banner {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  background: var(--accent-d); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  animation: suggestIn 0.4s var(--travel-ease) both;
+}
+@keyframes suggestIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+.suggest-banner svg { color: var(--accent); flex-shrink: 0; }
+.suggest-text { flex: 1; font-size: 11px; color: var(--text-1); }
+.suggest-text .name { font-weight: 600; }
+.suggest-text .hint { display: block; font-size: 10px; color: var(--text-3); margin-top: 2px; }
+.suggest-btns { display: flex; gap: 6px; flex-shrink: 0; }
+.suggest-approve {
+  font-family: inherit; font-size: 10px; font-weight: 600; color: var(--bg); background: var(--text-1);
+  border: none; padding: 6px 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+  transition: transform 0.2s var(--hover-ease-out);
+}
+.suggest-approve:hover { transform: translateY(-1px); }
+.suggest-dismiss {
+  font-family: inherit; font-size: 10px; color: var(--text-3); background: none;
+  border: 1px solid var(--border); padding: 6px 9px; cursor: pointer;
+}
+.suggest-dismiss:hover { color: var(--text-1); border-color: var(--hover-border); }
+.inbox-select-row { display: flex; align-items: center; gap: 6px; }
+.inbox-select {
+  flex: 1; height: 28px; background: var(--surface-2); border: 1px solid var(--border);
+  padding: 0 8px; font-size: 11px; color: var(--text-3); font-family: inherit;
+}
+.inbox-approve-btn {
+  height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 0 11px; font-size: 11px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-3); font-family: inherit;
+}
+.approved-flash {
+  border-color: var(--green); background: color-mix(in srgb, var(--green) 8%, var(--glass-bg));
+  animation: flashPop 0.5s var(--travel-ease) both;
+}
+@keyframes flashPop { 0% { transform: scale(0.98); opacity: 0.6; } 100% { transform: scale(1); opacity: 1; } }
+.approved-note { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--green); }
+
+footer.board-foot { padding: 28px clamp(20px, 4vw, 48px) 60px; color: var(--text-3); font-size: 11px; line-height: 1.7; border-top: 1px solid var(--border); margin-top: 24px; }
+footer.board-foot code { background: var(--surface); padding: 1px 5px; border: 1px solid var(--border-2); font-size: 10.5px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+</style>
+</head>
+<body>
+
+<div class="board-head">
+  <div>
+    <div class="board-title">Projects Rework: Mock Board</div>
+    <div class="board-sub">
+      The old vocabulary is gone. Everything is a project now. A note's project comes from a body tag
+      (<code style="background:var(--surface);padding:1px 5px;border:1px solid var(--border-2)">#project@research</code>),
+      exactly one per note, and a note with none is simply loose: a normal, permanent state.
+      Auto-tagging only ever picks an existing project or suggests a new one for approval; it never
+      creates one on its own. Three desktop layouts, two phone tile layouts, one inbox-suggestion
+      pattern. Pick one per surface.
+    </div>
+  </div>
+  <div class="theme-switch" role="group" aria-label="Preview theme">
+    <button type="button" aria-pressed="true" onclick="setTheme('dark', this)">Void</button>
+    <button type="button" aria-pressed="false" onclick="setTheme('light', this)">Paper</button>
+  </div>
+</div>
+
+<div class="reduced-motion-note">
+  <strong>Motion note:</strong> every transition below (row lift, tile press, suggestion banner rise,
+  approve flash) collapses to an instant state change under <code style="background:var(--surface);padding:1px 5px;border:1px solid var(--border-2)">prefers-reduced-motion: reduce</code>, so
+  toggle it in your OS to verify live in this file.
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SURFACE A: DESKTOP PROJECT MANAGEMENT PAGE
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="surface-block">
+  <div class="surface-label"><span class="dot"></span>Surface A: Desktop</div>
+  <div class="surface-title">The Vault page becomes Projects</div>
+  <div class="surface-copy">
+    Three layouts for the same page: see all projects, create one, edit its description, rename,
+    delete, drill into its notes, and see everything loose. Each echoes the phone tiles page's
+    tile/panel language without copying it verbatim. Desktop gets room for the description text
+    the phone's semantic matcher actually depends on.
+  </div>
+</div>
+
+<div class="options-row two-col">
+
+  <!-- OPTION A1: Row list (VaultManager-style, echoed) -->
+  <div class="option">
+    <div class="option-head">
+      <div>
+        <div class="option-name">A1: Row list</div>
+        <div class="option-tag">Direct evolution of today's VaultManager</div>
+      </div>
+      <button class="pick-btn" type="button" aria-pressed="false" onclick="pick(this)">Pick A1</button>
+    </div>
+    <div class="state-toggle" role="group" aria-label="A1 state">
+      <button type="button" aria-pressed="true" onclick="showState(this,'a1-pop')">Populated</button>
+      <button type="button" aria-pressed="false" onclick="showState(this,'a1-empty')">Empty</button>
+    </div>
+    <div class="option-body">
+      <div id="a1-pop" class="state-pane desk-frame">
+        <div class="desk-header">
+          <span class="title">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-2)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>
+            Projects
+          </span>
+          <div class="desk-actions">
+            <button class="icon-btn" title="Refresh"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
+            <button class="icon-btn accent" title="New project"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+          </div>
+        </div>
+        <div class="proj-row" tabindex="0">
+          <div class="proj-row-main">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>
+            <div class="proj-row-text">
+              <div class="proj-row-name">research</div>
+              <div class="proj-row-count">14 notes</div>
+              <div class="proj-row-desc">Long-form reading notes, papers, and literature reviews across active investigations.</div>
+            </div>
+            <div class="proj-row-actions">
+              <button class="icon-btn" title="Edit description"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button>
+              <button class="icon-btn" title="Rename"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
+              <button class="icon-btn" style="color:var(--text-3)" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>
+            </div>
+          </div>
+        </div>
+        <div class="proj-row" tabindex="0">
+          <div class="proj-row-main">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>
+            <div class="proj-row-text">
+              <div class="proj-row-name">billing</div>
+              <div class="proj-row-count">6 notes</div>
+              <div class="proj-row-desc">Invoices, receipts, subscription renewals, anything money-adjacent.</div>
+            </div>
+            <div class="proj-row-actions">
+              <button class="icon-btn" title="Edit description"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button>
+              <button class="icon-btn" title="Rename"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
+              <button class="icon-btn" style="color:var(--text-3)" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>
+            </div>
+          </div>
+        </div>
+        <div class="section-label">Loose (no project)</div>
+        <div class="loose-row">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          9 notes at the vault root, none tagged with a project yet.
+        </div>
+      </div>
+      <div id="a1-empty" class="state-pane desk-frame" hidden>
+        <div class="desk-header">
+          <span class="title">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-2)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>
+            Projects
+          </span>
+          <div class="desk-actions">
+            <button class="icon-btn accent" title="New project"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+          </div>
+        </div>
+        <div class="empty-state" style="min-height:260px;">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>
+          <div class="headline">No projects yet</div>
+          <div class="sub">Every note is loose right now. Create a project and give it a short description, since that's what the phone uses to match new notes to it.</div>
+          <button class="empty-cta" type="button">Create your first project</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- OPTION A2: Bento tile grid -->
+  <div class="option">
+    <div class="option-head">
+      <div>
+        <div class="option-name">A2: Tile grid</div>
+        <div class="option-tag">Echoes the phone's tiles view directly</div>
+      </div>
+      <button class="pick-btn" type="button" aria-pressed="false" onclick="pick(this)">Pick A2</button>
+    </div>
+    <div class="state-toggle" role="group" aria-label="A2 state">
+      <button type="button" aria-pressed="true" onclick="showState(this,'a2-pop')">Populated</button>
+      <button type="button" aria-pressed="false" onclick="showState(this,'a2-empty')">Empty</button>
+    </div>
+    <div class="option-body">
+      <div id="a2-pop" class="state-pane desk-frame">
+        <div class="desk-header">
+          <span class="title">Projects</span>
+          <div class="desk-actions">
+            <button class="icon-btn accent" title="New project"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+          </div>
+        </div>
+        <div class="tile-grid">
+          <div class="tile" tabindex="0">
+            <div class="tile-top"><span class="tile-name">research</span><span class="tile-count">14</span></div>
+            <div class="tile-desc">Reading notes and literature reviews.</div>
+          </div>
+          <div class="tile" tabindex="0">
+            <div class="tile-top"><span class="tile-name">billing</span><span class="tile-count">6</span></div>
+            <div class="tile-desc">Invoices, receipts, renewals.</div>
+          </div>
+          <div class="tile" tabindex="0">
+            <div class="tile-top"><span class="tile-name">home-renovation</span><span class="tile-count">21</span></div>
+            <div class="tile-desc">Contractor quotes, paint colors, timelines.</div>
+          </div>
+          <div class="tile loose-tile" tabindex="0">
+            <div class="tile-top"><span class="tile-name">Loose</span><span class="tile-count">9</span></div>
+            <div class="tile-desc">No project tag. Lives at the vault root.</div>
+          </div>
+          <div class="tile new-tile" tabindex="0">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            New project
+          </div>
+        </div>
+      </div>
+      <div id="a2-empty" class="state-pane desk-frame" hidden>
+        <div class="desk-header"><span class="title">Projects</span></div>
+        <div class="empty-state" style="min-height:260px;">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="7" height="7"/><rect x="13" y="4" width="7" height="7"/><rect x="4" y="13" width="7" height="7"/><rect x="13" y="13" width="7" height="7"/></svg>
+          <div class="headline">No projects yet</div>
+          <div class="sub">All notes are loose. The tile grid fills in as you create projects, or as you approve one the engine suggests from the Inbox.</div>
+          <button class="empty-cta" type="button">Create your first project</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- OPTION A3: Split panel (list + detail) -->
+  <div class="option" style="grid-column: 1 / -1;">
+    <div class="option-head">
+      <div>
+        <div class="option-name">A3: Split panel</div>
+        <div class="option-tag">Project list left, description and notes right, no drill-in navigation</div>
+      </div>
+      <button class="pick-btn" type="button" aria-pressed="false" onclick="pick(this)">Pick A3</button>
+    </div>
+    <div class="state-toggle" role="group" aria-label="A3 state">
+      <button type="button" aria-pressed="true" onclick="showState(this,'a3-pop')">Populated</button>
+      <button type="button" aria-pressed="false" onclick="showState(this,'a3-empty')">Empty</button>
+    </div>
+    <div class="option-body">
+      <div id="a3-pop" class="state-pane desk-frame" style="padding:0;">
+        <div class="desk-header">
+          <span class="title">Projects</span>
+          <div class="desk-actions">
+            <button class="icon-btn accent" title="New project"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+          </div>
+        </div>
+        <div class="split">
+          <div class="split-left">
+            <div class="proj-row" style="background:var(--hover-bg);" tabindex="0">
+              <div class="proj-row-main">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>
+                <div class="proj-row-text"><div class="proj-row-name">research</div><div class="proj-row-count">14 notes</div></div>
+              </div>
+            </div>
+            <div class="proj-row" tabindex="0">
+              <div class="proj-row-main">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" stroke-width="1.8"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>
+                <div class="proj-row-text"><div class="proj-row-name">billing</div><div class="proj-row-count">6 notes</div></div>
+              </div>
+            </div>
+            <div class="section-label">Loose</div>
+            <div class="loose-row"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>9 notes</div>
+          </div>
+          <div class="split-right">
+            <div class="split-right-head">
+              <span class="name">research</span>
+              <span style="font-size:10px;color:var(--text-3);margin-left:8px;">14 notes</span>
+              <span class="desk-actions" style="float:right;">
+                <button class="icon-btn" title="Rename"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
+                <button class="icon-btn" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>
+              </span>
+            </div>
+            <div class="desc-box">
+              Long-form reading notes, papers, and literature reviews across active investigations.
+              <span class="edit-affordance"><button class="icon-btn" style="width:20px;height:20px;" title="Edit description"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button></span>
+            </div>
+            <div class="desc-hint">This description is what the phone's semantic matcher embeds: specific beats clever.</div>
+            <div style="flex:1;overflow-y:auto;margin-top:10px;">
+              <div class="split-file-row"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>Attention span literature.md<span class="meta">2.1 KB</span></div>
+              <div class="split-file-row"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>Cold-start UX patterns.md<span class="meta">4.6 KB</span></div>
+              <div class="split-file-row"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>Interview notes, P4.md<span class="meta">1.2 KB</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="a3-empty" class="state-pane desk-frame" style="padding:0;" hidden>
+        <div class="desk-header"><span class="title">Projects</span></div>
+        <div class="split">
+          <div class="split-left">
+            <div class="empty-state" style="min-height:260px;padding:24px 12px;">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>
+              <div class="headline">No projects</div>
+              <button class="empty-cta" type="button">Create one</button>
+            </div>
+          </div>
+          <div class="split-right">
+            <div class="empty-state" style="flex:1;">
+              <div class="sub">Select or create a project to see its description and notes here.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="surface-block">
+  <div class="rule-list">
+    <ul style="margin:0; padding-left: 18px;">
+      <li>Rename, delete, and edit-description all stay inline, with no separate modal route, matching the current VaultManager pattern.</li>
+      <li>Delete never touches notes: a confirmation names the note count and, on confirm, those notes fall back to loose.</li>
+      <li>"Loose" is always visible, never hidden behind a filter: it is a normal shelf, not an error state.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SURFACE B: PHONE TILES-AS-PROJECTS
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="surface-block">
+  <div class="surface-label"><span class="dot"></span>Surface B: Phone</div>
+  <div class="surface-title">Tags screen: tiles become Projects, list stays Tags</div>
+  <div class="surface-copy">
+    The existing List/Tiles toggle on the phone's Tags screen keeps its shape. List keeps showing
+    ordinary hand-written hashtags. Tiles becomes the project surface: peek tile, press-hold to scrub
+    into its files (unchanged gesture), plus a per-note three-dot menu for assigning a project by hand.
+  </div>
+</div>
+
+<div class="options-row two-col">
+
+  <!-- OPTION B1: Peek tile grid, minimal change from today's tiles -->
+  <div class="option">
+    <div class="option-head">
+      <div>
+        <div class="option-name">B1: Peek tiles</div>
+        <div class="option-tag">Same tile shape as today, project-labeled</div>
+      </div>
+      <button class="pick-btn" type="button" aria-pressed="false" onclick="pick(this)">Pick B1</button>
+    </div>
+    <div class="state-toggle" role="group" aria-label="B1 state">
+      <button type="button" aria-pressed="true" onclick="showState(this,'b1-pop')">Populated</button>
+      <button type="button" aria-pressed="false" onclick="showState(this,'b1-empty')">Empty</button>
+    </div>
+    <div class="option-body" style="display:flex; justify-content:center;">
+      <div id="b1-pop" class="state-pane phone-frame">
+        <div class="phone-status"></div>
+        <div class="phone-header">
+          <span class="phone-back"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></span>
+          <div class="phone-header-text">
+            <div class="phone-h1">Projects</div>
+            <div class="phone-sub">3 projects</div>
+          </div>
+          <div class="phone-toggle">
+            <button type="button" aria-pressed="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg></button>
+            <button type="button" aria-pressed="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="7" height="7"/><rect x="13" y="4" width="7" height="7"/><rect x="4" y="13" width="7" height="7"/><rect x="13" y="13" width="7" height="7"/></svg></button>
+          </div>
+        </div>
+        <div class="phone-body">
+          <div class="phone-tilegrid">
+            <div class="phone-tile-wrap"><div class="phone-tile">
+              <div class="phone-tile-top"><span class="phone-tile-name">research</span><span class="phone-tile-count">14</span></div>
+              <div class="phone-tile-peek">· Attention span lit<br>· Cold-start UX</div>
+            </div></div>
+            <div class="phone-tile-wrap"><div class="phone-tile">
+              <div class="phone-tile-top"><span class="phone-tile-name">billing</span><span class="phone-tile-count">6</span></div>
+              <div class="phone-tile-peek">· Q3 renewal<br>· Contractor invoice</div>
+            </div></div>
+            <div class="phone-tile-wrap"><div class="phone-tile loose">
+              <div class="phone-tile-top"><span class="phone-tile-name">Loose</span><span class="phone-tile-count">9</span></div>
+              <div class="phone-tile-peek">No project tag</div>
+            </div></div>
+            <div class="phone-tile-wrap"><div class="phone-tile new">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 5v14M5 12h14"/></svg>
+              New
+            </div></div>
+          </div>
+        </div>
+      </div>
+      <div id="b1-empty" class="state-pane phone-frame" hidden>
+        <div class="phone-status"></div>
+        <div class="phone-header">
+          <span class="phone-back"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></span>
+          <div class="phone-header-text"><div class="phone-h1">Projects</div><div class="phone-sub">0 projects</div></div>
+        </div>
+        <div class="phone-empty">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="7" height="7"/><rect x="13" y="4" width="7" height="7"/><rect x="4" y="13" width="7" height="7"/><rect x="13" y="13" width="7" height="7"/></svg>
+          <div class="h">No projects yet</div>
+          <div class="s">Every note is loose. Create one here, or approve a suggestion from the Inbox.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- OPTION B2: Compact stat tiles, denser, description-forward -->
+  <div class="option">
+    <div class="option-head">
+      <div>
+        <div class="option-name">B2: Compact stat tiles</div>
+        <div class="option-tag">Denser grid, description line instead of file peek</div>
+      </div>
+      <button class="pick-btn" type="button" aria-pressed="false" onclick="pick(this)">Pick B2</button>
+    </div>
+    <div class="state-toggle" role="group" aria-label="B2 state">
+      <button type="button" aria-pressed="true" onclick="showState(this,'b2-pop')">Populated</button>
+      <button type="button" aria-pressed="false" onclick="showState(this,'b2-empty')">Empty</button>
+    </div>
+    <div class="option-body" style="display:flex; justify-content:center;">
+      <div id="b2-pop" class="state-pane phone-frame">
+        <div class="phone-status"></div>
+        <div class="phone-header">
+          <span class="phone-back"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></span>
+          <div class="phone-header-text"><div class="phone-h1">Projects</div><div class="phone-sub">3 projects</div></div>
+          <div class="phone-toggle">
+            <button type="button" aria-pressed="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg></button>
+            <button type="button" aria-pressed="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="7" height="7"/><rect x="13" y="4" width="7" height="7"/><rect x="4" y="13" width="7" height="7"/><rect x="13" y="13" width="7" height="7"/></svg></button>
+          </div>
+        </div>
+        <div class="phone-body">
+          <div class="phone-tilegrid" style="padding:8px 6px 6px;">
+            <div class="phone-tile-wrap" style="width:100%;"><div class="phone-tile" style="flex-direction:row;align-items:center;min-height:auto;padding:10px 12px;">
+              <div style="flex:1;">
+                <div class="phone-tile-name" style="font-weight:600;">research</div>
+                <div class="phone-tile-peek" style="border:none;padding:0;margin-top:2px;">Reading notes and literature reviews.</div>
+              </div>
+              <span class="phone-tile-count">14</span>
+            </div></div>
+            <div class="phone-tile-wrap" style="width:100%;"><div class="phone-tile" style="flex-direction:row;align-items:center;min-height:auto;padding:10px 12px;">
+              <div style="flex:1;">
+                <div class="phone-tile-name" style="font-weight:600;">billing</div>
+                <div class="phone-tile-peek" style="border:none;padding:0;margin-top:2px;">Invoices, receipts, renewals.</div>
+              </div>
+              <span class="phone-tile-count">6</span>
+            </div></div>
+            <div class="phone-tile-wrap" style="width:100%;"><div class="phone-tile loose" style="flex-direction:row;align-items:center;min-height:auto;padding:10px 12px;">
+              <div style="flex:1;">
+                <div class="phone-tile-name">Loose</div>
+                <div class="phone-tile-peek" style="border:none;padding:0;margin-top:2px;">No project tag.</div>
+              </div>
+              <span class="phone-tile-count">9</span>
+            </div></div>
+            <div class="phone-tile-wrap" style="width:100%;"><div class="phone-tile new" style="min-height:44px;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 5v14M5 12h14"/></svg>
+              New project
+            </div></div>
+          </div>
+        </div>
+      </div>
+      <div id="b2-empty" class="state-pane phone-frame" hidden>
+        <div class="phone-status"></div>
+        <div class="phone-header">
+          <span class="phone-back"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></span>
+          <div class="phone-header-text"><div class="phone-h1">Projects</div><div class="phone-sub">0 projects</div></div>
+        </div>
+        <div class="phone-empty">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="7" height="7"/><rect x="13" y="4" width="7" height="7"/><rect x="4" y="13" width="7" height="7"/><rect x="13" y="13" width="7" height="7"/></svg>
+          <div class="h">No projects yet</div>
+          <div class="s">Every note is loose. Create one here, or approve a suggestion from the Inbox.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="surface-block">
+  <div class="surface-title" style="font-size:14px;">Row three-dot menu: assign a project by hand</div>
+  <div class="surface-copy">
+    Wherever a note row already carries a three-dot menu (Notes list, search results), an "Assign
+    project…" entry opens the existing project list inline. Picking one writes the
+    <code style="background:var(--surface);padding:1px 5px;border:1px solid var(--border-2)">#project@name</code>
+    tag into the note body; there is no "create new" option here, matching the rule that assignment
+    only ever picks from what exists.
+  </div>
+  <div class="options-row one-col" style="padding-top:12px;">
+    <div class="option">
+      <div class="option-body" style="display:flex; justify-content:center;">
+        <div class="phone-frame row-menu-demo" style="width:320px;">
+          <div class="phone-status"></div>
+          <div class="phone-header"><div class="phone-header-text"><div class="phone-h1" style="font-size:15px;">Notes</div></div></div>
+          <div class="phone-body" style="min-height:220px;">
+            <div class="phone-note-row">
+              <span class="title">Cold-start UX patterns</span>
+              <span class="chip solid">research</span>
+              <span class="phone-more-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="5.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="18.5" r="1.3" fill="currentColor" stroke="none"/></svg></span>
+            </div>
+            <div class="phone-note-row" style="background:var(--hover-bg);">
+              <span class="title">Grocery list draft</span>
+              <span class="chip">loose</span>
+              <span class="phone-more-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="5.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="18.5" r="1.3" fill="currentColor" stroke="none"/></svg></span>
+            </div>
+            <div class="row-menu-popover">
+              <div class="row-menu-sub">Assign project</div>
+              <div class="row-menu-project"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>research</div>
+              <div class="row-menu-project"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>billing</div>
+              <div class="row-menu-item"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 6l12 12M18 6L6 18"/></svg>Cancel</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SURFACE C: INBOX SUGGESTED PROJECT
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="surface-block">
+  <div class="surface-label"><span class="dot"></span>Surface C: Desktop Inbox</div>
+  <div class="surface-title">A suggested new project waits for approval</div>
+  <div class="surface-copy">
+    When the engine thinks a genuinely new project is warranted, it says so directly on the Inbox
+    row instead of silently inventing one. Approve creates the project and files the note into it;
+    Dismiss leaves the note loose and the destination dropdown available as usual.
+  </div>
+</div>
+
+<div class="options-row one-col">
+  <div class="option">
+    <div class="option-head">
+      <div>
+        <div class="option-name">C1: Suggestion banner on the row</div>
+        <div class="option-tag">The only option: click Approve to see the after-state</div>
+      </div>
+      <button class="pick-btn" type="button" aria-pressed="true" onclick="pick(this)">Pick C1</button>
+    </div>
+    <div class="option-body inbox-demo-frame">
+      <div class="inbox-row" id="inbox-demo">
+        <div class="inbox-row-top">
+          <span class="inbox-kind">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>
+            link · roasters-guide.substack.com
+          </span>
+          <span class="inbox-date">Aug 1</span>
+        </div>
+
+        <div class="suggest-banner" id="suggest-banner">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+          <span class="suggest-text">
+            Suggested new project: <span class="name">coffee</span>
+            <span class="hint">3 recent captures look related but nothing today matches an existing project.</span>
+          </span>
+          <span class="suggest-btns">
+            <button class="suggest-approve" type="button" onclick="approveSuggestion()">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 9 17 20 6"/></svg>
+              Approve
+            </button>
+            <button class="suggest-dismiss" type="button" onclick="dismissSuggestion()">Dismiss</button>
+          </span>
+        </div>
+
+        <div class="inbox-select-row" id="inbox-controls">
+          <select class="inbox-select" disabled>
+            <option>Choose a project…</option>
+          </select>
+          <button class="inbox-approve-btn" disabled>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 9 17 20 6"/></svg>
+            Approve
+          </button>
+        </div>
+      </div>
+      <div style="font-size:10px; color:var(--text-3); margin-top:10px; line-height:1.6;">
+        Until the suggestion is approved (or a project is picked from the dropdown), the note stays
+        loose. Nothing is created behind the scenes just because the engine noticed a pattern.
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer class="board-foot">
+  Sourced from <code>gui/src/index.css</code> (Void token set), <code>gui/src/components/VaultManager.tsx</code>
+  and <code>InboxPanel.tsx</code>, <code>phone/app/tags.tsx</code>, and icon paths copied from
+  <code>gui/src/components/PillMenu/icons.tsx</code> / <code>phone/src/components/icons.tsx</code>.
+  Decision artifact only. No application source was modified to build this file.
+</footer>
+
+<script>
+function setTheme(name, btn) {
+  document.documentElement.setAttribute('data-theme', name);
+  document.querySelectorAll('.theme-switch button').forEach(b => b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
+}
+function showState(btn, id) {
+  const group = btn.closest('.option').querySelectorAll('.state-pane');
+  group.forEach(el => el.hidden = true);
+  document.getElementById(id).hidden = false;
+  btn.parentElement.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
+}
+function pick(btn) {
+  const row = btn.closest('.options-row');
+  row.querySelectorAll('.pick-btn').forEach(b => b.setAttribute('aria-pressed', 'false'));
+  btn.setAttribute('aria-pressed', 'true');
+}
+function approveSuggestion() {
+  const banner = document.getElementById('suggest-banner');
+  const controls = document.getElementById('inbox-controls');
+  banner.outerHTML = '<div class="approved-note approved-flash" style="padding:8px 10px;border:1px solid var(--border);">' +
+    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 9 17 20 6"/></svg>' +
+    'Project "coffee" created. This note filed into it.</div>';
+  controls.style.display = 'none';
+}
+function dismissSuggestion() {
+  const banner = document.getElementById('suggest-banner');
+  const controls = document.getElementById('inbox-controls');
+  banner.style.display = 'none';
+  controls.querySelectorAll('select, button').forEach(el => el.disabled = false);
+}
+</script>
+
+</body>
+</html>

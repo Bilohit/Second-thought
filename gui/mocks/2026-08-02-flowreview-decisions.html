@@ -1,0 +1,637 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Flow review decisions — Projects screen, three forks</title>
+<style>
+  /* Tokens copied 1:1 from gui/src/index.css (dark + light blocks). This file
+     is standalone, so it cannot @import the app's stylesheet — every value
+     below is transcribed, not invented. Real token names only: no
+     --ease-travel/--ease-settle alias pair (that pair does not exist in
+     index.css — verified by grep before writing this file). */
+  :root, [data-theme="dark"] {
+    --bg:#0a0a0a; --surface:#262626; --surface-2:#404040;
+    --border:#383838; --border-2:#262626;
+    --ctl-face:#404040; --ctl-face-hover:#4d4d4d;
+    --text-1:#fafafa; --text-2:#a1a1a1; --text-3:#7a7a7a;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.18); --accent-glow:rgba(115,115,115,0.30);
+    --on-accent:#fafafa;
+    --green:#4ade80; --yellow:#facc15; --red:#ff6467;
+    --radius:0px; --radius-sm:0px;
+    --menu-travel-ease:cubic-bezier(0.22,1,0.36,1);
+    --hover-dur:260ms;
+    --hover-ease:cubic-bezier(0.34,1.3,0.64,1);
+    --hover-ease-out:cubic-bezier(0.16,1,0.3,1);
+    --hover-bg:color-mix(in srgb, var(--accent) 5%, var(--surface));
+    --hover-border:color-mix(in srgb, var(--accent) 90%, var(--border));
+    --hover-lift:-2px; --hover-scale:1.03;
+    --hover-shadow:0 4px 12px rgba(0,0,0,0.25);
+  }
+  [data-theme="light"] {
+    --bg:#ffffff; --surface:#f5f5f5; --surface-2:#cccccc;
+    --border:#c7c7c7; --border-2:#d2d2d2;
+    --ctl-face:#cccccc; --ctl-face-hover:#bfbfbf;
+    --text-1:#0a0a0a; --text-2:#4f4f4f; --text-3:#636363;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.10); --accent-glow:rgba(115,115,115,0.22);
+    --on-accent:#fafafa;
+    --green:#16a34a; --yellow:#92660a; --red:#e7000b;
+    --hover-shadow:0 4px 12px rgba(0,0,0,0.10);
+  }
+  * { box-sizing:border-box; }
+  html, body { margin:0; padding:0; background:var(--bg); color:var(--text-1);
+    font-family:"Geist Mono", ui-monospace, "Cascadia Mono", "Segoe UI Mono", monospace; }
+  body { padding:32px 40px 100px; }
+  .page { max-width:1320px; margin:0 auto; }
+  h1 { font-size:20px; font-weight:600; margin:0 0 6px; letter-spacing:-0.01em; }
+  h2 { font-size:15px; font-weight:600; margin:0; letter-spacing:-0.005em; }
+  h3 { font-size:12px; font-weight:600; margin:0 0 3px; color:var(--text-1); }
+  p { margin:0; }
+  svg.ic { display:block; flex:0 0 auto; }
+  .lede { font-size:12px; color:var(--text-2); line-height:1.65; max-width:86ch; }
+
+  /* ── header / correction flag ─────────────────────────────────────────── */
+  .flag-box { border:1px solid var(--yellow); background:rgba(250,204,21,0.06); padding:11px 14px; margin-top:18px; font-size:10.5px; color:var(--text-2); line-height:1.7; max-width:86ch; }
+  .flag-box b { color:var(--text-1); font-weight:600; }
+  .flag-box .flag-row { display:flex; gap:8px; align-items:flex-start; margin-top:8px; }
+  .flag-box svg { color:var(--yellow); flex:0 0 auto; margin-top:1px; }
+
+  .howto { margin-top:16px; display:flex; gap:18px; flex-wrap:wrap; font-size:10px; color:var(--text-3); }
+  .howto span { display:inline-flex; align-items:center; gap:6px; }
+  .badge { display:inline-flex; align-items:center; justify-content:center; width:15px; height:15px; border:1px solid var(--border); font-size:9px; font-weight:600; color:var(--text-2); flex:0 0 auto; }
+
+  /* ── fork sections ─────────────────────────────────────────────────────── */
+  .fork { margin-top:56px; padding-top:28px; border-top:1px solid var(--border-2); }
+  .fork-head { display:flex; align-items:baseline; gap:12px; margin-bottom:8px; }
+  .fork-num { font-size:9.5px; color:var(--text-3); border:1px solid var(--border); padding:2px 7px; flex:0 0 auto; }
+  .problem { font-size:11.5px; color:var(--text-2); line-height:1.7; max-width:90ch; margin-top:12px; }
+  .problem code { background:var(--surface); border:1px solid var(--border-2); padding:1px 4px; font-size:10.5px; color:var(--text-1); }
+  .problem b { color:var(--text-1); font-weight:600; }
+
+  .quote-block { margin-top:14px; border:1px solid var(--border); border-left:2px solid var(--text-3); background:var(--surface); padding:10px 14px; max-width:78ch; }
+  .quote-block .ql { font-size:8.5px; letter-spacing:0.08em; text-transform:uppercase; color:var(--text-3); margin-bottom:6px; }
+  .quote-block p { font-size:11px; color:var(--text-1); line-height:1.7; font-style:italic; }
+  .quote-block p + p { margin-top:8px; }
+
+  /* ── option grid ───────────────────────────────────────────────────────── */
+  .option-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:16px; margin-top:22px; }
+  .option-grid.two { grid-template-columns:repeat(2, minmax(0,1fr)); }
+  .option { border:1px solid var(--border); background:var(--surface); display:flex; flex-direction:column; min-width:0; }
+  .option-head { display:flex; align-items:center; gap:8px; padding:11px 13px 9px; border-bottom:1px solid var(--border-2); }
+  .option-letter { display:flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--accent); color:var(--text-1); font-size:11px; font-weight:600; flex:0 0 auto; }
+  .option-title { font-size:12px; font-weight:600; color:var(--text-1); }
+  .option-body { padding:13px; display:flex; flex-direction:column; gap:10px; }
+  .option-desc { font-size:10.5px; color:var(--text-2); line-height:1.6; }
+  .mock-caption { font-size:8.5px; letter-spacing:0.06em; text-transform:uppercase; color:var(--text-3); margin:2px 0 4px; }
+  .mock-arrow-row { display:flex; align-items:center; gap:6px; font-size:9.5px; color:var(--text-3); margin:2px 0; }
+
+  /* ── mini window / rail chrome ────────────────────────────────────────── */
+  .mini-win { border:1px solid var(--border); background:var(--surface); overflow:hidden; }
+  .mini-rail { display:flex; flex-direction:column; min-height:0; }
+  .mini-rail-top { flex:0 0 auto; padding:8px; border-bottom:1px solid var(--border-2); }
+  .mini-rail-body { flex:1 1 auto; }
+  .mini-rail-foot { flex:0 0 auto; border-top:1px solid var(--border); padding:8px; }
+
+  .seg-toggle { position:relative; display:grid; grid-template-columns:repeat(2,1fr); background:var(--surface); border:1px solid var(--border); padding:2px; }
+  .seg-pill { position:absolute; top:2px; bottom:2px; left:2px; width:calc((100% - 4px) / 2); background:var(--accent); }
+  .seg-item { position:relative; z-index:1; display:flex; align-items:center; justify-content:center; gap:5px; font-size:10px; padding:5px 8px; border:none; background:transparent; color:var(--text-2); font-family:inherit; }
+  .seg-item.on { color:var(--on-accent); }
+
+  .tiles { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:1px; background:var(--border-2); border-bottom:1px solid var(--border-2); }
+  .tile { min-width:0; background:var(--surface); border:none; border-left:2px solid transparent; padding:9px; min-height:52px; display:flex; flex-direction:column; justify-content:space-between; gap:5px; font-family:inherit; text-align:left; color:var(--text-1); }
+  .tile.wide { grid-column:1 / -1; }
+  .tile .tn { font-size:10.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tile .tc { font-size:9px; color:var(--text-3); font-variant-numeric:tabular-nums; }
+  .tile .warn { font-size:8.5px; color:var(--yellow); }
+  .tile.loose-tile .tn { color:var(--text-3); display:flex; align-items:center; gap:6px; }
+  .loose-dot { width:5px; height:5px; border:1px dashed currentColor; border-radius:50%; flex:0 0 auto; }
+
+  /* an in-progress "about to exist" tile — accent wash, never --surface-2,
+     so the raised confirm/cancel glyphs inside it stay visible per the
+     ceiling demonstrated in the header flag box. */
+  .tile.editing { background:var(--accent-d); border-left-color:var(--accent); }
+  .tile.editing input { width:100%; background:transparent; border:none; color:var(--text-1); font-family:inherit; font-size:10.5px; font-weight:600; padding:0; outline:none; }
+  .tile.editing .edit-hint { font-size:8px; color:var(--text-2); display:flex; align-items:center; justify-content:space-between; gap:6px; }
+  .tile.editing .edit-glyphs { display:flex; gap:3px; flex:0 0 auto; }
+  .glyph-btn { width:16px; height:16px; display:flex; align-items:center; justify-content:center; background:var(--ctl-face); border:1px solid var(--border); color:var(--text-1); padding:0; cursor:pointer; }
+  .glyph-btn:hover { background:var(--ctl-face-hover); }
+
+  .newbtn { display:flex; align-items:center; justify-content:center; gap:6px; font-size:10.5px; color:var(--text-1); border:1px solid var(--border); background:var(--ctl-face); padding:8px; cursor:pointer; font-family:inherit; width:100%; transition:background var(--hover-dur) var(--hover-ease-out); }
+  .newbtn:hover { background:var(--ctl-face-hover); }
+
+  .calm { padding:16px 14px; display:flex; flex-direction:column; gap:8px; }
+  .calm h3 { font-size:12px; }
+  .calm p { font-size:10px; color:var(--text-2); line-height:1.65; }
+
+  /* ── suggestion / promoted-box (option C) ─────────────────────────────── */
+  .sugg-wrap { padding:8px; }
+  .sugg { border:1px solid var(--border); padding:8px; background:var(--accent-d); }
+  .sugg.manual { background:var(--surface); border-style:dashed; }
+  .sugg .hd { display:flex; align-items:center; gap:6px; font-size:8.5px; letter-spacing:0.07em; text-transform:uppercase; color:var(--text-3); }
+  .sugg .nm { font-size:12px; font-weight:600; color:var(--text-1); margin:5px 0 2px; }
+  .sugg input.nm-input { width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text-1); font-family:inherit; font-size:11px; padding:5px 7px; margin:5px 0 2px; }
+  .sugg .fact { font-size:8.5px; color:var(--text-3); margin-bottom:8px; }
+  .sugg { --ctl:26px; }
+  .sugg .acts { display:flex; gap:5px; align-items:center; }
+  .sg-btn { flex:1 1 0; min-width:0; height:var(--ctl); display:flex; align-items:center; justify-content:center; gap:5px; font-size:9.5px; font-family:inherit; padding:0 8px; cursor:pointer; border:1px solid var(--border); }
+  .sg-create { font-weight:600; background:var(--accent-glow); border-color:var(--accent); color:var(--text-1); }
+  .sg-rename { background:var(--ctl-face); color:var(--text-1); }
+  .sg-dismiss { flex:0 0 auto; width:var(--ctl); height:var(--ctl); display:flex; align-items:center; justify-content:center; background:var(--ctl-face); border:1px solid var(--border); color:var(--text-2); cursor:pointer; padding:0; }
+
+  /* ── note rows (shared delete-affordance demo) ───────────────────────── */
+  .mini-pane { border:1px solid var(--border); background:var(--surface); }
+  .mini-notes-head { display:flex; align-items:center; justify-content:space-between; padding:7px 13px; border-bottom:1px solid var(--border); font-size:9px; letter-spacing:0.07em; text-transform:uppercase; color:var(--text-3); }
+  .noterow { display:flex; align-items:center; gap:9px; padding:8px 13px; border-bottom:1px solid var(--border-2); font-size:11px; color:var(--text-2); }
+  .noterow:last-child { border-bottom:none; }
+  .noterow .fi { color:var(--text-3); flex:0 0 auto; }
+  .noterow .t { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .noterow .m { font-size:9px; color:var(--text-3); flex:0 0 auto; font-variant-numeric:tabular-nums; }
+  .noterow .del-slot { flex:0 0 auto; width:24px; display:flex; justify-content:flex-end; }
+  .iconbtn-danger { width:22px; height:22px; display:flex; align-items:center; justify-content:center; color:var(--red); background:rgba(255,100,103,0.10); border:1px solid transparent; padding:0; cursor:pointer; opacity:0.9; }
+  .noterow.hover-state { background:var(--surface-2); }
+  .confirm-strip { display:flex; align-items:center; gap:10px; padding:8px 13px; background:rgba(255,100,103,0.08); border-bottom:1px solid var(--border-2); font-size:10px; color:var(--text-2); }
+  .confirm-strip b { color:var(--text-1); }
+  .ghost-btn { display:inline-flex; align-items:center; gap:5px; font-size:9.5px; color:var(--text-2); border:1px solid var(--border); background:var(--bg); padding:4px 8px; cursor:pointer; font-family:inherit; }
+  .ghost-btn.danger { border-color:var(--red); color:var(--red); }
+
+  /* ── cost / recommendation ────────────────────────────────────────────── */
+  .cost-strip { margin-top:18px; display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:16px; }
+  .cost-strip.two { grid-template-columns:repeat(2, minmax(0,1fr)); }
+  .cost-cell { border-left:2px solid var(--border); padding:2px 0 2px 12px; }
+  .cost-cell .cl { font-size:9px; font-weight:600; color:var(--text-2); margin-bottom:3px; }
+  .cost-cell p { font-size:10px; color:var(--text-3); line-height:1.6; }
+
+  .recommend { margin-top:18px; border:1px solid var(--accent); background:var(--accent-d); padding:12px 15px; max-width:90ch; display:flex; gap:10px; align-items:flex-start; }
+  .recommend svg { color:var(--accent); flex:0 0 auto; margin-top:1px; }
+  .recommend .rl { font-size:9px; letter-spacing:0.07em; text-transform:uppercase; color:var(--text-2); margin-bottom:3px; }
+  .recommend p { font-size:11px; color:var(--text-1); line-height:1.65; }
+  .recommend b { font-weight:600; }
+
+  /* ── fork 2: collision diagram ─────────────────────────────────────────── */
+  .collision-row { display:flex; align-items:center; gap:10px; margin-top:20px; flex-wrap:wrap; }
+  .altitude-box { border:1px solid var(--border); background:var(--surface); padding:9px 13px; min-width:100px; }
+  .altitude-box .al { font-size:8px; letter-spacing:0.06em; text-transform:uppercase; color:var(--text-3); margin-bottom:4px; }
+  .altitude-box .av { font-size:12px; font-weight:600; color:var(--text-1); }
+  .altitude-box.collide { border-color:var(--yellow); background:rgba(250,204,21,0.07); }
+  .altitude-box.collide .av { color:var(--yellow); }
+  .altitude-box.fixed { border-color:var(--green); background:rgba(74,222,128,0.06); }
+  .altitude-box.fixed .av { color:var(--text-1); }
+  .diag-arrow { color:var(--text-3); flex:0 0 auto; }
+  .diag-caption { font-size:9.5px; color:var(--text-3); margin-top:8px; }
+
+  .history-row { display:flex; align-items:center; gap:10px; margin-top:12px; }
+  .pill-menu-mock { border:1px solid var(--border); background:var(--surface); width:150px; padding:6px; display:flex; flex-direction:column; gap:2px; }
+  .pill-menu-item { display:flex; align-items:center; gap:7px; padding:6px 7px; font-size:10px; color:var(--text-2); }
+  .pill-menu-item svg { flex:0 0 auto; }
+  .pill-menu-item.struck { text-decoration:line-through; color:var(--text-3); opacity:0.55; }
+  .pill-menu-item.relabel .old-label { text-decoration:line-through; color:var(--text-3); margin-right:5px; font-size:9px; }
+  .pill-menu-item.relabel .new-label { color:var(--text-1); }
+
+  .stat-card { border:1px solid var(--border); background:var(--surface); padding:9px 11px; }
+  .stat-card .sl { font-size:9.5px; color:var(--text-3); margin-bottom:7px; }
+  .spark-row { display:flex; align-items:flex-end; gap:3px; height:28px; }
+  .spark-bar { flex:1 1 0; background:var(--accent); opacity:0.75; }
+  .by-project-row { display:flex; align-items:center; justify-content:space-between; font-size:9.5px; color:var(--text-2); padding:3px 0; border-bottom:1px solid var(--border-2); }
+  .by-project-row:last-child { border-bottom:none; }
+
+  .rail-nav-mock { display:flex; flex-direction:column; gap:2px; border:1px solid var(--border); background:var(--surface); padding:6px; width:44px; }
+  .rail-nav-item { width:32px; height:32px; display:flex; align-items:center; justify-content:center; color:var(--text-3); }
+  .rail-nav-item.on { color:var(--text-1); background:var(--surface-2); border:1px solid var(--border); }
+  .rail-nav-item.new { color:var(--accent); border:1px dashed var(--accent); }
+
+  /* ── fork 3: copy tone blocks + tag chip ──────────────────────────────── */
+  .tone-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:16px; margin-top:22px; }
+  .tone-block { border:1px solid var(--border); background:var(--surface); }
+  .tone-head { padding:10px 13px; border-bottom:1px solid var(--border-2); display:flex; align-items:center; gap:8px; }
+  .tone-body { padding:13px; display:flex; flex-direction:column; gap:12px; }
+  .copy-row .cl { font-size:8.5px; letter-spacing:0.06em; text-transform:uppercase; color:var(--text-3); margin-bottom:4px; }
+  .copy-row p { font-size:10.5px; color:var(--text-1); line-height:1.65; }
+  .copy-row p.empty-variant { color:var(--yellow); }
+
+  .tag-chip-row { display:flex; align-items:center; gap:8px; margin-top:8px; padding:8px 10px; border:1px solid var(--border); background:var(--surface); max-width:420px; }
+  .tag-chip { font-size:11px; color:var(--text-1); background:var(--bg); border:1px solid var(--border); padding:4px 8px; flex:1 1 auto; }
+  .tag-chip .hash { color:var(--text-3); }
+  .copy-btn { width:26px; height:26px; display:flex; align-items:center; justify-content:center; background:var(--ctl-face); border:1px solid var(--border); color:var(--text-1); cursor:pointer; padding:0; flex:0 0 auto; transition:background var(--hover-dur) var(--hover-ease-out); }
+  .copy-btn:hover { background:var(--ctl-face-hover); }
+  .copy-btn.copied { color:var(--green); border-color:var(--green); }
+  .tag-affordance-caption { font-size:9.5px; color:var(--text-3); margin-top:6px; max-width:420px; line-height:1.6; }
+
+  /* ── light/dark ceiling demo ──────────────────────────────────────────── */
+  .ceiling-row { display:flex; gap:16px; margin-top:16px; flex-wrap:wrap; }
+  .ceiling-cell { flex:1 1 220px; border:1px solid var(--border); padding:12px; }
+  .ceiling-cell .theme-lbl { font-size:9px; letter-spacing:0.06em; text-transform:uppercase; color:var(--text-3); margin-bottom:8px; }
+  .ceiling-swatch { background:var(--surface-2); padding:14px; display:flex; align-items:center; gap:8px; }
+  .ceiling-swatch button { background:var(--ctl-face); border:1px solid var(--border); color:var(--text-1); font-family:inherit; font-size:10px; padding:6px 10px; cursor:pointer; }
+  .ceiling-swatch .warn-txt { font-size:9px; color:var(--yellow); }
+
+  footer { margin-top:56px; border-top:1px solid var(--border-2); padding-top:22px; }
+  .summary-table { margin-top:14px; border:1px solid var(--border); }
+  .summary-row { display:grid; grid-template-columns:110px 1fr; border-bottom:1px solid var(--border-2); }
+  .summary-row:last-child { border-bottom:none; }
+  .summary-row .sk { padding:11px 13px; font-size:10.5px; font-weight:600; color:var(--text-1); background:var(--surface); border-right:1px solid var(--border-2); }
+  .summary-row .sv { padding:11px 13px; font-size:10.5px; color:var(--text-2); line-height:1.6; }
+  .summary-row .sv b { color:var(--text-1); font-weight:600; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration:0.01ms !important; animation-duration:0.01ms !important; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <h1>Flow review decisions &mdash; the Projects screen</h1>
+    <p class="lede">
+      Three holes the 2026-08-02 live pass found in the full-window Projects screen, each one a
+      design decision, not a bug fix. Board of options for each, side by side, so you can point and
+      say &ldquo;B&rdquo;. Visual language is matched 1:1 to
+      <code>gui/mocks/2026-08-01-projects-fullwindow-v3.html</code>, the screen&rsquo;s own source of
+      truth &mdash; same tokens, same weights, same rhythm. Nothing here writes to a note body; nothing
+      here is emoji.
+    </p>
+    <div class="flag-box">
+      <b>Where reading the real source corrected this brief:</b> the brief names the
+      <code>--ctl-face</code> / <code>--surface-2</code> collision a <b>light-theme</b> ceiling. Reading
+      <code>gui/src/index.css</code>&rsquo;s two theme blocks directly, the two tokens are identical in
+      <b>both</b> themes &mdash; dark: <code>#404040</code> / <code>#404040</code>; light:
+      <code>#cccccc</code> / <code>#cccccc</code>. So every option below keeps raised controls off
+      <code>--surface-2</code> in dark mode too, not only light. Demonstrated once, in both themes, right
+      below &mdash; not re-proven per option.
+      <div class="flag-row">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16.5v.01"/></svg>
+        <span>Everything else in the brief &mdash; the single caller of <code>createProject</code>/<code>moveToTrash</code> (VaultManager.tsx:899/845), the <code>stats &rarr; library</code> alias (App.tsx:242), the missing <code>setProject</code>/<code>moveToProject</code>/<code>assignProject</code>, the exact live copy strings &mdash; checked out verbatim against the current code.</span>
+      </div>
+    </div>
+    <div class="ceiling-row">
+      <div class="ceiling-cell">
+        <div class="theme-lbl" data-theme="dark">dark &mdash; the ceiling, if you get it wrong</div>
+        <div class="ceiling-swatch"><button>Raised button on --surface-2</button><span class="warn-txt">barely there</span></div>
+      </div>
+      <div class="ceiling-cell" data-theme="light" style="background:var(--bg);">
+        <div class="theme-lbl">light &mdash; same ceiling</div>
+        <div class="ceiling-swatch"><button>Raised button on --surface-2</button><span class="warn-txt">barely there</span></div>
+      </div>
+    </div>
+    <p class="diag-caption">This is the one thing every option below avoids: no raised (<code>--ctl-face</code>) control sits directly on a <code>--surface-2</code> fill, in either theme.</p>
+  </header>
+
+  <!-- ══════════════════════════════════════════════════════════════════ FORK 1 -->
+  <section class="fork" id="fork1">
+    <div class="fork-head"><span class="fork-num">Fork 1 &middot; the most important one</span><h2>Creating a project, and deleting a note</h2></div>
+    <p class="problem">
+      The rail&rsquo;s <b>New project</b> button is enabled, lifts on hover, takes a focus ring &mdash;
+      and is wired to an empty function: <code>onNewProject={'{'}() =&gt; {'{'} /* Task 5/8 */ {'}'}{'}'}</code>
+      (ProjectsView.tsx:158). The empty-vault copy then instructs the user to press it. It is one
+      regression, not two: <code>createProject</code> and <code>moveToTrash</code> each have exactly
+      <b>one</b> caller in the whole GUI &mdash; both in <code>VaultManager.tsx</code> (lines 899 and
+      845), a component the last commit unmounted from the full window. A full-window user today can
+      restore a note from Trash but cannot put one in, and cannot create a project at all.
+    </p>
+
+    <div class="option-grid">
+      <!-- OPTION A — MODAL -->
+      <div class="option">
+        <div class="option-head"><span class="option-letter">A</span><span class="option-title">Modal create flow</span></div>
+        <div class="option-body">
+          <p class="option-desc">The conventional answer. Name, optional description, collision check, one dialog.</p>
+
+          <div class="mock-caption">populated</div>
+          <div class="mini-win">
+            <div class="mini-rail">
+              <div class="mini-rail-top"><div class="seg-toggle"><div class="seg-pill"></div><span class="seg-item on">Projects</span><span class="seg-item">Tags</span></div></div>
+              <div class="mini-rail-body">
+                <div class="tiles">
+                  <button class="tile"><span class="tn">research</span><span class="tc">6 notes</span></button>
+                  <button class="tile"><span class="tn">kitchen-remodel</span><span class="tc">4 notes</span></button>
+                  <button class="tile loose-tile wide"><span class="tn"><span class="loose-dot"></span>loose</span><span class="tc">17 notes</span></button>
+                </div>
+              </div>
+              <div class="mini-rail-foot"><button class="newbtn btn-hover" data-modal-open="1"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>New project</button></div>
+            </div>
+          </div>
+          <div class="mock-arrow-row"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>opens</div>
+          <div class="mini-win" id="modal-a" style="padding:12px;">
+            <h3 style="margin-bottom:8px;">New project</h3>
+            <div style="font-size:9px;color:var(--text-3);margin-bottom:3px;">Name</div>
+            <input value="kitchen-remodel" style="width:100%;background:var(--bg);border:1px solid var(--red);color:var(--text-1);font-family:inherit;font-size:11px;padding:6px 8px;margin-bottom:4px;" />
+            <div style="font-size:9px;color:var(--red);margin-bottom:9px;display:flex;align-items:center;gap:5px;"><svg class="ic" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 16.5v.01"/><path d="M10.3 3.9L2.6 17a1.5 1.5 0 0 0 1.3 2.3h16.2a1.5 1.5 0 0 0 1.3-2.3L13.7 3.9a1.5 1.5 0 0 0-2.6 0z"/></svg>A project named &ldquo;kitchen-remodel&rdquo; already exists.</div>
+            <div style="font-size:9px;color:var(--text-3);margin-bottom:3px;">Description (optional)</div>
+            <textarea rows="2" placeholder="What belongs here?" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text-1);font-family:inherit;font-size:10.5px;padding:6px 8px;resize:none;margin-bottom:10px;"></textarea>
+            <div style="display:flex;justify-content:flex-end;gap:7px;">
+              <button class="ghost-btn">Cancel</button>
+              <button class="sg-btn sg-create" style="flex:0 0 auto;padding:0 14px;">Create</button>
+            </div>
+          </div>
+
+          <div class="mock-caption" style="margin-top:6px;">empty vault, first open</div>
+          <div class="mini-win">
+            <div class="mini-rail">
+              <div class="mini-rail-top"><div class="seg-toggle"><div class="seg-pill"></div><span class="seg-item on">Projects</span><span class="seg-item">Tags</span></div></div>
+              <div class="mini-rail-body"><div class="tiles"><button class="tile loose-tile wide"><span class="tn"><span class="loose-dot"></span>loose</span><span class="tc">17 notes</span></button></div></div>
+              <div class="mini-rail-foot"><button class="newbtn btn-hover"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>New project</button></div>
+            </div>
+          </div>
+          <p class="option-desc">Same button, same modal &mdash; the identical dialog above, just with no name to collide against yet.</p>
+        </div>
+      </div>
+
+      <!-- OPTION B — INLINE -->
+      <div class="option">
+        <div class="option-head"><span class="option-letter">B</span><span class="option-title">Inline, in place</span></div>
+        <div class="option-body">
+          <p class="option-desc">No modal at all. A new tile appears in the grid, already editable.</p>
+
+          <div class="mock-caption">populated &mdash; mid-edit</div>
+          <div class="mini-win">
+            <div class="mini-rail">
+              <div class="mini-rail-top"><div class="seg-toggle"><div class="seg-pill"></div><span class="seg-item on">Projects</span><span class="seg-item">Tags</span></div></div>
+              <div class="mini-rail-body">
+                <div class="tiles">
+                  <button class="tile"><span class="tn">research</span><span class="tc">6 notes</span></button>
+                  <button class="tile"><span class="tn">kitchen-remodel</span><span class="tc">4 notes</span></button>
+                  <div class="tile editing wide">
+                    <input value="trip-osaka" autofocus />
+                    <div class="edit-hint"><span>Enter to create &middot; Esc to cancel</span>
+                      <span class="edit-glyphs">
+                        <button class="glyph-btn"><svg class="ic" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></button>
+                        <button class="glyph-btn"><svg class="ic" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
+                      </span>
+                    </div>
+                  </div>
+                  <button class="tile loose-tile"><span class="tn"><span class="loose-dot"></span>loose</span><span class="tc">17 notes</span></button>
+                </div>
+              </div>
+              <div class="mini-rail-foot"><button class="newbtn btn-hover"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>New project</button></div>
+            </div>
+          </div>
+          <p class="option-desc">Background is <code>--accent-d</code>, the same wash a selected tile uses &mdash; not <code>--surface-2</code>, so the confirm/cancel glyphs stay visible in both themes.</p>
+
+          <div class="mock-caption" style="margin-top:2px;">empty vault, first open</div>
+          <div class="mini-win">
+            <div class="mini-rail">
+              <div class="mini-rail-top"><div class="seg-toggle"><div class="seg-pill"></div><span class="seg-item on">Projects</span><span class="seg-item">Tags</span></div></div>
+              <div class="mini-rail-body">
+                <div class="tiles">
+                  <div class="tile editing"><input value="" placeholder="project-name" /><div class="edit-hint"><span>naming&hellip;</span></div></div>
+                  <button class="tile loose-tile"><span class="tn"><span class="loose-dot"></span>loose</span><span class="tc">17 notes</span></button>
+                </div>
+              </div>
+              <div class="mini-rail-foot"><button class="newbtn btn-hover"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>New project</button></div>
+            </div>
+          </div>
+          <p class="option-desc">Works identically at zero projects &mdash; no separate empty-state wiring needed.</p>
+        </div>
+      </div>
+
+      <!-- OPTION C — PROMOTED SUGGESTION GUTTER -->
+      <div class="option">
+        <div class="option-head"><span class="option-letter">C</span><span class="option-title">Promote the suggestion gutter</span></div>
+        <div class="option-body">
+          <p class="option-desc">Reuse what is already there. The Inbox-suggestion box becomes the one place a project starts, machine-proposed or user-typed.</p>
+
+          <div class="mock-caption">populated &mdash; a pending machine suggestion</div>
+          <div class="mini-win">
+            <div class="mini-rail">
+              <div class="mini-rail-top"><div class="seg-toggle"><div class="seg-pill"></div><span class="seg-item on">Projects</span><span class="seg-item">Tags</span></div></div>
+              <div class="mini-rail-body"><div class="tiles"><button class="tile"><span class="tn">research</span><span class="tc">6 notes</span></button><button class="tile loose-tile"><span class="tn"><span class="loose-dot"></span>loose</span><span class="tc">17 notes</span></button></div></div>
+              <div class="sugg-wrap"><div class="sugg">
+                <div class="hd"><svg class="ic" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12h-5l-2 3h-4l-2-3H3"/><path d="M6.2 4.6L3 12v6a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-6l-3.2-7.4A1 1 0 0 0 16.9 4H7.1a1 1 0 0 0-.9.6z"/></svg>Inbox suggests</div>
+                <div class="nm">trip-japan</div>
+                <div class="fact">3 loose captures, past 6 days</div>
+                <div class="acts"><button class="sg-btn sg-create">Create</button><button class="sg-btn sg-rename">Rename</button><button class="sg-dismiss"><svg class="ic" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button></div>
+              </div></div>
+              <div class="mini-rail-foot"><button class="newbtn btn-hover"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>New project</button></div>
+            </div>
+          </div>
+          <p class="option-desc">Same box, no pending suggestion &mdash; the base state, dashed border marking &ldquo;nothing proposed&rdquo;:</p>
+          <div class="sugg-wrap" style="padding:0;"><div class="sugg manual">
+            <div class="hd">Start a project</div>
+            <input class="nm-input" placeholder="name a project&hellip;" />
+            <div class="fact">nothing pending right now</div>
+            <div class="acts"><button class="sg-btn sg-create" style="flex:1 1 100%;">Create</button></div>
+          </div></div>
+          <p class="option-desc"><b>New project</b> in the rail-foot just scrolls to and focuses this box, rather than opening a second surface.</p>
+
+          <div class="mock-caption" style="margin-top:2px;">empty vault, first open</div>
+          <div class="mini-win">
+            <div class="mini-rail">
+              <div class="mini-rail-top"><div class="seg-toggle"><div class="seg-pill"></div><span class="seg-item on">Projects</span><span class="seg-item">Tags</span></div></div>
+              <div class="mini-rail-body"><div class="tiles"><button class="tile loose-tile wide"><span class="tn"><span class="loose-dot"></span>loose</span><span class="tc">17 notes</span></button></div></div>
+              <div class="sugg-wrap"><div class="sugg manual"><div class="hd">Start a project</div><input class="nm-input" placeholder="name a project&hellip;" /><div class="acts"><button class="sg-btn sg-create" style="flex:1 1 100%;">Create</button></div></div></div>
+              <div class="mini-rail-foot"><button class="newbtn btn-hover" style="opacity:0.7;">New project</button></div>
+            </div>
+          </div>
+          <p class="option-desc">The manual box is anchored in the rail permanently &mdash; a working creation control exists even before the first click.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="mock-caption" style="margin-top:26px;">shared across all three &mdash; where a note gets deleted</div>
+    <p class="option-desc" style="max-width:78ch;">This half of the fork is independent of which create-flow wins above, so it is drawn once. A trailing danger icon appears on row hover/focus (the same per-row-danger-icon language the pane head already uses for deleting a <i>project</i>), opening an inline confirm strip &mdash; no modal, no context menu, no multi-select.</p>
+    <div class="mini-pane" style="max-width:520px;margin-top:10px;">
+      <div class="mini-notes-head">6 notes &middot; newest first</div>
+      <div class="noterow"><span class="fi"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z"/><polyline points="14 3 14 7 18 7"/></svg></span><span class="t">Q3 lit review outline</span><span class="m">added today</span><span class="del-slot"></span></div>
+      <div class="noterow hover-state"><span class="fi"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z"/><polyline points="14 3 14 7 18 7"/></svg></span><span class="t">Interview transcript, P. Alvarez</span><span class="m">added 1w ago</span><span class="del-slot"><button class="iconbtn-danger" title="Move to trash" aria-label="Move to trash"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg></button></span></div>
+      <div class="confirm-strip"><span style="flex:1 1 auto;">Move <b>&ldquo;Interview transcript, P. Alvarez&rdquo;</b> to Trash? It stays recoverable for 30 days.</span><button class="ghost-btn">Cancel</button><button class="ghost-btn danger">Move to Trash</button></div>
+      <div class="noterow"><span class="fi"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z"/><polyline points="14 3 14 7 18 7"/></svg></span><span class="t">Related work, citation map</span><span class="m">added 2w ago</span><span class="del-slot"></span></div>
+    </div>
+
+    <div class="cost-strip">
+      <div class="cost-cell"><div class="cl">A &middot; modal</div><p>Easiest to validate name + description together, but is a whole new overlay surface: focus trap, escape key, backdrop click, all to build and test.</p></div>
+      <div class="cost-cell"><div class="cl">B &middot; inline</div><p>Zero new surfaces, and works at zero projects for free. But a mid-grid input needs its own Enter/Escape/blur-cancel handling, and a long name in a narrow tile needs its own truncation rule.</p></div>
+      <div class="cost-cell"><div class="cl">C &middot; promoted box</div><p>Reuses 100% of existing CSS, cheapest to ship. But it overloads one box with two jobs &mdash; machine-proposed and user-typed &mdash; so &ldquo;Inbox suggests&rdquo; must become conditional copy or it lies half the time.</p></div>
+    </div>
+
+    <div class="recommend">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+      <div><div class="rl">Recommendation</div><p><b>B, inline.</b> The screen already separates &ldquo;name the project&rdquo; (this step) from &ldquo;describe the project&rdquo; (the existing autosaving <code>desc-area</code> in the pane) &mdash; a two-field modal would duplicate work the pane already does one keystroke later. Delete-note: the hover-icon pattern, because it matches the danger-icon language the pane head already teaches for deleting a project, rather than adding a second one.</p></div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════════════════ FORK 2 -->
+  <section class="fork" id="fork2">
+    <div class="fork-head"><span class="fork-num">Fork 2</span><h2>What &ldquo;History&rdquo; means, and one place with three names</h2></div>
+    <p class="problem">
+      The pill menu&rsquo;s <b>History</b> item routes to the same destination as <b>Vault</b>
+      (<code>App.tsx:242</code> aliases <code>stats &rarr; library</code>) &mdash; and the &ldquo;By
+      project&rdquo; / &ldquo;Daily rhythm&rdquo; stats panels were removed from that screen in the last
+      commit, so firing it opens a screen with <b>no stats at all</b>. The compact pill&rsquo;s own
+      History panel still shows both panels, intact &mdash; confirmed in
+      <code>CompactHistory.tsx</code>. Meanwhile one destination carries three labels: left rail says
+      <b>Vault</b>, its topbar sub-tab says <b>Projects</b>, and the rail&rsquo;s own view toggle
+      (opposite Tags) <i>also</i> says <b>Projects</b> &mdash; confirmed at <code>FullWindow.tsx:44</code>
+      and <code>:300</code>.
+    </p>
+
+    <p class="option-desc" style="margin-top:18px;font-weight:600;color:var(--text-1);">The collision, as it stands today:</p>
+    <div class="collision-row">
+      <div class="altitude-box"><div class="al">left rail</div><div class="av">Vault</div></div>
+      <svg class="diag-arrow ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+      <div class="altitude-box collide"><div class="al">topbar sub-tab</div><div class="av">Projects</div></div>
+      <svg class="diag-arrow ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+      <div class="altitude-box collide"><div class="al">rail toggle</div><div class="av">Projects | Tags</div></div>
+    </div>
+    <p class="diag-caption">Same word, three altitudes, two different things named identically.</p>
+
+    <p class="option-desc" style="margin-top:20px;font-weight:600;color:var(--text-1);">The fix &mdash; rename the topbar sub-tab, leave the other two alone:</p>
+    <div class="collision-row">
+      <div class="altitude-box fixed"><div class="al">left rail</div><div class="av">Vault</div></div>
+      <svg class="diag-arrow ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+      <div class="altitude-box fixed"><div class="al">topbar sub-tab &middot; renamed</div><div class="av">Notes</div></div>
+      <svg class="diag-arrow ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+      <div class="altitude-box fixed"><div class="al">rail toggle &middot; unchanged</div><div class="av">Projects | Tags</div></div>
+    </div>
+    <p class="diag-caption">&ldquo;Projects&rdquo; now names exactly one thing anywhere on this screen: the rail&rsquo;s own tiles-vs-tags choice.</p>
+
+    <div class="option-grid" style="margin-top:30px;">
+      <div class="option">
+        <div class="option-head"><span class="option-letter">A</span><span class="option-title">Restore a real History destination</span></div>
+        <div class="option-body">
+          <p class="option-desc">A dedicated rail item, distinct from Vault, carrying the two panels the compact pill never lost.</p>
+          <div class="history-row">
+            <div class="rail-nav-mock">
+              <div class="rail-nav-item"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h6l2 3h8a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg></div>
+              <div class="rail-nav-item new"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div>
+              <div class="rail-nav-item"><svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 0 1-4 0v-.09A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 0 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 0 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 0 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg></div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px;flex:1;">
+              <div class="stat-card"><div class="sl">Daily rhythm</div><div class="spark-row"><div class="spark-bar" style="height:40%"></div><div class="spark-bar" style="height:70%"></div><div class="spark-bar" style="height:30%"></div><div class="spark-bar" style="height:90%"></div><div class="spark-bar" style="height:55%"></div><div class="spark-bar" style="height:20%"></div><div class="spark-bar" style="height:65%"></div></div></div>
+              <div class="stat-card"><div class="sl">By project</div><div class="by-project-row"><span>onboarding-v2</span><span>9</span></div><div class="by-project-row"><span>research</span><span>6</span></div><div class="by-project-row"><span>kitchen-remodel</span><span>4</span></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="option">
+        <div class="option-head"><span class="option-letter">B</span><span class="option-title">Retarget the menu item, honestly</span></div>
+        <div class="option-body">
+          <p class="option-desc">Keep routing to Vault (it already does) &mdash; stop calling the button something it isn&rsquo;t.</p>
+          <div class="pill-menu-mock">
+            <div class="pill-menu-item"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h6l2 3h8a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg>Look</div>
+            <div class="pill-menu-item relabel"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h6l2 3h8a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg><span><span class="old-label">History</span><span class="new-label">Vault</span></span></div>
+            <div class="pill-menu-item"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/></svg>Settings</div>
+          </div>
+          <p class="option-desc">Same destination, same wiring &mdash; the label just stops promising a screen that no longer exists there.</p>
+        </div>
+      </div>
+      <div class="option">
+        <div class="option-head"><span class="option-letter">C</span><span class="option-title">Drop it from this menu</span></div>
+        <div class="option-body">
+          <p class="option-desc">The full window already has a persistent rail. A menu duplicate of a rail item, mislabeled, earns nothing.</p>
+          <div class="pill-menu-mock">
+            <div class="pill-menu-item"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h6l2 3h8a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg>Look</div>
+            <div class="pill-menu-item struck"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>History</div>
+            <div class="pill-menu-item"><svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/></svg>Settings</div>
+          </div>
+          <p class="option-desc">Compact-pill mode keeps its own History item untouched (it still has somewhere real to send it); this only removes the full-window copy of the entry.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="cost-strip">
+      <div class="cost-cell"><div class="cl">A &middot; restore</div><p>Gives the full window parity with the compact pill and reuses two already-built card layouts &mdash; but is real screen-building work, not a copy fix.</p></div>
+      <div class="cost-cell"><div class="cl">B &middot; retarget</div><p>Fixes the lie for near-zero cost &mdash; but full-window users still land on a screen with no history or stats at all, just an honestly-labelled one.</p></div>
+      <div class="cost-cell"><div class="cl">C &middot; drop</div><p>Fixes the lie for free and admits the honest state &mdash; but permanently removes stats access from the full window, which the pill still offers.</p></div>
+    </div>
+
+    <div class="recommend">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+      <div><div class="rl">Recommendation</div><p><b>A, restore.</b> The compact pill kept its stats panels; the full window lost them as a side effect of an unrelated component unmount, not a decision to retire them. That is a regression to fix, not a feature to quietly let go. Naming: rename the topbar sub-tab <b>Projects &rarr; Notes</b> either way &mdash; it is a one-word change that ends the three-name collision regardless of which History option wins.</p></div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════════════════ FORK 3 -->
+  <section class="fork" id="fork3">
+    <div class="fork-head"><span class="fork-num">Fork 3</span><h2>&ldquo;Assign this note to a project&rdquo; does not exist &mdash; and the copy blames the phone</h2></div>
+    <p class="problem">
+      Grepping the GUI for <code>setProject</code> / <code>moveToProject</code> / <code>assignProject</code>
+      returns zero hits, and a note row&rsquo;s only interaction is opening the note. This is likely
+      correct <b>by architecture, not omission</b>: a note&rsquo;s project <b>is</b> the body tag
+      <code>#project@&lt;name&gt;</code>, and a note&rsquo;s body is sacred &mdash; only the user&rsquo;s
+      editor may write it. &ldquo;Assigning&rdquo; genuinely means editing the body, which no panel here
+      is allowed to do on the user&rsquo;s behalf. The problem is the screen never says so &mdash; its
+      copy tells a desktop-only user that a different device does the filing.
+    </p>
+    <div class="quote-block">
+      <div class="ql">today, verbatim &mdash; ProjectsPane.tsx:402 &amp; :467</div>
+      <p>&ldquo;All 17 of your notes are loose, which is a normal and permanent place for a note to live.
+      <b>Make a project when you want the phone to file new captures somewhere by itself.</b>&rdquo;</p>
+      <p>&ldquo;<b>This is what your phone matches new notes against.</b>&rdquo;</p>
+    </div>
+
+    <div class="tone-grid">
+      <div class="tone-block">
+        <div class="tone-head"><span class="option-letter" style="width:18px;height:18px;font-size:10px;">A</span><span class="option-title">Plain, functional</span></div>
+        <div class="tone-body">
+          <div class="copy-row"><div class="cl">empty-vault heading + body</div><p>No projects yet</p><p>All 17 of your notes are loose &mdash; a normal, permanent state. A project is a tag: add <code>#project@name</code> to a note&rsquo;s body and it belongs there. This panel can start the tag; it can&rsquo;t write it into a note for you.</p></div>
+          <div class="copy-row"><div class="cl">description field, filled</div><p>New captures are matched against this text &mdash; on this device, or a phone, if you use one.</p></div>
+          <div class="copy-row"><div class="cl">description field, empty</div><p class="empty-variant">Empty. Nothing to match new captures against yet.</p></div>
+        </div>
+      </div>
+      <div class="tone-block">
+        <div class="tone-head"><span class="option-letter" style="width:18px;height:18px;font-size:10px;">B</span><span class="option-title">Warmer, guided</span></div>
+        <div class="tone-body">
+          <div class="copy-row"><div class="cl">empty-vault heading + body</div><p>Nothing filed yet, and that&rsquo;s fine</p><p>Loose is where every note starts. When you&rsquo;re ready to group some together, add <code>#project@name</code> to one of their bodies &mdash; that&rsquo;s the whole mechanism. Start one below and we&rsquo;ll show you the exact tag to use.</p></div>
+          <div class="copy-row"><div class="cl">description field, filled</div><p>New captures get compared against this &mdash; from this computer, and from your phone too, if it&rsquo;s in the picture.</p></div>
+          <div class="copy-row"><div class="cl">description field, empty</div><p class="empty-variant">Nothing here yet, so nothing to compare new captures to.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <p class="option-desc" style="margin-top:22px;font-weight:600;color:var(--text-1);">The one affordance that is legitimate: show the exact tag, write nothing</p>
+    <div class="tag-chip-row">
+      <span class="tag-chip"><span class="hash">#</span>project@kitchen-remodel</span>
+      <button class="copy-btn" id="tag-copy-btn" title="Copy tag" aria-label="Copy tag">
+        <svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="1"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg>
+      </button>
+    </div>
+    <p class="tag-affordance-caption">Sits under the project head, next to the description editor. A copy button, not an insert button &mdash; the user still pastes it into a note themselves. Nothing here calls a save on the note body.</p>
+
+    <div class="cost-strip two">
+      <div class="cost-cell"><div class="cl">A &middot; plain</div><p>Matches the register the rest of the screen already uses &mdash; short, functional, no persuasion. Costs nothing beyond the rewrite itself.</p></div>
+      <div class="cost-cell"><div class="cl">B &middot; warmer</div><p>Reads better to a first-time user meeting an empty vault, but is the one warmer voice on an otherwise terse screen &mdash; a tone the rest of the app would need to match, not just this copy.</p></div>
+    </div>
+
+    <div class="recommend">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+      <div><div class="rl">Recommendation</div><p><b>A, plain.</b> The board&rsquo;s own copy elsewhere on this screen (the sort label, the tile warning, the delete-confirm strip) is already terse and functional &mdash; a warmer voice here would be the one inconsistent string on the page, not an improvement to it.</p></div>
+    </div>
+  </section>
+
+  <footer>
+    <h2>Summary</h2>
+    <div class="summary-table">
+      <div class="summary-row"><div class="sk">Fork 1</div><div class="sv"><b>B, inline creation</b> + hover-icon note delete. Naming stays a name-only step; description is already the pane&rsquo;s job.</div></div>
+      <div class="summary-row"><div class="sk">Fork 2</div><div class="sv"><b>A, restore History</b> as its own destination; rename the topbar sub-tab <b>Projects &rarr; Notes</b> regardless of which option wins.</div></div>
+      <div class="summary-row"><div class="sk">Fork 3</div><div class="sv"><b>A, plain copy</b> + the copy-the-tag affordance. Consistent with the screen&rsquo;s existing register; writes nothing to a note body.</div></div>
+    </div>
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var modal = document.getElementById("modal-a");
+  var openBtn = document.querySelector("[data-modal-open]");
+  if (modal && openBtn) {
+    modal.style.transition = "opacity 220ms " + getComputedStyle(document.documentElement).getPropertyValue("--menu-travel-ease");
+    openBtn.addEventListener("click", function () {
+      modal.style.opacity = "0";
+      requestAnimationFrame(function () {
+        modal.style.opacity = "1";
+        modal.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    });
+  }
+  var copyBtn = document.getElementById("tag-copy-btn");
+  if (copyBtn) {
+    copyBtn.addEventListener("click", function () {
+      copyBtn.classList.add("copied");
+      setTimeout(function () { copyBtn.classList.remove("copied"); }, 900);
+    });
+  }
+})();
+</script>
+</body>
+</html>

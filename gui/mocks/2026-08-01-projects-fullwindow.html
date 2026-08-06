@@ -1,0 +1,1087 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Projects, full window: three ways to weight description against notes</title>
+<style>
+  :root {
+    --bg: #0a0a0a; --surface: #262626; --surface-2: #404040;
+    --border: #383838; --border-2: #262626;
+    --text-1: #fafafa; --text-2: #a1a1a1; --text-3: #7a7a7a;
+    --accent: #737373; --accent-d: rgba(115,115,115,0.18); --accent-glow: rgba(115,115,115,0.30);
+    --green: #4ade80; --yellow: #facc15; --red: #ff6467;
+    --on-accent: #fafafa;
+    --radius: 0px; --radius-sm: 0px;
+    /* == gui/src/index.css --menu-travel-ease / SegmentedToggle.tsx's pill transition curve */
+    --ease-travel: cubic-bezier(0.22,1,0.36,1);
+    --ease-settle: cubic-bezier(0.16,1,0.3,1);
+    /* .btn-hover's own tokens, copied verbatim from index.css (dark theme block) so the
+       ported utility class below renders identically. */
+    --hover-dur: 260ms;
+    --hover-ease: cubic-bezier(0.34, 1.3, 0.64, 1);
+    --hover-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --hover-bg: color-mix(in srgb, var(--accent) 5%, var(--surface));
+    --hover-border: color-mix(in srgb, var(--accent) 90%, var(--border));
+    --hover-lift: -2px;
+    --hover-scale: 1.03;
+    --hover-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; background:var(--bg); color:var(--text-1);
+    font-family:"Geist Mono", ui-monospace, "Cascadia Mono", "Segoe UI Mono", monospace; }
+  body { padding:32px 40px 90px; }
+  .page { max-width:1240px; margin:0 auto; }
+  h1 { font-size:20px; font-weight:600; margin:0 0 6px; letter-spacing:-0.01em; }
+  h2 { font-size:14px; font-weight:600; margin:0 0 4px; }
+  p { margin:0; }
+  .lede { font-size:12px; color:var(--text-2); line-height:1.6; max-width:78ch; }
+  .principles { margin-top:16px; border:1px solid var(--border); background:var(--surface); padding:10px 14px; font-size:10.5px; color:var(--text-2); line-height:1.7; }
+  .principles b { color:var(--text-1); font-weight:600; }
+  section { margin-top:48px; }
+  .section-head { display:flex; align-items:baseline; justify-content:space-between; gap:16px; margin-bottom:14px; flex-wrap:wrap; }
+  .section-tag { font-size:9.5px; color:var(--text-3); border:1px solid var(--border); padding:2px 6px; }
+  svg.ic { display:block; flex:0 0 auto; }
+
+  .flag-box { border:1px solid var(--yellow); background:rgba(250,204,21,0.06); padding:10px 14px; margin-top:16px; font-size:10.5px; color:var(--text-2); line-height:1.7; }
+  .flag-box b { color:var(--text-1); font-weight:600; }
+  .flag-box .flag-row { display:flex; gap:8px; align-items:flex-start; margin-top:8px; }
+  .flag-box .flag-row:first-of-type { margin-top:10px; }
+  .flag-box svg { color:var(--yellow); flex:0 0 auto; margin-top:1px; }
+
+  .mockrow { display:flex; gap:22px; flex-wrap:wrap; align-items:flex-start; }
+  .mockcol { display:flex; flex-direction:column; align-items:flex-start; }
+  .mocklabel { margin-top:10px; font-size:9.5px; color:var(--text-3); line-height:1.7; letter-spacing:0.02em; max-width:1100px; }
+  .mocklabel b { color:var(--text-2); }
+  .dim-badge { font-size:8.5px; color:var(--text-3); letter-spacing:0.03em; margin-top:3px; }
+
+  /* .btn-hover, ported verbatim from index.css (lines ~910-929): lift + scale + bg + border,
+     the same utility the app uses on buttons, segmented toggles and theme swatches. Split
+     enter/leave easing (overshoot on hover-in via --hover-ease, plain ease-out on the base
+     rule) is the real repo's asymmetric-easing recipe, not a simplification. */
+  .btn-hover { transition: background var(--hover-dur) var(--hover-ease-out), border-color var(--hover-dur) var(--hover-ease-out),
+      color var(--hover-dur) var(--hover-ease-out), box-shadow var(--hover-dur) var(--hover-ease-out), transform var(--hover-dur) var(--hover-ease-out); }
+  .btn-hover:hover { transition: background var(--hover-dur) var(--hover-ease), border-color var(--hover-dur) var(--hover-ease),
+      color var(--hover-dur) var(--hover-ease), box-shadow var(--hover-dur) var(--hover-ease), transform var(--hover-dur) var(--hover-ease);
+    transform:translateY(var(--hover-lift)) scale(var(--hover-scale)); background:var(--hover-bg); border-color:var(--hover-border); color:var(--text-1); box-shadow:var(--hover-shadow); }
+
+  /* ── shared full-window chrome ─────────────────────────────────────────────
+     1100 x 680 content area, dashed neutral dimension guide (never a semantic
+     color) exactly as the compact-modes sibling frames its 332 x 320 panels. */
+  .win { width:1100px; height:680px; background:var(--surface); border:1px solid var(--border);
+    outline:2px dashed var(--text-3); outline-offset:3px;
+    display:flex; flex-direction:column; overflow:hidden; flex:0 0 auto; }
+  .win.short { height:560px; }
+  .win-head { flex:0 0 auto; height:40px; display:flex; align-items:center; justify-content:space-between;
+    padding:0 12px; border-bottom:1px solid var(--border); gap:12px; }
+  .win-head .wt { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:var(--text-1); }
+  .win-acts { display:flex; align-items:center; gap:4px; flex:0 0 auto; }
+  .win-body { flex:1 1 auto; display:flex; min-height:0; }
+
+  .iconbtn { width:26px; height:26px; display:flex; align-items:center; justify-content:center; color:var(--text-3);
+    background:none; border:1px solid transparent; cursor:pointer; padding:0;
+    transition:color 160ms var(--ease-settle), background 160ms var(--ease-settle), transform 120ms var(--ease-settle); }
+  .iconbtn:hover { color:var(--text-1); background:var(--surface-2); }
+  .iconbtn:active { transform:scale(0.88); }
+  .iconbtn:focus-visible { outline:2px solid var(--accent); outline-offset:-1px; }
+  .iconbtn.danger { color:var(--red); opacity:0.82; }
+  .iconbtn.danger:hover { opacity:1; background:rgba(255,100,103,0.12); }
+
+  .rail { flex:0 0 auto; border-right:1px solid var(--border); display:flex; flex-direction:column; min-height:0; }
+  .rail-head { flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 10px 8px; }
+  .rail-title { font-size:9px; letter-spacing:0.09em; text-transform:uppercase; color:var(--text-3); }
+  .rail-scroll { flex:1 1 auto; min-height:0; overflow-y:auto; scrollbar-gutter:stable; }
+  .rail-foot { flex:0 0 auto; border-top:1px solid var(--border-2); padding:8px 10px; display:flex; flex-direction:column; gap:8px; }
+  .rail-note { font-size:8.5px; color:var(--text-3); line-height:1.5; padding:6px 10px 2px; }
+
+  /* rail view-mode control: same icon-pair control the compact-modes sibling puts on the
+     full-window rail. Tile = project groupings. List = individual non-action tags. */
+  .fw-toggle { display:flex; border:1px solid var(--border); flex:0 0 auto; }
+  .fw-toggle-item { width:26px; height:23px; display:flex; align-items:center; justify-content:center;
+    color:var(--text-3); cursor:pointer; background:none; border:none; padding:0;
+    transition:color 160ms var(--ease-settle), background 160ms var(--ease-settle); }
+  .fw-toggle-item:hover { color:var(--text-1); }
+  .fw-toggle-item[aria-selected="true"] { color:var(--text-1); background:var(--accent-d); }
+  .fw-toggle-item:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+
+  /* entrance-only keyed swap, the same pattern as .seg-swap-panel in index.css */
+  @keyframes segSwapIn { from { opacity:0; transform:translateX(calc(var(--swap-dir, 0) * 18px)); } to { opacity:1; transform:translateX(0); } }
+  .seg-swap-panel { animation:segSwapIn 220ms var(--ease-travel) both; }
+
+  .pane { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; min-height:0; }
+
+  .newbtn { display:flex; align-items:center; justify-content:center; gap:6px; font-size:10.5px; color:var(--text-2);
+    border:1px solid var(--border); background:var(--bg); padding:6px 8px; cursor:pointer; font-family:inherit; width:100%; }
+  .newbtn:focus-visible { outline:2px solid var(--accent); outline-offset:-1px; }
+  .primary-btn { display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:600; padding:7px 14px;
+    background:var(--accent-d); border:1px solid var(--accent); color:var(--text-1); cursor:pointer; font-family:inherit;
+    transition:background 160ms var(--ease-settle), transform 120ms var(--ease-settle); }
+  .primary-btn:hover { background:var(--accent-glow); }
+  .primary-btn:active { transform:scale(0.97); }
+  .primary-btn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .ghost-btn { display:inline-flex; align-items:center; gap:5px; font-size:10px; color:var(--text-2);
+    border:1px solid var(--border); background:var(--bg); padding:5px 9px; cursor:pointer; font-family:inherit;
+    transition:color 160ms var(--ease-settle), border-color 160ms var(--ease-settle), transform 120ms var(--ease-settle); }
+  .ghost-btn:hover { color:var(--text-1); border-color:var(--accent); }
+  .ghost-btn:active { transform:scale(0.96); }
+  .ghost-btn:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+
+  /* rail rows, shared skeleton; per-option density comes from the option classes below */
+  .prow { display:flex; align-items:center; justify-content:space-between; gap:8px; cursor:pointer;
+    border-left:2px solid transparent; color:var(--text-2); font-family:inherit; background:none; border-top:none; border-right:none; border-bottom:none;
+    width:100%; text-align:left; transition:background 160ms var(--ease-settle), color 160ms var(--ease-settle); }
+  .prow:hover { background:var(--surface-2); color:var(--text-1); }
+  .prow[aria-selected="true"] { background:var(--accent-d); color:var(--text-1); border-left-color:var(--accent); }
+  .prow:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  .prow .n { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1 1 auto; }
+  .prow .c { font-size:9.5px; color:var(--text-3); flex:0 0 auto; font-variant-numeric:tabular-nums; }
+  .prow[aria-selected="true"] .c { color:var(--text-2); }
+  .prow.loose { border-top:1px dashed var(--border); margin-top:4px; }
+  .prow.loose .n { color:var(--text-3); }
+  .prow.loose[aria-selected="true"] .n { color:var(--text-1); }
+  .loose-dot { width:5px; height:5px; border:1px dashed var(--text-3); border-radius:50%; flex:0 0 auto; }
+
+  .tagrow { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:5px 10px; font-size:11px;
+    color:var(--text-2); border-bottom:1px solid var(--border-2); }
+  .tagrow .h { color:var(--text-3); }
+  .tagrow .c { font-size:9.5px; color:var(--text-3); font-variant-numeric:tabular-nums; }
+
+  /* notes surfaces */
+  .noterow { display:flex; align-items:center; gap:10px; padding:7px 14px; border-bottom:1px solid var(--border-2);
+    font-size:11.5px; color:var(--text-2); cursor:pointer; transition:background 160ms var(--ease-settle); }
+  .noterow:hover { background:var(--surface-2); color:var(--text-1); }
+  .noterow .t { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .noterow .m { font-size:9.5px; color:var(--text-3); flex:0 0 auto; }
+  .noterow .fi { color:var(--text-3); flex:0 0 auto; }
+  .noterow.big { padding:11px 18px; font-size:12.5px; }
+  .noterow.tight { padding:5px 14px; font-size:11px; }
+  .notes-head { flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:8px 14px; border-bottom:1px solid var(--border); }
+  .notes-head .lbl { font-size:9px; letter-spacing:0.09em; text-transform:uppercase; color:var(--text-3); }
+  .notes-scroll { flex:1 1 auto; min-height:0; overflow-y:auto; scrollbar-gutter:stable; }
+  .more-row { padding:8px 14px; font-size:10px; color:var(--text-3); }
+
+  /* description fields */
+  .desc-area { width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text-1);
+    font-family:inherit; font-size:11px; line-height:1.55; padding:8px 10px; resize:none;
+    transition:border-color 160ms var(--ease-settle); }
+  .desc-area::placeholder { color:var(--text-3); }
+  .desc-area:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+  .desc-meta { display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:9px; color:var(--text-3); }
+
+  /* quality meter (semantic state only: yellow = weak, green = good) */
+  .qmeter { display:flex; align-items:center; gap:6px; font-size:9.5px; }
+  .qbars { display:flex; gap:2px; }
+  .qbar { width:16px; height:4px; background:var(--surface-2); }
+  .qbar.on { background:currentColor; }
+  .q-weak { color:var(--yellow); }
+  .q-good { color:var(--green); }
+
+  /* Inbox suggestion: the engine proposes a NEW project and waits. It may never create one. */
+  .sugg { border:1px solid var(--accent); background:var(--accent-d); padding:9px 11px; }
+  .sugg .hd { display:flex; align-items:center; gap:6px; font-size:9px; letter-spacing:0.08em;
+    text-transform:uppercase; color:var(--text-2); margin-bottom:6px; }
+  .sugg .qt { font-size:11px; color:var(--text-1); line-height:1.45; margin-bottom:5px;
+    overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+  .sugg .why { font-size:9px; color:var(--text-3); line-height:1.5; margin-bottom:8px; }
+  .sugg .acts { display:flex; gap:6px; flex-wrap:wrap; }
+  .sugg-strip { display:flex; align-items:center; gap:10px; padding:8px 14px; border-bottom:1px solid var(--border);
+    background:var(--accent-d); font-size:10.5px; color:var(--text-2); }
+  .sugg-strip .txt { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-1); }
+
+  /* empty / first-open state — calm, never a nag, never an error */
+  .calm { padding:26px 30px; max-width:64ch; display:flex; flex-direction:column; gap:12px; }
+  .calm h3 { font-size:15px; font-weight:600; margin:0; color:var(--text-1); }
+  .calm p { font-size:11.5px; color:var(--text-2); line-height:1.7; }
+  .calm .row { display:flex; gap:8px; align-items:center; margin-top:2px; }
+
+  /* Panel 0 — today's page, rendered from VaultManager.tsx */
+  .v0-card { border:1px solid var(--border); background:var(--bg); padding:10px 12px; display:flex; align-items:center; gap:10px; }
+  .v0-card:hover { border-color:var(--accent); }
+  .v0-name { font-size:12px; font-weight:500; color:var(--text-1); }
+  .v0-sub { font-size:10px; color:var(--text-3); margin-top:1px; }
+  .v0-desc { font-size:10px; color:color-mix(in srgb, var(--accent) 70%, var(--text-2)); margin-top:3px; }
+  .v0-path { font-size:10px; color:var(--text-3); text-transform:uppercase; letter-spacing:0.08em; }
+  .strike-note { display:inline-flex; align-items:center; gap:6px; font-size:9px; color:var(--yellow); }
+
+  footer { margin-top:60px; border-top:1px solid var(--border-2); padding-top:24px; }
+  .tradeoff { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:1px; background:var(--border-2); border:1px solid var(--border-2); margin-top:14px; }
+  .tradeoff > div { background:var(--surface); padding:12px 14px; }
+  .tradeoff h4 { margin:0 0 6px; font-size:11.5px; font-weight:600; color:var(--text-1); }
+  .tradeoff p { font-size:10.5px; color:var(--text-2); line-height:1.6; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration:0.01ms !important; animation-duration:0.01ms !important; transition-delay:0ms !important; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <h1>Projects, full window: three ways to weight description against notes</h1>
+    <p class="lede">
+      <b style="color:var(--text-1);">A3 is settled and is not on the table here.</b> The parent spec
+      &sect;6 item 1 already closed the layout strategy for this surface: a split panel, project list on
+      the left, that project's description editor and notes on the right, no drill-in, and the left rail
+      carries the tile/list toggle. All three options below are A3. They differ only in how much of the
+      right pane the description editor is allowed to take from the notes list, and how loud the rail is.
+    </p>
+    <p class="lede" style="margin-top:12px;">
+      The real trade-off you are picking: <b style="color:var(--text-1);">A favours density</b> (most
+      information per pixel, closest to today), <b style="color:var(--text-1);">B favours reading notes</b>
+      (the notes list dominates, description is one click away), <b style="color:var(--text-1);">C favours
+      description quality</b> &mdash; which is the one that makes phone auto-assignment work, because the
+      phone matches a new note semantically against the description text you wrote.
+    </p>
+    <div class="principles">
+      A note's project comes from a body tag like <b>#project@research</b>; exactly one project per note;
+      a note with no tag is <b>loose</b>, which is normal, permanent and never nagged at. Both apps group
+      by the tag, never by a path, and <b>no surface presents a path as the source of truth</b>.
+      <b>Tile mode</b> shows project groupings; <b>list mode</b> shows individual non-action tags only
+      (<b>sys/*</b> and <b>#project@</b> are filtered out). Deleting a project removes the registry entry
+      and nothing else &mdash; its notes go loose, no note is ever destroyed by a project operation
+      (&sect;5). The engine may <b>propose</b> a new project from an Inbox item but may never create one:
+      approval is always yours.
+    </div>
+    <div class="flag-box">
+      <b>Two findings from the live smoke run against your actual vault, recorded here so you see them
+      next to the design.</b>
+      <div class="flag-row">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16.5v.01"/></svg>
+        <span><b>The index's <code>project</code> column is a stale derived cache.</b> Task 11 renamed
+        <code>category</code> to <code>project</code> without re-deriving the values, so
+        <code>/stats</code> and <code>/search?project=</code> currently report <b>personal</b>,
+        <b>work</b> and <b>recipes</b> as projects that do not exist in any registry. Every count those
+        routes return today is describing the deleted taxonomy, not the new one.</span>
+      </div>
+      <div class="flag-row">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16.5v.01"/></svg>
+        <span><b><code>project_registry.rebuild_from_vault</code> has zero non-test callers.</b> It was
+        built and never wired to anything. Whichever option wins, the "rebuild from the tags in my vault"
+        recovery path this page will want does not currently exist as a reachable action.</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ══════════════════════════ PANEL 0 — CURRENT ══════════════════════════ -->
+  <section>
+    <div class="section-head">
+      <h2>Current &mdash; the Vault page as it exists today</h2>
+      <span class="section-tag">baseline, not an option</span>
+    </div>
+    <p class="lede" style="margin-bottom:16px;">
+      Rendered from <b style="color:var(--text-1);">gui/src/components/VaultManager.tsx</b> with your real
+      vault contents. Top-level directories become cards; clicking one drills in and replaces the whole
+      body with a file list; description editing is a modal that takes over the top of the page. The
+      structure is a directory browser, so the description &mdash; the field the phone's matcher actually
+      depends on &mdash; is three clicks deep and invisible until you go looking for it.
+    </p>
+
+    <div class="win short" role="img" aria-label="Current Vault page">
+      <div class="win-head">
+        <span class="wt">
+          <svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h6l2 3h8a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg>
+          Vault
+          <span class="v0-path">C:\&hellip;\STORAGE</span>
+          <span class="strike-note" title="Removed by the rework">
+            <svg class="ic" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16.5v.01"/></svg>
+            path shown as the identity &mdash; the rework removes this
+          </span>
+        </span>
+        <span class="win-acts">
+          <button class="iconbtn" title="Open vault location" aria-label="Open vault location">
+            <svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h6l2 3h8a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M3 10h18"/></svg>
+          </button>
+          <button class="iconbtn" title="Refresh" aria-label="Refresh">
+            <svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 4 21 10 15 10"/><path d="M19.5 15a8 8 0 1 1-1.9-8.3L21 10"/></svg>
+          </button>
+          <button class="iconbtn" title="New project" aria-label="New project" style="color:var(--accent);">
+            <svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+          </button>
+          <button class="iconbtn" title="Close" aria-label="Close">
+            <svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>
+          </button>
+        </span>
+      </div>
+      <div style="flex:1 1 auto; overflow-y:auto; padding:12px 16px; display:flex; flex-direction:column; gap:6px;">
+        <div class="v0-card">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h6l2 3h8a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg>
+          <div style="flex:1 1 auto; min-width:0;">
+            <div class="v0-name" style="color:var(--text-3);">Inbox</div>
+            <div class="v0-sub">0 notes</div>
+          </div>
+          <div style="display:flex; gap:2px;">
+            <button class="iconbtn" title="Edit description" aria-label="Edit description"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button>
+            <button class="iconbtn" title="Rename" aria-label="Rename"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4v16h16v-7"/><path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z"/></svg></button>
+            <button class="iconbtn danger" title="Delete" aria-label="Delete"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>
+          </div>
+        </div>
+        <div class="v0-card">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h6l2 3h8a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg>
+          <div style="flex:1 1 auto; min-width:0;">
+            <div class="v0-name">personal</div>
+            <div class="v0-sub">20 notes</div>
+          </div>
+          <div style="display:flex; gap:2px;">
+            <button class="iconbtn" title="Edit description" aria-label="Edit description"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button>
+            <button class="iconbtn" title="Rename" aria-label="Rename"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4v16h16v-7"/><path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z"/></svg></button>
+            <button class="iconbtn danger" title="Delete" aria-label="Delete"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>
+          </div>
+        </div>
+        <div class="v0-card">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h6l2 3h8a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg>
+          <div style="flex:1 1 auto; min-width:0;">
+            <div class="v0-name">work</div>
+            <div class="v0-sub">2 notes</div>
+          </div>
+          <div style="display:flex; gap:2px;">
+            <button class="iconbtn" title="Edit description" aria-label="Edit description"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button>
+            <button class="iconbtn" title="Rename" aria-label="Rename"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4v16h16v-7"/><path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z"/></svg></button>
+            <button class="iconbtn danger" title="Delete" aria-label="Delete"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>
+          </div>
+        </div>
+        <div class="v0-card">
+          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h6l2 3h8a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg>
+          <div style="flex:1 1 auto; min-width:0;">
+            <div class="v0-name">recipes</div>
+            <div class="v0-sub">1 note</div>
+          </div>
+          <div style="display:flex; gap:2px;">
+            <button class="iconbtn" title="Edit description" aria-label="Edit description"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button>
+            <button class="iconbtn" title="Rename" aria-label="Rename"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4v16h16v-7"/><path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z"/></svg></button>
+            <button class="iconbtn danger" title="Delete" aria-label="Delete"><svg class="ic" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>
+          </div>
+        </div>
+        <div style="font-size:10px; color:var(--text-3); line-height:1.7; padding-top:8px;">
+          Four rows, and not one of them is a project. <b style="color:var(--text-2);">personal</b>,
+          <b style="color:var(--text-2);">work</b> and <b style="color:var(--text-2);">recipes</b> are
+          legacy directories on disk; the registry file has never been created, so the product's own
+          answer to "what projects do I have" is currently <b style="color:var(--text-2);">none</b>. This
+          page cannot tell the difference, because it lists directories rather than projects. There is no
+          row here for the 17 notes that are loose, no description visible without opening a modal, and
+          no place for the engine to propose anything.
+        </div>
+      </div>
+    </div>
+    <div class="dim-badge">1100 x 560 &mdash; dashed outline is a dimension guide, not part of the UI</div>
+  </section>
+
+  <!-- ══════════════════════════ OPTION A ══════════════════════════ -->
+  <section>
+    <div class="section-head">
+      <h2>Option A &mdash; "Ledger": density</h2>
+      <span class="section-tag">most information per pixel, closest to today</span>
+    </div>
+    <p class="lede" style="margin-bottom:16px;">
+      A dense single-column rail: name left, note count right-aligned, nothing else. The right pane splits
+      horizontally &mdash; a compact always-editable description strip on top (no modal, no expand step,
+      you just type in it) and the notes list filling everything below. Because A is the density option,
+      its rail control is three positions rather than two: <b style="color:var(--text-1);">tiles</b> (a
+      2-column project grid), <b style="color:var(--text-1);">rows</b> (the dense single column), and
+      <b style="color:var(--text-1);">tags</b> (list mode &mdash; individual non-action tags only).
+      Suggestions live as a quiet strip pinned to the bottom of the rail, so they never displace notes.
+    </p>
+    <div class="mockcol">
+      <div class="win" id="a-full"></div>
+      <div class="dim-badge">1100 x 680 &mdash; populated. Click a rail row to select it; the rail control is live.</div>
+      <p class="mocklabel">
+        <b>Populated.</b> The description strip is 3 lines and always live &mdash; edits commit on blur,
+        there is no Save button to hunt for. The cost of that compactness is that a long description
+        scrolls inside a 3-line box, which is exactly the thing risk 4 in &sect;11 warns about: the field
+        the phone depends on is the smallest thing on the page.
+      </p>
+    </div>
+    <div class="mockcol" style="margin-top:34px;">
+      <div class="win" id="a-empty"></div>
+      <div class="dim-badge">1100 x 680 &mdash; first open, and this is your vault as it actually is today</div>
+      <p class="mocklabel">
+        <b>First open.</b> Zero registered projects, 17 loose notes, and no error anywhere. The rail holds
+        exactly one entry &mdash; <b>loose</b> &mdash; and the pane shows those notes as an ordinary,
+        readable list. The invitation to make a project is one calm button; nothing counts down, nothing
+        is red, nothing calls this state incomplete.
+      </p>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════ OPTION B ══════════════════════════ -->
+  <section>
+    <div class="section-head">
+      <h2>Option B &mdash; "Workbench": reading</h2>
+      <span class="section-tag">the notes list is the page</span>
+    </div>
+    <p class="lede" style="margin-bottom:16px;">
+      The narrowest rail of the three: names only, count as a quiet right-aligned numeral, no descriptions,
+      no snippets. The right pane is given almost entirely to notes, at a larger row height that is
+      comfortable to read down. The description collapses to a single-line header strip showing its first
+      words; clicking it expands a full editor in place (live &mdash; try it), and it collapses again on
+      save. Deliberately secondary, always exactly one click away.
+    </p>
+    <div class="mockcol">
+      <div class="win" id="b-full"></div>
+      <div class="dim-badge">1100 x 680 &mdash; populated. The description strip expands and collapses; the rail control is live.</div>
+      <p class="mocklabel">
+        <b>Populated.</b> Best option for the day-to-day act of "open a project, scan what's in it".
+        The risk it accepts: a description you never expand is a description you never write, and an empty
+        description is what degrades phone matching. B answers that with the collapsed strip's own copy
+        &mdash; when the text is missing, the strip says so in the same place the text would be.
+      </p>
+    </div>
+    <div class="mockcol" style="margin-top:34px;">
+      <div class="win" id="b-empty"></div>
+      <div class="dim-badge">1100 x 680 &mdash; first open</div>
+      <p class="mocklabel">
+        <b>First open.</b> Same calm framing, but B's larger note rows mean the 17 loose notes read as a
+        proper reading list rather than a backlog. The suggestion strip sits above them where a banner
+        would go, and can be dismissed without touching anything else.
+      </p>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════ OPTION C ══════════════════════════ -->
+  <section>
+    <div class="section-head">
+      <h2>Option C &mdash; "Card": descriptions are load-bearing</h2>
+      <span class="section-tag">optimises the field the phone actually reads</span>
+    </div>
+    <p class="lede" style="margin-bottom:16px;">
+      The right pane leads with the project itself: the name as a large heading, and underneath it a
+      genuine multi-line editor, roomy enough that writing three sentences feels natural rather than
+      grudging. Under the editor is a live quality hint that explains, in one line, why the text matters:
+      the phone embeds this description and matches new captures against it, so a blank one means the
+      matcher has nothing and correctly gives up rather than guessing (&sect;11 risk 4). The rail carries a
+      one-line description snippet per project, so a blank one is visible from across the page. Notes sit
+      below as a compact table.
+    </p>
+    <div class="mockcol">
+      <div class="win" id="c-full"></div>
+      <div class="dim-badge">1100 x 680 &mdash; populated. Type in the description to watch the quality hint move; the rail control is live.</div>
+      <p class="mocklabel">
+        <b>Populated.</b> Select <b>trip-japan</b> in the rail to see the blank-description state: the
+        editor is empty, the hint reads weak in yellow, and the rail row shows "no description" where the
+        others show their first words. The cost is the obvious one &mdash; the notes table gets the
+        smallest share of the three, roughly half of B's.
+      </p>
+    </div>
+    <div class="mockcol" style="margin-top:34px;">
+      <div class="win" id="c-empty"></div>
+      <div class="dim-badge">1100 x 680 &mdash; first open</div>
+      <p class="mocklabel">
+        <b>First open.</b> C's empty state is the one that teaches: because the card is the page, the
+        first project you create lands you straight in a description editor with the quality hint already
+        showing, which is the moment that decides whether phone auto-assignment ever works for you.
+      </p>
+    </div>
+  </section>
+
+  <footer>
+    <h2>What you are actually choosing</h2>
+    <div class="tradeoff">
+      <div>
+        <h4>A &mdash; Ledger</h4>
+        <p>Pick this if you want to see everything at once and treat the description as a small field you
+        occasionally fix. Least change from today. Highest risk of leaving descriptions thin.</p>
+      </div>
+      <div>
+        <h4>B &mdash; Workbench</h4>
+        <p>Pick this if the thing you do most is read a project's notes. Descriptions stay reachable but
+        never take space from the list. Middle ground on the phone-accuracy risk.</p>
+      </div>
+      <div>
+        <h4>C &mdash; Card</h4>
+        <p>Pick this if you want phone auto-assignment to work well. It spends real screen area on the one
+        field that drives it, and makes a blank description visible rather than silent.</p>
+      </div>
+    </div>
+    <p class="lede" style="margin-top:16px;">
+      All three are A3, all three carry the tile/list toggle on the rail, all three show loose as a
+      first-class rail entry, and all three keep project creation strictly user-approved. Nothing below
+      the neck differs; the choice is purely about where the pixels go.
+    </p>
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ── icons: inline SVG only, stroke=currentColor, 1.7 weight, 24 grid ──────
+  function ic(d, size) {
+    return '<svg class="ic" width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" ' +
+      'stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + d + '</svg>';
+  }
+  var I = {
+    tile: '<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/>',
+    rows: '<line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="2" cy="7" r="0.6"/><circle cx="2" cy="12" r="0.6"/><circle cx="2" cy="17" r="0.6"/>',
+    list: '<line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/>',
+    plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+    pencil: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+    trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>',
+    refresh: '<polyline points="21 4 21 10 15 10"/><path d="M19.5 15a8 8 0 1 1-1.9-8.3L21 10"/>',
+    file: '<path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z"/><polyline points="14 3 14 7 18 7"/>',
+    inbox: '<path d="M21 12h-5l-2 3h-4l-2-3H3"/><path d="M6.2 4.6L3 12v6a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-6l-3.2-7.4A1 1 0 0 0 16.9 4H7.1a1 1 0 0 0-.9.6z"/>',
+    check: '<path d="M20 6L9 17l-5-5"/>',
+    x: '<path d="M18 6L6 18"/><path d="M6 6l12 12"/>',
+    chevR: '<path d="M9 18l6-6-6-6"/>',
+    chevD: '<path d="M6 9l6 6 6-6"/>',
+    close: '<path d="M18 6L6 18"/><path d="M6 6l12 12"/>',
+    vault: '<path d="M4 4h6l2 3h8a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/>'
+  };
+
+  // ── data ───────────────────────────────────────────────────────────────────
+  // The populated state is necessarily hypothetical: your registry does not
+  // exist yet, so there are no real projects to draw. The loose list and the
+  // three note titles inside it are real, from the smoke run.
+  var LOOSE_REAL = [
+    ["I'll tell you why this is very important. This was a very,", "edited 12 Jul"],
+    ["qa-smoke", "edited 28 Jul"],
+    ["DrainTest 1", "edited 30 Jul"]
+  ];
+
+  function looseNotes() {
+    return LOOSE_REAL.slice();
+  }
+
+  var PROJECTS = [
+    {
+      id: "research", name: "research", count: 6,
+      desc: "Papers, outlines and interview notes for the current literature review. Anything about study design, citations, or participant interviews belongs here.",
+      notes: [
+        ["Q3 lit review outline", "edited 2h ago"],
+        ["Interview transcript, P. Alvarez", "edited yesterday"],
+        ["Related work, citation map", "edited 3d ago"],
+        ["Methodology draft", "edited 4d ago"],
+        ["Survey response notes", "edited 5d ago"],
+        ["Figures, working set", "edited 6d ago"]
+      ]
+    },
+    {
+      id: "kitchen-remodel", name: "kitchen-remodel", count: 4,
+      desc: "Quotes, measurements and supplier contacts for the kitchen job. Includes anything about cabinets, worktops, plumbing dates.",
+      notes: [
+        ["Cabinet quote, second supplier", "edited 1d ago"],
+        ["Worktop measurements", "edited 2d ago"],
+        ["Plumber availability", "edited 1w ago"],
+        ["Tile samples, shortlist", "edited 2w ago"]
+      ]
+    },
+    {
+      id: "onboarding-v2", name: "onboarding-v2", count: 9,
+      desc: "The onboarding rewrite: copy drafts, funnel numbers, and every decision about the first-run flow.",
+      notes: [
+        ["First-run copy, draft 3", "edited 3h ago"],
+        ["Funnel numbers, week 2", "edited yesterday"],
+        ["Decision: no email gate", "edited 2d ago"],
+        ["Empty-state audit", "edited 3d ago"],
+        ["Support tickets, themes", "edited 4d ago"],
+        ["A/B result, tooltip variant", "edited 5d ago"],
+        ["Handoff notes for design", "edited 1w ago"],
+        ["Open questions", "edited 1w ago"],
+        ["Old flow, screenshots", "edited 2w ago"]
+      ]
+    },
+    {
+      id: "trip-japan", name: "trip-japan", count: 3,
+      desc: "",
+      notes: [
+        ["Flights, options compared", "edited 2d ago"],
+        ["Kyoto, places to eat", "edited 4d ago"],
+        ["Rail pass, what it covers", "edited 1w ago"]
+      ]
+    }
+  ];
+
+  var TAGS = [
+    ["reading", 11], ["invoice", 6], ["idea", 5], ["recipe", 4],
+    ["health", 3], ["quote", 3], ["draft", 2], ["reference", 2]
+  ];
+
+  // Inbox suggestion: the engine proposes a NEW project name and waits. It may
+  // never create one itself; approval is always the user's.
+  var SUGGESTION = {
+    quote: "Rail pass, what it covers \u2014 plus two other captures this week about Kyoto and flight prices.",
+    name: "trip-japan",
+    why: "3 loose captures in 6 days share vocabulary that matches no existing project."
+  };
+
+  function looseCount(st) { return st.empty ? 17 : 17; }
+
+  function projectsFor(st) { return st.empty ? [] : PROJECTS; }
+
+  function findProject(id) {
+    for (var i = 0; i < PROJECTS.length; i++) if (PROJECTS[i].id === id) return PROJECTS[i];
+    return null;
+  }
+
+  // ── state ──────────────────────────────────────────────────────────────────
+  var STATE = {};
+
+  function esc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  // ── shared fragments ───────────────────────────────────────────────────────
+
+  function railToggle(st, threeWay) {
+    var items = threeWay
+      ? [["tile", I.tile, "Tiles: project groupings"], ["rows", I.rows, "Rows: dense project list"], ["list", I.list, "Tags: individual non-action tags"]]
+      : [["tile", I.tile, "Tile mode: project groupings"], ["list", I.list, "List mode: individual non-action tags"]];
+    var h = '<div class="fw-toggle" role="tablist" aria-label="Rail view mode">';
+    for (var i = 0; i < items.length; i++) {
+      var sel = st.mode === items[i][0];
+      h += '<button class="fw-toggle-item" role="tab" data-act="mode" data-mode="' + items[i][0] + '" ' +
+        'aria-selected="' + (sel ? "true" : "false") + '" title="' + items[i][2] + '" aria-label="' + items[i][2] + '">' +
+        ic(items[i][1], 13) + '</button>';
+    }
+    return h + '</div>';
+  }
+
+  function tagRows() {
+    var h = "";
+    for (var i = 0; i < TAGS.length; i++) {
+      h += '<div class="tagrow"><span><span class="h">#</span>' + esc(TAGS[i][0]) + '</span><span class="c">' + TAGS[i][1] + '</span></div>';
+    }
+    return h;
+  }
+
+  function tagFootnote() {
+    return '<div class="rail-note">List mode shows descriptive vocabulary only. System tags and the project tag itself are filtered out.</div>';
+  }
+
+  function looseRow(st, pad) {
+    var sel = st.sel === "__loose";
+    return '<button class="prow loose" data-act="sel" data-id="__loose" aria-selected="' + (sel ? "true" : "false") + '" ' +
+      'style="padding:' + pad + ';">' +
+      '<span class="loose-dot" aria-hidden="true"></span>' +
+      '<span class="n">loose</span><span class="c">' + looseCount(st) + '</span></button>';
+  }
+
+  function noteRows(list, cls) {
+    var h = "";
+    for (var i = 0; i < list.length; i++) {
+      h += '<div class="noterow ' + cls + '" tabindex="0">' +
+        '<span class="fi">' + ic(I.file, 12) + '</span>' +
+        '<span class="t">' + esc(list[i][0]) + '</span>' +
+        '<span class="m">' + esc(list[i][1]) + '</span>' +
+        '<span class="fi">' + ic(I.chevR, 11) + '</span></div>';
+    }
+    return h;
+  }
+
+  function looseMoreRow(st) {
+    return '<div class="more-row">14 more loose notes below. Loose is a normal, permanent state, not a queue.</div>';
+  }
+
+  function currentNotes(st) {
+    if (st.sel === "__loose") return looseNotes();
+    var p = findProject(st.sel);
+    return p ? p.notes : [];
+  }
+
+  function currentTitle(st) {
+    return st.sel === "__loose" ? "loose" : st.sel;
+  }
+
+  function suggestionCard(st, compact) {
+    if (st.dismissed) return "";
+    if (st.approved) {
+      return '<div class="sugg" style="border-color:var(--green);background:rgba(74,222,128,0.08);">' +
+        '<div class="hd" style="color:var(--green);">' + ic(I.check, 12) + ' Project created</div>' +
+        '<div class="qt" style="font-size:10.5px;">You approved <b>' + esc(SUGGESTION.name) + '</b>. Its 3 notes were tagged and it now appears in the rail.</div>' +
+        '</div>';
+    }
+    return '<div class="sugg">' +
+      '<div class="hd">' + ic(I.inbox, 12) + ' Inbox suggests a new project</div>' +
+      '<div class="qt">' + esc(SUGGESTION.quote) + '</div>' +
+      '<div class="why">' + esc(SUGGESTION.why) + ' Proposed name: <b style="color:var(--text-2);">' + esc(SUGGESTION.name) + '</b>. Nothing is created until you approve.</div>' +
+      '<div class="acts">' +
+      '<button class="primary-btn" data-act="approve" style="font-size:10px;padding:5px 10px;">' + ic(I.check, 11) + ' Create it</button>' +
+      '<button class="ghost-btn" data-act="rename-sugg">' + ic(I.pencil, 11) + ' Rename first</button>' +
+      '<button class="ghost-btn" data-act="dismiss">' + ic(I.x, 11) + ' Not a project</button>' +
+      '</div></div>';
+  }
+
+  function suggestionStrip(st) {
+    if (st.dismissed) return "";
+    if (st.approved) {
+      return '<div class="sugg-strip" style="background:rgba(74,222,128,0.08);color:var(--green);">' +
+        ic(I.check, 13) + '<span class="txt" style="color:var(--green);">Created <b>' + esc(SUGGESTION.name) + '</b> and tagged its 3 notes.</span></div>';
+    }
+    return '<div class="sugg-strip">' + ic(I.inbox, 13) +
+      '<span class="txt">Inbox suggests a new project: <b>' + esc(SUGGESTION.name) + '</b></span>' +
+      '<span style="font-size:9px;color:var(--text-3);flex:0 0 auto;">' + esc(SUGGESTION.why) + '</span>' +
+      '<button class="primary-btn" data-act="approve" style="font-size:10px;padding:4px 10px;">' + ic(I.check, 11) + ' Create it</button>' +
+      '<button class="ghost-btn" data-act="dismiss">' + ic(I.x, 11) + ' Not a project</button></div>';
+  }
+
+  function winHead(st) {
+    return '<div class="win-head">' +
+      '<span class="wt">' + ic(I.vault, 14) + ' Vault' +
+      '<span style="font-size:9.5px;color:var(--text-3);font-weight:400;letter-spacing:0.05em;text-transform:uppercase;margin-left:4px;">projects</span>' +
+      '</span>' +
+      '<span class="win-acts">' +
+      '<button class="iconbtn" title="Refresh" aria-label="Refresh">' + ic(I.refresh, 13) + '</button>' +
+      '<button class="iconbtn" title="Close" aria-label="Close">' + ic(I.close, 13) + '</button>' +
+      '</span></div>';
+  }
+
+  function descQuality(text) {
+    var n = (text || "").trim().length;
+    var lvl = n === 0 ? 0 : (n < 60 ? 1 : (n < 120 ? 2 : 3));
+    var cls = lvl >= 3 ? "q-good" : "q-weak";
+    var word = lvl === 0 ? "nothing to match on" : (lvl === 1 ? "weak" : (lvl === 2 ? "getting there" : "good"));
+    var bars = "";
+    for (var i = 0; i < 3; i++) bars += '<span class="qbar' + (i < lvl ? " on" : "") + '"></span>';
+    return { cls: cls, word: word, bars: bars, n: n };
+  }
+
+  function qualityLine(text, verbose) {
+    var q = descQuality(text);
+    var tail = verbose
+      ? '<span style="color:var(--text-3);">The phone embeds this text and matches new captures against it. With nothing here it leaves them loose rather than guessing.</span>'
+      : "";
+    return '<div class="qmeter ' + q.cls + '" data-q="1">' +
+      '<span class="qbars">' + q.bars + '</span>' +
+      '<span data-qword="1">Phone match quality: ' + q.word + '</span>' +
+      '</div>' + (tail ? '<div style="font-size:9px;line-height:1.6;margin-top:6px;">' + tail + '</div>' : "");
+  }
+
+  function emptyPane(st, bigRows) {
+    return '<div class="calm">' +
+      '<h3>No projects yet</h3>' +
+      '<p>Every one of your 17 notes is loose right now, and that is a perfectly ordinary place for a note to live. ' +
+      'Nothing here is broken and nothing needs sorting out. A project is worth making when you have a body of ' +
+      'work you want to keep together and want the phone to file new captures into automatically.</p>' +
+      '<div class="row"><button class="primary-btn btn-hover" data-act="new">' + ic(I.plus, 12) + ' New project</button>' +
+      '<span style="font-size:9.5px;color:var(--text-3);">You name it, you describe it. Nothing is created for you.</span></div>' +
+      '</div>' +
+      '<div class="notes-head"><span class="lbl">loose &mdash; ' + looseCount(st) + ' notes</span>' +
+      '<span style="font-size:9.5px;color:var(--text-3);">no tag, and that is fine</span></div>' +
+      '<div class="notes-scroll">' + noteRows(looseNotes(), bigRows ? "big" : "") + looseMoreRow(st) + '</div>';
+  }
+
+  // ── Option A ───────────────────────────────────────────────────────────────
+  function renderA(st) {
+    var ps = projectsFor(st);
+    var body;
+
+    if (st.mode === "list") {
+      body = '<div class="seg-swap-panel" style="--swap-dir:1;">' + tagRows() + '</div>' + tagFootnote();
+    } else if (st.mode === "tile") {
+      var t = '<div class="seg-swap-panel" style="--swap-dir:-1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:1px;background:var(--border-2);border-top:1px solid var(--border-2);border-bottom:1px solid var(--border-2);">';
+      for (var i = 0; i < ps.length; i++) {
+        var on = st.sel === ps[i].id;
+        t += '<button data-act="sel" data-id="' + ps[i].id + '" aria-selected="' + (on ? "true" : "false") + '" ' +
+          'style="background:' + (on ? "var(--accent-d)" : "var(--surface)") + ';border:none;border-left:2px solid ' + (on ? "var(--accent)" : "transparent") +
+          ';padding:8px;min-height:54px;cursor:pointer;font-family:inherit;text-align:left;display:flex;flex-direction:column;justify-content:space-between;gap:4px;min-width:0;color:var(--text-1);">' +
+          '<span style="font-size:10.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(ps[i].name) + '</span>' +
+          '<span style="font-size:9px;color:var(--text-3);">' + ps[i].count + ' notes</span></button>';
+      }
+      var lo = st.sel === "__loose";
+      t += '<button data-act="sel" data-id="__loose" aria-selected="' + (lo ? "true" : "false") + '" ' +
+        'style="background:' + (lo ? "var(--accent-d)" : "var(--surface)") + ';border:none;border-left:2px solid ' + (lo ? "var(--accent)" : "transparent") +
+        ';padding:8px;min-height:54px;cursor:pointer;font-family:inherit;text-align:left;display:flex;flex-direction:column;justify-content:space-between;gap:4px;min-width:0;">' +
+        '<span style="font-size:10.5px;font-weight:600;color:var(--text-3);display:flex;align-items:center;gap:5px;"><span class="loose-dot"></span>loose</span>' +
+        '<span style="font-size:9px;color:var(--text-3);">' + looseCount(st) + ' notes</span></button>';
+      body = t + '</div>';
+    } else {
+      var r = '<div class="seg-swap-panel">';
+      for (var j = 0; j < ps.length; j++) {
+        var s = st.sel === ps[j].id;
+        r += '<button class="prow" data-act="sel" data-id="' + ps[j].id + '" aria-selected="' + (s ? "true" : "false") +
+          '" style="padding:5px 10px;font-size:11.5px;">' +
+          '<span class="n">' + esc(ps[j].name) + '</span><span class="c">' + ps[j].count + '</span></button>';
+      }
+      r += looseRow(st, "5px 10px");
+      body = r + '</div>';
+    }
+
+    var pane;
+    if (st.empty) {
+      pane = emptyPane(st, false);
+    } else {
+      var title = currentTitle(st);
+      var isLoose = st.sel === "__loose";
+      var p = findProject(st.sel);
+      pane =
+        '<div style="flex:0 0 auto;border-bottom:1px solid var(--border);padding:10px 14px;display:flex;flex-direction:column;gap:5px;">' +
+          '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">' +
+            '<span style="font-size:13px;font-weight:600;">' + esc(title) + '</span>' +
+            '<span style="display:flex;align-items:center;gap:4px;">' +
+              (isLoose ? '<span style="font-size:9.5px;color:var(--text-3);">loose notes carry no tag &mdash; nothing to configure</span>' :
+                '<button class="iconbtn" title="Rename" aria-label="Rename project">' + ic(I.pencil, 12) + '</button>' +
+                '<button class="iconbtn danger" data-act="del" title="Delete project" aria-label="Delete project">' + ic(I.trash, 12) + '</button>') +
+            '</span>' +
+          '</div>' +
+          (isLoose ? "" :
+            '<textarea class="desc-area" rows="3" data-act="desc" aria-label="Project description" ' +
+            'placeholder="What belongs in this project? The phone matches new captures against this text.">' + esc(st.desc[st.sel] !== undefined ? st.desc[st.sel] : (p ? p.desc : "")) + '</textarea>' +
+            '<div class="desc-meta"><span>Saves as you type. The phone reads this to file new captures.</span>' +
+            '<span data-qslot="1">' + qualityLine(st.desc[st.sel] !== undefined ? st.desc[st.sel] : (p ? p.desc : ""), false) + '</span></div>') +
+        '</div>' +
+        (st.confirmDel ?
+          '<div style="flex:0 0 auto;border-bottom:1px solid var(--border);background:rgba(255,100,103,0.08);padding:9px 14px;display:flex;align-items:center;gap:12px;">' +
+          '<span style="font-size:10.5px;color:var(--text-2);flex:1 1 auto;">Delete <b style="color:var(--text-1);">' + esc(title) + '</b>? Its ' +
+          (p ? p.count : 0) + ' notes are not deleted, moved to trash or edited &mdash; they become loose.</span>' +
+          '<button class="ghost-btn" data-act="cancel-del">Cancel</button>' +
+          '<button class="ghost-btn" data-act="do-del" style="border-color:var(--red);color:var(--red);">Delete project only</button></div>' : "") +
+        '<div class="notes-head"><span class="lbl">' + currentNotes(st).length + (isLoose ? ' of ' + looseCount(st) : '') + ' notes</span>' +
+          '<span style="font-size:9.5px;color:var(--text-3);">newest first</span></div>' +
+        '<div class="notes-scroll">' + noteRows(currentNotes(st), "tight") + (isLoose ? looseMoreRow(st) : "") + '</div>';
+    }
+
+    return winHead(st) +
+      '<div class="win-body">' +
+        '<div class="rail" style="width:272px;">' +
+          '<div class="rail-head"><span class="rail-title">Projects</span>' + railToggle(st, true) + '</div>' +
+          '<div class="rail-scroll">' + body + '</div>' +
+          '<div class="rail-foot">' +
+            '<button class="newbtn btn-hover" data-act="new">' + ic(I.plus, 12) + ' New project</button>' +
+            suggestionCard(st, true) +
+          '</div>' +
+        '</div>' +
+        '<div class="pane">' + pane + '</div>' +
+      '</div>';
+  }
+
+  // ── Option B ───────────────────────────────────────────────────────────────
+  function renderB(st) {
+    var ps = projectsFor(st);
+    var body;
+    if (st.mode === "list") {
+      body = '<div class="seg-swap-panel" style="--swap-dir:1;">' + tagRows() + '</div>' + tagFootnote();
+    } else {
+      var r = '<div class="seg-swap-panel" style="--swap-dir:-1;">';
+      for (var i = 0; i < ps.length; i++) {
+        var s = st.sel === ps[i].id;
+        r += '<button class="prow" data-act="sel" data-id="' + ps[i].id + '" aria-selected="' + (s ? "true" : "false") +
+          '" style="padding:8px 10px;font-size:11.5px;">' +
+          '<span class="n">' + esc(ps[i].name) + '</span><span class="c">' + ps[i].count + '</span></button>';
+      }
+      r += looseRow(st, "8px 10px");
+      body = r + '</div>';
+    }
+
+    var pane;
+    if (st.empty) {
+      pane = suggestionStrip(st) + emptyPane(st, true);
+    } else {
+      var isLoose = st.sel === "__loose";
+      var p = findProject(st.sel);
+      var text = st.desc[st.sel] !== undefined ? st.desc[st.sel] : (p ? p.desc : "");
+      var firstWords = text.trim() ? (text.trim().length > 78 ? text.trim().slice(0, 78) + "\u2026" : text.trim()) : "";
+
+      var descBlock;
+      if (isLoose) {
+        descBlock = '<div style="flex:0 0 auto;border-bottom:1px solid var(--border);padding:10px 16px;font-size:10px;color:var(--text-3);">' +
+          'Loose notes carry no project tag. There is nothing to describe and nothing to fix.</div>';
+      } else if (st.descOpen) {
+        descBlock = '<div style="flex:0 0 auto;border-bottom:1px solid var(--border);padding:10px 16px;display:flex;flex-direction:column;gap:7px;">' +
+          '<div style="display:flex;align-items:center;justify-content:space-between;">' +
+            '<span class="rail-title">Description</span>' +
+            '<button class="iconbtn" data-act="desc-toggle" title="Collapse" aria-label="Collapse description">' + ic(I.chevD, 13) + '</button>' +
+          '</div>' +
+          '<textarea class="desc-area" rows="4" data-act="desc" aria-label="Project description" ' +
+          'placeholder="What belongs in this project? The phone matches new captures against this text.">' + esc(text) + '</textarea>' +
+          '<div class="desc-meta"><span data-qslot="1">' + qualityLine(text, false) + '</span>' +
+          '<button class="ghost-btn" data-act="desc-toggle">' + ic(I.check, 11) + ' Save and collapse</button></div>' +
+        '</div>';
+      } else {
+        descBlock = '<button data-act="desc-toggle" style="flex:0 0 auto;border:none;border-bottom:1px solid var(--border);background:none;' +
+          'padding:9px 16px;display:flex;align-items:center;gap:10px;cursor:pointer;font-family:inherit;width:100%;text-align:left;color:var(--text-2);">' +
+          '<span style="font-size:9px;letter-spacing:0.09em;text-transform:uppercase;color:var(--text-3);flex:0 0 auto;">Description</span>' +
+          (firstWords
+            ? '<span style="flex:1 1 auto;min-width:0;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(firstWords) + '</span>'
+            : '<span style="flex:1 1 auto;min-width:0;font-size:11px;color:var(--yellow);">Not written yet &mdash; the phone has nothing to match new captures against</span>') +
+          '<span style="flex:0 0 auto;color:var(--text-3);">' + ic(I.chevR, 13) + '</span></button>';
+      }
+
+      pane = descBlock + suggestionStrip(st) +
+        (st.confirmDel ?
+          '<div style="flex:0 0 auto;border-bottom:1px solid var(--border);background:rgba(255,100,103,0.08);padding:9px 16px;display:flex;align-items:center;gap:12px;">' +
+          '<span style="font-size:10.5px;color:var(--text-2);flex:1 1 auto;">Delete <b style="color:var(--text-1);">' + esc(currentTitle(st)) + '</b>? Its notes are not deleted or moved to trash &mdash; they become loose.</span>' +
+          '<button class="ghost-btn" data-act="cancel-del">Cancel</button>' +
+          '<button class="ghost-btn" data-act="do-del" style="border-color:var(--red);color:var(--red);">Delete project only</button></div>' : "") +
+        '<div class="notes-head">' +
+          '<span style="display:flex;align-items:baseline;gap:10px;"><span style="font-size:14px;font-weight:600;color:var(--text-1);">' + esc(currentTitle(st)) + '</span>' +
+          '<span class="lbl">' + currentNotes(st).length + (isLoose ? ' of ' + looseCount(st) : '') + ' notes</span></span>' +
+          '<span style="display:flex;gap:4px;">' + (isLoose ? '' :
+            '<button class="iconbtn" title="Rename" aria-label="Rename project">' + ic(I.pencil, 12) + '</button>' +
+            '<button class="iconbtn danger" data-act="del" title="Delete project" aria-label="Delete project">' + ic(I.trash, 12) + '</button>') + '</span>' +
+        '</div>' +
+        '<div class="notes-scroll">' + noteRows(currentNotes(st), "big") + (isLoose ? looseMoreRow(st) : "") + '</div>';
+    }
+
+    return winHead(st) +
+      '<div class="win-body">' +
+        '<div class="rail" style="width:186px;">' +
+          '<div class="rail-head"><span class="rail-title">Projects</span>' + railToggle(st, false) + '</div>' +
+          '<div class="rail-scroll">' + body + '</div>' +
+          '<div class="rail-foot"><button class="newbtn btn-hover" data-act="new">' + ic(I.plus, 12) + ' New project</button></div>' +
+        '</div>' +
+        '<div class="pane">' + pane + '</div>' +
+      '</div>';
+  }
+
+  // ── Option C ───────────────────────────────────────────────────────────────
+  function renderC(st) {
+    var ps = projectsFor(st);
+    var body;
+    if (st.mode === "list") {
+      body = '<div class="seg-swap-panel" style="--swap-dir:1;">' + tagRows() + '</div>' + tagFootnote();
+    } else {
+      var r = '<div class="seg-swap-panel" style="--swap-dir:-1;">';
+      for (var i = 0; i < ps.length; i++) {
+        var s = st.sel === ps[i].id;
+        var d = st.desc[ps[i].id] !== undefined ? st.desc[ps[i].id] : ps[i].desc;
+        var snip = d.trim() ? (d.trim().length > 34 ? d.trim().slice(0, 34) + "\u2026" : d.trim()) : "";
+        r += '<button class="prow" data-act="sel" data-id="' + ps[i].id + '" aria-selected="' + (s ? "true" : "false") +
+          '" style="padding:7px 10px;flex-direction:column;align-items:stretch;gap:2px;">' +
+          '<span style="display:flex;align-items:center;justify-content:space-between;gap:8px;">' +
+            '<span class="n" style="font-size:11.5px;">' + esc(ps[i].name) + '</span><span class="c">' + ps[i].count + '</span></span>' +
+          (snip
+            ? '<span style="font-size:8.5px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(snip) + '</span>'
+            : '<span style="font-size:8.5px;color:var(--yellow);">no description</span>') +
+          '</button>';
+      }
+      r += looseRow(st, "7px 10px");
+      body = r + '</div>';
+    }
+
+    var pane;
+    if (st.empty) {
+      pane = '<div class="calm" style="padding-bottom:16px;">' +
+          '<h3>No projects yet</h3>' +
+          '<p>All 17 of your notes are loose. That is a normal, permanent state for a note and nothing here needs ' +
+          'tidying. Make a project when you have work you want kept together &mdash; and when you make one, the ' +
+          'description you write is what lets the phone file new captures into it by itself.</p>' +
+          '<div class="row"><button class="primary-btn btn-hover" data-act="new">' + ic(I.plus, 12) + ' New project</button>' +
+          '<span style="font-size:9.5px;color:var(--text-3);">Name, then description. Nothing is created for you.</span></div>' +
+          '<div style="margin-top:4px;">' + suggestionCard(st, false) + '</div>' +
+        '</div>' +
+        '<div class="notes-head"><span class="lbl">loose &mdash; ' + looseCount(st) + ' notes</span>' +
+          '<span style="font-size:9.5px;color:var(--text-3);">no tag, and that is fine</span></div>' +
+        '<div class="notes-scroll">' + noteRows(looseNotes(), "tight") + looseMoreRow(st) + '</div>';
+    } else {
+      var isLoose = st.sel === "__loose";
+      var p = findProject(st.sel);
+      var text = st.desc[st.sel] !== undefined ? st.desc[st.sel] : (p ? p.desc : "");
+      var card;
+      if (isLoose) {
+        card = '<div style="flex:0 0 auto;padding:20px 24px 16px;border-bottom:1px solid var(--border);">' +
+          '<div style="font-size:22px;font-weight:600;letter-spacing:-0.01em;display:flex;align-items:center;gap:10px;">' +
+          '<span class="loose-dot" style="width:8px;height:8px;"></span>loose</div>' +
+          '<p style="font-size:11px;color:var(--text-2);line-height:1.7;margin-top:8px;max-width:70ch;">' +
+          'Notes with no project tag. There is nothing to describe here and nothing to fix &mdash; a note can stay ' +
+          'loose forever. Assign one to a project from its own three-dot menu, or approve a suggestion below.</p>' +
+          '<div style="margin-top:12px;max-width:560px;">' + suggestionCard(st, false) + '</div>' +
+        '</div>';
+      } else {
+        card = '<div style="flex:0 0 auto;padding:20px 24px 14px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:10px;">' +
+          '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;">' +
+            '<div style="min-width:0;">' +
+              '<div style="font-size:22px;font-weight:600;letter-spacing:-0.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(currentTitle(st)) + '</div>' +
+              '<div style="font-size:9.5px;color:var(--text-3);margin-top:3px;">' + (p ? p.count : 0) + ' notes carry this project tag</div>' +
+            '</div>' +
+            '<div style="display:flex;gap:4px;flex:0 0 auto;">' +
+              '<button class="iconbtn" title="Rename" aria-label="Rename project">' + ic(I.pencil, 13) + '</button>' +
+              '<button class="iconbtn danger" data-act="del" title="Delete project" aria-label="Delete project">' + ic(I.trash, 13) + '</button>' +
+            '</div>' +
+          '</div>' +
+          '<textarea class="desc-area" rows="5" data-act="desc" aria-label="Project description" style="font-size:12px;line-height:1.65;padding:11px 13px;" ' +
+          'placeholder="Describe what belongs in this project in a sentence or two. Example: quotes, measurements and supplier contacts for the kitchen job.">' + esc(text) + '</textarea>' +
+          '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:20px;">' +
+            '<span data-qslot="1" style="flex:0 0 auto;">' + qualityLine(text, true) + '</span>' +
+            '<span style="font-size:9px;color:var(--text-3);flex:0 0 auto;padding-top:2px;">Saves as you type</span>' +
+          '</div>' +
+          '<div style="max-width:560px;">' + suggestionCard(st, false) + '</div>' +
+        '</div>';
+      }
+
+      pane = card +
+        (st.confirmDel ?
+          '<div style="flex:0 0 auto;border-bottom:1px solid var(--border);background:rgba(255,100,103,0.08);padding:9px 24px;display:flex;align-items:center;gap:12px;">' +
+          '<span style="font-size:10.5px;color:var(--text-2);flex:1 1 auto;">Delete <b style="color:var(--text-1);">' + esc(currentTitle(st)) + '</b>? Its notes are never deleted, trashed or edited &mdash; they become loose.</span>' +
+          '<button class="ghost-btn" data-act="cancel-del">Cancel</button>' +
+          '<button class="ghost-btn" data-act="do-del" style="border-color:var(--red);color:var(--red);">Delete project only</button></div>' : "") +
+        '<div class="notes-head" style="padding-left:24px;"><span class="lbl">Notes</span>' +
+        '<span style="font-size:9.5px;color:var(--text-3);">newest first</span></div>' +
+        '<div class="notes-scroll">' + noteRows(currentNotes(st), "tight") + (isLoose ? looseMoreRow(st) : "") + '</div>';
+    }
+
+    return winHead(st) +
+      '<div class="win-body">' +
+        '<div class="rail" style="width:236px;">' +
+          '<div class="rail-head"><span class="rail-title">Projects</span>' + railToggle(st, false) + '</div>' +
+          '<div class="rail-scroll">' + body + '</div>' +
+          '<div class="rail-foot"><button class="newbtn btn-hover" data-act="new">' + ic(I.plus, 12) + ' New project</button></div>' +
+        '</div>' +
+        '<div class="pane">' + pane + '</div>' +
+      '</div>';
+  }
+
+  var RENDER = { a: renderA, b: renderB, c: renderC };
+
+  function draw(key) {
+    var st = STATE[key];
+    var el = document.getElementById(key);
+    el.innerHTML = RENDER[st.opt](st);
+  }
+
+  function mount(key, opt, empty) {
+    STATE[key] = {
+      opt: opt, empty: !!empty,
+      mode: opt === "a" ? "rows" : "tile",
+      sel: empty ? "__loose" : "research",
+      desc: {}, descOpen: false, confirmDel: false,
+      approved: false, dismissed: false
+    };
+    var el = document.getElementById(key);
+
+    el.addEventListener("click", function (e) {
+      var t = e.target.closest ? e.target.closest("[data-act]") : null;
+      if (!t || !el.contains(t)) return;
+      var st = STATE[key];
+      var act = t.getAttribute("data-act");
+      if (act === "desc") return;               // typing is handled by the input listener
+      if (act === "mode") { st.mode = t.getAttribute("data-mode"); }
+      else if (act === "sel") { st.sel = t.getAttribute("data-id"); st.confirmDel = false; }
+      else if (act === "desc-toggle") { st.descOpen = !st.descOpen; }
+      else if (act === "del") { st.confirmDel = true; }
+      else if (act === "cancel-del") { st.confirmDel = false; }
+      else if (act === "do-del") { st.confirmDel = false; }   // mock: registry entry only, notes stay
+      else if (act === "approve") { st.approved = true; }
+      else if (act === "dismiss") { st.dismissed = true; }
+      else if (act === "new" || act === "rename-sugg") { /* mock: no-op */ return; }
+      else return;
+      draw(key);
+      if (act === "desc-toggle" && st.descOpen) {
+        var ta = el.querySelector('textarea[data-act="desc"]');
+        if (ta) ta.focus();
+      }
+    });
+
+    // Live description editing without a full redraw, so focus and caret survive.
+    el.addEventListener("input", function (e) {
+      var t = e.target;
+      if (!t || t.getAttribute("data-act") !== "desc") return;
+      var st = STATE[key];
+      st.desc[st.sel] = t.value;
+      var slot = el.querySelector('[data-qslot="1"]');
+      if (slot) slot.innerHTML = qualityLine(t.value, st.opt === "c");
+    });
+
+    draw(key);
+  }
+
+  mount("a-full", "a", false);
+  mount("a-empty", "a", true);
+  mount("b-full", "b", false);
+  mount("b-empty", "b", true);
+  mount("c-full", "c", false);
+  mount("c-empty", "c", true);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,351 @@
+<title>Void — SP3 Task 10: what should daily notes do?</title>
+
+<style>
+  :root {
+    --bg:#0a0a0a; --surface:#191919; --surface-2:#262626; --border:#383838; --border-2:#262626;
+    --text-1:#fafafa; --text-2:#a1a1a1; --text-3:#7a7a7a;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.18);
+    --green:#4ade80; --yellow:#facc15; --red:#ff6467;
+    --mono: "Geist Mono", ui-monospace, "Cascadia Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg:#ffffff; --surface:#f5f5f5; --surface-2:#e8e8e8; --border:#c7c7c7; --border-2:#d2d2d2;
+      --text-1:#0a0a0a; --text-2:#4f4f4f; --text-3:#636363;
+      --accent:#737373; --accent-d:rgba(115,115,115,0.10);
+      --green:#16a34a; --yellow:#92660a; --red:#e7000b;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:#ffffff; --surface:#f5f5f5; --surface-2:#e8e8e8; --border:#c7c7c7; --border-2:#d2d2d2;
+    --text-1:#0a0a0a; --text-2:#4f4f4f; --text-3:#636363;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.10);
+    --green:#16a34a; --yellow:#92660a; --red:#e7000b;
+  }
+  :root[data-theme="dark"] {
+    --bg:#0a0a0a; --surface:#191919; --surface-2:#262626; --border:#383838; --border-2:#262626;
+    --text-1:#fafafa; --text-2:#a1a1a1; --text-3:#7a7a7a;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.18);
+    --green:#4ade80; --yellow:#facc15; --red:#ff6467;
+  }
+
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text-1); font-family:var(--mono); font-size:14px; line-height:1.6; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:1240px; margin:0 auto; padding:var(--s6) var(--s4) var(--s7); }
+  @media (max-width:640px){ .wrap { padding:var(--s5) var(--s3) var(--s6); } }
+
+  h1 { font-size:clamp(22px,5vw,34px); line-height:1.2; margin:0 0 var(--s3); font-weight:500; letter-spacing:-0.02em; text-wrap:balance; }
+  h2 { font-size:clamp(15px,3vw,18px); margin:0; font-weight:500; letter-spacing:-0.01em; }
+  p  { margin:0 0 var(--s3); color:var(--text-2); max-width:72ch; text-wrap:pretty; }
+  strong { color:var(--text-1); font-weight:500; }
+  code { background:var(--surface-2); padding:1px 5px; font-size:0.9em; color:var(--text-1); }
+
+  .meta { display:flex; flex-wrap:wrap; gap:var(--s3); font-size:12px; color:var(--text-3); margin-bottom:var(--s5); }
+  .meta span { display:inline-flex; align-items:center; gap:6px; }
+  .dot { width:6px; height:6px; background:var(--accent); display:inline-block; }
+
+  /* ---- one fork block ---- */
+  .fork { border:1px solid var(--border); margin:0 0 var(--s6); background:var(--surface); }
+  .fork.rec { border-color:var(--accent); }
+  .fork.bad { border-color:var(--red); }
+  .fork > header { padding:var(--s3) var(--s4); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:var(--s3); flex-wrap:wrap; }
+  .fork > header .lhs { display:flex; align-items:baseline; gap:var(--s3); }
+  .fork > header b { font-weight:500; font-size:15px; }
+  .fork > header .sub { font-size:12px; color:var(--text-3); }
+  .badge { font-size:10px; padding:2px 6px; border:1px solid var(--border); color:var(--text-3); white-space:nowrap; }
+  .badge.good { color:var(--green); border-color:var(--green); }
+  .badge.bad { color:var(--red); border-color:var(--red); }
+  .badge.warn { color:var(--yellow); border-color:var(--yellow); }
+
+  .panes { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1px; background:var(--border); }
+  .pane { background:var(--surface); padding:var(--s3) var(--s4) var(--s4); min-width:0; }
+  .pane > .cap { font-size:10px; color:var(--text-3); margin-bottom:var(--s3); display:block; }
+
+  /* the note surface */
+  .note { background:var(--bg); border:1px solid var(--border-2); padding:var(--s3); font-size:12px; line-height:1.75; overflow-x:auto; }
+  .note pre { margin:0; font-family:var(--mono); white-space:pre; }
+  .fm { color:var(--text-3); }
+  .h1line { color:var(--text-1); font-weight:500; }
+  .h2line { color:var(--text-2); }
+  .ptag { color:var(--accent); background:var(--accent-d); padding:0 3px; }
+  .cursor { color:var(--text-3); }
+
+  /* vault tree */
+  .tree { background:var(--bg); border:1px solid var(--border-2); padding:var(--s3); font-size:12px; line-height:1.9; }
+  .tree div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tree .dir { color:var(--text-1); }
+  .tree .file { color:var(--text-2); }
+  .tree .dim { color:var(--text-3); }
+  .tree .hit { color:var(--accent); background:var(--accent-d); }
+  .tree .gone { color:var(--red); text-decoration:line-through; }
+
+  /* projects rail tiles */
+  .tiles { display:flex; flex-direction:column; gap:var(--s2); }
+  .tile { border:1px solid var(--border); background:var(--bg); padding:var(--s2) var(--s3); display:flex; align-items:center; justify-content:space-between; gap:var(--s3); font-size:12px; }
+  .tile.on { border-color:var(--accent); background:var(--accent-d); }
+  .tile .n { color:var(--text-3); font-size:11px; }
+  .tile.ghost { border-style:dashed; color:var(--text-3); justify-content:center; }
+
+  .why { padding:var(--s3) var(--s4); border-top:1px solid var(--border); font-size:12px; color:var(--text-2); line-height:1.7; }
+  .why ul { margin:0; padding-left:16px; columns:2; column-gap:var(--s5); }
+  @media (max-width:760px){ .why ul { columns:1; } }
+  .why li { margin-bottom:4px; break-inside:avoid; }
+  .why .no { color:var(--red); }
+  .why .yes { color:var(--green); }
+
+  .arrowrow { display:flex; align-items:center; gap:var(--s2); margin:var(--s2) 0; font-size:11px; color:var(--text-3); }
+  .arrowrow svg { flex:none; }
+
+  .foot { border:1px solid var(--border); background:var(--surface); padding:var(--s4); margin-top:var(--s5); font-size:13px; color:var(--text-2); }
+  .foot b { color:var(--text-1); font-weight:500; }
+</style>
+
+<div class="wrap">
+
+  <h1>What should daily notes do?</h1>
+  <div class="meta">
+    <span><i class="dot"></i>SP3 Task 10 &mdash; reframed</span>
+    <span><i class="dot"></i>2026-08-04 &middot; s139</span>
+    <span><i class="dot"></i>three surfaces per option: the note, the vault, the projects rail</span>
+  </div>
+
+  <p>A project exists <strong>only</strong> as a body tag. Verified at source today: register <code>Daily</code>
+  and write into <code>Daily/</code> without a tag and it still resolves loose, with a tidy move queued. So
+  the question is not where a folder goes &mdash; it is <strong>whether a daily note carries machine syntax
+  in its body</strong>, and what you see if it doesn&rsquo;t.</p>
+
+  <!-- ============ OPTION 1 ============ -->
+  <div class="fork rec">
+    <header>
+      <div class="lhs"><b>1 &mdash; Daily notes go <code>_loose/</code></b><span class="sub">no Daily project, no tag</span></div>
+      <span class="badge good">recommended</span>
+    </header>
+    <div class="panes">
+      <div class="pane">
+        <span class="cap">the note you open every day</span>
+        <div class="note"><pre><span class="fm">---
+title: 2026-08-04
+project: [-]
+tags: []
+---</span>
+<span class="h1line"># 2026-08-04</span>
+
+<span class="h2line">## Intentions</span>
+- [ ] <span class="cursor">|</span>
+
+<span class="h2line">## Log</span>
+</pre></div>
+      </div>
+      <div class="pane">
+        <span class="cap">the vault on disk</span>
+        <div class="tree">
+          <div class="dim">vault/</div>
+          <div class="dir">&nbsp;&nbsp;_loose/</div>
+          <div class="file">&nbsp;&nbsp;&nbsp;&nbsp;<span class="hit">2026-08-04.md</span></div>
+          <div class="file">&nbsp;&nbsp;&nbsp;&nbsp;2026-08-03.md</div>
+          <div class="file">&nbsp;&nbsp;&nbsp;&nbsp;Grocery run.md</div>
+          <div class="dir">&nbsp;&nbsp;research/</div>
+          <div class="dim">&nbsp;&nbsp;_attachments/ _trash/</div>
+        </div>
+        <div class="arrowrow">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          tidy plans no move &mdash; tagless already means loose
+        </div>
+      </div>
+      <div class="pane">
+        <span class="cap">projects rail</span>
+        <div class="tiles">
+          <div class="tile on"><span>Loose</span><span class="n">28</span></div>
+          <div class="tile"><span>research</span><span class="n">6</span></div>
+          <div class="tile ghost">no Daily tile</div>
+        </div>
+      </div>
+    </div>
+    <div class="why"><ul>
+      <li><span class="yes">Nothing machine-shaped in a note you open daily.</span></li>
+      <li><span class="yes">Today view unaffected</span> &mdash; <code>find_daily_note</code> matches on title, not folder. Verified.</li>
+      <li><span class="yes">Retires <code>folder="Daily"</code></span>, a hardcoded name flagged as an ownerless ceiling since s127.</li>
+      <li><span class="yes">Same shape FR-29 already chose</span> for the other origination path.</li>
+      <li><span class="no">Daily notes mix into Loose</span> with everything else unfiled.</li>
+      <li><span class="no">No per-day grouping or count</span> on the projects screen.</li>
+    </ul></div>
+  </div>
+
+  <!-- ============ OPTION 2 ============ -->
+  <div class="fork">
+    <header>
+      <div class="lhs"><b>2 &mdash; Ship the tag</b><span class="sub">registered Daily project, tag under the heading</span></div>
+      <span class="badge">honours s127</span>
+    </header>
+    <div class="panes">
+      <div class="pane">
+        <span class="cap">the note you open every day</span>
+        <div class="note"><pre><span class="fm">---
+title: 2026-08-04
+project: [Daily]
+tags: []
+---</span>
+<span class="h1line"># 2026-08-04</span>
+<span class="ptag">#project@Daily</span>
+
+<span class="h2line">## Intentions</span>
+- [ ] <span class="cursor">|</span>
+
+<span class="h2line">## Log</span>
+</pre></div>
+      </div>
+      <div class="pane">
+        <span class="cap">the vault on disk</span>
+        <div class="tree">
+          <div class="dim">vault/</div>
+          <div class="dir">&nbsp;&nbsp;<span class="hit">Daily/</span></div>
+          <div class="file">&nbsp;&nbsp;&nbsp;&nbsp;2026-08-04.md</div>
+          <div class="file">&nbsp;&nbsp;&nbsp;&nbsp;2026-08-03.md</div>
+          <div class="dir">&nbsp;&nbsp;_loose/</div>
+          <div class="file">&nbsp;&nbsp;&nbsp;&nbsp;Grocery run.md</div>
+          <div class="dir">&nbsp;&nbsp;research/</div>
+          <div class="dim">&nbsp;&nbsp;_attachments/ _trash/</div>
+        </div>
+        <div class="arrowrow">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          tag agrees with folder &mdash; tidy plans no move
+        </div>
+      </div>
+      <div class="pane">
+        <span class="cap">projects rail</span>
+        <div class="tiles">
+          <div class="tile"><span>Loose</span><span class="n">26</span></div>
+          <div class="tile on"><span>Daily</span><span class="n">2</span></div>
+          <div class="tile"><span>research</span><span class="n">6</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="why"><ul>
+      <li><span class="yes">A real Daily tile</span> with a count, filterable like any project.</li>
+      <li><span class="yes">Folder and tag finally agree</span> instead of quietly fighting.</li>
+      <li><span class="no">A visible <code>#project@Daily</code> line</span> in every daily note, forever.</li>
+      <li><span class="no">First time the product authors a project tag for you</span> &mdash; a new precedent.</li>
+      <li><span class="no">Old tagless daily notes stay broken</span> and still go loose on tidy.</li>
+    </ul></div>
+  </div>
+
+  <!-- ============ OPTION 3 ============ -->
+  <div class="fork bad">
+    <header>
+      <div class="lhs"><b>3 &mdash; Leave it, defer again</b><span class="sub">status quo</span></div>
+      <span class="badge bad">known defect</span>
+    </header>
+    <div class="panes">
+      <div class="pane">
+        <span class="cap">the note &mdash; unchanged</span>
+        <div class="note"><pre><span class="fm">---
+title: 2026-08-04
+project: [-]
+tags: []
+---</span>
+<span class="h1line"># 2026-08-04</span>
+
+<span class="h2line">## Intentions</span>
+- [ ] <span class="cursor">|</span>
+
+<span class="h2line">## Log</span>
+</pre></div>
+      </div>
+      <div class="pane">
+        <span class="cap">the vault &mdash; before, then after any tidy</span>
+        <div class="tree">
+          <div class="dim">vault/</div>
+          <div class="dir">&nbsp;&nbsp;Daily/</div>
+          <div class="file">&nbsp;&nbsp;&nbsp;&nbsp;<span class="gone">2026-08-04.md</span></div>
+          <div class="dir">&nbsp;&nbsp;_loose/</div>
+          <div class="file">&nbsp;&nbsp;&nbsp;&nbsp;<span class="hit">2026-08-04.md</span></div>
+        </div>
+        <div class="arrowrow">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+          tidy relocates it silently &mdash; no confirm, no preview, no undo
+        </div>
+      </div>
+      <div class="pane">
+        <span class="cap">projects rail &mdash; before / after</span>
+        <div class="tiles">
+          <div class="tile"><span>Daily</span><span class="n">1 &rarr; 0</span></div>
+          <div class="tile on"><span>Loose</span><span class="n">27 &rarr; 28</span></div>
+          <div class="tile ghost">the folder empties itself</div>
+        </div>
+      </div>
+    </div>
+    <div class="why"><ul>
+      <li><span class="yes">Zero work now.</span></li>
+      <li><span class="no">This is the FR-23 defect class</span>, still open, now with a second known trigger.</li>
+      <li><span class="no">The <code>Daily/</code> folder looks like it means something</span> and does not.</li>
+      <li><span class="no">Task 10 keeps being carried</span> &mdash; it has been open since s126.</li>
+    </ul></div>
+  </div>
+
+  <!-- ============ OPTION 4 ============ -->
+  <div class="fork">
+    <header>
+      <div class="lhs"><b>4 &mdash; Opt-in</b><span class="sub">loose by default; tag only if you made a Daily project</span></div>
+      <span class="badge warn">conditional</span>
+    </header>
+    <div class="panes">
+      <div class="pane">
+        <span class="cap">default vault &mdash; no Daily project registered</span>
+        <div class="note"><pre><span class="fm">---
+title: 2026-08-04
+project: [-]
+---</span>
+<span class="h1line"># 2026-08-04</span>
+
+<span class="h2line">## Intentions</span>
+- [ ] <span class="cursor">|</span>
+</pre></div>
+        <div class="arrowrow">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          lands in <code>_loose/</code>, exactly like option 1
+        </div>
+      </div>
+      <div class="pane">
+        <span class="cap">after you create a Daily project yourself</span>
+        <div class="note"><pre><span class="fm">---
+title: 2026-08-04
+project: [Daily]
+---</span>
+<span class="h1line"># 2026-08-04</span>
+<span class="ptag">#project@Daily</span>
+
+<span class="h2line">## Intentions</span>
+- [ ] <span class="cursor">|</span>
+</pre></div>
+        <div class="arrowrow">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          lands in <code>Daily/</code>, exactly like option 2
+        </div>
+      </div>
+      <div class="pane">
+        <span class="cap">projects rail &mdash; whichever you chose</span>
+        <div class="tiles">
+          <div class="tile on"><span>Loose</span><span class="n">28</span></div>
+          <div class="tile ghost">Daily tile appears only if you make it</div>
+          <div class="tile"><span>research</span><span class="n">6</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="why"><ul>
+      <li><span class="yes">The product never invents a project</span> &mdash; the standing hard rule.</li>
+      <li><span class="yes">Both behaviours available</span>, chosen per vault by a normal action.</li>
+      <li><span class="no">Two code paths and two behaviours to test</span> instead of one.</li>
+      <li><span class="no">Undiscoverable</span> &mdash; nothing tells you creating a project named Daily does this.</li>
+      <li><span class="no">Any project named Daily silently changes note-creation behaviour.</span></li>
+    </ul></div>
+  </div>
+
+  <div class="foot">
+    <b>Why 1 is still the recommendation.</b> It is the only option that removes a rule instead of adding
+    one. 2 buys a tile with a permanent line of syntax in the note you read most. 3 is a defect you already
+    have. 4 sounds like flexibility but is a hidden behaviour keyed on a project name &mdash; the exact
+    coupling the &ldquo;projects are never hardcoded&rdquo; rule exists to prevent.
+  </div>
+
+</div>

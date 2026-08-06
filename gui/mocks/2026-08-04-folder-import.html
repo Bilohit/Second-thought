@@ -1,0 +1,479 @@
+<title>Void — FR-23 Option C: importing a folder-organised vault</title>
+
+<style>
+  :root {
+    --bg:#0a0a0a; --surface:#191919; --surface-2:#262626; --border:#383838; --border-2:#262626;
+    --text-1:#fafafa; --text-2:#a1a1a1; --text-3:#7a7a7a;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.18);
+    --green:#4ade80; --yellow:#facc15; --red:#ff6467;
+    --mono: "Geist Mono", ui-monospace, "Cascadia Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg:#ffffff; --surface:#f5f5f5; --surface-2:#e8e8e8; --border:#c7c7c7; --border-2:#d2d2d2;
+      --text-1:#0a0a0a; --text-2:#4f4f4f; --text-3:#636363;
+      --accent:#737373; --accent-d:rgba(115,115,115,0.10);
+      --green:#16a34a; --yellow:#92660a; --red:#e7000b;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:#ffffff; --surface:#f5f5f5; --surface-2:#e8e8e8; --border:#c7c7c7; --border-2:#d2d2d2;
+    --text-1:#0a0a0a; --text-2:#4f4f4f; --text-3:#636363;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.10);
+    --green:#16a34a; --yellow:#92660a; --red:#e7000b;
+  }
+  :root[data-theme="dark"] {
+    --bg:#0a0a0a; --surface:#191919; --surface-2:#262626; --border:#383838; --border-2:#262626;
+    --text-1:#fafafa; --text-2:#a1a1a1; --text-3:#7a7a7a;
+    --accent:#737373; --accent-d:rgba(115,115,115,0.18);
+    --green:#4ade80; --yellow:#facc15; --red:#ff6467;
+  }
+
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text-1); font-family:var(--mono); font-size:14px; line-height:1.6; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:1180px; margin:0 auto; padding:var(--s6) var(--s4) var(--s7); }
+  @media (max-width:640px){ .wrap { padding:var(--s5) var(--s3) var(--s6); } }
+
+  h1 { font-size:clamp(22px,5vw,32px); line-height:1.2; margin:0 0 var(--s3); font-weight:500; letter-spacing:-0.02em; text-wrap:balance; }
+  h2 { font-size:clamp(15px,3vw,19px); margin:0; font-weight:500; letter-spacing:-0.01em; }
+  p  { margin:0 0 var(--s3); color:var(--text-2); max-width:72ch; text-wrap:pretty; }
+  strong { color:var(--text-1); font-weight:500; }
+  code { background:var(--surface-2); padding:1px 5px; font-size:0.9em; color:var(--text-1); }
+
+  .meta { display:flex; flex-wrap:wrap; gap:var(--s3); font-size:12px; color:var(--text-3); margin-bottom:var(--s5); }
+  .meta span { display:inline-flex; align-items:center; gap:6px; }
+  .dot { width:6px; height:6px; background:var(--accent); display:inline-block; }
+
+  .settled { border:1px solid var(--green); background:var(--surface); padding:var(--s3) var(--s4); margin:0 0 var(--s6); font-size:12px; color:var(--text-2); }
+  .settled b { color:var(--green); font-weight:500; }
+  .settled ul { margin:var(--s2) 0 0; padding-left:16px; }
+  .settled li { margin-bottom:4px; }
+  .settled li:last-child { margin-bottom:0; }
+
+  .sec { margin:0 0 var(--s7); }
+  .sechead { display:flex; align-items:baseline; gap:var(--s3); border-bottom:1px solid var(--border); padding-bottom:var(--s2); margin-bottom:var(--s4); flex-wrap:wrap; }
+  .sechead .q { font-size:11px; color:var(--text-3); }
+
+  .opts { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:var(--s4); }
+  .opt { border:1px solid var(--border); background:var(--surface); display:flex; flex-direction:column; }
+  .opt.rec { border-color:var(--accent); }
+  .opt > header { padding:var(--s3) var(--s4); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:var(--s2); }
+  .opt > header b { font-weight:500; font-size:13px; }
+  .badge { font-size:10px; padding:2px 6px; border:1px solid var(--border); color:var(--text-3); white-space:nowrap; }
+  .badge.good { color:var(--green); border-color:var(--green); }
+  .badge.bad { color:var(--red); border-color:var(--red); }
+  .badge.warn { color:var(--yellow); border-color:var(--yellow); }
+
+  .note { background:var(--bg); border-bottom:1px solid var(--border); padding:var(--s4); font-size:12.5px; line-height:1.75; overflow-x:auto; }
+  .note pre { margin:0; font-family:var(--mono); white-space:pre; }
+  .fm { color:var(--text-3); }
+  .h1line { color:var(--text-1); font-weight:500; }
+  .body { color:var(--text-2); }
+  .tag { color:var(--accent); background:var(--accent-d); padding:0 3px; }
+  .add { color:var(--green); }
+  .mach { color:var(--yellow); }
+
+  .why { padding:var(--s3) var(--s4); font-size:12px; color:var(--text-2); line-height:1.65; flex:1; }
+  .why ul { margin:0; padding-left:16px; }
+  .why li { margin-bottom:4px; }
+  .why li:last-child { margin-bottom:0; }
+  .why .no { color:var(--red); }
+  .why .yes { color:var(--green); }
+
+  .later { border-top:1px solid var(--border); padding:var(--s3) var(--s4); font-size:11.5px; color:var(--text-3); background:var(--surface-2); }
+  .later b { color:var(--text-2); font-weight:500; }
+
+  /* a panel surface: strip, list rows, buttons */
+  .panel { background:var(--bg); border:1px solid var(--border-2); }
+  .ptitle { padding:var(--s2) var(--s3); border-bottom:1px solid var(--border-2); font-size:11px; color:var(--text-3); }
+  .strip { padding:var(--s3); border-bottom:1px solid var(--border-2); font-size:12px; color:var(--text-2); display:flex; flex-direction:column; gap:var(--s2); }
+  .strip .msg { color:var(--text-1); }
+  .btns { display:flex; gap:var(--s2); flex-wrap:wrap; }
+  .btn { border:1px solid var(--border); background:var(--surface-2); color:var(--text-1); font-family:var(--mono); font-size:11.5px; padding:4px 10px; }
+  .btn.pri { border-color:var(--accent); background:var(--accent-d); }
+  .btn.quiet { color:var(--text-3); background:transparent; }
+  .lrow { display:flex; align-items:center; justify-content:space-between; gap:var(--s3); padding:6px var(--s3); border-bottom:1px solid var(--border-2); font-size:12px; }
+  .lrow:last-child { border-bottom:0; }
+  .lrow .n { color:var(--text-3); font-size:11px; }
+  .lrow.bad { color:var(--red); }
+  .box { width:12px; height:12px; border:1px solid var(--border); flex:none; display:inline-block; }
+  .box.on { border-color:var(--accent); background:var(--accent-d); position:relative; }
+  .box.on::after { content:""; position:absolute; inset:2px; background:var(--text-1); }
+  .fld { display:flex; align-items:center; justify-content:space-between; gap:var(--s3); padding:var(--s3); border-bottom:1px solid var(--border-2); }
+  .fld:last-child { border-bottom:0; }
+  .fld .lab { font-size:12px; color:var(--text-1); }
+  .fld .hint { display:block; font-size:11px; color:var(--text-3); margin-top:2px; max-width:46ch; }
+  .inp { border:1px solid var(--border); background:var(--surface-2); padding:4px 8px; font-family:var(--mono); font-size:12px; color:var(--text-1); min-width:120px; }
+
+  .foot { border:1px solid var(--border); background:var(--surface); padding:var(--s4); font-size:13px; color:var(--text-2); }
+  .foot b { color:var(--text-1); font-weight:500; }
+</style>
+
+<div class="wrap">
+
+  <h1>Importing a folder-organised vault &mdash; FR-23 Option C</h1>
+  <div class="meta">
+    <span><i class="dot"></i>the one thing that writes into note bodies</span>
+    <span><i class="dot"></i>2026-08-04 &middot; s140</span>
+  </div>
+
+  <p>You pre-approved this and confirmed it again this session. Four choices are left, and each one
+  changes what a stranger's vault looks like after they say yes. Everything below is drawn from the
+  real surfaces, not described.</p>
+
+  <div class="settled">
+    <b>Settled before you choose &mdash; verified at source, not assumed:</b>
+    <ul>
+      <li>The import writes <strong>two</strong> things per folder: the body tag
+        <code>#project@&lt;folder&gt;</code> <em>and</em> a <code>.projects.toml</code> entry.
+        <code>resolve_project</code> (<code>project_registry.py:183</code>) resolves a tag only if the
+        registry also holds the name &mdash; tag alone leaves the note reading <em>loose</em>, and the
+        tidy pass would move it anyway. That is exactly the failure the <code>Daily</code> probe hit.</li>
+      <li>Bodies are touched <strong>only</strong> on an explicit yes, with the change shown first.
+        Nothing here runs automatically, ever.</li>
+      <li>Files do not move. The import makes the folders <em>legitimate</em>; it never re-paths a note.</li>
+      <li><code>_scratchpad</code>, <code>_trash</code>, <code>_attachments</code>,
+        <code>_mobile_inbox</code> and <code>_loose</code> are never candidates.</li>
+      <li>A note that already carries a <code>#project@</code> tag is skipped, not re-tagged.</li>
+    </ul>
+  </div>
+
+  <!-- ============================================================ Q1 -->
+  <div class="sec">
+    <div class="sechead">
+      <h2>1 &mdash; where the offer lives</h2>
+      <span class="q">when does a user first meet this?</span>
+    </div>
+
+    <div class="opts">
+
+      <div class="opt rec">
+        <header><b>A1 &mdash; inside the tidy preview</b><span class="badge good">recommended</span></header>
+        <div class="note">
+          <div class="panel">
+            <div class="ptitle">Vault</div>
+            <div class="strip">
+              <span class="msg">27 notes would move to <code>loose</code> because they carry no project tag.</span>
+              <div class="btns">
+                <button class="btn pri">Keep my folders &mdash; add the tags</button>
+                <button class="btn">Move the files</button>
+                <button class="btn quiet">Not now</button>
+              </div>
+            </div>
+            <div class="lrow"><span>Work / q3-planning.md</span><span class="n">&rarr; loose</span></div>
+            <div class="lrow"><span>Work / vendor-call.md</span><span class="n">&rarr; loose</span></div>
+            <div class="lrow"><span>Recipes / sourdough.md</span><span class="n">&rarr; loose</span></div>
+          </div>
+        </div>
+        <div class="why">
+          <ul>
+            <li><span class="yes">It is the exact moment of the pain.</span> The user is being told their tree is about to flatten; the fix belongs in that sentence, not in a menu they never open.</li>
+            <li>Symmetric choice: flatten, or legitimise. Both are one click, neither is hidden.</li>
+            <li>Reuses the strip Option A already shipped &mdash; one new button, no new surface.</li>
+            <li><span class="no">Only appears when a tidy is proposed.</span> A user who never renames or deletes a project never sees it.</li>
+          </ul>
+        </div>
+        <div class="later"><b>Cost:</b> the strip grows to three actions; at 288px the compact panel wraps them to two rows.</div>
+      </div>
+
+      <div class="opt">
+        <header><b>A2 &mdash; a row in Vault settings</b><span class="badge">always reachable</span></header>
+        <div class="note">
+          <div class="panel">
+            <div class="ptitle">Settings &middot; Vault</div>
+            <div class="fld">
+              <span class="lab">Import folder structure
+                <span class="hint">Turn existing folders into projects by tagging the notes inside them.</span>
+              </span>
+              <button class="btn">Scan&hellip;</button>
+            </div>
+            <div class="fld">
+              <span class="lab">Vault root<span class="hint">~/second-thought-storage</span></span>
+              <span class="inp">Change</span>
+            </div>
+          </div>
+        </div>
+        <div class="why">
+          <ul>
+            <li><span class="yes">Findable forever</span>, not just at the one moment something is about to move.</li>
+            <li>Re-runnable after the user adds more folders later.</li>
+            <li><span class="no">Nobody browses settings looking for a migration they don't know exists.</span> Discovery is near zero on its own.</li>
+          </ul>
+        </div>
+        <div class="later"><b>Cost:</b> a new settings row that reads as maintenance, in a tab that is otherwise about preferences.</div>
+      </div>
+
+      <div class="opt">
+        <header><b>A3 &mdash; one-time prompt on first open</b><span class="badge warn">loudest</span></header>
+        <div class="note">
+          <div class="panel">
+            <div class="ptitle">Vault</div>
+            <div class="strip">
+              <span class="msg">This vault has 4 folders. Second Thought groups notes by tag, not by folder.</span>
+              <div class="btns">
+                <button class="btn pri">Tag them &mdash; keep the grouping</button>
+                <button class="btn quiet">Leave the folders alone</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="why">
+          <ul>
+            <li><span class="yes">Catches every folder-organised vault</span>, including the ones that never trigger a tidy.</li>
+            <li>Explains the model once, at the moment the user is forming their expectation of it.</li>
+            <li><span class="no">Interrupts before there is any trust.</span> A first-run prompt asking to edit their files is the highest-anxiety version of this.</li>
+            <li><span class="no">One-time state to store</span> &mdash; "asked already" needs its own flag and a way to bring it back.</li>
+          </ul>
+        </div>
+        <div class="later"><b>Cost:</b> new dismissed-forever state, and a second place the same import can be launched from.</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============================================================ Q2 -->
+  <div class="sec">
+    <div class="sechead">
+      <h2>2 &mdash; where the tag line lands in the body</h2>
+      <span class="q">this is the byte the user actually gets</span>
+    </div>
+
+    <div class="opts">
+
+      <div class="opt rec">
+        <header><b>P1 &mdash; under the heading</b><span class="badge good">recommended</span></header>
+        <div class="note"><pre><span class="fm">---
+id: 8f2a...
+project: [Work]
+---</span>
+<span class="h1line"># Q3 planning</span>
+<span class="add">#project@Work</span>
+
+<span class="body">Kickoff is the 14th. Budget still open.</span></pre></div>
+        <div class="why">
+          <ul>
+            <li><span class="yes">Identical to where the daily note puts <code>#daily</code></span> &mdash; one placement rule in the product, not two.</li>
+            <li>Visible immediately on open, so the user sees what the import did without scrolling.</li>
+            <li>Reads like a tag someone typed under a title, because that is what it is.</li>
+            <li><span class="no">Pushes the first line of prose down</span> in every note it touches.</li>
+          </ul>
+        </div>
+        <div class="later"><b>No heading?</b> The line goes first, before the prose.</div>
+      </div>
+
+      <div class="opt">
+        <header><b>P2 &mdash; last line of the body</b><span class="badge">least intrusive</span></header>
+        <div class="note"><pre><span class="fm">---
+id: 8f2a...
+project: [Work]
+---</span>
+<span class="h1line"># Q3 planning</span>
+
+<span class="body">Kickoff is the 14th. Budget still open.</span>
+<span class="add">#project@Work</span></pre></div>
+        <div class="why">
+          <ul>
+            <li><span class="yes">The note opens exactly as it did before.</span> Nothing above the fold changes.</li>
+            <li>Matches how people already footer their tags in other markdown apps.</li>
+            <li><span class="no">Sits adjacent to the machine-owned trailing <code>tags:</code> line</span>, which enrichment <em>replaces wholesale</em> (<code>mobile_sync_agent.py:1484</code>). Two tag-ish lines at the bottom, one of which the machine rewrites and one it must never touch &mdash; that is the confusion s139 deliberately designed out.</li>
+            <li><span class="no">Invisible in a long note</span>; the user cannot see what was done to their file.</li>
+          </ul>
+        </div>
+        <div class="later"><b>Cost:</b> a new adjacency to the one line in the body the machine owns.</div>
+      </div>
+
+      <div class="opt">
+        <header><b>P3 &mdash; beside existing tags</b><span class="badge warn">context-aware</span></header>
+        <div class="note"><pre><span class="fm">---
+id: 8f2a...
+project: [Work]
+---</span>
+<span class="h1line"># Q3 planning</span>
+<span class="tag">#planning</span> <span class="tag">#q3</span> <span class="add">#project@Work</span>
+
+<span class="body">Kickoff is the 14th. Budget still open.</span></pre></div>
+        <div class="why">
+          <ul>
+            <li><span class="yes">Tidiest result</span> when the note already has a tag line &mdash; one line of tags, not two.</li>
+            <li><span class="no">Two code paths and no single rule</span>: it falls back to P1 whenever there is no tag line, so the product's answer to "where does the tag go" becomes "it depends".</li>
+            <li><span class="no">Edits a line the user wrote</span>, rather than adding one of its own. Harder to undo by eye, and a worse diff to review.</li>
+          </ul>
+        </div>
+        <div class="later"><b>Cost:</b> the only option here that modifies existing text instead of inserting a new line.</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============================================================ Q3 -->
+  <div class="sec">
+    <div class="sechead">
+      <h2>3 &mdash; how much the user confirms</h2>
+      <span class="q">consent granularity vs. tedium</span>
+    </div>
+
+    <div class="opts">
+
+      <div class="opt rec">
+        <header><b>G1 &mdash; per folder, counts shown</b><span class="badge good">recommended</span></header>
+        <div class="note">
+          <div class="panel">
+            <div class="ptitle">Import folder structure</div>
+            <div class="lrow"><span><i class="box on"></i> Work</span><span class="n">12 notes</span></div>
+            <div class="lrow"><span><i class="box on"></i> Recipes</span><span class="n">6 notes</span></div>
+            <div class="lrow"><span><i class="box"></i> Archive-2019</span><span class="n">31 notes</span></div>
+            <div class="strip">
+              <span class="msg">Adds one <code>#project@&lt;name&gt;</code> line to 18 notes. Nothing moves, nothing is deleted.</span>
+              <div class="btns">
+                <button class="btn pri">Add tags to 18 notes</button>
+                <button class="btn quiet">Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="why">
+          <ul>
+            <li><span class="yes">The unit of the decision is the folder</span>, which is the unit the user actually thinks in.</li>
+            <li>Lets them take Work and leave a dead archive alone &mdash; the common real case.</li>
+            <li>One confirm, and the count is stated in the button so the scale is never a surprise.</li>
+          </ul>
+        </div>
+        <div class="later"><b>Cost:</b> a checkbox list is a new pattern in this shell; nothing else here has one.</div>
+      </div>
+
+      <div class="opt">
+        <header><b>G2 &mdash; whole vault, one confirm</b><span class="badge">simplest</span></header>
+        <div class="note">
+          <div class="panel">
+            <div class="ptitle">Import folder structure</div>
+            <div class="strip">
+              <span class="msg">4 folders, 49 notes. Each gets one <code>#project@&lt;folder&gt;</code> line. Nothing moves.</span>
+              <div class="btns">
+                <button class="btn pri">Tag all 49</button>
+                <button class="btn quiet">Cancel</button>
+              </div>
+            </div>
+            <div class="lrow"><span>Work</span><span class="n">12</span></div>
+            <div class="lrow"><span>Recipes</span><span class="n">6</span></div>
+            <div class="lrow"><span>Archive-2019</span><span class="n">31</span></div>
+          </div>
+        </div>
+        <div class="why">
+          <ul>
+            <li><span class="yes">Smallest surface and smallest diff.</span> A list, a count, one button.</li>
+            <li><span class="no">All or nothing.</span> A vault with one folder worth keeping and one graveyard forces the wrong answer either way.</li>
+            <li>Undo is "delete 31 tag lines by hand", which is not undo.</li>
+          </ul>
+        </div>
+        <div class="later"><b>Cost:</b> pushes the selection work onto the user, outside the app, before they start.</div>
+      </div>
+
+      <div class="opt">
+        <header><b>G3 &mdash; per note, with the diff</b><span class="badge bad">most tedious</span></header>
+        <div class="note">
+          <div class="panel">
+            <div class="ptitle">Import &middot; 3 of 49</div>
+            <div class="lrow"><span>Work / q3-planning.md</span><span class="n">skip &middot; tag</span></div>
+            <div class="strip">
+              <span class="msg"><code># Q3 planning</code><br><span class="add">+ #project@Work</span></span>
+              <div class="btns"><button class="btn pri">Tag</button><button class="btn">Skip</button><button class="btn quiet">Tag all remaining</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="why">
+          <ul>
+            <li><span class="yes">Maximum consent</span> &mdash; every byte is seen before it is written.</li>
+            <li><span class="no">49 decisions.</span> Everyone will hit "tag all remaining" on note three, which makes it G2 with extra steps and a false sense of review.</li>
+          </ul>
+        </div>
+        <div class="later"><b>Cost:</b> a wizard, its own state, and the highest chance the user abandons half-migrated.</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============================================================ Q4 -->
+  <div class="sec">
+    <div class="sechead">
+      <h2>4 &mdash; folders whose names cannot be project names</h2>
+      <span class="q"><code>^[A-Za-z0-9][A-Za-z0-9_-]*$</code> &mdash; so <code>My Notes</code>, <code>2026 ideas</code> and <code>r&amp;d</code> all fail</span>
+    </div>
+
+    <div class="opts">
+
+      <div class="opt rec">
+        <header><b>N1 &mdash; list them, skip them</b><span class="badge good">recommended</span></header>
+        <div class="note">
+          <div class="panel">
+            <div class="ptitle">Import folder structure</div>
+            <div class="lrow"><span><i class="box on"></i> Work</span><span class="n">12 notes</span></div>
+            <div class="lrow bad"><span>My Notes</span><span class="n">can't be a project name</span></div>
+            <div class="lrow bad"><span>r&amp;d</span><span class="n">can't be a project name</span></div>
+            <div class="strip"><span class="msg">Rename the folder yourself and scan again &mdash; letters, digits, <code>-</code> and <code>_</code> only.</span></div>
+          </div>
+        </div>
+        <div class="why">
+          <ul>
+            <li><span class="yes">Honest and inert.</span> The product never invents a name for something the user named.</li>
+            <li>The rule is stated once, where it bites, with the fix in the same sentence.</li>
+            <li><span class="no">Leaves work for the user</span> &mdash; a rename outside the app, then a re-scan.</li>
+          </ul>
+        </div>
+        <div class="later"><b>Cost:</b> a vault of spaced folder names imports nothing on the first pass.</div>
+      </div>
+
+      <div class="opt">
+        <header><b>N2 &mdash; auto-sanitise, show the result</b><span class="badge warn">helpful, presumptuous</span></header>
+        <div class="note">
+          <div class="panel">
+            <div class="ptitle">Import folder structure</div>
+            <div class="lrow"><span><i class="box on"></i> My Notes</span><span class="n">&rarr; My-Notes</span></div>
+            <div class="lrow"><span><i class="box on"></i> r&amp;d</span><span class="n">&rarr; r-d</span></div>
+            <div class="strip"><span class="msg">2 names were adjusted to fit project naming.</span></div>
+          </div>
+        </div>
+        <div class="why">
+          <ul>
+            <li><span class="yes">Everything imports</span>, first try, no homework.</li>
+            <li><span class="no">The project name no longer matches the folder</span> the user is looking at, and nothing on disk records why.</li>
+            <li><span class="no"><code>r&amp;d</code> &rarr; <code>r-d</code> is a bad name</span> that will outlive the import.</li>
+          </ul>
+        </div>
+        <div class="later"><b>Cost:</b> a permanent silent divergence between folder name and project name.</div>
+      </div>
+
+      <div class="opt">
+        <header><b>N3 &mdash; inline rename field</b><span class="badge">most control</span></header>
+        <div class="note">
+          <div class="panel">
+            <div class="ptitle">Import folder structure</div>
+            <div class="lrow"><span><i class="box on"></i> Work</span><span class="n">12 notes</span></div>
+            <div class="fld"><span class="lab">My Notes<span class="hint">needs a valid project name</span></span><span class="inp">My-Notes</span></div>
+            <div class="fld"><span class="lab">r&amp;d<span class="hint">needs a valid project name</span></span><span class="inp">RnD</span></div>
+          </div>
+        </div>
+        <div class="why">
+          <ul>
+            <li><span class="yes">The user names their own project</span>, in the app, at the moment it matters.</li>
+            <li>Turns a dead end into a two-keystroke fix.</li>
+            <li><span class="no">Live validation per row</span>, and the same 400-the-whole-tab hazard FR-01 named &mdash; each field has to be validated client-side and omitted when invalid.</li>
+            <li><span class="no">Biggest surface of the three</span> for a case most vaults never hit.</li>
+          </ul>
+        </div>
+        <div class="later"><b>Cost:</b> the most code, and it is the only option that needs its own validation story.</div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="foot">
+    <b>The combination I would ship: A1 + P1 + G1 + N1.</b> The offer meets the user at the moment
+    their tree is about to flatten, the tag lands exactly where <code>#daily</code> already lands, the
+    folder is the unit of consent, and the product never renames anything the user named. It is also
+    the smallest build: one button on a strip that already exists, one placement rule the code already
+    has, one list, and a skip. <b>N3 is the one worth adding later</b> if real vaults turn out to be
+    full of spaced folder names &mdash; it is additive to N1, not a different design.
+  </div>
+
+</div>
