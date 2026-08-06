@@ -3,7 +3,7 @@ import StatusIndicator from "../StatusIndicator";
 import SegmentedToggle from "../ui/SegmentedToggle";
 import LookPanel from "../LookPanel";
 import SettingsPanel from "../SettingsPanel";
-import DashboardView from "./DashboardView";
+import NotesView from "./NotesView";
 import LibraryView from "./LibraryView";
 import HistoryView from "./HistoryView";
 import { railSliderFromElement } from "../../lib/railSelection";
@@ -33,16 +33,25 @@ interface LookChatHook {
 
 // P3-A (2026-08-06): rail rewrite — 4 views + footer (Dashboard·Look·Vault·
 // History + New Note/Settings) become 5 evenly-split tabs: NOTES·BROWSE·
-// CHAT·SYNC·SET. This is the shell only — the interiors named per tab below
-// (P3-B..P3-E) are each a later task's scope; today's nearest-equivalent
-// component is mounted as a placeholder so the app keeps working in the
-// meantime. `history` and `inbox` stay valid RailView values with NO rail
-// button (same precedent `inbox` already set before this rewrite) — neither
-// earned one of the 5 new slots, but both remain reachable programmatically
-// (pill-menu "History"/reminders links via viewRouting.ts's VIEW_TO_RAIL,
-// DashboardView's onNavigate) so no destination is orphaned.
+// CHAT·SYNC·SET. `history` and `inbox` stay valid RailView values with NO
+// rail button (same precedent `inbox` already set before this rewrite) —
+// neither earned one of the 5 new slots, but both remain reachable
+// programmatically (pill-menu "History"/reminders links via
+// viewRouting.ts's VIEW_TO_RAIL, NotesView's/InboxPanel's own nav) so no
+// destination is orphaned.
+//
+// P3-B: the note editor is NO LONGER a routed RailView value — it is a
+// window-level slide-over (`editorOpen`/`editorPath` below), independent of
+// which tab is showing underneath, and per the s145 override it closes on
+// EVERY tab switch (BROWSE included; the mock left it open over BROWSE,
+// which is a mock bug — DECISIONS.md §5 s145). `ExternalNav` keeps "note"
+// as a value ONLY for `initialView`/`initialViewToken` (App.tsx's pill-menu
+// "New Note" selection, `VIEW_TO_RAIL["note"] === "note"`, still needs a way
+// to ask FullWindow to open a blank note from outside) — it is translated
+// into `openNote(null)` below and never assigned to `view` itself.
 type MainTab = "notes" | "browse" | "chat" | "sync" | "set";
-type RailView = MainTab | "history" | "inbox" | "note";
+type RailView = MainTab | "history" | "inbox";
+type ExternalNav = RailView | "note";
 const MAIN_TABS: MainTab[] = ["notes", "browse", "chat", "sync", "set"];
 // ISS-022: the folder-panel nav label is "Vault" everywhere — was "Library"
 // here vs "Vault" in Capsule/Minimal mode. SP3 Task 8: the container's
@@ -60,22 +69,18 @@ const MAIN_TABS: MainTab[] = ["notes", "browse", "chat", "sync", "set"];
 // strip, full-window only); its Reminders/Scratchpad cards were deleted
 // outright, both already duplicated by Inbox's own Reminders tab and header
 // count.
-// Task 9 (C1): "note" is deliberately absent here now -- NoteEditor's own
-// topbar content (back/title/sync/mode-toggle/external/more) is lifted into
-// this component's topbar via the `onHeaderActionsChange` slot (see
-// `noteHeaderActions` state below), the same seam InboxPanel/CompactQuickNote
-// already use for CompactShell. A fixed "Note" placeholder would be wrong the
-// instant a real note (or "New Note") is open, so the note view's title is
-// computed from `editorPath` at render time instead -- see `title`/`subtitle`
-// below -- and used only as the one-frame fallback before NoteEditor's effect
-// fires on mount. P3-B: this whole view becomes a window-level slide-over
-// from the right instead of a plain routed view — out of scope here.
-const TITLES: Record<Exclude<RailView, "note">, [string, string]> = {
-  // P3-B owns NOTES' real interior (list + 280px morphing capture pane,
-  // radial → blank/voice/clip/screenshot, hotkey → live StepIndicator over
-  // STEP_DEFS). DashboardView is today's nearest equivalent — it already
-  // carries the capture front door + recent notes + inbox/reminders nav.
-  notes:   ["Notes", "capture · recent · inbox"],
+// Task 9 (C1) / P3-B: "note" is not a RailView any more, so it never needs an
+// entry here — NoteEditor's own header content (back/title/sync/mode-toggle/
+// external/more) still reaches the DOM via the `onHeaderActionsChange` slot
+// (see `noteHeaderActions` state below), the same seam InboxPanel/
+// CompactQuickNote already use for CompactShell, but P3-B now renders that
+// lifted content inside the slide-over's own header strip instead of this
+// shared per-tab topbar, so the two never compete for the same row.
+const TITLES: Record<RailView, [string, string]> = {
+  // P3-B: real interior — list pane + 280px morphing capture pane (radial →
+  // blank/voice/clip/screenshot; any in-flight capture, hotkey-triggered or
+  // not, shows the live StepIndicator over the real `stepDefs`).
+  notes:   ["Notes", "capture · recent"],
   // P3-D splits CHAT out of LookPanel's search/chat toggle into its own tab.
   // Until then this mounts LookPanel unchanged (both modes) so search stays
   // reachable — losing it here would be a real regression, not a shell nicety.
@@ -145,7 +150,11 @@ interface FullWindowProps {
   sampleRate: number;
   onVoiceToggle: () => void;
   onVoiceCancel: () => void;
-  initialView?: RailView;
+  /** "note" is accepted here even though it is no longer a `RailView` value
+   *  (P3-B) — App.tsx's pill-menu "New Note" selection still needs a way to
+   *  ask for a blank note from outside; see the effect below that translates
+   *  it into `openNote(null)` instead of ever assigning it to `view`. */
+  initialView?: ExternalNav;
   /** FR-07 dead-control fix: bumped by App.tsx on every menu/nav-event
    *  selection, independent of whether `initialView`'s *value* changed.
    *  Re-selecting the rail section you're already on (e.g. clicking History
@@ -158,11 +167,46 @@ interface FullWindowProps {
 }
 
 export default function FullWindow(props: FullWindowProps) {
-  const [view, setView] = useState<RailView>(props.initialView ?? "notes");
+  const [view, setView] = useState<RailView>(
+    props.initialView && props.initialView !== "note" ? props.initialView : "notes",
+  );
+
+  // P3-B: the note editor is a WINDOW-LEVEL SLIDE-OVER from the right,
+  // tracked independently of `view` — opening a note no longer navigates the
+  // rail. `editorOpen` (not `editorPath !== null`) is the open/closed flag,
+  // because `null` is itself a valid open state (a brand-new blank note,
+  // NoteEditor's own path===null create-on-first-keystroke flow, s135).
+  const [editorPath, setEditorPath] = useState<string | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const openNote = useCallback((path: string | null) => {
+    setEditorPath(path);
+    setEditorOpen(true);
+  }, []);
+  const closeNote = useCallback(() => setEditorOpen(false), []);
+
+  // ★ s145 override of the mock (binding, DECISIONS.md §5 s145): the editor
+  // closes on EVERY tab switch, BROWSE included — the mock leaves it open
+  // over BROWSE, which was a mock bug. Keyed on `view` alone: reselecting the
+  // already-active tab doesn't change `view`'s value, so it correctly does
+  // NOT close the editor (not a "switch").
+  useEffect(() => { setEditorOpen(false); }, [view]);
+
+  // `initialView === "note"` — App.tsx's pill-menu "New Note" selection —
+  // opens the blank-note overlay instead of ever assigning "note" to `view`
+  // (which is no longer a valid `RailView` value at all, P3-B).
   useEffect(() => {
-    if (props.initialView) setView(props.initialView);
+    if (!props.initialView) return;
+    if (props.initialView === "note") { openNote(null); return; }
+    setView(props.initialView);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.initialView, props.initialViewToken]);
-  const [inboxTab, setInboxTab] = useState<InboxTab>("inbox");
+
+  // P3-B: NOTES no longer carries a "jump to Reminders sub-tab" shortcut
+  // (DashboardView's old onNavigate) — the mock's own NOTES screen has no
+  // such affordance either. Inbox itself stays reachable exactly as P3-A's
+  // own comment anticipated: the pill menu's "Inbox" target routes here via
+  // `viewRouting.ts`, independent of anything NOTES renders.
+  const [inboxTab] = useState<InboxTab>("inbox");
   const [browseSection, setBrowseSection] = useState<"vault" | "trash">("vault");
   const [healthOpen, setHealthOpen] = useState(false);
   const [healthVault, setHealthVault] = useState<number | null>(null);
@@ -218,43 +262,17 @@ export default function FullWindow(props: FullWindowProps) {
 
   useEffect(() => () => { if (syncTimerRef.current) clearTimeout(syncTimerRef.current); }, []);
 
-  // F-7: full-window note editor overlay. FullWindow-exclusive entry point
-  // (recent-note row, dashboard-only) -- deliberately does NOT repoint
-  // props.onOpenFile itself, since that prop is shared with PillOverlay's
-  // compact-mode CompactHistory (external-open there stays untouched; F-7
-  // is full-window-mode only). NoteEditor's own "open in external editor"
-  // instrument button calls props.onOpenFile to reach the same OS-handler
-  // path compact mode already uses.
-  const [editorPath, setEditorPath] = useState<string | null>(null);
-
-  // Task 8: opening a note now has to switch the rail to the "note" view too
-  // (not just set the path) -- the editor is an ordinary keyed view, so
-  // nothing shows it unless `view` actually points at it.
-  const openNote = useCallback((path: string) => {
-    setEditorPath(path);
-    setView("note");
-  }, []);
-
-  // Task 9 (C1): NoteEditor's own topbar is deleted -- it pushes its content
-  // (back/title/sync/mode-toggle/external/more) up into this component's
-  // shared topbar through `onHeaderActionsChange`, exactly the seam
-  // InboxPanel/CompactQuickNote already use to reach CompactShell's
-  // `headerActions` slot. `null` until NoteEditor's effect fires (or once it
-  // unmounts), and reset whenever the rail leaves the note view so a stale
-  // note's controls can't survive into "New Note" or a different rail tab.
+  // Task 9 (C1) / P3-B: NoteEditor still has no topbar of its own — it pushes
+  // its header content (back/title/sync/mode-toggle/external/more) up
+  // through `onHeaderActionsChange`, the same seam InboxPanel/
+  // CompactQuickNote use for CompactShell — but that content now renders
+  // inside the slide-over's own header strip (below), not this shared
+  // per-tab topbar. NoteEditor's own effect already pushes `null` the moment
+  // its `open` prop goes false (see NoteEditor.tsx), so nothing here needs
+  // to reset it manually on tab switch any more.
   const [noteHeaderActions, setNoteHeaderActions] = useState<React.ReactNode | null>(null);
-  useEffect(() => {
-    if (view !== "note") setNoteHeaderActions(null);
-  }, [view]);
 
-  // Task 9: "note" has no static TITLES entry (see comment above the map) --
-  // derive a real filename fallback from `editorPath` instead of a fixed
-  // placeholder. This only ever paints for the one frame before NoteEditor's
-  // own `onHeaderActionsChange` effect fires and `noteHeaderActions` above
-  // takes over rendering the topbar for real.
-  const [title, subtitle] = view === "note"
-    ? [editorPath ? (editorPath.split(/[\\/]/).pop() ?? "Note").replace(/\.md$/i, "") : "New Note", ""]
-    : TITLES[view];
+  const [title, subtitle] = TITLES[view];
 
   return (
     <div
@@ -340,24 +358,13 @@ export default function FullWindow(props: FullWindowProps) {
 
       {/* Main content area */}
       <div className="fw-chrome" data-corner={props.pillCorner} style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, position: "relative" }}>
-        {/* Topbar */}
+        {/* Topbar — P3-B: always the current tab's own title/controls now.
+            The note editor is a slide-over with its own header strip (below),
+            so it no longer competes with this row for `noteHeaderActions`. */}
         <div className="drag-region" style={{ height: 46, borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10, padding: "0 14px", flex: "none" }}>
-          {view === "note" ? (
-            // Task 9 (C1): NoteEditor supplies its whole row (back/title/sync/
-            // mode-toggle/external/more) through the slot -- this wrapper only
-            // provides `no-drag` (a "drag-region" ancestor would otherwise eat
-            // clicks on the lifted buttons) and the fallback title for the one
-            // frame before that content arrives.
-            <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
-              {noteHeaderActions ?? <span style={{ fontSize: fsTitle, fontWeight: 600, color: "var(--text-1)" }}>{title}</span>}
-            </div>
-          ) : (
-            <>
-              <span style={{ fontSize: fsTitle, fontWeight: 600, color: "var(--text-1)" }}>{title}</span>
-              <span style={{ fontSize: fsBody, color: "var(--text-3)" }}>{subtitle}</span>
-              <span style={{ flex: 1 }} />
-            </>
-          )}
+          <span style={{ fontSize: fsTitle, fontWeight: 600, color: "var(--text-1)" }}>{title}</span>
+          <span style={{ fontSize: fsBody, color: "var(--text-3)" }}>{subtitle}</span>
+          <span style={{ flex: 1 }} />
           {view === "chat" && (
             <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <button
@@ -405,24 +412,19 @@ export default function FullWindow(props: FullWindowProps) {
         <ErrorBoundary key={view}>
         {view === "notes" && (
           <div key="notes" className="fw-view-panel">
-            {/* P3-B: NOTES' real interior is a note list + a 280px morphing
-                capture pane (radial → blank-note/voice/clip/screenshot; the
-                hotkey path drives a live StepIndicator over the real
-                STEP_DEFS). DashboardView is today's nearest equivalent —
-                mounted unmodified. */}
-            <DashboardView
+            {/* P3-B: NOTES' real interior — a vault list pane + a 280px
+                morphing capture pane. The radial (blank-note/voice/clip/
+                screenshot) is net new: it has never mounted in the full
+                window before this. Any in-flight capture — hotkey-triggered
+                or started from a satellite — shows the live StepIndicator
+                over the real `stepDefs` (see NotesView.tsx's file header). */}
+            <NotesView
               visible
               captureState={props.captureState}
               stepDefs={props.stepDefs}
               onOpenFile={openNote}
               onCaptureFile={props.onCaptureFile}
               onCaptureNow={props.onCaptureNow}
-              llmStatus={props.llmStatus}
-              onNavigate={(t) => {
-                if (t === "library") { setView("browse"); return; }
-                setInboxTab(t === "reminders" ? "reminders" : "inbox");
-                setView("inbox");
-              }}
               voicePhase={props.voicePhase}
               voiceElapsedMs={props.voiceElapsedMs}
               readWaveform={props.readWaveform}
@@ -494,25 +496,43 @@ export default function FullWindow(props: FullWindowProps) {
             <SettingsPanel visible onClose={() => setView("notes")} {...props.settingsProps} embedded />
           </div>
         )}
-        {view === "note" && (
-          <div key="note" className="fw-view-panel">
-            {/* P3-B: this becomes a window-level slide-over from the right
-                (view/edit toggle, open-in-OS-editor, 3-dot: Reminder / Set as
-                template / Outline / History / Delete). Stays a plain routed
-                view for now — out of scope here. Per s145: the editor must
-                close on EVERY tab switch, BROWSE included; that already
-                holds today via the ErrorBoundary-keyed `view` switch below,
-                unchanged by this task. */}
-            <NoteEditor
-              open
-              path={editorPath}
-              onClose={() => { setView("notes"); setEditorPath(null); }}
-              onOpenExternal={props.onOpenFile}
-              onHeaderActionsChange={setNoteHeaderActions}
-            />
-          </div>
-        )}
         </ErrorBoundary>
+
+        {/* P3-B: the note editor is a WINDOW-LEVEL SLIDE-OVER from the right
+            — an absolutely-positioned overlay sibling of the topbar+content
+            column above (not a routed view inside the ErrorBoundary switch),
+            so it can stay open over whichever tab was showing when it opened
+            and slides independently of tab navigation. Per the ★ s145
+            override of the mock (DECISIONS.md §5 s145): it still closes on
+            EVERY tab switch, BROWSE included — see the `[view]`-keyed effect
+            above — the mock's own "stays open over BROWSE" behavior was a
+            mock bug, not the spec. Always mounted (never conditionally
+            rendered) so the slide transition has something to animate;
+            NoteEditor itself returns null while its own `open` prop is
+            false, same as it always has. */}
+        <div
+          className="no-drag"
+          style={{
+            position: "absolute", top: 0, right: 0, bottom: 0, width: "54%",
+            display: "flex", flexDirection: "column", minWidth: 0,
+            background: "var(--surface)", borderLeft: "1px solid var(--border)",
+            transform: editorOpen ? "translateX(0)" : "translateX(103%)",
+            transition: "transform 340ms cubic-bezier(0.22,1,0.36,1)",
+            pointerEvents: editorOpen ? "auto" : "none",
+            zIndex: 5,
+          }}
+        >
+          <div style={{ height: 46, borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10, padding: "0 14px", flex: "none" }}>
+            {noteHeaderActions}
+          </div>
+          <NoteEditor
+            open={editorOpen}
+            path={editorPath}
+            onClose={closeNote}
+            onOpenExternal={props.onOpenFile}
+            onHeaderActionsChange={setNoteHeaderActions}
+          />
+        </div>
       </div>
     </div>
   );

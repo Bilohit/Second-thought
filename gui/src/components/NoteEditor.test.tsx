@@ -29,6 +29,7 @@ vi.mock("../lib/api", async (importOriginal) => {
     createReminder: vi.fn(),
     addNoteAttachment: vi.fn(),
     fetchAttachmentBlob: vi.fn(),
+    moveToTrash: vi.fn(),
   };
 });
 
@@ -135,15 +136,18 @@ describe("NoteEditor — Escape precedence", () => {
 
   it("closes the pinned drawer next, when the menu is closed and the toolbar is unlocked", async () => {
     const user = userEvent.setup({ delay: null });
+    vi.mocked(api.searchCaptures).mockResolvedValue({ results: [], count: 0, query: "Test Note" });
     const { onClose } = await renderEditor();
     await screen.findByRole("heading", { name: "Test Note" });
     await user.click(screen.getByRole("button", { name: "More" }));
-    await user.click(screen.getByRole("menuitem", { name: "Metadata" }));
-    expect(screen.queryByText("METADATA")).toBeTruthy();
+    // P3-B: the menu's trigger for the "conn" drawer is now "Outline"
+    // (Metadata's own row was dropped along with the drawer it opened).
+    await user.click(screen.getByRole("menuitem", { name: "Outline" }));
+    expect(screen.queryByText("CONNECTIONS")).toBeTruthy();
 
     fireEvent.keyDown(window, { key: "Escape" });
 
-    expect(screen.queryByText("METADATA")).toBeNull();
+    expect(screen.queryByText("CONNECTIONS")).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
   });
 
@@ -283,19 +287,13 @@ describe("NoteEditor — toolbar peek chevron", () => {
   });
 });
 
-describe("NoteEditor — metadata drawer project sentinel guard (FR-02)", () => {
-  it("renders a loose note's project as 'loose', never the raw _loose sentinel", async () => {
-    const user = userEvent.setup({ delay: null });
-    vi.mocked(api.getNoteContent).mockResolvedValue({ ...noteFixture, project: "_loose" });
-    await renderEditor();
-    await screen.findByRole("heading", { name: "Test Note" });
-    await user.click(screen.getByRole("button", { name: "More" }));
-    await user.click(screen.getByRole("menuitem", { name: "Metadata" }));
-
-    expect(await screen.findByText("loose")).toBeTruthy();
-    expect(screen.queryByText("_loose")).toBeNull();
-  });
-});
+// P3-B: the metadata drawer's own menu row ("Metadata") was dropped — the
+// program plan's editor 3-dot menu is exactly Reminder / Set as template /
+// Outline / History / Delete, no Metadata entry. The drawer/content this
+// guarded is now unreachable from the UI, so the FR-02 loose-sentinel
+// regression it pinned moved to `FullWindow/NotesView.test.tsx`, which
+// exercises the one remaining call site of `displayProject` (the vault
+// list-pane rows).
 
 describe("NoteEditor — Connections/Mentions rows (FR-14)", () => {
   it("wires a Mentions row to onOpenExternal(m.path) -- a real vault file is a real target", async () => {
@@ -310,7 +308,8 @@ describe("NoteEditor — Connections/Mentions rows (FR-14)", () => {
     const { onOpenExternal } = await renderEditor();
     await screen.findByRole("heading", { name: "Test Note" });
     await user.click(screen.getByRole("button", { name: "More" }));
-    await user.click(screen.getByRole("menuitem", { name: "Connections" }));
+    // P3-B: Outline is now the sole trigger for the "conn" drawer.
+    await user.click(screen.getByRole("menuitem", { name: "Outline" }));
 
     const mentionRow = await screen.findByRole("button", { name: "other.md" });
     expect(onOpenExternal).not.toHaveBeenCalled();
@@ -328,7 +327,7 @@ describe("NoteEditor — Connections/Mentions rows (FR-14)", () => {
     const { onOpenExternal } = await renderEditor();
     await screen.findByRole("heading", { name: "Test Note" });
     await user.click(screen.getByRole("button", { name: "More" }));
-    await user.click(screen.getByRole("menuitem", { name: "Connections" }));
+    await user.click(screen.getByRole("menuitem", { name: "Outline" }));
 
     const linkRow = await screen.findByText("some-other-note");
     expect(linkRow.tagName).toBe("DIV");
@@ -369,5 +368,45 @@ describe("NoteEditor — autosave debounce + backoff", () => {
     // one base tick alone must NOT retry (above), and a retry must happen (here).
     await vi.advanceTimersByTimeAsync(SAVE_BASE_DELAY_MS * 3);
     expect(api.saveNoteContent).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("NoteEditor — 3-dot menu (P3-B): Reminder · Set as template · Outline · History · Delete", () => {
+  it("the menu has exactly the five required rows, Delete last and styled as danger", async () => {
+    const user = userEvent.setup({ delay: null });
+    await renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+    await user.click(screen.getByRole("button", { name: "More" }));
+
+    const rows = screen.getAllByRole("menuitem");
+    expect(rows.map((r) => r.textContent)).toEqual([
+      "Reminder", "Set as template", "Outline", "History", "Delete",
+    ]);
+    expect(rows[rows.length - 1].style.color).toBe("var(--red)");
+  });
+
+  it("Delete calls moveToTrash(note.path) then onClose -- no confirmation step, matching the mock", async () => {
+    const user = userEvent.setup({ delay: null });
+    vi.mocked(api.moveToTrash).mockResolvedValue({ ok: true, filename: "note.md", trashed_path: "Trash/note.md" });
+    const { onClose } = await renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+
+    expect(api.moveToTrash).toHaveBeenCalledWith("Test/note.md");
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  it("Set as template persists the note's path and the row reflects the marked state on reopen", async () => {
+    const user = userEvent.setup({ delay: null });
+    await renderEditor();
+    await screen.findByRole("heading", { name: "Test Note" });
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: "Set as template" }));
+
+    // Menu closes on click (existing behavior for every row) -- reopen to see
+    // the row's own state reflect back.
+    await user.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("menuitem", { name: "Already the template" })).toBeTruthy();
   });
 });

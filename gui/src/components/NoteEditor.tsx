@@ -27,10 +27,11 @@ import { parseAttachments, attachErrorMessage, NO_ATTACH_HINT } from "../lib/att
 import { isSaveRetry, saveRetryDelayMs } from "../lib/saveRetry";
 import { logger } from "../lib/logger";
 import { diffLines } from "../lib/lineDiff";
-import { BellIcon, ClockIcon, BoldIcon, ChecklistIcon } from "./PillMenu/icons";
+import { BellIcon, ClockIcon, BoldIcon, ChecklistIcon, TrashIcon } from "./PillMenu/icons";
 import { Markdown } from "./Markdown";
 import { TagChip } from "./TagChip";
 import { parseBlocks } from "../lib/markdown";
+import { getTemplateNotePath, setTemplateNotePath } from "../lib/templateNote";
 
 const TRAVEL = "cubic-bezier(0.22,1,0.36,1)";
 const SETTLE = "cubic-bezier(0.16,1,0.3,1)";
@@ -64,23 +65,6 @@ function IconBack(props: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
       <path d="M15 5l-7 7 7 7" />
-    </svg>
-  );
-}
-function IconMeta(props: { size?: number }) {
-  const size = props.size ?? 17;
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
-      <path d="M11.5 3H4v7.5L13 20l7-7z" /><circle cx="8.5" cy="7.5" r="1.3" />
-    </svg>
-  );
-}
-function IconConnections(props: { size?: number }) {
-  const size = props.size ?? 17;
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}>
-      <circle cx="6" cy="6" r="2.1" /><circle cx="18" cy="6" r="2.1" /><circle cx="12" cy="18" r="2.1" />
-      <path d="M8 7l7-0.7M13.5 16.3l3-8.7M10.5 16.3l-3-8.7" />
     </svg>
   );
 }
@@ -146,6 +130,19 @@ function OutlineIcon(props: { size?: number }) {
       <path d="M4 6h16M8 12h12M8 18h12" />
       <circle cx="4" cy="12" r="1" fill="currentColor" stroke="none" />
       <circle cx="4" cy="18" r="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+// P3-B: "Set as template" menu glyph — mirrors the mock's `i-tmpl` (a
+// folded-corner rect), following this file's own established convention of
+// local one-off icon functions rather than reaching into PillMenu/icons.tsx
+// for a component-specific glyph nothing else in the app needs yet.
+function IconTemplate(props: { size?: number }) {
+  const size = props.size ?? 13;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinejoin="round">
+      <rect x="4" y="8" width="12" height="12" />
+      <path d="M8 4h12v12" />
     </svg>
   );
 }
@@ -238,6 +235,11 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal, onHead
   const [reminderBusy, setReminderBusy] = useState(false);
   const [reminderDone, setReminderDone] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // P3-B: "Set as template" — gui-local only, see lib/templateNote.ts's
+  // ponytail note for why (no vault-side template concept exists to write
+  // to; this agent's brief is scoped to gui/ only).
+  const [templatePath, setTemplatePathState] = useState<string | null>(() => getTemplateNotePath());
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   // -- F-3: version history --
   const [historyStatus, setHistoryStatus] = useState<NoteHistoryStatus | null>(null);
@@ -522,6 +524,28 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal, onHead
     if (key === "history") loadHistory();
   }, [loadMentions, loadHistory]);
 
+  // P3-B: 3-dot "Delete" — moveToTrash already exists in this file (used
+  // today only as a New-Note-abandoned-mid-create rollback); this is its
+  // first user-facing entry point. Non-destructive on the vault side (moves
+  // to Recently deleted, same as the mock's own copy), so — matching the
+  // mock — this fires immediately with no confirmation step.
+  const handleDelete = useCallback(() => {
+    if (!note || deleteBusy) return;
+    setDeleteBusy(true);
+    moveToTrash(note.path)
+      .then(() => onClose())
+      .catch((err) => {
+        logger.error("note", "delete (move to trash) failed", err);
+        setDeleteBusy(false);
+      });
+  }, [note, deleteBusy, onClose]);
+
+  const handleSetAsTemplate = useCallback(() => {
+    if (!note) return;
+    setTemplateNotePath(note.path);
+    setTemplatePathState(note.path);
+  }, [note]);
+
   const resolveConflict = useCallback((action: ConflictResolveAction) => {
     if (!note || !conflict) return;
     setConflictBusy(true);
@@ -760,17 +784,20 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal, onHead
             >
               <MoreIcon size={16} />
             </button>
-            {/* ponytail: Connections and Outline both open the existing combined "conn" drawer
-                rather than splitting ConnectionsDrawer's content into two components. Two menu
-                entries satisfy the phone-parity ask without a drawer-content refactor; split the
-                drawer for real if Outline needs its own scroll position or the combined view gets
-                too busy. */}
+            {/* P3-B: exactly Reminder · Set as template · Outline · History ·
+                Delete (danger, last) — the program plan's binding menu list.
+                Connections and Metadata (which used to have their own rows
+                here) are dropped: Outline still opens the same combined
+                "conn" drawer Connections used to (ponytail precedent this
+                replaces: both entries already pointed at one drawer), and
+                Metadata's project/tag summary has no row left to trigger it
+                from — a deliberate cut, see this task's report. */}
             <div style={menuDropStyle(menuOpen)} role="menu" aria-hidden={!menuOpen}>
               <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("remind"); }}>
                 <BellIcon size={13} />Reminder
               </button>
-              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); if (pinnedDrawer !== "conn") togglePin("conn"); }}>
-                <IconConnections size={13} />Connections
+              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); handleSetAsTemplate(); }}>
+                <IconTemplate size={13} />{note && templatePath === note.path ? "Already the template" : "Set as template"}
               </button>
               <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); if (pinnedDrawer !== "conn") togglePin("conn"); }}>
                 <OutlineIcon size={13} />Outline
@@ -780,8 +807,8 @@ export default function NoteEditor({ open, path, onClose, onOpenExternal, onHead
                   <ClockIcon size={13} />History
                 </button>
               )}
-              <button className="ne-menu-row" style={menuRowStyle} role="menuitem" tabIndex={menuOpen ? 0 : -1} onClick={() => { setMenuOpen(false); togglePin("meta"); }}>
-                <IconMeta size={13} />Metadata
+              <button className="ne-menu-row" style={{ ...menuRowStyle, color: "var(--red)" }} role="menuitem" tabIndex={menuOpen ? 0 : -1} disabled={deleteBusy} onClick={() => { setMenuOpen(false); handleDelete(); }}>
+                <TrashIcon size={13} />{deleteBusy ? "Deleting…" : "Delete"}
               </button>
             </div>
           </div>

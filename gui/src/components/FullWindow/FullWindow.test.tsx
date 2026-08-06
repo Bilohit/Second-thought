@@ -13,11 +13,15 @@
  * P3-A (2026-08-06): the rail went from 4 main views + a 2-button footer
  * (New Note / Settings) to 5 evenly-split tabs (NOTES · BROWSE · CHAT ·
  * SYNC · SET) with no separate "New Note" slot -- P3-B folds note creation
- * into NOTES' future capture-pane radial. `openANote()` below now opens the
- * editor via `initialView`/`initialViewToken` (the exact prop path
- * App.tsx's pill menu already drives FullWindow through) instead of a rail
- * click, so this file doesn't need to know where -- or whether -- a "new
- * note" affordance exists inside any given tab's still-unbuilt interior.
+ * into NOTES' capture-pane radial.
+ *
+ * P3-B (2026-08-06): the note editor stopped being a routed `RailView` value
+ * entirely -- it is now a window-level slide-over, tracked by its own
+ * `editorOpen` state, independent of `view`. Opening a note (via
+ * `initialView="note"`, the same prop path App.tsx's pill-menu "New Note"
+ * drives FullWindow through) no longer changes which rail tab is pressed;
+ * closing it happens on every `view` change instead (★ s145 override of the
+ * mock, binding: closes even when the switch is to BROWSE).
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, within, fireEvent, cleanup } from "@testing-library/react";
@@ -42,6 +46,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     getConfig: vi.fn(),
     getVaultConflicts: vi.fn(),
     checkHealth: vi.fn(),
+    searchCaptures: vi.fn(),
   };
 });
 
@@ -99,6 +104,7 @@ function mockNetworkDefaults() {
   vi.mocked(api.getConfig).mockResolvedValue({});
   vi.mocked(api.getVaultConflicts).mockResolvedValue([]);
   vi.mocked(api.checkHealth).mockResolvedValue({ serverOk: true, llmStatus: "ready", ffmpeg: true });
+  vi.mocked(api.searchCaptures).mockResolvedValue({ results: [], count: 0, query: "" });
 }
 
 afterEach(() => {
@@ -120,6 +126,34 @@ describe("FullWindow — rail stays live behind the note editor (Task 8)", () =>
 
     expect(screen.queryByRole("dialog", { name: /note editor/i })).toBeNull();
     expect(screen.getByRole("button", { name: /^sync$/i }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  // ★ s145 override of the mock (binding, DECISIONS.md §5 s145): the mock's
+  // own desktop screen (`setDeskScreen` in SecondThoughtV2.html) leaves the
+  // editor open when switching TO browse specifically -- `if (s !== "browse")
+  // closeDesk()`. That is the one case this program plan overrides: the
+  // editor must close on EVERY tab switch, BROWSE included.
+  it("closes the editor when switching to BROWSE specifically (s145 override of the mock)", async () => {
+    mockNetworkDefaults();
+    render(<FullWindow {...baseProps} initialView="note" />);
+    expect(screen.getByRole("dialog", { name: /note editor/i })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /^browse$/i }));
+
+    expect(screen.queryByRole("dialog", { name: /note editor/i })).toBeNull();
+  });
+
+  it("stays open while re-selecting the same tab it opened on (not a 'switch')", async () => {
+    mockNetworkDefaults();
+    render(<FullWindow {...baseProps} initialView="note" />);
+    expect(screen.getByRole("dialog", { name: /note editor/i })).toBeTruthy();
+
+    // The overlay opened on top of the default "Notes" view -- clicking the
+    // already-active Notes tab is not a switch (`view`'s value is unchanged),
+    // so the editor must not close.
+    fireEvent.click(screen.getByRole("button", { name: /^notes$/i }));
+
+    expect(screen.getByRole("dialog", { name: /note editor/i })).toBeTruthy();
   });
 
   it("has exactly 5 evenly-split tabs, in order NOTES · BROWSE · CHAT · SYNC · SET", () => {
