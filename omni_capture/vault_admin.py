@@ -863,6 +863,28 @@ def _shape_semantic_row(row: dict, root: Optional[Path] = None, rescued: bool = 
     return shaped
 
 
+def _vec_for_path(vectors: dict[str, list[float]], path: Optional[str]) -> Optional[list[float]]:
+    """Match a /search result row's `path` (absolute for the FTS tier,
+    vault-relative for the semantic tier -- see _shape_semantic_row) against
+    vector_store.note_vectors' vault-relative keys by suffix, same convention
+    as the STARS reference's vec_for(). No match (unembedded note, stale or
+    missing vectors.db) -> None, never an error.
+
+    ponytail: linear suffix scan per row -- O(results x notes), which is
+    <=200 x vault size. Fine at a few thousand notes, visible at tens of
+    thousands. Upgrade path IF that is ever measured: normalize the row path
+    to vault-relative once (root is in scope at the call site) and dict-look
+    it up. Suffix matching is only here because the two tiers disagree about
+    absolute-vs-relative, not because the key is genuinely unknown."""
+    if not path:
+        return None
+    norm = path.replace("\\", "/")
+    for key, vec in vectors.items():
+        if norm.endswith(key.replace("\\", "/")):
+            return vec
+    return None
+
+
 @router.get("/search")
 async def search_captures(
     q: str = "",
@@ -870,6 +892,7 @@ async def search_captures(
     since: Optional[str] = None,
     limit: int = 25,
     offset: int = 0,
+    include_vectors: bool = False,
     x_log_level: Optional[str] = Header(None, alias="X-Log-Level"),
 ):
     """Unified, scored, tier-labeled search (P-DSEARCH, ISS-011/ISS-012):
@@ -914,10 +937,18 @@ async def search_captures(
     see the comment below), a candidate sharing a meaningful token with the
     query is ranked ahead of one that does not; raw cosine only breaks ties
     within each group. This changes ORDER, never the published `score`,
-    which stays the honest cosine similarity `_shape_semantic_row` documents."""
+    which stays the honest cosine similarity `_shape_semantic_row` documents.
+
+    `include_vectors` (opt-in, default False, STARS "smart connections"):
+    when True, every result row also carries `vec` -- that note's chunk
+    vectors mean-pooled to one 384-d vector (vector_store.note_vectors) --
+    or `null` when the note has no embedding. Purely additive: it never
+    participates in scoring/tiering/rescue/re-rank/paging above, and when
+    False no vector work happens at all (200 notes x 384 dims is
+    ~1MB of JSON -- too costly to pay on every ordinary search)."""
     from index_writer import search as idx_search
     from config import get_config
-    from vector_store import semantic_search
+    from vector_store import semantic_search, note_vectors
     from look_log import debug_logging_from_level, set_look_verbose, look_debug, look_info
     set_look_verbose(debug_logging_from_level(x_log_level))
     limit = min(max(1, limit), 200)
@@ -1007,6 +1038,13 @@ async def search_captures(
         # and would silently overwrite that order by raw score alone.
         results.sort(key=lambda r: r["score"] if r.get("score") is not None else -1.0, reverse=True)
     results = results[:limit]
+    if include_vectors:
+        # Rides along AFTER scoring/tiering/rescue/re-rank/paging above have
+        # already produced the final `results` list -- attaching `vec` never
+        # feeds back into any of that.
+        vecs = note_vectors(root)
+        for r in results:
+            r["vec"] = _vec_for_path(vecs, r.get("path"))
     look_info(f"GET /search returned {len(results)} result(s) for q={q!r}")
     return {"results": results, "count": len(results), "query": q}
 

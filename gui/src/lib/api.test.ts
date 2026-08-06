@@ -11,7 +11,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   revealItemInDir: vi.fn(),
 }));
 
-import { listProjects, notesForProject, notesForTag, listHandMadeFolders } from "./api";
+import { listProjects, notesForProject, notesForTag, listHandMadeFolders, searchCaptures } from "./api";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return {
@@ -200,6 +200,50 @@ describe("notesForProject", () => {
     fetchMock.mockResolvedValue(jsonResponse({}, false, 500));
 
     await expect(notesForProject("acme")).rejects.toThrow("Search failed");
+  });
+});
+
+describe("searchCaptures — includeVectors (s152)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  it("omits include_vectors entirely when not requested", async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(jsonResponse({ results: [] }));
+
+    await searchCaptures("", { limit: 200 });
+
+    const [url] = fetchMock.mock.calls[0];
+    const parsed = new URL(url as string);
+    expect(parsed.searchParams.has("include_vectors")).toBe(false);
+  });
+
+  it("sends include_vectors=1 only when explicitly opted in", async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(jsonResponse({ results: [] }));
+
+    await searchCaptures("", { limit: 200, includeVectors: true });
+
+    const [url] = fetchMock.mock.calls[0];
+    const parsed = new URL(url as string);
+    expect(parsed.searchParams.get("include_vectors")).toBe("1");
+  });
+
+  it("passes each row's vec through untouched, including a null for an unembedded note", async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        results: [
+          { project: "acme", path: "a.md", filename: "a.md", vec: [0.1, 0.2] },
+          { project: "acme", path: "b.md", filename: "b.md", vec: null },
+        ],
+      }),
+    );
+
+    const { results } = await searchCaptures("", { includeVectors: true });
+    expect(results[0].vec).toEqual([0.1, 0.2]);
+    expect(results[1].vec).toBeNull();
   });
 });
 

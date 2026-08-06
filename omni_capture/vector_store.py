@@ -605,6 +605,38 @@ def best_match(
         return None
 
 
+def note_vectors(vault_root: Path) -> dict[str, list[float]]:
+    """Mean-pool every note's chunk vectors (ids `<path>::c<N>`, or a bare
+    `<path>` for a note short enough to embed in one piece) back to a single
+    L2-normalized vector per note, keyed by that vault-relative path.
+
+    Same mean-pool-then-normalize the STARS edge-model reference
+    (gui/mocks/2026-08-07-s151-stars-edges-board.py load_vectors()) uses --
+    kept in sync with it by convention, not import (that script is a
+    standalone data mock, not a runtime dependency of this module).
+
+    Returns {} on an empty/missing/corrupt store -- same fail-soft contract
+    as embedded_parents/count. Callers (vault_admin.search_captures) must
+    treat a missing entry as "no vector for this note", never an error."""
+    try:
+        with _connect(vault_root) as conn:
+            rows = conn.execute("SELECT id, embedding FROM embeddings").fetchall()
+        acc: dict[str, list[np.ndarray]] = {}
+        for doc_id, blob in rows:
+            parent = doc_id.split("::c")[0]
+            acc.setdefault(parent, []).append(np.frombuffer(blob, dtype=np.float32))
+        out: dict[str, list[float]] = {}
+        for parent, vecs in acc.items():
+            mean = np.mean(np.stack(vecs), axis=0)
+            norm = float(np.linalg.norm(mean)) or 1.0
+            out[parent] = (mean / norm).tolist()
+        return out
+    except Exception as exc:
+        print(f"[{_ist_now()}] [VectorStore] non-fatal note_vectors error: {exc}",
+              file=sys.stderr, flush=True)
+        return {}
+
+
 def count(vault_root: Path) -> int:
     """Return the number of indexed notes (0 if DB does not exist yet)."""
     try:

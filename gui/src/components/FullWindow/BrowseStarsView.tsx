@@ -27,11 +27,13 @@ import { searchCaptures } from "../../lib/api";
 import { formatAgo } from "../../lib/projectsView";
 import { StarIcon } from "../PillMenu/icons";
 import { BTN_PRIMARY, BTN_SECONDARY } from "../ui/styles";
+import { Toggle } from "../ui/Toggle";
 import { micro, label as fsLabel, read as fsRead } from "../../lib/type";
 import {
   buildStarEdges,
   computeDegrees,
   coreVisual,
+  edgeOpacity,
   initNodes,
   isTap,
   parseTagsField,
@@ -39,8 +41,40 @@ import {
   selectRecentIds,
   stepSimulation,
   type SimEdge,
+  type SimEdgeKind,
   type SimNode,
 } from "../../lib/starsSim";
+
+// s152: "Smart connections" — the opt-in semantic pass. Default OFF (the user's own call, DECISIONS
+// §5 s152): it costs a ~1MB vector payload per browse fetch, so it only runs when the user asks for
+// it. Persisted the same way every other client-only UI pref in this app is (App.tsx's own
+// localStorage getters/setters, e.g. LOOK_MODE_KEY) — module-level key + try/catch get/set, the same
+// shape as useLookChat.ts's IGNORE_HISTORY_KEY, kept local to this file since nothing else reads it.
+const SMART_CONNECTIONS_KEY = "omni-stars-smart-connections";
+function getSmartConnectionsPref(): boolean {
+  try {
+    return localStorage.getItem(SMART_CONNECTIONS_KEY) === "1";
+  } catch { /* ignore */ }
+  return false;
+}
+function setSmartConnectionsPref(enabled: boolean): void {
+  try {
+    localStorage.setItem(SMART_CONNECTIONS_KEY, enabled ? "1" : "0");
+  } catch { /* ignore */ }
+}
+const SMART_CONNECTIONS_EXPLANATION =
+  "Groups notes by meaning using embeddings that already exist on this device. Nothing leaves your device.";
+
+// Kind → dash pattern. Colour stays a single grayscale token (var(--text-1)) for every kind — only
+// weight (opacity, via edgeOpacity) and this pattern vary, per CLAUDE.md's "no new colours invented".
+function edgeDash(kind: SimEdgeKind): string | undefined {
+  switch (kind) {
+    case "wikilink": return undefined; // solid
+    case "tag": return "3 5";
+    case "project": return "1 3";
+    case "semantic": return "6 3";
+  }
+}
 
 interface Props {
   visible: boolean;
@@ -53,6 +87,9 @@ interface StarNote {
   project: string;
   tags: string[];
   modified: number | null; // epoch seconds (SearchResult.modified), or null if unstat-able
+  /** Only ever populated when smart connections is on (see the fetch effect below) — absent
+   *  otherwise, so an OFF session never even carries the field around. */
+  vec?: number[] | null;
 }
 
 // SecondThoughtV2.html :215 (.star-card{width:230px}) and :1834-1835 (the clamp margins — 240/150,
@@ -75,15 +112,23 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [peekId, setPeekId] = useState<string | null>(null);
   const [peekPos, setPeekPos] = useState({ x: 0, y: 0 });
+  // s152: default OFF — see the module-level comment above the pref helpers.
+  const [smartConnections, setSmartConnectionsState] = useState<boolean>(() => getSmartConnectionsPref());
+  const setSmartConnections = useCallback((enabled: boolean) => {
+    setSmartConnectionsState(enabled);
+    setSmartConnectionsPref(enabled);
+  }, []);
 
   // ── data: refetched on every `visible` transition to true, same convention as BrowseView.tsx's own
   // project/tag fetch. searchCaptures("", ...) is the server's documented "browse everything" blank
   // query (vault_admin.py's search_captures docstring) — the same source BrowseView's own NOTES
-  // section and notesForProject/notesForTag already trust for "the vault's notes", not a new one. ──
+  // section and notesForProject/notesForTag already trust for "the vault's notes", not a new one.
+  // Also refetches on a `smartConnections` flip — ON needs the vector payload it didn't ask for
+  // before, OFF must stop paying for it on the very next fetch (the whole point of the opt-in). ──
   useEffect(() => {
     if (!visible) return;
     let cancelled = false;
-    searchCaptures("", { limit: 200 })
+    searchCaptures("", smartConnections ? { limit: 200, includeVectors: true } : { limit: 200 })
       .then(({ results }) => {
         if (cancelled) return;
         const shaped: StarNote[] = results.map((r) => ({
@@ -92,6 +137,7 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
           project: r.project ?? "uncategorized",
           tags: parseTagsField(r.tags),
           modified: r.modified ?? null,
+          vec: r.vec,
         }));
         setNotes(shaped);
         setLoaded(true);
@@ -105,7 +151,7 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [visible]);
+  }, [visible, smartConnections]);
 
   const recentIds = useMemo(
     () => selectRecentIds(notes.map((n) => ({ id: n.id, modified: n.modified }))),
@@ -113,11 +159,19 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
   );
   const idSet = useMemo(() => new Set(recentIds), [recentIds]);
   const byId = useMemo(() => new Map(notes.map((n) => [n.id, n])), [notes]);
-  // ponytail: shared-tag edges only — no wikilink source is reachable client-side. See starsSim.ts's
-  // header comment for the full ceiling (no /links endpoint on the FastAPI server) and upgrade path.
+  // ponytail: no wikilink signal ever bids here — desktop supplies no `links` (no `/links` endpoint
+  // on the FastAPI server; see starsSim.ts's header comment for the full ceiling and upgrade path).
+  // Tag (Jaccard), same-project, and the opt-in semantic pass are the three signals that carry the
+  // sky instead — `project` is passed through as-is since the scorer itself treats `_loose`/
+  // `uncategorized` as "no grouping" and never sources an edge from either.
   const edges = useMemo(
-    () => buildStarEdges(notes.map((n) => ({ id: n.id, tags: n.tags })), idSet),
-    [notes, idSet]
+    () =>
+      buildStarEdges(
+        notes.map((n) => ({ id: n.id, tags: n.tags, project: n.project, vec: n.vec })),
+        idSet,
+        { semantic: smartConnections }
+      ),
+    [notes, idSet, smartConnections]
   );
   const degrees = useMemo(() => computeDegrees(recentIds, edges), [recentIds, edges]);
   edgesRef.current = edges;
@@ -254,6 +308,10 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
 
   const empty = loaded && notes.length === 0;
   const peekNote = peekId ? byId.get(peekId) : undefined;
+  // ★ THE EMPTY-SKY AFFORDANCE (DECISIONS §5 s152, the user's own ruling): stars with zero drawn
+  // edges and the setting off are indistinguishable from "broken" without this — it must disappear
+  // the instant either condition stops holding (setting flips on, or a real edge appears).
+  const showEnableOffer = loaded && notes.length > 0 && edges.length === 0 && !smartConnections;
 
   // hostRef stays mounted on every branch (empty or populated) so the ResizeObserver effect above —
   // deps [visible] only — never misses attaching just because the FIRST visible render happened to
@@ -270,6 +328,22 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
 
       {!empty && size.w > 0 && size.h > 0 && (
         <>
+          {showEnableOffer && (
+            <button
+              type="button"
+              className="btn-hover"
+              style={enableOfferStyle}
+              onClick={() => setSmartConnections(true)}
+            >
+              No connections yet <span style={enableOfferActionStyle}>· Enable smart connections</span>
+            </button>
+          )}
+
+          <div style={smartRowStyle} title={SMART_CONNECTIONS_EXPLANATION}>
+            <Toggle checked={smartConnections} onChange={setSmartConnections} label="Smart connections" />
+            <span style={smartLabelStyle}>Smart connections</span>
+          </div>
+
           <svg style={svgStyle} width={size.w} height={size.h}>
             {edges.map((e, i) => (
               <line
@@ -279,8 +353,8 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
                 }}
                 stroke="var(--text-1)"
                 strokeWidth={1}
-                strokeOpacity={e.kind === "wikilink" ? 0.3 : 0.1}
-                strokeDasharray={e.kind === "tag" ? "3 5" : undefined}
+                strokeOpacity={edgeOpacity(e.weight)}
+                strokeDasharray={edgeDash(e.kind)}
               />
             ))}
           </svg>
@@ -328,6 +402,10 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
           <div style={legendStyle} aria-hidden="true">
             <div style={legendRowStyle}><span style={legendWikStyle} />wikilink · spring</div>
             <div style={legendRowStyle}><span style={legendTagStyle} />shared tag · thread</div>
+            <div style={legendRowStyle}><span style={legendProjectStyle} />same project</div>
+            {smartConnections && (
+              <div style={legendRowStyle}><span style={legendSemanticStyle} />smart connection</div>
+            )}
           </div>
         </>
       )}
@@ -427,7 +505,23 @@ const legendStyle: CSSProperties = { position: "absolute", left: 14, bottom: 12,
 const legendRowStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 6 };
 const legendWikStyle: CSSProperties = { display: "inline-block", width: 22, height: 1, background: "color-mix(in srgb, var(--text-1) 40%, transparent)" };
 const legendTagStyle: CSSProperties = { display: "inline-block", width: 22, borderTop: "1px dashed color-mix(in srgb, var(--text-1) 22%, transparent)" };
+const legendProjectStyle: CSSProperties = { display: "inline-block", width: 22, borderTop: "1px dotted color-mix(in srgb, var(--text-1) 22%, transparent)" };
+const legendSemanticStyle: CSSProperties = { display: "inline-block", width: 22, borderTop: "2px dashed color-mix(in srgb, var(--text-1) 22%, transparent)" };
 const backdropStyle: CSSProperties = { position: "absolute", inset: 0, zIndex: 4 };
+// s152: the "Smart connections" control — top-right, quiet, always present alongside the legend so
+// the setting is reachable whether or not the sky currently needs the empty-sky offer below.
+const smartRowStyle: CSSProperties = {
+  position: "absolute", top: 12, right: 14, display: "flex", alignItems: "center", gap: 8, zIndex: 3,
+};
+const smartLabelStyle: CSSProperties = { fontSize: fsLabel, color: "var(--text-3)" };
+// ★ the empty-sky affordance (task 3) — an offer, not an error: quiet border + glass surface, no
+// semantic colour, dismissed simply by it no longer applying (setting on, or an edge appears).
+const enableOfferStyle: CSSProperties = {
+  position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 3,
+  background: "var(--glass-bg)", border: "1px solid var(--border)", padding: "6px 12px",
+  fontSize: fsLabel, color: "var(--text-3)", cursor: "pointer", whiteSpace: "nowrap",
+};
+const enableOfferActionStyle: CSSProperties = { color: "var(--text-1)", textDecoration: "underline" };
 const cardStyle: CSSProperties = {
   position: "absolute", width: CARD_W, background: "var(--glass-bg)", border: "1px solid var(--border)",
   padding: "12px 14px", zIndex: 5, display: "flex", flexDirection: "column", gap: 4,

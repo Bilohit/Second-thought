@@ -252,6 +252,11 @@ export interface SearchResult {
    *  Absent (never `false`) on every ordinary row; `score` on a rescued row
    *  is the real sub-threshold cosine similarity, not clamped or faked. */
   rescued?: true;
+  /** s152: present only when the caller opts in via `searchCaptures(..., { includeVectors: true })`
+   *  — the server-computed embedding for this row, or `null` if the note has none yet. Omitted
+   *  (not merely `undefined`) on every ordinary request; requesting it unconditionally would mean
+   *  paying ~1MB of JSON per 200-row browse fetch for a feature most callers never asked for. */
+  vec?: number[] | null;
 }
 
 export type LlmStatus = "loading" | "ready" | "disconnected";
@@ -797,7 +802,7 @@ export async function getVaultFolderFiles(
 
 export async function searchCaptures(
   q: string,
-  opts?: { project?: string; since?: string; limit?: number; offset?: number },
+  opts?: { project?: string; since?: string; limit?: number; offset?: number; includeVectors?: boolean },
 ): Promise<{ results: SearchResult[]; count: number; query: string }> {
   const stop = logger.time("look", "GET /search");
   logger.debug("look", "search query", { q, ...opts });
@@ -808,6 +813,9 @@ export async function searchCaptures(
   // FR-27: omitted entirely when 0/absent, so an un-paged caller's request URL
   // is byte-identical to what it sent before offset existed.
   if (opts?.offset) params.set("offset", String(opts.offset));
+  // s152: opt-in only — omitted entirely (not "0") when false/absent, so every existing caller's
+  // request is byte-identical to before this param existed and never pays for embeddings it didn't ask for.
+  if (opts?.includeVectors) params.set("include_vectors", "1");
   try {
     const r = await fetch(`${BASE}/search?${params.toString()}`, { headers: await authHeaders() });
     if (!r.ok) {

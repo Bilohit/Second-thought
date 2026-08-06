@@ -23,6 +23,11 @@
  *     below, no wikilink edges are ever produced here, so the wikilink half of the phone's
  *     `buildStarEdges` (which reads a real `LinkIndex`) has nothing to port.
  *
+ * ★ s152: the edge model is now weighted (tags · project · opt-in semantic · wikilink) and budgeted
+ * per node. That block is marked in the file and is kept IDENTICAL in the phone's copy. The ceiling
+ * below is unchanged and still real — desktop supplies no `links`, so the wikilink signal simply
+ * never bids here; the other three carry the sky.
+ *
  * ponytail: NO WIKILINK EDGES. The phone's `buildStarEdges` reads a durable on-device `linkIndex`
  * (SQLite `links` table, built by `db/index.ts`'s writers) — the desktop has no equivalent. The
  * capture pipeline's `link_resolver.py` builds a link index too, but only in-process at capture-write
@@ -53,11 +58,15 @@ export interface SimNode {
   fvy?: number;
 }
 
-export type SimEdgeKind = "wikilink" | "tag";
+export type SimEdgeKind = "wikilink" | "tag" | "project" | "semantic";
 export interface SimEdge {
   a: string;
   b: string;
+  /** The signal that WON this pair (strongest bid), for colour + explanation. */
   kind: SimEdgeKind;
+  /** 0..1 strength. Drives spring stiffness, rest length and line opacity — a strong pair settles
+   *  closer and steadier, a weak one sits further out and sways more (DECISIONS §5 s152). */
+  weight: number;
 }
 
 export interface StepOptions {
@@ -91,6 +100,25 @@ const DRIFT_VY = 0.012; // cos(t/2100 + ph), :1866
 const DAMPING = 0.9; // :1867
 const CLAMP_X = [26, 26] as const; // [left margin, right margin] — x in [26, W-26], :1870
 const CLAMP_Y = [20, 34] as const; // y in [20, H-34], :1871
+
+// ── weight → motion (s152) ───────────────────────────────────────────────────────────────────────
+// The mock shipped two discrete springs; the weighted model interpolates BETWEEN them, so a 1.0
+// edge is bit-for-bit the old wikilink spring and a 0.0 edge is bit-for-bit the old tag spring.
+// Nothing outside these two helpers changed: repulsion, centering, damping, drift and the clamp are
+// untouched, which is what keeps the felt motion of the sky the same.
+function clamp01(v: number): number {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+export function springK(weight: number): number {
+  return SPRING_TAG.k + (SPRING_WIKILINK.k - SPRING_TAG.k) * clamp01(weight);
+}
+export function springRest(weight: number): number {
+  return SPRING_TAG.rest + (SPRING_WIKILINK.rest - SPRING_TAG.rest) * clamp01(weight);
+}
+/** Line opacity for a drawn edge — the visual half of the same continuum. */
+export function edgeOpacity(weight: number): number {
+  return 0.1 + 0.38 * clamp01(weight);
+}
 
 export function stepSimulation(
   nodes: readonly SimNode[],
@@ -129,28 +157,26 @@ export function stepSimulation(
     }
   }
 
-  const spring = (kind: SimEdgeKind, k: number, rest: number): void => {
-    for (const e of edges) {
-      if (e.kind !== kind) continue;
-      const a = byId.get(e.a);
-      const b = byId.get(e.b);
-      if (!a || !b) continue;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const d = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-      const f = k * (d - rest);
-      if (!a.drag) {
-        a.vx += (dx / d) * f;
-        a.vy += (dy / d) * f;
-      }
-      if (!b.drag) {
-        b.vx -= (dx / d) * f;
-        b.vy -= (dy / d) * f;
-      }
+  // ONE spring pass, interpolated by weight (s152). The two named constants below are now the ENDS
+  // of a continuum rather than two discrete cases: weight 0 is exactly the old tag spring, weight 1
+  // exactly the old wikilink spring, so the mock's numbers are still the only numbers here.
+  for (const e of edges) {
+    const a = byId.get(e.a);
+    const b = byId.get(e.b);
+    if (!a || !b) continue;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const d = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
+    const f = springK(e.weight) * (d - springRest(e.weight));
+    if (!a.drag) {
+      a.vx += (dx / d) * f;
+      a.vy += (dy / d) * f;
     }
-  };
-  spring("wikilink", SPRING_WIKILINK.k, SPRING_WIKILINK.rest);
-  spring("tag", SPRING_TAG.k, SPRING_TAG.rest);
+    if (!b.drag) {
+      b.vx -= (dx / d) * f;
+      b.vy -= (dy / d) * f;
+    }
+  }
 
   for (const n of arr) {
     if (!n.drag) {
@@ -219,12 +245,100 @@ export function selectRecentIds(items: readonly RecencyItem[], cap: number = NOD
     .map((n) => n.id);
 }
 
-// ── edges: shared tags only (see the ponytail above for why wikilinks aren't built here) ─────────
-// Deduped, unordered pairs restricted to `allowedIds` (the capped node set) — a pair with either end
-// outside the cap is simply dropped, same as the mock only ever wiring pairs both present in `NOTES`.
+// ══ THE EDGE MODEL (s152) — THIS BLOCK IS KEPT IDENTICAL IN `phone/src/lib/starsSim.ts`. ═════════
+// Change one, change the other in the same commit, or the two skies stop agreeing about what a
+// connection IS. Everything it needs arrives on `StarSourceNote`, so neither platform's own types
+// (desktop `SearchResult`, phone `Note`/`LinkIndex`) leak in here.
+//
+// Why weighted-and-budgeted rather than the old boolean "shares a tag": both boolean rules are
+// degenerate on a real vault, in OPPOSITE directions (measured s151 on the user's own 29 notes —
+// `shares ≥1 tag` drew ZERO edges because every tag occurred exactly once, `same project` drew ALL
+// 406 pairs because every note sat in `_loose`). A score plus a per-node budget is what makes the
+// drawn set both non-empty and bounded, whatever shape the vault happens to be in.
 export interface StarSourceNote {
   id: string;
   tags: readonly string[];
+  /** Owning project. `_loose`/`uncategorized`/empty are the ABSENCE of a grouping, not a grouping —
+   *  they can never source an edge (and `_loose` must never be rendered at all). */
+  project?: string | null;
+  /** Ids this note wikilinks TO, already resolved. Desktop supplies none — see the ponytail above. */
+  links?: readonly string[];
+  /** The note's embedding, supplied ONLY when smart connections are on. Absent = no semantic bid. */
+  vec?: readonly number[] | null;
+}
+
+export interface EdgeOptions {
+  /** The opt-in semantic pass (DECISIONS §5 s152). Default OFF — the user's own call. */
+  semantic?: boolean;
+}
+
+/** Max edges any one star may SOURCE. Drawn degree can still exceed it via inbound picks — the kept
+ *  set is a union, not a partition, so a genuinely central note stays central. */
+export const EDGE_TOP_K = 3;
+/** Cosine below this is not a relationship, it is two notes written in the same language. */
+export const SEMANTIC_FLOOR = 0.62;
+
+const W_WIKILINK = 1;
+const W_TAG_BASE = 0.35;
+const W_TAG_SPAN = 0.4;
+const W_PROJECT = 0.3;
+const W_SEMANTIC_BASE = 0.5;
+const W_SEMANTIC_SPAN = 0.5;
+
+function isRealProject(p: string | null | undefined): boolean {
+  return !!p && p !== "_loose" && p !== "uncategorized";
+}
+
+/** Cosine similarity. A zero-length vector scores 0 rather than NaN — an unembedded note must read
+ *  as "no evidence", never as a NaN that then propagates silently through every comparison. */
+export function cosine(a: readonly number[], b: readonly number[]): number {
+  const n = Math.min(a.length, b.length);
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < n; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / Math.sqrt(na * nb);
+}
+
+/** The strongest signal connecting two notes, or null when nothing does. Signals BID; the highest
+ *  bid wins outright — a pair is drawn once, coloured by whatever justified it best. */
+export function pairWeight(
+  a: StarSourceNote,
+  b: StarSourceNote,
+  semantic: boolean
+): { weight: number; kind: SimEdgeKind } | null {
+  let best: { weight: number; kind: SimEdgeKind } | null = null;
+  const bid = (weight: number, kind: SimEdgeKind): void => {
+    if (!best || weight > best.weight) best = { weight, kind };
+  };
+
+  // An explicit [[link]] is the user's own assertion of a relationship — nothing outranks it.
+  if (a.links?.includes(b.id) || b.links?.includes(a.id)) bid(W_WIKILINK, "wikilink");
+
+  // Tags: Jaccard, not "shares at least one" — three tags in common must beat one.
+  const union = new Set<string>([...a.tags, ...b.tags]);
+  if (union.size > 0) {
+    let inter = 0;
+    for (const t of new Set(a.tags)) if (b.tags.includes(t)) inter++;
+    if (inter > 0) bid(W_TAG_BASE + W_TAG_SPAN * (inter / union.size), "tag");
+  }
+
+  if (isRealProject(a.project) && a.project === b.project) bid(W_PROJECT, "project");
+
+  // Semantic: opt-in, and a pass over vectors that ALREADY EXIST on disk — no inference at render
+  // time, nothing leaves the device, no model loaded just to draw a sky.
+  if (semantic && a.vec && b.vec) {
+    const s = cosine(a.vec, b.vec);
+    if (s >= SEMANTIC_FLOOR) {
+      bid(W_SEMANTIC_BASE + W_SEMANTIC_SPAN * ((s - SEMANTIC_FLOOR) / (1 - SEMANTIC_FLOOR)), "semantic");
+    }
+  }
+  return best;
 }
 
 const EDGE_SEP = "\u0000"; // cannot occur in a vault-relative path
@@ -233,25 +347,53 @@ function edgeKey(a: string, b: string): string {
   return a < b ? a + EDGE_SEP + b : b + EDGE_SEP + a;
 }
 
-export function buildStarEdges(notes: readonly StarSourceNote[], allowedIds: ReadonlySet<string>): SimEdge[] {
-  const edges: SimEdge[] = [];
-  const seen = new Set<string>();
+/**
+ * Score every in-cap pair, then keep each star's own top `EDGE_TOP_K` and union the picks.
+ * Deduped, unordered pairs restricted to `allowedIds` (the capped node set) — a pair with either end
+ * outside the cap is simply dropped, same as the mock only ever wiring pairs both present in `NOTES`.
+ * Output is sorted by edge key, so the same vault redraws the same sky rather than a reshuffled one.
+ */
+export function buildStarEdges(
+  notes: readonly StarSourceNote[],
+  allowedIds: ReadonlySet<string>,
+  opts: EdgeOptions = {}
+): SimEdge[] {
+  const semantic = opts.semantic ?? false;
   const included = notes.filter((n) => allowedIds.has(n.id));
+  const scored = new Map<string, SimEdge>();
+  const candidates = new Map<string, string[]>();
+
+  const remember = (id: string, key: string): void => {
+    const list = candidates.get(id);
+    if (list) list.push(key);
+    else candidates.set(id, [key]);
+  };
+
   for (let i = 0; i < included.length; i++) {
     for (let j = i + 1; j < included.length; j++) {
       const a = included[i];
       const b = included[j];
-      if (a.tags.some((t) => b.tags.includes(t))) {
-        const key = edgeKey(a.id, b.id);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const [lo, hi] = a.id < b.id ? [a.id, b.id] : [b.id, a.id];
-        edges.push({ a: lo, b: hi, kind: "tag" });
-      }
+      const w = pairWeight(a, b, semantic);
+      if (!w) continue;
+      const key = edgeKey(a.id, b.id);
+      if (scored.has(key)) continue;
+      const [lo, hi] = a.id < b.id ? [a.id, b.id] : [b.id, a.id];
+      scored.set(key, { a: lo, b: hi, kind: w.kind, weight: w.weight });
+      remember(a.id, key);
+      remember(b.id, key);
     }
   }
-  return edges;
+
+  const keep = new Set<string>();
+  for (const keys of candidates.values()) {
+    // Ties break on the key, never on insertion order — two equal-weight candidates must resolve the
+    // same way on every machine, or the same vault draws a different sky on desktop than on phone.
+    keys.sort((x, y) => (scored.get(y) as SimEdge).weight - (scored.get(x) as SimEdge).weight || (x < y ? -1 : 1));
+    for (const k of keys.slice(0, EDGE_TOP_K)) keep.add(k);
+  }
+  return [...keep].sort().map((k) => scored.get(k) as SimEdge);
 }
+// ══ END OF THE SHARED EDGE MODEL ═════════════════════════════════════════════════════════════════
 
 // ── degree = wikilink-edge count only (mirrors the mock: `n.links.length`, :1784) ────────────────
 export function computeDegrees(ids: readonly string[], edges: readonly SimEdge[]): Map<string, number> {

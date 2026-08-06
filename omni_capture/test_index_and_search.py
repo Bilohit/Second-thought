@@ -1007,6 +1007,96 @@ class TestSearchEndpoint(unittest.TestCase):
             self.assertIsNone(row["modified"])
 
 
+class TestSearchIncludeVectors(unittest.TestCase):
+    """`include_vectors` (opt-in, STARS "smart connections"): every result
+    row gains `vec` -- that note's chunk vectors mean-pooled+normalized to
+    one vector -- only when explicitly requested, and `null` for a note
+    with no embedding rather than an error."""
+
+    def _make_client(self, vault: Path) -> "TestClient":
+        import server
+        server._get_vault_root = lambda: vault  # type: ignore[attr-defined]
+        return TestClient(server.app, headers=_AUTH)
+
+    def _write_note(self, vault: Path, project: str, name: str) -> Path:
+        note_dir = vault / project
+        note_dir.mkdir(parents=True, exist_ok=True)
+        note_path = note_dir / f"{name}.md"
+        note_path.write_text(f"---\ntitle: {name}\n---\nbody\n", encoding="utf-8")
+        return note_path
+
+    def _insert_embedding(self, vault: Path, doc_id: str, vec: list[float]) -> None:
+        import numpy as np
+        import vector_store
+        blob = np.array(vec, dtype=np.float32).tobytes()
+        with vector_store._connect(vault) as conn:
+            conn.execute(
+                "INSERT INTO embeddings (id, embedding, document, category) VALUES (?,?,?,?)",
+                (doc_id, blob, "doc", "Tech_Notes"),
+            )
+
+    def test_vec_field_absent_by_default(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            note_path = self._write_note(vault, "Tech_Notes", "docker")
+            log_capture_db(_entry_search(filepath=str(note_path), filename="docker"), vault)
+            self._insert_embedding(vault, "Tech_Notes/docker.md", [1.0, 0.0, 0.0, 0.0])
+            client = self._make_client(vault)
+
+            data = client.get("/search?q=docker").json()
+
+            row = next(r for r in data["results"] if r["filename"] == "docker")
+            self.assertNotIn("vec", row)
+
+    def test_vec_present_and_mean_pooled_across_chunks(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            note_path = self._write_note(vault, "Tech_Notes", "docker")
+            log_capture_db(_entry_search(filepath=str(note_path), filename="docker"), vault)
+            # Two chunk vectors for the same note -- mean-pool then L2-normalize
+            # must match vector_store.note_vectors' own behaviour exactly.
+            self._insert_embedding(vault, "Tech_Notes/docker.md::c0", [1.0, 0.0, 0.0, 0.0])
+            self._insert_embedding(vault, "Tech_Notes/docker.md::c1", [0.0, 1.0, 0.0, 0.0])
+            client = self._make_client(vault)
+
+            data = client.get("/search?q=docker&include_vectors=true").json()
+
+            row = next(r for r in data["results"] if r["filename"] == "docker")
+            self.assertIn("vec", row)
+            expected = [0.7071067811865475, 0.7071067811865475, 0.0, 0.0]
+            self.assertEqual(len(row["vec"]), 4)
+            for got, want in zip(row["vec"], expected):
+                self.assertAlmostEqual(got, want, places=5)
+
+    def test_vec_null_when_note_has_no_embedding(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            note_path = self._write_note(vault, "Tech_Notes", "unembedded")
+            log_capture_db(_entry_search(filepath=str(note_path), filename="unembedded"), vault)
+            # No vectors.db row for this note at all -- must degrade to null,
+            # not raise, and must not affect any other result.
+            client = self._make_client(vault)
+
+            data = client.get("/search?q=unembedded&include_vectors=true").json()
+
+            row = next(r for r in data["results"] if r["filename"] == "unembedded")
+            self.assertIn("vec", row)
+            self.assertIsNone(row["vec"])
+
+    def test_vec_null_when_vectors_db_missing_entirely(self):
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td) / "vault"
+            note_path = self._write_note(vault, "Tech_Notes", "docker")
+            log_capture_db(_entry_search(filepath=str(note_path), filename="docker"), vault)
+            client = self._make_client(vault)
+            # vectors.db was never created for this vault at all.
+
+            data = client.get("/search?q=docker&include_vectors=true").json()
+
+            row = next(r for r in data["results"] if r["filename"] == "docker")
+            self.assertIsNone(row["vec"])
+
+
 class TestStatsEndpoint(unittest.TestCase):
     def _make_client(self, vault: Path) -> "TestClient":
         import server
