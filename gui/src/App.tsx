@@ -2678,7 +2678,7 @@ export default function App() {
             lookChat={lookChat}
             lookChatPersist={lookChatPersist}
             onOpenFile={(path) => openFilePath(path).catch(() => {})}
-            initialView={VIEW_TO_RAIL[view] ?? "dashboard"}
+            initialView={VIEW_TO_RAIL[view] ?? "notes"}
             initialViewToken={navToken}
             onCaptureFile={captureFile}
             onCaptureNow={captureNow}

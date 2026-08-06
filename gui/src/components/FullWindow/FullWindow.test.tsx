@@ -10,13 +10,14 @@
  * `view === "note"` branch, so opening a note is real navigation and a rail
  * click away from it unmounts the editor like any other view swap.
  *
- * `openANote()` below opens the editor via the new rail "New Note" button
- * (null path, no note ever created since nothing is typed) rather than via
- * an existing vault note -- that keeps this file's mocking to exactly the
- * views that actually mount (Dashboard, then History) instead of also
- * needing LibraryView/ProjectsView's own note-listing API surface. The
- * assertion under test -- a rail click while `view === "note"` actually
- * switches views -- doesn't care whether the open note is new or existing.
+ * P3-A (2026-08-06): the rail went from 4 main views + a 2-button footer
+ * (New Note / Settings) to 5 evenly-split tabs (NOTES · BROWSE · CHAT ·
+ * SYNC · SET) with no separate "New Note" slot -- P3-B folds note creation
+ * into NOTES' future capture-pane radial. `openANote()` below now opens the
+ * editor via `initialView`/`initialViewToken` (the exact prop path
+ * App.tsx's pill menu already drives FullWindow through) instead of a rail
+ * click, so this file doesn't need to know where -- or whether -- a "new
+ * note" affordance exists inside any given tab's still-unbuilt interior.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, within, fireEvent, cleanup } from "@testing-library/react";
@@ -100,12 +101,6 @@ function mockNetworkDefaults() {
   vi.mocked(api.checkHealth).mockResolvedValue({ serverOk: true, llmStatus: "ready", ffmpeg: true });
 }
 
-/** Opens NoteEditor via the rail's "New Note" button (null path -- no
- *  keystroke, so no createNote() call fires; see file docblock). */
-function openANote() {
-  fireEvent.click(screen.getByRole("button", { name: /new note/i }));
-}
-
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -114,28 +109,51 @@ afterEach(() => {
 describe("FullWindow — rail stays live behind the note editor (Task 8)", () => {
   it("switches view when a rail tab is clicked while a note is open", async () => {
     mockNetworkDefaults();
-    render(<FullWindow {...baseProps} />);
+    // P3-A: opened via `initialView` (the exact prop App.tsx's pill menu
+    // already drives FullWindow through) instead of a rail "New Note"
+    // click -- that button no longer exists (see file docblock).
+    render(<FullWindow {...baseProps} initialView="note" />);
 
-    openANote();
     expect(screen.getByRole("dialog", { name: /note editor/i })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: /^history$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^sync$/i }));
 
     expect(screen.queryByRole("dialog", { name: /note editor/i })).toBeNull();
-    // Exact, case-sensitive match: FullWindow's own topbar subtitle for this
-    // view ("by project") also contains the substring "by project" lowercase,
-    // so a loose regex here matches two elements.
-    expect(await screen.findByText("By project")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^sync$/i }).getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("puts Settings last in the rail, below New Note", () => {
+  it("has exactly 5 evenly-split tabs, in order NOTES · BROWSE · CHAT · SYNC · SET", () => {
     mockNetworkDefaults();
     render(<FullWindow {...baseProps} />);
 
     const rail = screen.getByTestId("fw-rail");
-    const labels = within(rail).getAllByRole("button").map((b) => b.getAttribute("aria-label"));
+    const buttons = within(rail).getAllByRole("button");
+    const labels = buttons.map((b) => b.getAttribute("aria-label"));
 
-    expect(labels.slice(-2)).toEqual(["New Note", "Settings"]);
+    // P3-A: the old 4-main + divider + 2-footer split is gone -- all 5 tabs
+    // are `rail-btn--main` now, none is `rail-btn--footer`, and "New Note"
+    // is no longer a standalone slot (folds into NOTES' future capture
+    // pane, P3-B).
+    expect(labels).toEqual(["Notes", "Browse", "Chat", "Sync", "Settings"]);
+    expect(buttons.every((b) => b.className.includes("rail-btn--main"))).toBe(true);
+    expect(buttons.some((b) => b.className.includes("rail-btn--footer"))).toBe(false);
+  });
+
+  it("clicking a tab presses it and un-presses every other tab (railSliderFromElement's target)", () => {
+    mockNetworkDefaults();
+    render(<FullWindow {...baseProps} />);
+
+    const rail = screen.getByTestId("fw-rail");
+    const pressed = () =>
+      within(rail).getAllByRole("button").filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.getAttribute("aria-label"));
+
+    expect(pressed()).toEqual(["Notes"]); // default view
+
+    fireEvent.click(screen.getByRole("button", { name: /^browse$/i }));
+    expect(pressed()).toEqual(["Browse"]);
+
+    fireEvent.click(screen.getByRole("button", { name: /^chat$/i }));
+    expect(pressed()).toEqual(["Chat"]);
   });
 
   it("has no Hide control", () => {
