@@ -2692,8 +2692,6 @@ export default function App() {
             captureState={captureState}
             stepDefs={stepDefs}
             llmStatus={llmStatus}
-            lookMode={lookMode}
-            onSelectLookMode={setLookMode}
             lookChat={lookChat}
             lookChatPersist={lookChatPersist}
             onOpenFile={(path) => openFilePath(path).catch(() => {})}

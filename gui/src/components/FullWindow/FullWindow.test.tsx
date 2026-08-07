@@ -71,8 +71,6 @@ const baseProps = {
   captureState: idleCapture,
   stepDefs,
   llmStatus: "ready" as const,
-  lookMode: "search" as const,
-  onSelectLookMode: vi.fn(),
   lookChat: {
     messages: [],
     streaming: false,

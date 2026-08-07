@@ -77,15 +77,23 @@ const MAIN_TABS: MainTab[] = ["notes", "browse", "chat", "sync", "set"];
 // CompactQuickNote already use for CompactShell, but P3-B now renders that
 // lifted content inside the slide-over's own header strip instead of this
 // shared per-tab topbar, so the two never compete for the same row.
+// P3-D: LookPanel's `onSelectMode` is required but unreachable when
+// `hideToggle` is set (its only call site is the internal toggle that prop
+// suppresses) — a single module-level no-op avoids allocating a fresh
+// closure per render for a callback that can never fire.
+function noOpSelectMode(): void {}
+
 const TITLES: Record<RailView, [string, string]> = {
   // P3-B: real interior — list pane + 280px morphing capture pane (radial →
   // blank/voice/clip/screenshot; any in-flight capture, hotkey-triggered or
   // not, shows the live StepIndicator over the real `stepDefs`).
   notes:   ["Notes", "capture · recent"],
-  // P3-D splits CHAT out of LookPanel's search/chat toggle into its own tab.
-  // Until then this mounts LookPanel unchanged (both modes) so search stays
-  // reachable — losing it here would be a real regression, not a shell nicety.
-  chat:    ["Chat", "search · chat over vault"],
+  // P3-D: CHAT is chat-only now — Search moved into BROWSE's own sectioned
+  // search (P3-C, BrowseView.tsx) and the Search/Chat toggle that used to
+  // pick between them left this tab's topbar entirely (see the `view ===
+  // "chat"` block below). LookPanel is locked to `mode="chat"` at the call
+  // site instead of forwarding `props.lookMode`.
+  chat:    ["Chat", "local model · your vault"],
   // P3-C owns BROWSE's real interior (sectioned search + paged 4×2 project
   // rects + tag list + LIST/STARS toggle — none of that exists today).
   // LibraryView (ProjectsRail + ProjectsPane + Trash) is the nearest
@@ -135,8 +143,6 @@ interface FullWindowProps {
   captureState: CaptureState;
   stepDefs: CaptureStep[];
   llmStatus: LlmStatus;
-  lookMode: "search" | "chat";
-  onSelectLookMode: (m: "search" | "chat") => void;
   lookChat: LookChatHook;
   lookChatPersist: LookChatPersist;
   onOpenFile: (path: string) => void;
@@ -385,17 +391,6 @@ export default function FullWindow(props: FullWindowProps) {
               >
                 <RefreshIcon size={13} />
               </button>
-              {/* P3-D: CHAT splits from Search into its own tab — this toggle
-                  (and the search mode it exposes) moves into BROWSE's
-                  sectioned search (P3-C). --swap-dir is coupled to the
-                  Search=0/Chat=1 ordering below; reordering flips slide
-                  direction silently. */}
-              <SegmentedToggle
-                ariaLabel="Look mode"
-                options={[{ key: "search" as const, label: "Search" }, { key: "chat" as const, label: "Chat" }]}
-                value={props.lookMode}
-                onChange={props.onSelectLookMode}
-              />
             </div>
           )}
           {view === "browse" && (
@@ -460,10 +455,17 @@ export default function FullWindow(props: FullWindowProps) {
         )}
         {view === "chat" && (
           <div key="chat" className="fw-view-panel">
+            {/* P3-D: CHAT is chat-only — `mode` is locked to "chat" here
+                rather than forwarding the app-level `lookMode` state (that
+                state still exists for the pill's own Search/Chat toggle,
+                CompactLook.tsx, which keeps both modes and is unaffected —
+                see LookPanel.test.tsx's swap-direction pin). `onSelectMode`
+                is a stable no-op: LookPanel only ever calls it from its own
+                internal toggle, permanently hidden here by `hideToggle`. */}
             <LookPanel
               visible
-              mode={props.lookMode}
-              onSelectMode={props.onSelectLookMode}
+              mode="chat"
+              onSelectMode={noOpSelectMode}
               onClose={() => setView("notes")}
               lookChat={props.lookChat}
               lookChatPersist={props.lookChatPersist}
