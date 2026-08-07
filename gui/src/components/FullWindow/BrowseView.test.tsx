@@ -26,6 +26,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     searchCaptures: vi.fn(),
     notesForProject: vi.fn(),
     notesForTag: vi.fn(),
+    createProject: vi.fn(),
     renameProject: vi.fn(),
     updateProjectDescription: vi.fn(),
     deleteProject: vi.fn(),
@@ -76,6 +77,7 @@ beforeEach(() => {
   vi.mocked(api.searchCaptures).mockResolvedValue({ results: [], count: 0, query: "" });
   vi.mocked(api.notesForProject).mockResolvedValue([row(), row({ path: "trip-japan/b.md", filename: "b.md" })]);
   vi.mocked(api.notesForTag).mockResolvedValue([]);
+  vi.mocked(api.createProject).mockResolvedValue(undefined);
   vi.mocked(api.renameProject).mockResolvedValue(undefined);
   vi.mocked(api.updateProjectDescription).mockResolvedValue(undefined);
   vi.mocked(api.deleteProject).mockResolvedValue(undefined);
@@ -287,5 +289,52 @@ describe("BrowseView — FR-36 regression guard: rename/delete/folder-import re-
     fireEvent.click(applyBtn);
     await vi.waitFor(() => expect(api.applyFolderImport).toHaveBeenCalled());
     await vi.waitFor(() => expect(vi.mocked(api.listProjects).mock.calls.length).toBeGreaterThan(before));
+  });
+});
+
+describe("BrowseView — FR-42 the PROJECTS section-head '+ NEW' affordance", () => {
+  it("renders on the PROJECTS head row, beside the pager", async () => {
+    renderBrowse();
+    await screen.findByText("trip-japan"); // page finished its normal render
+    expect(screen.getByLabelText("New project")).toBeTruthy();
+  });
+
+  it("rejects an invalid name without calling createProject, and shows a message", async () => {
+    renderBrowse();
+    await screen.findByText("trip-japan");
+    fireEvent.click(screen.getByLabelText("New project"));
+    const input = screen.getByLabelText("New project name");
+    fireEvent.change(input, { target: { value: "bad name!" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(api.createProject).not.toHaveBeenCalled();
+    expect(screen.getByText("Letters, numbers, - or _ only, starting with a letter or number.")).toBeTruthy();
+    // the input stays open so the user can fix and retry
+    expect(screen.getByLabelText("New project name")).toBeTruthy();
+  });
+
+  it("a valid name calls createProject and re-fetches via the SAME refetchProjects()", async () => {
+    renderBrowse();
+    await screen.findByText("trip-japan");
+    const before = vi.mocked(api.listProjects).mock.calls.length;
+    fireEvent.click(screen.getByLabelText("New project"));
+    const input = screen.getByLabelText("New project name");
+    fireEvent.change(input, { target: { value: "new-trip" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await vi.waitFor(() => expect(api.createProject).toHaveBeenCalledWith("new-trip"));
+    await vi.waitFor(() => expect(vi.mocked(api.listProjects).mock.calls.length).toBeGreaterThan(before));
+    // the inline input closes back to the trigger button on success
+    await vi.waitFor(() => expect(screen.queryByLabelText("New project name")).toBeNull());
+    expect(screen.getByLabelText("New project")).toBeTruthy();
+  });
+
+  it("Escape cancels without calling createProject", async () => {
+    renderBrowse();
+    await screen.findByText("trip-japan");
+    fireEvent.click(screen.getByLabelText("New project"));
+    const input = screen.getByLabelText("New project name");
+    fireEvent.change(input, { target: { value: "new-trip" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(api.createProject).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("New project name")).toBeNull();
   });
 });

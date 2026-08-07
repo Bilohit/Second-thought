@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FR-42 — where does "New project" live in the full window?</title>
+<style>
+  /* Tokens lifted verbatim from gui/src/index.css (dark theme, lines 144-155) — not re-invented. */
+  :root {
+    --bg: #0a0a0a; --surface: #262626; --surface-2: #404040;
+    --border: #383838; --border-2: #262626;
+    --text-1: #fafafa; --text-2: #a1a1a1; --text-3: #7a7a7a;
+    --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", "Segoe UI Mono", monospace;
+    --track: 0.01em;
+    /* s145 type scale — gui/src/lib/type.ts. Half-steps banned, raw px rejected at review. */
+    --fs-micro: 9px; --fs-label: 10px; --fs-body: 11px; --fs-read: 12px; --fs-lead: 13px;
+    --fs-title: 16px; --fs-display: 20px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px 22px 60px; background: var(--bg); color: var(--text-1);
+    font-family: var(--mono); letter-spacing: var(--track); font-size: var(--fs-read);
+  }
+  h1 { font-size: var(--fs-display); font-weight: 600; margin: 0 0 6px; letter-spacing: var(--track); }
+  .sub { color: var(--text-2); font-size: var(--fs-body); margin: 0 0 4px; max-width: 78ch; line-height: 1.7; }
+  .sub strong { color: var(--text-1); font-weight: 600; }
+  .rule { height: 1px; background: var(--border-2); margin: 22px 0 26px; }
+
+  .opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 22px; align-items: start; }
+
+  .opt { border: 1px solid var(--border); background: var(--bg); }
+  .opt > header { padding: 10px 12px; border-bottom: 1px solid var(--border-2); display: flex; align-items: baseline; gap: 8px; }
+  .tag { font-size: var(--fs-micro); letter-spacing: 0.18em; color: var(--text-3); }
+  .name { font-size: var(--fs-body); font-weight: 600; }
+  .verdict { margin-left: auto; font-size: var(--fs-micro); letter-spacing: 0.14em; }
+  .rec { color: #6ee7a8; } .no { color: #f0a0a0; } .neutral { color: var(--text-3); }
+
+  /* ── the surface being mocked: BrowseView's PROJECTS block ── */
+  .fw { background: var(--bg); padding-bottom: 8px; }
+  .sechead {
+    display: flex; align-items: center; gap: 8px; padding: 14px 14px 8px;
+    font-size: var(--fs-label); letter-spacing: 0.18em; color: var(--text-3);
+  }
+  .dots { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .pdot { width: 6px; height: 6px; background: var(--surface-2); border: none; padding: 0; }
+  .pdot.on { background: var(--text-1); }
+  .parrow { background: none; border: none; color: var(--text-3); padding: 0 2px; display: inline-flex; cursor: pointer; }
+
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 2px 14px; }
+  .card {
+    aspect-ratio: 1; background: var(--surface); border: 1px solid var(--border);
+    display: flex; flex-direction: column; padding: 10px; text-align: left; min-width: 0;
+    font-family: inherit; letter-spacing: var(--track); cursor: pointer;
+  }
+  .pc-name { font-size: var(--fs-body); font-weight: 600; color: var(--text-1); line-height: 1.5; word-break: break-word; }
+  .pc-cnt { margin-top: auto; font-size: var(--fs-micro); color: var(--text-3); letter-spacing: 0.08em; }
+
+  /* option A — a create cell inside the paged grid */
+  .card.newcell {
+    background: transparent; color: var(--text-2);
+    align-items: center; justify-content: center; gap: 8px;
+  }
+  .card.newcell .lbl { font-size: var(--fs-micro); letter-spacing: 0.14em; color: var(--text-3); }
+
+  /* option B — a create action on the section-head control row */
+  .headbtn {
+    display: inline-flex; align-items: center; gap: 6px; background: none;
+    border: 1px solid var(--border); color: var(--text-2); cursor: pointer;
+    padding: 3px 8px; font-family: inherit; font-size: var(--fs-micro);
+    letter-spacing: 0.14em; margin-left: auto;
+  }
+  .headbtn:hover { color: var(--text-1); border-color: var(--surface-2); }
+  .headbtn + .dots { margin-left: 10px; }
+
+  /* option C — a full-width row beneath the grid */
+  .newrow {
+    display: flex; align-items: center; gap: 10px; width: 100%; background: none;
+    border: none; border-top: 1px solid var(--border-2); padding: 9px 14px; margin-top: 10px;
+    color: var(--text-2); font-family: inherit; font-size: var(--fs-read);
+    letter-spacing: var(--track); text-align: left; cursor: pointer;
+  }
+
+  .note { padding: 10px 12px; border-top: 1px solid var(--border-2); font-size: var(--fs-body); color: var(--text-2); line-height: 1.65; }
+  .note b { color: var(--text-1); font-weight: 600; }
+  .note .kill { color: #f0a0a0; }
+</style>
+</head>
+<body>
+
+<h1>FR-42 — where does “New project” live?</h1>
+<p class="sub">
+  The full window can rename, describe, delete, tidy and folder-import a project — everything except bring one
+  into existence. <code>createProject</code>’s only caller is <code>VaultManager.tsx:924</code>, which is pill-only.
+  You ruled the home is BROWSE; these are the three placements <em>within</em> BROWSE, drawn with
+  <strong>the real tokens and the real geometry</strong> from <code>index.css</code> and <code>BrowseView.tsx</code>.
+</p>
+<p class="sub">
+  The deciding fact is that <strong>the projects grid is paged</strong> — 4 across, with the pager already sitting in the
+  section-head row.
+</p>
+
+<div class="rule"></div>
+
+<div class="opts">
+
+  <!-- ── CURRENT ── -->
+  <section class="opt">
+    <header><span class="tag">NOW</span><span class="name">Current — no way to create</span><span class="verdict no">THE BUG</span></header>
+    <div class="fw">
+      <div class="sechead">PROJECTS
+        <span class="dots">
+          <button class="parrow" aria-label="previous"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M15 18l-6-6 6-6"/></svg></button>
+          <button class="pdot on" aria-label="page 1"></button>
+          <button class="pdot" aria-label="page 2"></button>
+          <button class="parrow" aria-label="next"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 18l6-6-6-6"/></svg></button>
+        </span>
+      </div>
+      <div class="grid">
+        <div class="card"><span class="pc-name">research</span><span class="pc-cnt">12 NOTES</span></div>
+        <div class="card"><span class="pc-name">admin</span><span class="pc-cnt">4 NOTES</span></div>
+        <div class="card"><span class="pc-name">reading</span><span class="pc-cnt">1 NOTE</span></div>
+        <div class="card"><span class="pc-name">void-build</span><span class="pc-cnt">31 NOTES</span></div>
+      </div>
+    </div>
+    <div class="note">Every project-level verb exists here except <b>create</b>. Pre-existing since P3-A; the dead <code>ProjectsRail</code> was the last thing making the gap <i>look</i> covered.</div>
+  </section>
+
+  <!-- ── OPTION A ── -->
+  <section class="opt">
+    <header><span class="tag">A</span><span class="name">Create cell in the grid</span><span class="verdict no">PAGING BREAKS IT</span></header>
+    <div class="fw">
+      <div class="sechead">PROJECTS
+        <span class="dots">
+          <button class="parrow" aria-label="previous"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M15 18l-6-6 6-6"/></svg></button>
+          <button class="pdot on"></button><button class="pdot"></button>
+          <button class="parrow" aria-label="next"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 18l6-6-6-6"/></svg></button>
+        </span>
+      </div>
+      <div class="grid">
+        <button class="card newcell">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 5v14M5 12h14"/></svg>
+          <span class="lbl">NEW</span>
+        </button>
+        <div class="card"><span class="pc-name">research</span><span class="pc-cnt">12 NOTES</span></div>
+        <div class="card"><span class="pc-name">admin</span><span class="pc-cnt">4 NOTES</span></div>
+        <div class="card"><span class="pc-name">reading</span><span class="pc-cnt">1 NOTE</span></div>
+      </div>
+    </div>
+    <div class="note">Most discoverable, and it reads well on page 1. <span class="kill">But the grid pages.</span> The cell must either <b>vanish on page 2</b> — a control that disappears when you navigate — or <b>consume a slot on every page</b>, permanently costing one project tile. Also pushes <code>void-build</code> off page 1 in this very mock.</div>
+  </section>
+
+  <!-- ── OPTION B ── -->
+  <section class="opt">
+    <header><span class="tag">B</span><span class="name">Action on the section-head row</span><span class="verdict rec">RECOMMENDED</span></header>
+    <div class="fw">
+      <div class="sechead">PROJECTS
+        <button class="headbtn">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 5v14M5 12h14"/></svg>
+          NEW
+        </button>
+        <span class="dots">
+          <button class="parrow" aria-label="previous"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M15 18l-6-6 6-6"/></svg></button>
+          <button class="pdot on"></button><button class="pdot"></button>
+          <button class="parrow" aria-label="next"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 18l6-6-6-6"/></svg></button>
+        </span>
+      </div>
+      <div class="grid">
+        <div class="card"><span class="pc-name">research</span><span class="pc-cnt">12 NOTES</span></div>
+        <div class="card"><span class="pc-name">admin</span><span class="pc-cnt">4 NOTES</span></div>
+        <div class="card"><span class="pc-name">reading</span><span class="pc-cnt">1 NOTE</span></div>
+        <div class="card"><span class="pc-name">void-build</span><span class="pc-cnt">31 NOTES</span></div>
+      </div>
+    </div>
+    <div class="note"><b>List-level verb on the list-level control row</b>, beside the pager that already lives there (<code>dotsWrapStyle</code>, <code>marginLeft:auto</code>). Page-invariant, costs no tile, and the grid stays purely content. Matches s141’s split: <i>per-project</i> verbs in the drill-in’s 3-dot menu, <i>list</i> verbs on the head.</div>
+  </section>
+
+  <!-- ── OPTION C ── -->
+  <section class="opt">
+    <header><span class="tag">C</span><span class="name">Row beneath the grid</span><span class="verdict neutral">WORKS, READS WEAKER</span></header>
+    <div class="fw">
+      <div class="sechead">PROJECTS
+        <span class="dots">
+          <button class="parrow" aria-label="previous"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M15 18l-6-6 6-6"/></svg></button>
+          <button class="pdot on"></button><button class="pdot"></button>
+          <button class="parrow" aria-label="next"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 18l6-6-6-6"/></svg></button>
+        </span>
+      </div>
+      <div class="grid">
+        <div class="card"><span class="pc-name">research</span><span class="pc-cnt">12 NOTES</span></div>
+        <div class="card"><span class="pc-name">admin</span><span class="pc-cnt">4 NOTES</span></div>
+        <div class="card"><span class="pc-name">reading</span><span class="pc-cnt">1 NOTE</span></div>
+        <div class="card"><span class="pc-name">void-build</span><span class="pc-cnt">31 NOTES</span></div>
+      </div>
+      <button class="newrow">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 5v14M5 12h14"/></svg>
+        New project
+      </button>
+    </div>
+    <div class="note">Page-invariant too, and it borrows <code>tagRowStyle</code>’s row geometry so it costs no new vocabulary. But it sits <b>between PROJECTS and TAGS</b>, where a divider already implies a section change — so it reads as belonging to neither, and it is the placement most likely to be missed on a short viewport.</div>
+  </section>
+
+</div>
+
+<div class="rule"></div>
+<p class="sub">
+  All four panels use <strong>0-radius surfaces, border-based elevation, grayscale accent, IBM Plex Mono at +0.01em,
+  the s145 type scale and inline SVG icons</strong> — no emoji, no new tokens, no half-steps.
+  The empty-vault case is unchanged in every option: <code>“No projects yet.”</code> still renders, and in B and C the
+  create affordance is the one thing visible beside it, which is the state that most needs it.
+</p>
+
+</body>
+</html>

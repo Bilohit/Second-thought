@@ -41,13 +41,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
   listProjects, getStats, getTagTree, searchCaptures, notesForProject, notesForTag,
-  renameProject, updateProjectDescription, deleteProject, getTidyPreview, applyTidy,
+  createProject, renameProject, updateProjectDescription, deleteProject, getTidyPreview, applyTidy,
   listHandMadeFolders,
   type ProjectEntry, type SearchResult, type TidyMove, type HandMadeFolder,
 } from "../../lib/api";
 import {
   filterMachineTags, flattenTagTree, tagDisplayLabel, excludeProvisional, formatAgo,
-  describeTidyMove,
+  describeTidyMove, isValidProjectName, INVALID_NAME_MESSAGE,
   type FlatTag,
 } from "../../lib/projectsView";
 import { sectionSearch, isSearchActive, type SearchableProject } from "../../lib/browseSearch";
@@ -55,7 +55,7 @@ import { chunkProjects, browsePagerInfo, PROJECTS_PER_PAGE } from "../../lib/bro
 import { useFolderImport, FolderImportOffer, FolderImportChecklist } from "../FolderImportPanel";
 import {
   SearchIcon, FileIcon, ChevronLeftIcon, ChevronRightIcon,
-  MoreIcon, PencilIcon, ListIcon, TrashIcon, CheckIcon, CloseIcon,
+  MoreIcon, PencilIcon, ListIcon, TrashIcon, CheckIcon, CloseIcon, PlusIcon,
 } from "../PillMenu/icons";
 import { INPUT_STYLE, focusRing, blurRing } from "../ui/styles";
 import { micro, label as fsLabel, body as fsBody, read as fsRead, lead as fsLead } from "../../lib/type";
@@ -195,6 +195,13 @@ export default function BrowseView({ visible, mode, onOpenNote }: Props) {
   const [tidyBusy, setTidyBusy] = useState(false);
   const pendingSaveRef = useRef<{ name: string; value: string; timer: ReturnType<typeof setTimeout> } | null>(null);
 
+  // FR-42: the PROJECTS section-head "+ NEW" affordance — list-level, not
+  // drill-in-local, so it lives beside (not inside) the P3-C3 state block
+  // above even though it reuses that block's inline-edit idiom (renameValue/
+  // renameInputStyle/subIconBtnStyle's confirm+cancel pair).
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+
   const selectedProject = sub?.kind === "project" ? projects.find((p) => p.name === sub.value) ?? null : null;
 
   // Reset every piece of drill-in-local UI state whenever the drill-in's own
@@ -209,6 +216,8 @@ export default function BrowseView({ visible, mode, onOpenNote }: Props) {
     setMutationError(null);
     setTidyPreview(null);
     setDescDraft(selectedProject?.description ?? "");
+    setCreatingProject(false);
+    setNewProjectName("");
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `selectedProject` is derived FROM `sub`
     // (+ `projects`); re-running on every unrelated `projects` refetch would clobber an in-progress
     // rename/description edit. ProjectsPane.tsx's identical guard on its own `[selectedId, mode]`.
@@ -334,6 +343,42 @@ export default function BrowseView({ visible, mode, onOpenNote }: Props) {
         checkTidyPreview();
       })
       .catch((e) => setMutationError(e instanceof Error ? e.message : "Failed to delete"));
+  }
+
+  // FR-42: the PROJECTS section-head "+ NEW" affordance (mock option B,
+  // 2026-08-07-s157-fr42-new-project-placement.html) — same inline
+  // confirm/cancel idiom as `startRename`/`confirmRename` above, reusing
+  // this component's own `refetchProjects` (FR-36's one function, now a
+  // fourth caller) so the new tile appears without a navigate-away-and-back.
+  function startCreateProject() {
+    setMutationError(null);
+    setNewProjectName("");
+    setCreatingProject(true);
+  }
+
+  function cancelCreateProject() {
+    setCreatingProject(false);
+  }
+
+  function confirmCreateProject() {
+    const name = newProjectName.trim();
+    if (!name) { setCreatingProject(false); return; }
+    // Contract §1.3/§13.1: "a writer MUST reject an invalid name rather than
+    // write it." Client-side pre-check only — isValidProjectName mirrors the
+    // server's own regex (see its doc comment); the server remains the
+    // authority for anything that somehow slips past this.
+    if (!isValidProjectName(name)) {
+      setMutationError(INVALID_NAME_MESSAGE);
+      return;
+    }
+    setMutationError(null);
+    createProject(name)
+      .then(() => {
+        setCreatingProject(false);
+        setNewProjectName("");
+        refetchProjects();
+      })
+      .catch((e) => setMutationError(e instanceof Error ? e.message : "Failed to create project"));
   }
 
   if (!visible) return null;
@@ -585,6 +630,32 @@ export default function BrowseView({ visible, mode, onOpenNote }: Props) {
         <div style={scrollStyle}>
           <div style={sectionHeadStyle}>
             PROJECTS
+            {creatingProject ? (
+              <>
+                <input
+                  autoFocus
+                  value={newProjectName}
+                  onChange={(e) => setNewProjectName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") confirmCreateProject();
+                    if (e.key === "Escape") cancelCreateProject();
+                  }}
+                  placeholder="project name"
+                  aria-label="New project name"
+                  style={renameInputStyle}
+                />
+                <button className="br-kebab" style={subIconBtnStyle} onClick={confirmCreateProject} title="Confirm create" aria-label="Confirm create project">
+                  <CheckIcon size={13} />
+                </button>
+                <button className="br-kebab" style={subIconBtnStyle} onClick={cancelCreateProject} title="Cancel create" aria-label="Cancel create project">
+                  <CloseIcon size={13} />
+                </button>
+              </>
+            ) : (
+              <button className="br-kebab" style={headBtnStyle} onClick={startCreateProject} aria-label="New project">
+                <PlusIcon size={12} />NEW
+              </button>
+            )}
             <span style={dotsWrapStyle}>
               <button
                 className="br-parrow" style={parrowStyle} disabled={!pager.canPrev}
@@ -609,6 +680,7 @@ export default function BrowseView({ visible, mode, onOpenNote }: Props) {
               </button>
             </span>
           </div>
+          {mutationError && <div style={mutationErrorStyle}>{mutationError}</div>}
           {pageItems.length === 0 ? (
             <div style={emptyStyle}>No projects yet.</div>
           ) : (
@@ -711,7 +783,18 @@ const sectionHeadStyle: CSSProperties = {
   fontSize: fsLabel, letterSpacing: "0.18em", color: "var(--text-3)",
 };
 const emptyStyle: CSSProperties = { padding: "10px 14px", fontSize: fsBody, color: "var(--text-3)" };
-const dotsWrapStyle: CSSProperties = { marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" };
+// FR-42: the pager used to own the row's sole `marginLeft: "auto"` — now the
+// "+ NEW" button/input group (always rendered first) takes that role, so this
+// only needs the mock's own fixed 10px gap after it (`.headbtn + .dots`).
+const dotsWrapStyle: CSSProperties = { marginLeft: 10, display: "flex", gap: 8, alignItems: "center" };
+// FR-42: PROJECTS section-head "+ NEW" trigger — mock option B's `.headbtn`
+// (fs-micro, 0.14em tracking, bordered ghost button), `br-kebab` supplies the
+// hover/focus-visible treatment already defined for this file's icon buttons.
+const headBtnStyle: CSSProperties = {
+  display: "inline-flex", alignItems: "center", gap: 6, marginLeft: "auto",
+  background: "none", border: "1px solid var(--border)", color: "var(--text-2)",
+  cursor: "pointer", padding: "3px 8px", fontFamily: "inherit", fontSize: micro, letterSpacing: "0.14em",
+};
 const parrowStyle: CSSProperties = { background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", padding: "0 2px", display: "inline-flex" };
 const pdotStyle: CSSProperties = { width: 6, height: 6, background: "var(--surface-2)", border: "none", cursor: "pointer", padding: 0 };
 const pdotOnStyle: CSSProperties = { ...pdotStyle, background: "var(--text-1)" };
