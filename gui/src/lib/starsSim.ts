@@ -98,7 +98,13 @@ const CENTER_PULL = 0.0016; // :1865
 const DRIFT_VX = 0.012; // sin(t/1700 + ph), :1866
 const DRIFT_VY = 0.012; // cos(t/2100 + ph), :1866
 const DAMPING = 0.9; // :1867
-const CLAMP_X = [26, 26] as const; // [left margin, right margin] — x in [26, W-26], :1870
+// ★ s154 (FR-40, user-ruled): 26 → 66, and DELIBERATELY NOT the mock's :1870 literal any more.
+// The clamp bounds the node CENTRE, but `.bs-lbl` is an 80px-wide centred label, so at 26 a
+// right-edge label's box ended at W+14 and was clipped by skyStyle's `overflow:hidden`. Measured
+// live over CDP: right edge 749 against a 736px viewport — +13px, matching the arithmetic.
+// 66 = 26 + half the label width. Kept EQUAL to the phone sibling's constant: this pair sits
+// OUTSIDE the shared-block markers, so `parity:edge-model` would not catch a one-sided edit.
+const CLAMP_X = [66, 66] as const; // [left margin, right margin] — x in [66, W-66]
 const CLAMP_Y = [20, 34] as const; // y in [20, H-34], :1871
 
 // ── weight → motion (s152) ───────────────────────────────────────────────────────────────────────

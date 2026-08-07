@@ -35,9 +35,12 @@ describe("stepSimulation — drag anchoring", () => {
 
     expect(resA.vx).toBe(0);
     expect(resA.vy).toBe(0);
-    // clamp: x in [26, W-26], y in [20, H-34] — a's raw (-50,-50) is out of bounds on both axes,
+    // clamp: x in [66, W-66], y in [20, H-34] — a's raw (-50,-50) is out of bounds on both axes,
     // so ONLY the clamp (unconditional) can be what moved it.
-    expect(resA.x).toBe(26);
+    // ★ s154: x was 26 until FR-40 raised CLAMP_X to 66 so an 80px centred label stops being
+    // clipped at the sky edge. This assertion pinning the exact value is what caught the change —
+    // keep it exact, not a range: a `>=` bound here would have let the constant drift silently.
+    expect(resA.x).toBe(66);
     expect(resA.y).toBe(20);
   });
 
