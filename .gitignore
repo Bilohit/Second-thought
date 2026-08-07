@@ -43,3 +43,7 @@ omni_capture/.coverage
 # testmon test-selection database (tier 0). Rebuildable; never committed.
 omni_capture/.testmondata
 omni_capture/.testmondata-journal
+
+# Stryker mutation-testing output (tier 3). Rebuildable; never committed.
+gui/reports/
+gui/.stryker-tmp/

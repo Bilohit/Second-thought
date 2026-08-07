@@ -1,0 +1,10 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "testRunner": "vitest",
+  "mutate": ["src/lib/**/*.ts", "!src/lib/**/*.test.ts", "!src/lib/__baseline__/**"],
+  "incremental": true,
+  "incrementalFile": "reports/stryker-incremental.json",
+  "reporters": ["clear-text", "progress"],
+  "concurrency": 4,
+  "timeoutMS": 30000
+}
