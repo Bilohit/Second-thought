@@ -21,13 +21,29 @@ python main.py --self-check          # verify Ollama/vault/whisper/index
 python main.py --log [--stats]       # tail / summarize capture audit log
 ```
 
-Tests — pytest, no config file, run from `omni_capture/`:
+**Tests — go through the ladder, not the raw commands (s153, 2026-08-07).** `python check.py N`
+from the **workspace root** is the gate; it owns the env traps and runs the reachability, parity,
+identity and mount-census checks that no raw command below covers. Tier table + rules: workspace
+`CLAUDE.md` §"Work standards". **A blocking pre-commit hook runs tier 1 in this repo; `--no-verify`
+is forbidden.**
 ```bash
-pytest                                          # full suite
-pytest test_routing_and_merge.py -k test_name   # single test
-pytest tests/test_e2e.py                        # end-to-end
-FUZZ=1 pytest test_fuzz_races.py -q             # §3.1 concurrency/race fuzz — opt-in, not in the gate, ~250s at full 2000 runs
+python check.py 0      # reflex  ~3s   — after every edit (pytest --testmon + tsc)
+python check.py 1      # surface ~10s  — before reporting done (also the pre-commit hook)
+python check.py 2      # full    ~227s — main thread, before every commit. Agents never run it
+python check.py 3      # truth         — phase boundaries: staleness guard, FUZZ=1, isolated, mutants
+python check.py --explain N            # list a tier without running it
 ```
+The raw commands below still work and are the right tool for **one** test while iterating — they
+are not a gate. Run from `omni_capture/`; there is no pytest config file:
+```bash
+pytest                                          # full suite (= what `check.py 2` runs)
+pytest test_routing_and_merge.py -k test_name   # single test — the reason this block still exists
+pytest tests/test_e2e.py                        # end-to-end
+pytest --testmon -q                             # only tests affected by your change (= tier 0)
+FUZZ=1 pytest test_fuzz_races.py -q             # §3.1 race fuzz — opt-in, tier 3 only, ~250s at the full 2000
+```
+`pytest-testmon` (`requirements-dev.txt`) backs tier 0; its `.testmondata` is gitignored and the
+first run rebuilds it in ~178s.
 Modules with an `if __name__ == "__main__":` smoke block run standalone, e.g. `python enrichment_router.py`, `python storage_engine.py`, `python llm_engine.py`, `python summarizer.py`.
 
 GUI server (standalone, also auto-spawned by Tauri):
@@ -39,9 +55,16 @@ GUI frontend (`gui/`):
 ```bash
 npm run dev          # tauri dev: Vite + Rust + Python together
 npm run dev:vite      # Vite only, no Tauri shell
-npm run build         # tsc typecheck + vite build — MUST pass before any GUI commit
-npm test              # vitest run — pure lib/*.ts modules
+npm run build         # tsc typecheck + vite build — part of `check.py 2`, not run by hand as a gate
+npm test              # vitest run — lib/*.ts modules, component tests, and the mount census
+npm test -- src/__census__/   # the mount census alone (also part of `check.py 1`)
 ```
+
+**`vitest.config.ts` sets `happy-dom` as the default test environment** — a `.test.tsx` no longer
+needs a `// @vitest-environment happy-dom` docblock, and the 17 files that still carry one are
+redundant but harmless. **A component with passing tests but no import path from `src/main.tsx` is
+dead code and fails `check.py 1`** — five such components exist today and are baselined in
+`tools/reachability-baseline.txt`; that file emptying is the definition of done for the cleanup.
 
 Rust shell (`gui/src-tauri/`):
 ```bash
