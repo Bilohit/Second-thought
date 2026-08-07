@@ -33,6 +33,27 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 
+/**
+ * The census asserts "this surface renders" — never "the backend answered". Left unstubbed,
+ * happy-dom's `fetch` is REAL: every mounted panel issued live requests to the desktop server on
+ * :7070, so this rung's result depended on whether that process was running and how fast it
+ * answered while ~85 other test files mounted their own panels in parallel workers. That is how
+ * it failed at s157 — `CompactSettings` alone needs ~1s to mount, and under full-suite contention
+ * it crossed vitest's default 5s timeout, going red on a run whose product code was fine.
+ *
+ * The stub returns the SAME 403 those requests already got (the server rejects an unauthenticated
+ * caller — `X-Omni-Secret` is never set here), so component behaviour is byte-for-byte what it was
+ * before; only the network round-trip is gone. Raising the timeout instead would have left a unit
+ * gate depending on an external process.
+ */
+vi.stubGlobal(
+  "fetch",
+  vi.fn(async () => new Response('{"detail":"Forbidden"}', {
+    status: 403,
+    headers: { "content-type": "application/json" },
+  })),
+);
+
 const SURFACES = import.meta.glob("../components/**/*.tsx");
 
 /**
