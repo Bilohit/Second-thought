@@ -1361,6 +1361,107 @@ export async function setSyncIgnore(path: string, ignored: boolean): Promise<str
   return data.ignored;
 }
 
+// -- P3-E: SYNC tab data layer (read-only, vault_admin.py's Phase-1 router) ----
+// Field names and shapes are the Python payload verbatim — see
+// omni_capture/sync_activity.py / sync_pending.py for the authoritative
+// commentary on what each field means and why. This file only shapes the fetch.
+
+export interface SyncActivityEvent {
+  at: string | null;
+  kind: "capture" | "note";
+  status: "ok" | "failed";
+  project: string | null;
+  path: string | null;
+  filename: string | null;
+  input_type: string | null;
+  source_url: string | null;
+  model: string | null;
+  confidence: number | null;
+}
+
+export interface SyncActivityResponse {
+  events: SyncActivityEvent[];
+  count: number;
+  limit: number;
+}
+
+export async function getSyncActivity(limit = 25): Promise<SyncActivityResponse> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  const r = await fetch(`${BASE}/sync/activity?${params.toString()}`, { headers: await authHeaders() });
+  await assertOk(r, "Failed to load sync activity");
+  return r.json() as Promise<SyncActivityResponse>;
+}
+
+/** local_pending()'s resting-diff row shape (sync_pending.py:168). */
+export interface SyncPendingItem { id: string; path: string; reason: string; }
+
+/** pending_with_hub()'s hub-resolved bucket rows. `will_upload` items never
+ *  carry `reason` (sync_pending.py:247); `to_pull`'s hub-only rows (the note
+ *  exists on Drive but nowhere locally) never carry `path` (:275) — both
+ *  fields are optional here, not just possibly-empty-string. */
+export interface HubPendingItem { id: string; path?: string; reason?: string; }
+
+export interface SyncHubCounts { will_upload: number; blocked: number; to_pull: number; }
+
+/** `hub` on the pending payload — three postures, `note_history.py`'s own
+ *  ok/offline/not_synced trio (sync_pending.py:296). `offline`/`not_synced`
+ *  carry no buckets: absent, never zeroed. */
+export type SyncHubResult =
+  | { status: "offline"; error?: string }
+  | { status: "not_synced" }
+  | {
+      status: "ok";
+      will_upload: HubPendingItem[];
+      blocked: HubPendingItem[];
+      to_pull: HubPendingItem[];
+      counts: SyncHubCounts;
+    };
+
+export interface SyncPendingScope {
+  notes_scanned: number;
+  captures_counted: boolean;
+  mirror_captures_enabled: boolean;
+  attachments_counted: boolean;
+}
+
+/** The refusal state (`sync_ignore`'s ignore set failed to parse) — carries NO
+ *  count field at all, by design. See sync_pending.py's module docstring,
+ *  "THE REFUSAL STATE NEVER SHOWS A COUNT" (user decision s143). Never add a
+ *  count here — a corrupt ignore set must never read as "zero pending". */
+export interface SyncPendingBlocked {
+  status: "blocked";
+  reason: string;
+  error: string;
+  label: string;
+}
+
+export interface SyncPendingOk {
+  status: "ok";
+  label: string;
+  changed: number;
+  unknown: number;
+  deletes_pending: number;
+  items: SyncPendingItem[];
+  truncated: boolean;
+  sidecar_present: boolean;
+  sidecar_rows: number;
+  scope: SyncPendingScope;
+  hub: SyncHubResult | null;
+}
+
+export type SyncPendingResponse = SyncPendingBlocked | SyncPendingOk;
+
+/** `hub=true` spends one Drive listing server-side — only ever call this from
+ *  an explicit user gesture, never on mount and never on an interval. The
+ *  default (`hub=false`) is the zero-network resting read, safe at any poll
+ *  cadence. */
+export async function getSyncPending(hub = false): Promise<SyncPendingResponse> {
+  const params = new URLSearchParams({ hub: String(hub) });
+  const r = await fetch(`${BASE}/sync/pending?${params.toString()}`, { headers: await authHeaders() });
+  await assertOk(r, "Failed to load sync pending");
+  return r.json() as Promise<SyncPendingResponse>;
+}
+
 // -- F-10: semantic search band ------------------------------------------------
 
 export interface SemanticResult {

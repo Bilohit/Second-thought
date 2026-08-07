@@ -14,6 +14,7 @@ import InboxPanel, { type InboxTab } from "../InboxPanel";
 import ErrorBoundary from "../ErrorBoundary";
 import NoteEditor from "../NoteEditor";
 import SyncPanel from "../Sync/SyncPanel";
+import SyncFeed from "../Sync/SyncFeed";
 import { title as fsTitle, body as fsBody } from "../../lib/type";
 import type { CaptureState, CaptureStep } from "../../hooks/useCapture";
 import type { LlmStatus } from "../../lib/api";
@@ -100,10 +101,14 @@ const TITLES: Record<RailView, [string, string]> = {
   // equivalent: today's one project/tag browsing surface.
   browse:  ["Browse", "projects · tags · notes"],
   // P3-E owns SYNC's real interior over Phase 1's /sync/activity + /sync/pending
-  // endpoints (hub strip · queue · conflicts · activity, gap-filled for real,
+  // endpoints (hub strip · pending · conflicts · activity, gap-filled for real,
   // no stubbed rows). SyncPanel — today's Settings › Sync sub-tab body — is
-  // the nearest equivalent and is mounted here unmodified.
-  sync:    ["Sync", "hub · queue · conflicts · activity"],
+  // mounted here unmodified as the hub strip (constraint: never fork its
+  // behavior for a caller); SyncFeed.tsx adds the three new real sections below
+  // it. "Queue" is intentionally absent from this subtitle and everywhere in
+  // SyncFeed — the resting Pending read is a local diff, not a live Drive
+  // listing, and only earns drain semantics on an explicit user gesture.
+  sync:    ["Sync", "hub · pending · conflicts · activity"],
   // SET is a VISUAL NO-FLY ZONE (Form/Function/Sync stay exactly as shipped) —
   // this is a direct, unmodified mount of SettingsPanel, not a placeholder.
   set:     ["Settings", ""],
@@ -499,14 +504,28 @@ export default function FullWindow(props: FullWindowProps) {
           </div>
         )}
         {view === "sync" && (
-          <div key="sync" className="fw-view-panel">
+          <div key="sync" className="fw-view-panel" style={{ overflowY: "auto" }}>
             {/* P3-E: SYNC's real interior renders over Phase 1's real
                 endpoints (GET /sync/activity, GET /sync/pending) — hub strip,
-                queue, conflicts, activity, gap-filled for real, no stubbed
+                pending, conflicts, activity, gap-filled for real, no stubbed
                 rows or invented data. SyncPanel is today's Settings > Sync
                 sub-tab body, the exact "Today: Settings tab 3" source named
-                in the program plan's surface table — mounted unmodified. */}
-            <SyncPanel compact={false} />
+                in the program plan's surface table — mounted here unmodified
+                as the hub strip (master switch, Drive gauge, schedule,
+                same-WiFi shortcut); it is shared with Settings' own Sync
+                sub-tab so its behavior is never forked for this caller.
+                SyncFeed.tsx owns the three new sections: Pending (the local
+                diff, GET /sync/pending), Conflicts (GET /vault/conflicts —
+                see SyncFeed.tsx's header comment for why this is the real
+                render location, not DashboardView.tsx, which P3-A already
+                made unreachable), and Activity (GET /sync/activity). */}
+            {/* Padding/gap match SettingsPanel's own full-window Sync-tab
+                container (SettingsPanel.tsx:709) so the two mounts of
+                SyncPanel read identically. */}
+            <div style={{ padding: "16px 16px 14px", display: "flex", flexDirection: "column", gap: 16 }}>
+              <SyncPanel compact={false} />
+              <SyncFeed onOpenNote={openNote} />
+            </div>
           </div>
         )}
         {/* History has no rail slot in the new 5-tab IA (it never earned one
