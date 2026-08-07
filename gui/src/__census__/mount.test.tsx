@@ -9,8 +9,10 @@
  *
  * Scope note: this file censuses what EXISTS. Whether a component is REACHABLE from the app
  * entry is a different question, owned by tools/reachability.py. Both run in tier 1; neither
- * substitutes for the other. Five components in this tree are censused here and unreachable
- * there, which is exactly the pairing working as intended.
+ * substitutes for the other. Five components that used to be censused here and unreachable
+ * there (DashboardView, LibraryView, ProjectsPane, ProjectsRail, ProjectsView) were deleted
+ * in the bounded dead-code cleanup (CURRENT.md §5.8) once their capabilities were confirmed
+ * live elsewhere (BrowseView's drill-in, InboxPanel's Reminders tab, NotesView).
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, cleanup } from "@testing-library/react";
@@ -54,11 +56,8 @@ const PROPS: Record<string, Record<string, unknown>> = {};
  */
 const REQUIRES_PROPS = new Set([
   "../components/CompactPanels/CompactLook.tsx",
-  "../components/FullWindow/DashboardView.tsx",
   "../components/FullWindow/FullWindow.tsx",
   "../components/FullWindow/NotesView.tsx",
-  "../components/FullWindow/ProjectsPane.tsx",
-  "../components/FullWindow/ProjectsRail.tsx",
   "../components/LookPanel.tsx",
   "../components/PillOverlay.tsx",
   "../components/StatusIndicator.tsx",
