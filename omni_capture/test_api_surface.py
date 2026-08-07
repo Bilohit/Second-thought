@@ -934,8 +934,21 @@ def test_lan_nonce_cap_is_bounded(tmp_path, monkeypatch):
     """Re-confirms s23's cap finding: /lan/nonce is unauthenticated by design, so
     an attacker must not be able to grow the store past _NONCE_CAP."""
     c, key, _ = _lan_client(tmp_path, monkeypatch)
-    for _ in range(lan_sync._NONCE_CAP + 40):
-        assert c.get("/lan/nonce").status_code == 200
+    # `with c:` is a HARNESS fix, not a weakening of this test (s154b). Outside a context
+    # manager, Starlette's TestClient starts and tears down a blocking portal PER REQUEST,
+    # and every asyncio ProactorEventLoop allocates a self-pipe socket pair -- so this loop
+    # created ~4136 event loops and exhausted the socket pool with
+    # `OSError: [WinError 10055]`, intermittently reddening the whole desktop gate. The
+    # giveaway was already in the log: ProactorEventLoop.__del__ -> _close_self_pipe ->
+    # AttributeError: '_ssock'. /lan/nonce itself opens no sockets; the endpoint was never
+    # at fault. One portal now serves every request.
+    #
+    # ★ The request COUNT, the 200 assertion and the cap assertion are all unchanged. This
+    # test must still fail if the cap ever stops holding -- verified by probe at s154b
+    # (neutralising the eviction makes it red).
+    with c:
+        for _ in range(lan_sync._NONCE_CAP + 40):
+            assert c.get("/lan/nonce").status_code == 200
     assert len(lan_sync._nonces) <= lan_sync._NONCE_CAP
 
 
