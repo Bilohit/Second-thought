@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
+  adaptiveSemanticFloor,
+  densityStep,
+  DENSITY_DEFAULT_INDEX,
+  DENSITY_STEPS,
+  percentileOf,
   buildStarEdges,
   coreVisual,
   cosine,
@@ -338,5 +343,116 @@ describe("parseTagsField", () => {
     expect(parseTagsField("")).toEqual([]);
     expect(parseTagsField("not json")).toEqual([]);
     expect(parseTagsField("42")).toEqual([]);
+  });
+});
+
+// ── s156: connection density + the hybrid adaptive floor (D1-C, user-ruled) ──────────────────────
+// A unit-circle vector, so the cosine between two of these is exactly cos(theta_i - theta_j) and
+// every expectation below can be reasoned about by hand rather than trusted from a run.
+function ringVec(i: number, spread: number): number[] {
+  return [Math.cos(i * spread), Math.sin(i * spread)];
+}
+
+describe("density + adaptive floor (s156)", () => {
+  it("percentileOf uses nearest-rank on an ascending array", () => {
+    const xs = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+    expect(percentileOf(xs, 0)).toBeCloseTo(0.1, 6);
+    expect(percentileOf(xs, 100)).toBeCloseTo(1.0, 6);
+    expect(percentileOf(xs, 50)).toBeCloseTo(0.5, 6);
+    expect(percentileOf([], 83)).toBe(0);
+    expect(percentileOf([0.42], 83)).toBeCloseTo(0.42, 6);
+  });
+
+  it("the absolute floor is a FLOOR, never a ceiling", () => {
+    // A vault of unrelated notes: every cosine is low. A pure percentile would keep the top slice
+    // anyway and draw a constellation over nothing; the absolute floor must win instead.
+    const unrelated = Array.from({ length: 100 }, (_, i) => 0.05 + i * 0.001).sort((a, b) => a - b);
+    expect(adaptiveSemanticFloor(unrelated, 83)).toBeCloseTo(SEMANTIC_FLOOR, 6);
+    // A one-topic vault: every cosine is high. Here the percentile must win, or the sky saturates.
+    const oneTopic = Array.from({ length: 100 }, (_, i) => 0.8 + i * 0.001).sort((a, b) => a - b);
+    expect(adaptiveSemanticFloor(oneTopic, 83)).toBeGreaterThan(SEMANTIC_FLOOR);
+  });
+
+  it("the default step still equals the shipped constants", () => {
+    expect(DENSITY_STEPS).toHaveLength(5);
+    expect(DENSITY_STEPS[DENSITY_DEFAULT_INDEX].topK).toBe(EDGE_TOP_K);
+    // Percentile falls and budget rises monotonically as density goes up — a step that did neither
+    // would be a rail position that does nothing when you drag onto it.
+    for (let i = 1; i < DENSITY_STEPS.length; i++) {
+      expect(DENSITY_STEPS[i].percentile).toBeLessThan(DENSITY_STEPS[i - 1].percentile);
+      expect(DENSITY_STEPS[i].topK).toBeGreaterThan(DENSITY_STEPS[i - 1].topK);
+    }
+  });
+
+  it("densityStep clamps out-of-range indices instead of returning undefined", () => {
+    expect(densityStep(-3)).toBe(DENSITY_STEPS[0]);
+    expect(densityStep(99)).toBe(DENSITY_STEPS[DENSITY_STEPS.length - 1]);
+    expect(densityStep(Number.NaN)).toBe(DENSITY_STEPS[DENSITY_DEFAULT_INDEX]);
+  });
+
+  it("a vault of unrelated notes draws NO semantic edge at ANY density", () => {
+    // theta step 1.3 rad over four notes: cosines are 0.267, -0.857, -0.726 — every one below the
+    // absolute floor. This is the case a pure percentile gets wrong, and the only reason the rule
+    // is a max() rather than a replacement.
+    const notes = Array.from({ length: 4 }, (_, i) => ({ id: `u${i}`, tags: [], vec: ringVec(i, 1.3) }));
+    const ids = new Set(notes.map((n) => n.id));
+    for (let i = 0; i < DENSITY_STEPS.length; i++) {
+      expect(buildStarEdges(notes, ids, { semantic: true, densityIndex: i })).toEqual([]);
+    }
+  });
+
+  it("raising density never draws an edge below the absolute floor", () => {
+    // theta step 0.25 rad over six notes: 12 of the 15 pairs clear 0.62, three do not.
+    const notes = Array.from({ length: 6 }, (_, i) => ({ id: `n${i}`, tags: [], vec: ringVec(i, 0.25) }));
+    const ids = new Set(notes.map((n) => n.id));
+    const at = (densityIndex: number) => buildStarEdges(notes, ids, { semantic: true, densityIndex });
+
+    // Non-vacuity guard FIRST. Without it the invariant loop below passes over an empty array and
+    // reports perfect health for a scorer that draws nothing at all.
+    expect(at(DENSITY_DEFAULT_INDEX).length).toBeGreaterThan(0);
+    expect(at(0).length).toBeLessThanOrEqual(at(DENSITY_DEFAULT_INDEX).length);
+    expect(at(DENSITY_STEPS.length - 1).length).toBeGreaterThanOrEqual(at(DENSITY_DEFAULT_INDEX).length);
+
+    const byId = new Map(notes.map((n) => [n.id, n]));
+    for (let i = 0; i < DENSITY_STEPS.length; i++) {
+      for (const e of at(i)) {
+        if (e.kind !== "semantic") continue;
+        const a = byId.get(e.a);
+        const b = byId.get(e.b);
+        expect(a && b).toBeTruthy();
+        expect(cosine(a!.vec, b!.vec)).toBeGreaterThanOrEqual(SEMANTIC_FLOOR);
+      }
+    }
+  });
+
+  it("density moves a NON-semantic sky too — the budget is wired, not just the percentile", () => {
+    // Tag edges never touch the floor, so this isolates topK. Six notes sharing one tag = 15 pairs
+    // that all bid identically; only the per-node budget decides how many survive.
+    const notes = Array.from({ length: 6 }, (_, i) => ({ id: `t${i}`, tags: ["shared"] }));
+    const ids = new Set(notes.map((n) => n.id));
+    const few = buildStarEdges(notes, ids, { densityIndex: 0 }).length;
+    const many = buildStarEdges(notes, ids, { densityIndex: DENSITY_STEPS.length - 1 }).length;
+    expect(few).toBeGreaterThan(0);
+    expect(many).toBeGreaterThan(few);
+  });
+
+  it("omitting densityIndex reproduces the sky that shipped before s156", () => {
+    const notes = Array.from({ length: 8 }, (_, i) => ({
+      id: `d${i}`,
+      tags: i % 2 === 0 ? ["even"] : ["odd"],
+      project: i < 4 ? "p" : "q",
+    }));
+    const ids = new Set(notes.map((n) => n.id));
+    expect(buildStarEdges(notes, ids, {})).toEqual(
+      buildStarEdges(notes, ids, { densityIndex: DENSITY_DEFAULT_INDEX })
+    );
+  });
+
+  it("pairWeight normalises against the EFFECTIVE floor, so a just-passing edge is always 0.5", () => {
+    const a = { id: "a", tags: [], vec: [1, 0] };
+    const b = { id: "b", tags: [], vec: ringVec(1, Math.acos(0.8)) };
+    const w = pairWeight(a, b, true, 0.8);
+    expect(w?.kind).toBe("semantic");
+    expect(w?.weight).toBeCloseTo(0.5, 5);
   });
 });

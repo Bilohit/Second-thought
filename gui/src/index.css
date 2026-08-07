@@ -1062,6 +1062,17 @@ html, body, #root {
   background: var(--surface-2);
 }
 
+/* SkyPanel.tsx's density tick rail (s156, D-B) — a hand-rolled role="slider" needs its own
+   focus-visible ring, since it owns keyboard/pointer handling that a native <input> would give
+   for free. */
+.sky-density-rail {
+  outline: none;
+}
+.sky-density-rail:focus-visible {
+  outline: 1px solid var(--text-1);
+  outline-offset: 3px;
+}
+
 /* Subtle divider */
 .divider {
   height: 1px;

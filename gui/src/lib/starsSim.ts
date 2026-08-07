@@ -276,13 +276,68 @@ export interface StarSourceNote {
 export interface EdgeOptions {
   /** The opt-in semantic pass (DECISIONS §5 s152). Default OFF — the user's own call. */
   semantic?: boolean;
+  /** Index into DENSITY_STEPS. Omitted = the shipped default (s156). */
+  densityIndex?: number;
 }
 
 /** Max edges any one star may SOURCE. Drawn degree can still exceed it via inbound picks — the kept
  *  set is a union, not a partition, so a genuinely central note stays central. */
 export const EDGE_TOP_K = 3;
-/** Cosine below this is not a relationship, it is two notes written in the same language. */
+/** The ABSOLUTE floor: a cosine below this is not a relationship, it is two notes written in the
+ *  same language. Since s156 it is a floor and never a ceiling — see `adaptiveSemanticFloor`. */
 export const SEMANTIC_FLOOR = 0.62;
+
+/** ★ s156 (D1, user-ruled): CONNECTION DENSITY. One index moves two knobs at once — the percentile
+ *  the semantic floor tracks, and the per-node edge budget. Both are needed, and for different
+ *  reasons. The percentile is what makes the floor adapt to a vault's own similarity distribution.
+ *  The budget is what makes the control do anything at all on a vault whose distribution the
+ *  absolute floor already dominates: on the user's real vault 74 of 435 pairs clear 0.62 but only 39
+ *  edges are drawn, so 35 REAL pairs are pruned by the budget alone. Raising density un-prunes those;
+ *  it can never invent one, because the floor below is a max(), not a replacement. */
+export interface DensityStep {
+  readonly name: string;
+  /** Percentile of the observed cosine distribution the semantic floor tracks. */
+  readonly percentile: number;
+  /** Max edges any one star may SOURCE at this step (see EDGE_TOP_K). */
+  readonly topK: number;
+}
+export const DENSITY_STEPS: readonly DensityStep[] = [
+  { name: "Minimal", percentile: 92, topK: 1 },
+  { name: "Sparse", percentile: 88, topK: 2 },
+  { name: "Balanced", percentile: 83, topK: 3 },
+  { name: "Dense", percentile: 78, topK: 4 },
+  { name: "Maximal", percentile: 70, topK: 5 },
+];
+/** Index of the shipped default. Measured s155 on the real vault: the fixed 0.62 floor sits at ~p83,
+ *  so this step reproduces the pre-s156 sky to within one edge. Adaptivity cannot regress the one
+ *  case anybody can actually see — that is why p83 is the default and not a rounder number. */
+export const DENSITY_DEFAULT_INDEX = 2;
+
+/** Clamped lookup. A persisted preference can be anything — an out-of-range index must resolve to a
+ *  real step, never to `undefined` that then reads as a missing topK deep inside the budget loop. */
+export function densityStep(i: number): DensityStep {
+  if (!Number.isFinite(i)) return DENSITY_STEPS[DENSITY_DEFAULT_INDEX];
+  const k = Math.min(Math.max(Math.round(i), 0), DENSITY_STEPS.length - 1);
+  return DENSITY_STEPS[k];
+}
+
+/** Nearest-rank percentile over an array sorted ASCENDING. `p` is 0..100. An empty distribution
+ *  scores 0, which makes the max() below fall back to the absolute floor — the safe direction. */
+export function percentileOf(sortedAsc: readonly number[], p: number): number {
+  if (sortedAsc.length === 0) return 0;
+  const q = Math.min(Math.max(p, 0), 100) / 100;
+  const idx = Math.min(sortedAsc.length - 1, Math.max(0, Math.ceil(q * sortedAsc.length) - 1));
+  return sortedAsc[idx];
+}
+
+/** THE HYBRID RULE (D1-C). `SEMANTIC_FLOOR` is the FLOOR, never a ceiling: the percentile may raise
+ *  the bar on a vault whose notes are all alike, and may never lower it on a vault whose notes are
+ *  all unrelated. Measured across three vault shapes — real / one-topic / unrelated — this is the
+ *  only rule that stays honest in all three: a pure percentile keeps the top 17% of an unrelated
+ *  vault at cosines around 0.18 and draws a constellation over nothing. */
+export function adaptiveSemanticFloor(sortedAsc: readonly number[], p: number): number {
+  return Math.max(SEMANTIC_FLOOR, percentileOf(sortedAsc, p));
+}
 
 const W_WIKILINK = 1;
 const W_TAG_BASE = 0.35;
@@ -316,7 +371,8 @@ export function cosine(a: readonly number[], b: readonly number[]): number {
 export function pairWeight(
   a: StarSourceNote,
   b: StarSourceNote,
-  semantic: boolean
+  semantic: boolean,
+  floor: number = SEMANTIC_FLOOR
 ): { weight: number; kind: SimEdgeKind } | null {
   let best: { weight: number; kind: SimEdgeKind } | null = null;
   const bid = (weight: number, kind: SimEdgeKind): void => {
@@ -340,8 +396,11 @@ export function pairWeight(
   // time, nothing leaves the device, no model loaded just to draw a sky.
   if (semantic && a.vec && b.vec) {
     const s = cosine(a.vec, b.vec);
-    if (s >= SEMANTIC_FLOOR) {
-      bid(W_SEMANTIC_BASE + W_SEMANTIC_SPAN * ((s - SEMANTIC_FLOOR) / (1 - SEMANTIC_FLOOR)), "semantic");
+    if (s >= floor) {
+      // Normalised against the EFFECTIVE floor, so a just-passing edge is weight 0.5 at every
+      // density rather than drifting as the floor moves. `span` guards a degenerate floor of 1.
+      const span = Math.max(1 - floor, 1e-6);
+      bid(W_SEMANTIC_BASE + W_SEMANTIC_SPAN * ((s - floor) / span), "semantic");
     }
   }
   return best;
@@ -365,7 +424,28 @@ export function buildStarEdges(
   opts: EdgeOptions = {}
 ): SimEdge[] {
   const semantic = opts.semantic ?? false;
+  const step = densityStep(opts.densityIndex ?? DENSITY_DEFAULT_INDEX);
   const included = notes.filter((n) => allowedIds.has(n.id));
+
+  // Pass 1: the observed cosine distribution, needed before ANY pair can be judged — the floor is a
+  // property of the whole vault, not of a pair. Only runs when the semantic bid is on.
+  // ponytail: cosine is computed twice per pair (here, then again in pairWeight). At NODE_CAP=100
+  // that is 2 x 4,950 x 384 multiplies, run once per data change behind a useMemo, not per frame —
+  // measured negligible. Cache pass 1 into a Map keyed by edgeKey if a profile ever shows it.
+  let floor = SEMANTIC_FLOOR;
+  if (semantic) {
+    const cosines: number[] = [];
+    for (let i = 0; i < included.length; i++) {
+      for (let j = i + 1; j < included.length; j++) {
+        const a = included[i];
+        const b = included[j];
+        if (a.vec && b.vec) cosines.push(cosine(a.vec, b.vec));
+      }
+    }
+    cosines.sort((x, y) => x - y);
+    floor = adaptiveSemanticFloor(cosines, step.percentile);
+  }
+
   const scored = new Map<string, SimEdge>();
   const candidates = new Map<string, string[]>();
 
@@ -379,7 +459,7 @@ export function buildStarEdges(
     for (let j = i + 1; j < included.length; j++) {
       const a = included[i];
       const b = included[j];
-      const w = pairWeight(a, b, semantic);
+      const w = pairWeight(a, b, semantic, floor);
       if (!w) continue;
       const key = edgeKey(a.id, b.id);
       if (scored.has(key)) continue;
@@ -395,7 +475,7 @@ export function buildStarEdges(
     // Ties break on the key, never on insertion order — two equal-weight candidates must resolve the
     // same way on every machine, or the same vault draws a different sky on desktop than on phone.
     keys.sort((x, y) => (scored.get(y) as SimEdge).weight - (scored.get(x) as SimEdge).weight || (x < y ? -1 : 1));
-    for (const k of keys.slice(0, EDGE_TOP_K)) keep.add(k);
+    for (const k of keys.slice(0, step.topK)) keep.add(k);
   }
   return [...keep].sort().map((k) => scored.get(k) as SimEdge);
 }

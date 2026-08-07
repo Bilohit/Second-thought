@@ -27,9 +27,10 @@ import { searchCaptures } from "../../lib/api";
 import { formatAgo } from "../../lib/projectsView";
 import { StarIcon } from "../PillMenu/icons";
 import { BTN_PRIMARY, BTN_SECONDARY } from "../ui/styles";
-import { Toggle } from "../ui/Toggle";
 import { micro, label as fsLabel, read as fsRead } from "../../lib/type";
 import { useSmartConnectionsPref } from "../../lib/smartConnectionsPref";
+import { useSkyPrefs } from "../../lib/skyPrefs";
+import SkyPanel from "./SkyPanel";
 import {
   buildStarEdges,
   computeDegrees,
@@ -46,14 +47,17 @@ import {
   type SimEdgeKind,
   type SimNode,
 } from "../../lib/starsSim";
-
-// s152: "Smart connections" — the opt-in semantic pass. Default OFF (the user's own call, DECISIONS
-// §5 s152): it costs a ~1MB vector payload per browse fetch, so it only runs when the user asks for
-// it. The pref itself now lives in lib/smartConnectionsPref.ts, shared with SettingsPanel.tsx so
-// flipping it in either surface updates the other live (the user's follow-up ruling — the setting
-// belongs in Settings too, not only here).
-const SMART_CONNECTIONS_EXPLANATION =
-  "Groups notes by meaning using embeddings that already exist on this device. Nothing leaves your device.";
+import {
+  IDENTITY_VIEWPORT,
+  ZOOM_STEP,
+  clampPan,
+  labelCounterScale,
+  labelOpacity,
+  panBy,
+  worldToScreen,
+  zoomAt,
+  type Viewport,
+} from "../../lib/skyViewport";
 
 // Kind → dash pattern. Colour stays a single grayscale token (var(--text-1)) for every kind — only
 // weight (opacity, via edgeOpacity) and this pattern vary, per CLAUDE.md's "no new colours invented".
@@ -96,14 +100,29 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
   const edgesRef = useRef<SimEdge[]>([]);
   const idsKeyRef = useRef<string>("");
   const dragMetaRef = useRef<Map<string, { sx: number; sy: number; px: number; py: number }>>(new Map());
+  // s156: the viewport (zoom/pan). A ref alongside the state — star drag and the wheel/pan gesture
+  // handlers read `vpRef.current.scale` rather than closing over `vp`, or a stale closure would
+  // divide a drag delta by yesterday's scale (the exact trap the plan calls out by name).
+  const vpRef = useRef<Viewport>(IDENTITY_VIEWPORT);
+  const panDragRef = useRef<{ x: number; y: number } | null>(null);
 
   const [notes, setNotes] = useState<StarNote[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [peekId, setPeekId] = useState<string | null>(null);
   const [peekPos, setPeekPos] = useState({ x: 0, y: 0 });
-  // s152: default OFF — see the module-level comment above. Shared with SettingsPanel.tsx.
+  const [vp, setVp] = useState<Viewport>(IDENTITY_VIEWPORT);
+  const [isPanning, setIsPanning] = useState(false);
+  // s152: the opt-in semantic pass. Default OFF — costs a ~1MB vector payload per browse fetch, so
+  // it only runs when the user asks for it. Pref lives in lib/smartConnectionsPref.ts, shared with
+  // SettingsPanel.tsx and (s156) with the SkyPanel's own toggle row.
   const [smartConnections, setSmartConnections] = useSmartConnectionsPref();
+  // s156: density index + the SKY panel's open state — shared shape with useSmartConnectionsPref.
+  const { densityIndex, setDensityIndex, panelOpen, setPanelOpen } = useSkyPrefs();
+
+  useEffect(() => {
+    vpRef.current = vp;
+  }, [vp]);
 
   // ── data: refetched on every `visible` transition to true, same convention as BrowseView.tsx's own
   // project/tag fetch. searchCaptures("", ...) is the server's documented "browse everything" blank
@@ -155,9 +174,9 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
       buildStarEdges(
         notes.map((n) => ({ id: n.id, tags: n.tags, project: n.project, vec: n.vec })),
         idSet,
-        { semantic: smartConnections }
+        { semantic: smartConnections, densityIndex }
       ),
-    [notes, idSet, smartConnections]
+    [notes, idSet, smartConnections, densityIndex]
   );
   const degrees = useMemo(() => computeDegrees(recentIds, edges), [recentIds, edges]);
   edgesRef.current = edges;
@@ -191,8 +210,29 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
     if (idsKey === idsKeyRef.current) return;
     idsKeyRef.current = idsKey;
     nodesRef.current = initNodes(recentIds, size.w, size.h);
+    // s156: a vault that changed under a 2.5x zoom must not leave the user staring at empty space —
+    // reset the viewport in the same place the node positions themselves reset.
+    setVp(IDENTITY_VIEWPORT);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idsKey, size.w, size.h]);
+
+  // ── wheel zoom (s156). React's onWheel is passive — preventDefault from the JSX prop silently
+  // fails, so this is a non-passive addEventListener in an effect instead. ──
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || size.w === 0 || size.h === 0) return;
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault();
+      const rect = host.getBoundingClientRect();
+      const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+      setVp((prev) => {
+        const zoomed = zoomAt(prev, factor, e.clientX - rect.left, e.clientY - rect.top);
+        return clampPan(zoomed, size.w, size.h, size.w, size.h);
+      });
+    };
+    host.addEventListener("wheel", onWheel, { passive: false });
+    return () => host.removeEventListener("wheel", onWheel);
+  }, [size.w, size.h]);
 
   // ── the RAF loop. Deps limited to visibility + host size — see the file header comment. ──
   useEffect(() => {
@@ -253,8 +293,13 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
       const node = getNode(id);
       const meta = dragMetaRef.current.get(id);
       if (!node || !node.drag || !meta) return;
-      const dx = e.clientX - meta.px;
-      const dy = e.clientY - meta.py;
+      // s156: the pointer moves in SCREEN pixels but the node lives in WORLD coordinates, and the
+      // transform layer around the sky already scales world->screen — dividing here is what keeps a
+      // dragged star locked under the cursor at any zoom other than 1x. Read from the REF, not a
+      // closure, or this handler goes stale the moment the user zooms mid-drag.
+      const scale = vpRef.current.scale;
+      const dx = (e.clientX - meta.px) / scale;
+      const dy = (e.clientY - meta.py) / scale;
       meta.px = e.clientX;
       meta.py = e.clientY;
       node.x += dx;
@@ -294,6 +339,42 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
     [getNode, openPeek]
   );
 
+  // ── background pan (s156). Ignores a pointer that originated on a star, the SKY panel, or the
+  // peek card — none of those stopPropagation, so this handler still sees the bubbled event and
+  // must bail rather than fight the star's own drag or eat a click on a panel control/card button. ──
+  const onHostPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest(".bs-star, .sky-panel, .bs-card")) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    panDragRef.current = { x: e.clientX, y: e.clientY };
+    setIsPanning(true);
+  }, []);
+  const onHostPointerMove = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      const drag = panDragRef.current;
+      if (!drag) return;
+      const dx = e.clientX - drag.x;
+      const dy = e.clientY - drag.y;
+      drag.x = e.clientX;
+      drag.y = e.clientY;
+      setVp((prev) => clampPan(panBy(prev, dx, dy), size.w, size.h, size.w, size.h));
+    },
+    [size.w, size.h]
+  );
+  const onHostPointerUp = useCallback(() => {
+    panDragRef.current = null;
+    setIsPanning(false);
+  }, []);
+
+  // ── zoom controls (s156), passed to SkyPanel. Button zoom anchors at the host's own centre —
+  // there is no cursor position to anchor on for a button press, unlike the wheel handler. ──
+  const onZoomIn = useCallback(() => {
+    setVp((prev) => clampPan(zoomAt(prev, ZOOM_STEP, size.w / 2, size.h / 2), size.w, size.h, size.w, size.h));
+  }, [size.w, size.h]);
+  const onZoomOut = useCallback(() => {
+    setVp((prev) => clampPan(zoomAt(prev, 1 / ZOOM_STEP, size.w / 2, size.h / 2), size.w, size.h, size.w, size.h));
+  }, [size.w, size.h]);
+  const onZoomReset = useCallback(() => setVp(IDENTITY_VIEWPORT), []);
+
   if (!visible) return null;
 
   const empty = loaded && notes.length === 0;
@@ -315,7 +396,15 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
   // deps [visible] only — never misses attaching just because the FIRST visible render happened to
   // be the empty state (loaded flips true asynchronously, after the initial fetch resolves).
   return (
-    <div ref={hostRef} className="bs-sky" style={skyStyle}>
+    <div
+      ref={hostRef}
+      className="bs-sky"
+      style={{ ...skyStyle, cursor: empty ? "default" : isPanning ? "grabbing" : "grab" }}
+      onPointerDown={onHostPointerDown}
+      onPointerMove={onHostPointerMove}
+      onPointerUp={onHostPointerUp}
+      onPointerCancel={onHostPointerUp}
+    >
       {empty && (
         <div style={emptyWrapStyle}>
           <StarIcon size={22} />
@@ -350,65 +439,81 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
             <div style={skyNoticeStyle}>No connections found yet</div>
           )}
 
-          <div style={smartRowStyle} title={SMART_CONNECTIONS_EXPLANATION}>
-            <Toggle checked={smartConnections} onChange={setSmartConnections} label="Smart connections" />
-            <span style={smartLabelStyle}>Smart connections</span>
-          </div>
-
-          <svg style={svgStyle} width={size.w} height={size.h}>
-            {edges.map((e, i) => (
-              <line
-                key={i}
-                ref={(el) => {
-                  lineElemsRef.current[i] = el ? { a: e.a, b: e.b, el } : undefined;
-                }}
-                stroke="var(--text-1)"
-                strokeWidth={1}
-                strokeOpacity={edgeOpacity(e.weight)}
-                strokeDasharray={edgeDash(e.kind)}
-              />
-            ))}
-          </svg>
-
-          {recentIds.map((id) => {
-            const note = byId.get(id);
-            if (!note) return null;
-            const { size: coreSize, opacity: coreOpacity } = coreVisual(degrees.get(id) ?? 0);
-            return (
-              <div
-                key={id}
-                ref={(el) => {
-                  if (el) elemsRef.current.set(id, el);
-                  else elemsRef.current.delete(id);
-                }}
-                className="bs-star"
-                style={starStyle}
-                role="button"
-                tabIndex={0}
-                aria-label={`${note.title}, peek`}
-                onPointerDown={onPointerDown(id)}
-                onPointerMove={onPointerMove(id)}
-                onPointerUp={onPointerUp(id)}
-                onPointerCancel={onPointerUp(id)}
-                onKeyDown={onKeyDown(id)}
-              >
-                <div
-                  className="bs-core"
-                  style={{
-                    ...coreBaseStyle,
-                    width: coreSize,
-                    height: coreSize,
-                    opacity: coreOpacity,
-                    // per-node twinkle phase, mock's own literal (SecondThoughtV2.html:1786) — the
-                    // DOM has no negative-animation-delay limit, so this is used unmodified (the RN
-                    // sibling port had to offset it positive; see starsSim.ts's header comment).
-                    ["--twd" as string]: `${(Math.sin(recentIds.indexOf(id) * 7.13) * 1.7 + 1.7).toFixed(2)}s`,
+          {/* s156: the force sim keeps running in unchanged world coordinates (RAF loop above writes
+              raw x/y to each element's own transform); THIS layer is the only place world->screen
+              zoom/pan is applied, via a single CSS transform around the wires + stars. Nothing else
+              (notices, legend, SkyPanel, peek card) lives inside it. */}
+          <div style={transformLayerStyle(vp)}>
+            <svg style={svgStyle} width={size.w} height={size.h}>
+              {edges.map((e, i) => (
+                <line
+                  key={i}
+                  ref={(el) => {
+                    lineElemsRef.current[i] = el ? { a: e.a, b: e.b, el } : undefined;
                   }}
+                  stroke="var(--text-1)"
+                  strokeWidth={1}
+                  strokeOpacity={edgeOpacity(e.weight)}
+                  strokeDasharray={edgeDash(e.kind)}
+                  vectorEffect="non-scaling-stroke"
                 />
-                <div className="bs-lbl" style={lblStyle}>{note.title}</div>
-              </div>
-            );
-          })}
+              ))}
+            </svg>
+
+            {recentIds.map((id) => {
+              const note = byId.get(id);
+              if (!note) return null;
+              const { size: coreSize, opacity: coreOpacity } = coreVisual(degrees.get(id) ?? 0);
+              return (
+                <div
+                  key={id}
+                  ref={(el) => {
+                    if (el) elemsRef.current.set(id, el);
+                    else elemsRef.current.delete(id);
+                  }}
+                  className="bs-star"
+                  style={starStyle}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${note.title}, peek`}
+                  onPointerDown={onPointerDown(id)}
+                  onPointerMove={onPointerMove(id)}
+                  onPointerUp={onPointerUp(id)}
+                  onPointerCancel={onPointerUp(id)}
+                  onKeyDown={onKeyDown(id)}
+                >
+                  <div
+                    className="bs-core"
+                    style={{
+                      ...coreBaseStyle,
+                      width: coreSize,
+                      height: coreSize,
+                      opacity: coreOpacity,
+                      // per-node twinkle phase, mock's own literal (SecondThoughtV2.html:1786) — the
+                      // DOM has no negative-animation-delay limit, so this is used unmodified (the RN
+                      // sibling port had to offset it positive; see starsSim.ts's header comment).
+                      ["--twd" as string]: `${(Math.sin(recentIds.indexOf(id) * 7.13) * 1.7 + 1.7).toFixed(2)}s`,
+                    }}
+                  />
+                  {/* s156 (D3): labels are constant-size and fade out zoomed out — counter-scale
+                      undoes the parent transform's scale, opacity ramps via labelOpacity. Star CORES
+                      keep scaling with the sky; only the label text is held constant. */}
+                  <div
+                    className="bs-lbl"
+                    style={{
+                      ...lblStyle,
+                      transform: `scale(${labelCounterScale(vp)})`,
+                      transformOrigin: "top center",
+                      opacity: labelOpacity(vp.scale),
+                      pointerEvents: "none",
+                    }}
+                  >
+                    {note.title}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
 
           <div style={legendStyle} aria-hidden="true">
             <div style={legendRowStyle}><span style={legendWikStyle} />wikilink · spring</div>
@@ -418,6 +523,20 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
               <div style={legendRowStyle}><span style={legendSemanticStyle} />smart connection</div>
             )}
           </div>
+
+          <SkyPanel
+            open={panelOpen}
+            onOpenChange={setPanelOpen}
+            densityIndex={densityIndex}
+            onDensityChange={setDensityIndex}
+            smartConnections={smartConnections}
+            onSmartConnectionsChange={setSmartConnections}
+            scale={vp.scale}
+            onZoomIn={onZoomIn}
+            onZoomOut={onZoomOut}
+            onZoomReset={onZoomReset}
+            edgeCount={edges.length}
+          />
         </>
       )}
 
@@ -429,6 +548,7 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
             note={peekNote}
             x={peekPos.x}
             y={peekPos.y}
+            vp={vp}
             hostW={size.w}
             hostH={size.h}
             onOpen={() => {
@@ -447,22 +567,28 @@ function PeekCard({
   note,
   x,
   y,
+  vp,
   hostW,
   hostH,
   onOpen,
   onClose,
 }: {
   note: StarNote;
+  /** World coordinates (the same node.x/node.y the sim already tracks) — NOT screen. */
   x: number;
   y: number;
+  vp: Viewport;
   hostW: number;
   hostH: number;
   onOpen: () => void;
   onClose: () => void;
 }) {
-  // SecondThoughtV2.html :1833-1835 — the mock's own literal clamp margins, not card-size-derived.
-  const left = Math.min(Math.max(x + 14, 6), hostW - CARD_LEFT_CLAMP);
-  const top = Math.min(Math.max(y - 20, 6), hostH - CARD_TOP_CLAMP);
+  // s156: the card lives OUTSIDE the sky's transform layer, so its world position has to be mapped
+  // to screen before the mock's own clamp margins (:1833-1835, not card-size-derived) apply — those
+  // margins are screen-space, same as hostW/hostH.
+  const screenPos = worldToScreen(vp, x, y);
+  const left = Math.min(Math.max(screenPos.x + 14, 6), hostW - CARD_LEFT_CLAMP);
+  const top = Math.min(Math.max(screenPos.y - 20, 6), hostH - CARD_TOP_CLAMP);
   const age = note.modified != null ? formatAgo(note.modified * 1000) : "unknown";
   const tagsLine = note.tags.length > 0 ? note.tags.map((t) => `#${t}`).join(" ") : "";
 
@@ -519,12 +645,16 @@ const legendTagStyle: CSSProperties = { display: "inline-block", width: 22, bord
 const legendProjectStyle: CSSProperties = { display: "inline-block", width: 22, borderTop: "1px dotted color-mix(in srgb, var(--text-1) 22%, transparent)" };
 const legendSemanticStyle: CSSProperties = { display: "inline-block", width: 22, borderTop: "2px dashed color-mix(in srgb, var(--text-1) 22%, transparent)" };
 const backdropStyle: CSSProperties = { position: "absolute", inset: 0, zIndex: 4 };
-// s152: the "Smart connections" control — top-right, quiet, always present alongside the legend so
-// the setting is reachable whether or not the sky currently needs the empty-sky offer below.
-const smartRowStyle: CSSProperties = {
-  position: "absolute", top: 12, right: 14, display: "flex", alignItems: "center", gap: 8, zIndex: 3,
-};
-const smartLabelStyle: CSSProperties = { fontSize: fsLabel, color: "var(--text-3)" };
+// s156: the ONE layer zoom/pan applies to — wires + stars, and nothing else (notices, legend,
+// SkyPanel, peek card all stay outside it, in unscaled screen space). transformOrigin "0 0" matches
+// worldToScreen/screenToWorld's own convention (screen = world * scale + pan).
+function transformLayerStyle(vp: Viewport): CSSProperties {
+  return {
+    position: "absolute", inset: 0,
+    transform: `translate(${vp.panX}px, ${vp.panY}px) scale(${vp.scale})`,
+    transformOrigin: "0 0",
+  };
+}
 // ★ the empty-sky notice (3 states, DECISIONS §5 s152 follow-up) — quiet border + glass surface, no
 // semantic colour, same slot for all three so the sky never jumps as the state changes underneath.
 const skyNoticeStyle: CSSProperties = {
