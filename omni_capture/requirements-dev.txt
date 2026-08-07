@@ -1,0 +1,10 @@
+# Dev-only test tooling. Not required to run the app; requirements.txt is unchanged.
+#
+# pytest-testmon backs tier 0 of the testing ladder (`python check.py 0`): it selects only
+# the tests affected by a change, using coverage data collected on a prior full run.
+# First run builds .testmondata (~178s, one time, gitignored); afterwards a real edit to a
+# module selects in ~3s.
+#
+# Selection is ADVISORY - tier 2 (`python check.py 2`) is the authority, so a testmon miss
+# costs a late signal, never a bad commit.
+pytest-testmon

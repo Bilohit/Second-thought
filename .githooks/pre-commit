@@ -1,0 +1,22 @@
+#!/bin/sh
+# Tier 1 (surface) gate — measured ~4s for this repo's half. Blocks the commit on failure.
+#
+# Tier 1 holds the checks tier 2 does not have: reachability, shared-scorer parity, the
+# identity locks, and the mount census. It is not a duplicate of the pre-commit test run.
+#
+# Bypassing with --no-verify is forbidden by workspace CLAUDE.md.
+export PATH="$HOME/.local/bin:$PATH"
+export PYTHONIOENCODING=utf-8
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+
+if [ ! -f "$ROOT/check.py" ]; then
+  echo "pre-commit: $ROOT/check.py not found — the ladder is missing, not passing."
+  exit 1
+fi
+
+python "$ROOT/check.py" 1 --repo desktop || {
+  echo ""
+  echo "pre-commit: tier 1 failed. Fix it, or state explicitly why the commit should proceed."
+  exit 1
+}

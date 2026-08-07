@@ -39,3 +39,7 @@ omni_capture/.drive_token.json
 omni_capture/config.toml
 coverage/
 omni_capture/.coverage
+
+# testmon test-selection database (tier 0). Rebuildable; never committed.
+omni_capture/.testmondata
+omni_capture/.testmondata-journal
