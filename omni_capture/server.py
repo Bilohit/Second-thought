@@ -208,7 +208,14 @@ def _backfill_vector_index(root: Path) -> None:
         from config import get_config
         from vault_sync import sync_vault_indexes
         cfg = get_config()
-        result = sync_vault_indexes(root, cfg.ollama.base_url, cfg.vector.embed_model)
+        # FR-39 (s154): honour [vector] enabled here too. Every OTHER consumer of the flag in this
+        # file already did (retrieve_related :904, enable_semantic_merge :1030, index_note :1036),
+        # so a user who turned the vector store off still got their whole vault embedded on every
+        # boot — found by a live round, not by a test. The captures.db refill this same pass does
+        # is deliberately NOT gated; only the embedding calls are.
+        result = sync_vault_indexes(
+            root, cfg.ollama.base_url, cfg.vector.embed_model, embed=cfg.vector.enabled
+        )
         if result["error"]:
             print(f"[VaultSync] startup vector backfill aborted: {result['error']}", flush=True)
         elif result["added"] or result["reembedded"] or result["embed_failed"]:
@@ -1691,8 +1698,14 @@ async def vault_sync_index(_: None = Depends(_require_secret)):
     from config import reload_config
     from vault_sync import sync_vault_indexes
     cfg = reload_config()
+    # FR-39 (s154): same gate as the startup backfill. "Off" has to mean off on the manual route
+    # too, or a user with [vector] enabled = false re-embeds their whole vault by pressing the
+    # reindex button — the orphan purge and captures.db refill still run, which is the half of
+    # this endpoint they actually asked for.
     result = await anyio.to_thread.run_sync(
-        lambda: sync_vault_indexes(cfg.vault.root, cfg.ollama.base_url, cfg.vector.embed_model)
+        lambda: sync_vault_indexes(
+            cfg.vault.root, cfg.ollama.base_url, cfg.vector.embed_model, embed=cfg.vector.enabled
+        )
     )
     return result
 

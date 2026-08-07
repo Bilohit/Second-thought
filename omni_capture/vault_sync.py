@@ -129,8 +129,25 @@ def purge_orphan_index_entries(vault_root: Path) -> int:
     return removed
 
 
-def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> SyncResult:
-    """Full diff-sync: heal a corrupt index, remove orphans, add/update changed files."""
+def sync_vault_indexes(
+    vault_root: Path, base_url: str, embed_model: str, embed: bool = True
+) -> SyncResult:
+    """Full diff-sync: heal a corrupt index, remove orphans, add/update changed files.
+
+    `embed=False` runs the whole pass EXCEPT the embedding calls (FR-39, s154). It exists because
+    `[vector] enabled = false` is supposed to mean "no embedding at all" -- retrieval (server.py
+    :904), semantic merge (:1030) and write-time index_note (:1036) all already honour that flag,
+    but this function did not, so a user who turned the vector store off still had their entire
+    vault embedded on every boot: real Ollama calls, real disk writes, a repopulated vectors.db.
+
+    It is a PARAMETER rather than a check inside this function because this pass also refills
+    captures.db (the `ap not in hash_map` -> upsert_capture_from_file branch below), which is a
+    boot-heal path documented in test_store_rebuild.py:539-543. Skipping the whole function when
+    vectors are disabled would silently take that heal out with it -- the obvious one-line guard
+    would have been a second bug.
+
+    Defaults to True so every existing caller and test keeps its current behaviour verbatim.
+    """
     result: SyncResult = {"added": 0, "removed": 0, "updated": 0, "skipped": 0,
                           "reembedded": 0, "reprojected": 0,
                           "healed": False, "vectors_healed": False,
@@ -236,13 +253,13 @@ def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> Syn
             if ap not in hash_map:
                 # new file — upsert into captures + embed
                 upsert_capture_from_file(vault_root, p, registry)
-                if not _embed_file(vault_root, p, base_url, embed_model):
+                if not _embed_file(vault_root, p, base_url, embed_model, embed):
                     result["embed_failed"] += 1   # SYNC-30
                 result["added"] += 1
             elif current_hash != stored_hash:
                 # changed — re-upsert + re-embed
                 upsert_capture_from_file(vault_root, p, registry)
-                if not _embed_file(vault_root, p, base_url, embed_model):
+                if not _embed_file(vault_root, p, base_url, embed_model, embed):
                     result["embed_failed"] += 1   # SYNC-30
                 result["updated"] += 1
             else:
@@ -260,8 +277,12 @@ def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> Syn
                 # OF-1: re-embed if the vector store is missing this note
                 # (rebuilt/emptied/corrupt-then-healed store).
                 rel = str(p.relative_to(vault_root)).replace("\\", "/")
-                if rel not in embedded:
-                    if not _embed_file(vault_root, p, base_url, embed_model):
+                # `embed and ...` so the counters stay honest with embedding off: nothing was
+                # re-embedded, so this file is `skipped`, not `reembedded`. Reporting a re-embed
+                # that never happened is exactly the kind of "pass that embedded nothing looks
+                # healthy" failure SYNC-30 exists to prevent.
+                if embed and rel not in embedded:
+                    if not _embed_file(vault_root, p, base_url, embed_model, embed):
                         result["embed_failed"] += 1   # SYNC-30
                     result["reembedded"] += 1
                 else:
@@ -276,11 +297,20 @@ def sync_vault_indexes(vault_root: Path, base_url: str, embed_model: str) -> Syn
     return result
 
 
-def _embed_file(vault_root: Path, p: Path, base_url: str, embed_model: str) -> bool:
+def _embed_file(
+    vault_root: Path, p: Path, base_url: str, embed_model: str, embed: bool = True
+) -> bool:
     """Returns False when the embedding failed (SYNC-30). Every failure used to be a bare
     stderr line while `added`/`updated`/`reembedded` still incremented, so a pass that embedded
     nothing was indistinguishable from a healthy one and semantic search silently rotted.
-    Still fail-soft — a dead Ollama must never abort the captures index."""
+    Still fail-soft — a dead Ollama must never abort the captures index.
+
+    `embed=False` (FR-39) returns True without calling Ollama: not-attempted is not a failure, so
+    it must not increment `embed_failed`. This ONE guard is what gates every embedding site in the
+    module — all four call paths route through here, so the flag cannot be honoured on one branch
+    and missed on another."""
+    if not embed:
+        return True
     try:
         content = p.read_text(encoding="utf-8", errors="ignore")
         if content.strip():

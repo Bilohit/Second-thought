@@ -655,6 +655,70 @@ def test_sync_vault_indexes_adds_new_file_and_skips_unchanged():
         assert result2["reembedded"] == 0, "an already-embedded note must not be re-embedded"
 
 
+def test_sync_vault_indexes_embed_false_indexes_captures_but_writes_no_vectors():
+    """FR-39 (s154): `[vector] enabled = false` must mean no embedding AT ALL.
+
+    Found by a live round, not by a test: with the flag off and vectors.db deleted, the server
+    still embedded the whole vault on startup, because _backfill_vector_index never consulted
+    cfg.vector.enabled while every other consumer in server.py did.
+
+    The half of this test that matters most is the LAST assertion. The obvious fix -- skip the
+    backfill entirely when vectors are disabled -- would also have killed the captures.db refill,
+    since this one pass does both (test_store_rebuild.py:539-543 documents that boot-heal). So
+    this pins BOTH halves: no vectors written, captures row still there.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp)
+        note = vault / "Notes" / "unembedded.md"
+        note.parent.mkdir(parents=True)
+        note.write_text("# Unembedded\nBody text", encoding="utf-8")
+
+        # ★ CALL COUNT is the assertion that actually distinguishes the two behaviours, and it was
+        # arrived at by watching this test go GREEN against the unfixed code first. `vs.count == 0`
+        # and `embed_failed == 0` are BOTH vacuous here: _embed_file wraps index_note in a blanket
+        # `except`, so an _embed that raises is swallowed, no row is written, and it still returns
+        # True. "Never embedded" and "tried to embed and silently failed" are indistinguishable by
+        # outcome — only by whether the call happened at all.
+        with mock.patch.object(vs, "_embed", return_value=[0.1] * 8) as m_embed:
+            result = sync_vault_indexes(
+                vault, "http://localhost:11434", "all-minilm", embed=False
+            )
+
+        assert m_embed.call_count == 0, "embed=False must not call Ollama at all"
+        assert result["error"] is None, result["error"]
+        assert result["added"] == 1
+        assert result["embed_failed"] == 0, "not-attempted is not a failure"
+        assert vs.count(vault) == 0, "embed=False must write no vectors"
+
+        conn = init_db(vault)
+        rows = conn.execute("SELECT path FROM captures").fetchall()
+        conn.close()
+        assert len(rows) == 1, "captures.db must still be refilled — only embedding is gated"
+
+
+def test_sync_vault_indexes_embed_false_counts_unembedded_note_as_skipped():
+    """The counters must stay honest with embedding off (SYNC-30's whole point).
+
+    An unchanged note that is absent from the vector store normally takes the OF-1 `reembedded`
+    branch. With embed=False nothing is re-embedded, so reporting `reembedded: 1` would be a pass
+    that embedded nothing while looking like it worked — the exact failure SYNC-30 exists to stop.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp)
+        note = vault / "Notes" / "stable.md"
+        note.parent.mkdir(parents=True)
+        note.write_text("# Stable\nUnchanged body", encoding="utf-8")
+
+        with mock.patch.object(vs, "_embed", return_value=[0.1] * 8) as m_embed:
+            sync_vault_indexes(vault, "http://localhost:11434", "all-minilm", embed=False)
+            second = sync_vault_indexes(vault, "http://localhost:11434", "all-minilm", embed=False)
+
+        assert second["reembedded"] == 0, "nothing was re-embedded, so nothing may be reported as such"
+        assert second["skipped"] == 1
+        assert m_embed.call_count == 0
+        assert vs.count(vault) == 0
+
+
 def test_sync_vault_indexes_removes_orphan_on_disk_delete():
     with tempfile.TemporaryDirectory() as tmp:
         vault = Path(tmp)
