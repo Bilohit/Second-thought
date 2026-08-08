@@ -1,0 +1,782 @@
+<title>s160 — notice surface + sky drift decay</title>
+<style>
+  /* Void, verbatim from design-system.md §1 / phone tokens.ts. Single-theme by
+     choice: this board proposes app UI, so it must render in the app's own
+     shipping palette. A light variant would be a different product. */
+  :root {
+    --bg: #0a0a0a;
+    --surface: #262626;
+    --surface-2: #404040;
+    --border: #383838;
+    --border-2: #262626;
+    --text-1: #fafafa;
+    --text-2: #a1a1a1;
+    --text-3: #7a7a7a;
+    --accent: #737373;
+    --accent-d: rgba(115, 115, 115, 0.18);
+    --green: #4ade80;
+    --yellow: #facc15;
+    --red: #ff6467;
+    --glass-bg: #191919;
+    --scrim: rgba(0, 0, 0, 0.62);
+
+    --track: 0.01em;
+    --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", "Consolas", monospace;
+
+    /* s145 scale — the app's own steps, used verbatim inside the phone frames.
+       Board chrome outside the frames scales up so a desktop reader is not
+       squinting at 11px, but never invents a half-step. */
+    --fs-micro: 9px;
+    --fs-label: 10px;
+    --fs-body: 11px;
+    --fs-read: 12px;
+    --fs-lead: 13px;
+    --fs-title: 16px;
+    --fs-display: 20px;
+    --fs-hero: 22px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text-1);
+    font-family: var(--mono);
+    letter-spacing: var(--track);
+    font-size: var(--fs-read);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 40px 24px 96px;
+    display: flex;
+    flex-direction: column;
+    gap: 56px;
+  }
+
+  /* ---- board chrome ---------------------------------------------------- */
+
+  .masthead { display: flex; flex-direction: column; gap: 14px; border-bottom: 1px solid var(--border); padding-bottom: 24px; }
+  .masthead h1 { margin: 0; font-size: var(--fs-hero); font-weight: 600; letter-spacing: var(--track); text-wrap: balance; }
+  .masthead .sub { margin: 0; color: var(--text-2); max-width: 68ch; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--text-3); font-size: var(--fs-body); }
+
+  section { display: flex; flex-direction: column; gap: 24px; }
+  h2 { margin: 0; font-size: var(--fs-title); font-weight: 600; letter-spacing: var(--track); }
+  h3 { margin: 0; font-size: var(--fs-read); font-weight: 600; color: var(--text-2); letter-spacing: var(--track); }
+  p { margin: 0; max-width: 74ch; color: var(--text-2); }
+  strong { color: var(--text-1); font-weight: 600; }
+  code { font-family: var(--mono); color: var(--text-1); background: var(--surface); padding: 1px 5px; font-size: var(--fs-body); }
+
+  .rule { border: 0; border-top: 1px solid var(--border); margin: 0; }
+
+  .note {
+    border: 1px solid var(--border);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--glass-bg);
+  }
+  .note .cap { color: var(--text-3); font-size: var(--fs-body); }
+
+  /* ---- option grid ----------------------------------------------------- */
+
+  .options { display: grid; grid-template-columns: repeat(auto-fit, minmax(288px, 1fr)); gap: 28px; align-items: start; }
+
+  .opt { display: flex; flex-direction: column; gap: 14px; }
+  .opt-head { display: flex; align-items: baseline; gap: 10px; }
+  .opt-tag {
+    font-size: var(--fs-label);
+    font-weight: 600;
+    color: var(--bg);
+    background: var(--text-1);
+    padding: 2px 7px;
+    letter-spacing: 0.06em;
+  }
+  .opt-tag.is-current { background: var(--surface-2); color: var(--text-1); }
+  .opt-name { font-size: var(--fs-read); font-weight: 600; color: var(--text-1); }
+  .opt-body { display: flex; flex-direction: column; gap: 10px; }
+  .opt-body p { font-size: var(--fs-body); line-height: 1.6; }
+
+  .verdict { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-body); }
+  .verdict div { display: flex; gap: 8px; }
+  .verdict .k { color: var(--text-3); flex: none; width: 52px; }
+  .verdict .v { color: var(--text-2); }
+  .verdict .v.bad { color: var(--red); }
+  .verdict .v.ok { color: var(--green); }
+
+  /* ---- phone frame ------------------------------------------------------ */
+
+  .phone {
+    width: 100%;
+    max-width: 300px;
+    aspect-ratio: 300 / 600;
+    /* The rounded bezel is the ONE platform concession design-system.md allows.
+       Everything inside stays 0-radius. */
+    border-radius: 22px;
+    border: 1px solid var(--surface-2);
+    background: var(--bg);
+    padding: 7px;
+    overflow: hidden;
+  }
+  .screen {
+    height: 100%;
+    border-radius: 15px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    position: relative;
+  }
+  .screen * { border-radius: 0; }
+
+  .st-head { padding: 14px 14px 10px; display: flex; align-items: baseline; justify-content: space-between; flex: none; }
+  .st-title { font-size: var(--fs-display); font-weight: 600; color: var(--text-1); }
+  .st-count { font-size: var(--fs-micro); color: var(--text-3); }
+
+  .st-list { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+
+  .row { padding: 10px 14px; border-bottom: 1px solid var(--border-2); display: flex; align-items: center; gap: 9px; flex: none; }
+  .row .col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .row .t { font-size: var(--fs-body); color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .m { font-size: var(--fs-micro); color: var(--text-3); }
+  .row.dim .t { color: var(--text-2); }
+
+  .dot { width: 6px; height: 6px; flex: none; }
+  .dot.q { background: var(--yellow); }
+  .dot.s { background: var(--green); }
+  .dot.p { background: var(--accent); }
+  .dot.held { background: var(--yellow); }
+  .ring { width: 7px; height: 7px; flex: none; border: 1px solid var(--yellow); background: transparent; }
+
+  .st-tabs { flex: none; border-top: 1px solid var(--border); display: flex; }
+  .st-tabs div { flex: 1; text-align: center; padding: 9px 0 11px; font-size: var(--fs-micro); color: var(--text-3); position: relative; }
+  .st-tabs div.on { color: var(--text-1); }
+  .tabdot { position: absolute; top: 4px; right: 50%; margin-right: -22px; width: 5px; height: 5px; background: var(--yellow); }
+
+  /* the strip, in its several placements */
+  .strip {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 9px 14px;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    background: var(--glass-bg);
+    flex: none;
+  }
+  .strip .txt { flex: 1; font-size: var(--fs-body); color: var(--text-1); }
+  .strip .txt em { font-style: normal; color: var(--text-2); }
+  .strip .chev { color: var(--text-3); font-size: var(--fs-body); }
+  .strip.residue { border-top: 0; }
+
+  .strip-row { /* option B: the notice sits IN the list, as its own row */
+    border-bottom: 1px solid var(--border);
+    background: transparent;
+  }
+
+  .bottombar { border-top: 1px solid var(--border); border-bottom: 0; }
+
+  .fab {
+    position: absolute; right: 14px; bottom: 58px;
+    width: 42px; height: 42px; border-radius: 50%;
+    background: var(--text-1); color: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    font-size: var(--fs-title); font-weight: 400; line-height: 1;
+  }
+
+  /* current-state modal */
+  .scrim { position: absolute; inset: 0; background: var(--scrim); }
+  .sheet {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    background: var(--glass-bg);
+    border-top: 1px solid var(--border);
+    padding: 14px 16px 18px;
+    display: flex; flex-direction: column; gap: 9px;
+  }
+  .grab { width: 36px; height: 4px; background: var(--surface-2); align-self: center; margin-bottom: 3px; }
+  .sheet-head { display: flex; align-items: center; gap: 8px; }
+  .sheet-title { flex: 1; font-size: var(--fs-lead); font-weight: 600; color: var(--text-1); }
+  .sheet-copy { font-size: var(--fs-read); color: var(--text-2); line-height: 1.5; }
+  .sheet-actions { border: 1px solid var(--border); margin-top: 5px; }
+  .sheet-act { display: flex; align-items: center; gap: 11px; padding: 11px 13px; border-bottom: 1px solid var(--border-2); font-size: var(--fs-lead); color: var(--text-1); }
+  .sheet-act:last-child { border-bottom: 0; }
+  .sheet-act.danger { color: var(--red); }
+
+  .escape-tag {
+    position: absolute; left: 0; right: 0; top: 0;
+    display: flex; justify-content: center; padding-top: 10px;
+  }
+  .escape-tag span {
+    background: var(--red); color: var(--bg);
+    font-size: var(--fs-micro); font-weight: 600; padding: 3px 8px;
+    letter-spacing: 0.05em;
+  }
+
+  svg { display: block; flex: none; }
+
+  /* ---- FR-44 demo ------------------------------------------------------- */
+
+  .sim-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
+  .sim { display: flex; flex-direction: column; gap: 10px; }
+  .sim canvas { width: 100%; height: 260px; border: 1px solid var(--border); background: var(--bg); display: block; }
+  .sim-cap { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: var(--fs-body); }
+  .sim-cap .name { color: var(--text-1); font-weight: 600; }
+  .sim-cap .read { color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .sim-controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: var(--fs-body); color: var(--text-2); }
+  .sim-controls button {
+    font-family: var(--mono); letter-spacing: var(--track);
+    background: var(--surface); color: var(--text-1);
+    border: 1px solid var(--border); padding: 6px 12px; font-size: var(--fs-body); cursor: pointer;
+  }
+  .sim-controls button:hover { background: var(--surface-2); }
+  .sim-controls button:focus-visible { outline: 2px solid var(--text-1); outline-offset: 2px; }
+  .sim-controls label { display: flex; align-items: center; gap: 8px; }
+  .sim-controls input[type="range"] { accent-color: var(--text-1); width: 140px; }
+
+  .tablewrap { overflow-x: auto; border: 1px solid var(--border); }
+  table { border-collapse: collapse; width: 100%; min-width: 520px; font-size: var(--fs-body); }
+  th, td { text-align: left; padding: 8px 14px; border-bottom: 1px solid var(--border-2); }
+  th { color: var(--text-3); font-weight: 400; font-size: var(--fs-micro); letter-spacing: 0.05em; }
+  td { color: var(--text-2); font-variant-numeric: tabular-nums; }
+  td.n { color: var(--text-1); }
+  tr:last-child td { border-bottom: 0; }
+  td .bad { color: var(--red); }
+  td .ok { color: var(--green); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sim canvas { outline: none; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <h1>Two decisions — the notice surface, and whether the sky comes to rest</h1>
+    <p class="sub">
+      Both are UI calls that were ruled but never designed. Every frame below is drawn in Void's real
+      tokens at the s145 type scale; the star demo runs the shipping force model with its real
+      constants, not an approximation.
+    </p>
+    <div class="meta">
+      <span>s160 · 2026-08-08</span>
+      <span>FR-45 + migration residue</span>
+      <span>FR-44</span>
+      <span>pick one per section</span>
+    </div>
+  </header>
+
+  <!-- ============================ SECTION 1 ============================ -->
+  <section>
+    <h2>1 · Where an unresolved thing lives</h2>
+
+    <p>
+      One surface has to carry <strong>two</strong> jobs. The first is the held delete-prompt: a peer
+      deleted a note this device still has, and the contract says keep both and
+      <em>re-prompt</em> until the user chooses — so this notice <strong>must not be dismissible into
+      invisibility</strong>. The second is migration residue: filing operations from slice&nbsp;1 that
+      could not become a project tag. That one <em>is</em> resolvable by acknowledgement, but today it
+      only reaches <code>console.warn</code>, so no user has ever seen it.
+    </p>
+
+    <div class="note">
+      <p>
+        <strong>The proposal underneath every option: both are the same kind of thing.</strong>
+        A held delete-prompt already lives in <code>sync_state</code> as a durable row that survives
+        restart and clears only when the user acts. Residue is the same shape — durable, one item per
+        affected note, cleared by a decision. Giving residue its own store is precisely what got
+        "persist the dismissal" rejected: a second durable store that can disagree with
+        <code>sync_state</code> and has no reconciler. So the strip is fed by <em>one</em> queue of
+        held items with two kinds, and the options below differ only in <strong>where that queue
+        surfaces</strong>.
+      </p>
+      <span class="cap">If you reject that premise, say so — every option changes.</span>
+    </div>
+
+    <hr class="rule" />
+
+    <div class="options">
+
+      <!-- CURRENT -->
+      <div class="opt">
+        <div class="opt-head">
+          <span class="opt-tag is-current">CURRENT</span>
+          <span class="opt-name">Launch-blocking modal</span>
+        </div>
+        <div class="phone">
+          <div class="screen">
+            <div class="st-head">
+              <span class="st-title">Notes</span>
+              <span class="st-count">33</span>
+            </div>
+            <div class="st-list">
+              <div class="row"><div class="col"><span class="t">Reading list — Q3</span><span class="m">personal · 2h</span></div><span class="dot s"></span></div>
+              <div class="row"><div class="col"><span class="t">Sync design notes</span><span class="m">work · yesterday</span></div><span class="dot q"></span></div>
+              <div class="row"><div class="col"><span class="t">Groceries</span><span class="m">personal · 3d</span></div><span class="dot s"></span></div>
+            </div>
+            <div class="st-tabs"><div class="on">NOTES</div><div>BROWSE</div><div>CHAT</div></div>
+            <div class="scrim"></div>
+            <div class="escape-tag"><span>BACK · SCRIM · ✕ ALL DEFER</span></div>
+            <div class="sheet">
+              <div class="grab"></div>
+              <div class="sheet-head">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#facc15" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/></svg>
+                <span class="sheet-title">Deleted on your other device</span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7a7a7a" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+              </div>
+              <div class="sheet-copy">"Sync design notes" was deleted on your other device. Delete it here too, or keep it?</div>
+              <div class="sheet-actions">
+                <div class="sheet-act danger">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#ff6467" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                  Delete on both
+                </div>
+                <div class="sheet-act">Keep here</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="opt-body">
+          <p>
+            The sheet ambushes the app at every cold launch. It is the contract working correctly —
+            the row is durable and nothing has resolved it — but all three reflexive exits (Android
+            back, scrim tap, ✕) route to the <em>non-resolving</em> branch, and nothing tells the user
+            that only the two buttons end it.
+          </p>
+          <div class="verdict">
+            <div><span class="k">Residue</span><span class="v bad">no home at all</span></div>
+            <div><span class="k">Exit</span><span class="v bad">three exits, none of them work</span></div>
+            <div><span class="k">Cost</span><span class="v">shipping today</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- A -->
+      <div class="opt">
+        <div class="opt-head">
+          <span class="opt-tag">A</span>
+          <span class="opt-name">Hairline strip under the header</span>
+        </div>
+        <div class="phone">
+          <div class="screen">
+            <div class="st-head">
+              <span class="st-title">Notes</span>
+              <span class="st-count">33</span>
+            </div>
+            <div class="strip">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#facc15" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/></svg>
+              <span class="txt">1 note deleted elsewhere <em>· needs a choice</em></span>
+              <svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7a7a7a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+            </div>
+            <div class="st-list">
+              <div class="row"><div class="col"><span class="t">Reading list — Q3</span><span class="m">personal · 2h</span></div><span class="dot s"></span></div>
+              <div class="row"><div class="col"><span class="t">Sync design notes</span><span class="m">deleted on desktop</span></div><span class="ring"></span></div>
+              <div class="row"><div class="col"><span class="t">Groceries</span><span class="m">personal · 3d</span></div><span class="dot s"></span></div>
+              <div class="row"><div class="col"><span class="t">Q3 planning</span><span class="m">work · 5d</span></div><span class="dot s"></span></div>
+            </div>
+            <div class="fab">+</div>
+            <div class="st-tabs"><div class="on">NOTES</div><div>BROWSE</div><div>CHAT</div></div>
+          </div>
+        </div>
+        <div class="opt-body">
+          <p>
+            The strip is pinned between header and list and has <strong>no ✕</strong> — it leaves only
+            when the queue empties. Tapping it opens the existing sheet unchanged, so the resolution
+            UI is not rebuilt. The affected row carries a hollow yellow ring, distinct from the filled
+            queued dot, so the notice and the note point at each other.
+          </p>
+          <p>
+            Residue reuses the same strip with its own copy and an <em>Acknowledge</em> action inside
+            the sheet — the only kind that can be dismissed, because acknowledging <em>is</em> the
+            resolution.
+          </p>
+          <div class="verdict">
+            <div><span class="k">Residue</span><span class="v ok">same strip, one extra kind</span></div>
+            <div><span class="k">Exit</span><span class="v ok">no false exit exists</span></div>
+            <div><span class="k">Cost</span><span class="v">new strip + row badge + a state kind</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- B -->
+      <div class="opt">
+        <div class="opt-head">
+          <span class="opt-tag">B</span>
+          <span class="opt-name">First row of the list</span>
+        </div>
+        <div class="phone">
+          <div class="screen">
+            <div class="st-head">
+              <span class="st-title">Notes</span>
+              <span class="st-count">33</span>
+            </div>
+            <div class="st-list">
+              <div class="strip strip-row">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#facc15" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/></svg>
+                <span class="txt">1 note deleted elsewhere <em>· needs a choice</em></span>
+                <svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7a7a7a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+              </div>
+              <div class="row"><div class="col"><span class="t">Reading list — Q3</span><span class="m">personal · 2h</span></div><span class="dot s"></span></div>
+              <div class="row"><div class="col"><span class="t">Sync design notes</span><span class="m">deleted on desktop</span></div><span class="ring"></span></div>
+              <div class="row"><div class="col"><span class="t">Groceries</span><span class="m">personal · 3d</span></div><span class="dot s"></span></div>
+              <div class="row"><div class="col"><span class="t">Q3 planning</span><span class="m">work · 5d</span></div><span class="dot s"></span></div>
+            </div>
+            <div class="fab">+</div>
+            <div class="st-tabs"><div class="on">NOTES</div><div>BROWSE</div><div>CHAT</div></div>
+          </div>
+        </div>
+        <div class="opt-body">
+          <p>
+            Same content, but it is a list item rather than chrome — so it <strong>scrolls away</strong>.
+            Cheapest to build (one more entry in the list data, no new layout slot) and it never steals
+            vertical space from a user who has scrolled past it.
+          </p>
+          <p>
+            The cost is exactly that: scrolling away is a soft dismissal the contract did not sanction.
+            A user with a long list can leave a held delete unresolved indefinitely without ever
+            declining it.
+          </p>
+          <div class="verdict">
+            <div><span class="k">Residue</span><span class="v ok">same row, one extra kind</span></div>
+            <div><span class="k">Exit</span><span class="v bad">scroll is a silent dismissal</span></div>
+            <div><span class="k">Cost</span><span class="v ok">lowest — no new layout slot</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- C -->
+      <div class="opt">
+        <div class="opt-head">
+          <span class="opt-tag">C</span>
+          <span class="opt-name">Quiet — badge only, resolved elsewhere</span>
+        </div>
+        <div class="phone">
+          <div class="screen">
+            <div class="st-head">
+              <span class="st-title">Notes</span>
+              <span class="st-count">33</span>
+            </div>
+            <div class="st-list">
+              <div class="row"><div class="col"><span class="t">Reading list — Q3</span><span class="m">personal · 2h</span></div><span class="dot s"></span></div>
+              <div class="row"><div class="col"><span class="t">Sync design notes</span><span class="m">deleted on desktop</span></div><span class="ring"></span></div>
+              <div class="row"><div class="col"><span class="t">Groceries</span><span class="m">personal · 3d</span></div><span class="dot s"></span></div>
+              <div class="row"><div class="col"><span class="t">Q3 planning</span><span class="m">work · 5d</span></div><span class="dot s"></span></div>
+              <div class="row dim"><div class="col"><span class="t">Old meeting notes</span><span class="m">work · 1w</span></div><span class="dot s"></span></div>
+            </div>
+            <div class="fab">+</div>
+            <div class="st-tabs">
+              <div class="on">NOTES</div>
+              <div>BROWSE</div>
+              <div>CHAT<span class="tabdot"></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="opt-body">
+          <p>
+            Nothing intrudes on the list. The affected row gets its ring, a dot appears on the tab that
+            leads to Sync status, and a <em>Needs your attention</em> group there holds every unresolved
+            item. Closest to the app's existing habit — the Sync screen already surfaces blocked ops
+            this way.
+          </p>
+          <p>
+            It is also the easiest to never notice. A held delete is a divergence between two devices;
+            burying it two taps deep optimises for calm over honesty, and honest status is a stated
+            product rule.
+          </p>
+          <div class="verdict">
+            <div><span class="k">Residue</span><span class="v ok">natural fit — it belongs to sync</span></div>
+            <div><span class="k">Exit</span><span class="v">nothing to exit; nothing to see</span></div>
+            <div><span class="k">Cost</span><span class="v">badge + a Sync-screen group</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- D -->
+      <div class="opt">
+        <div class="opt-head">
+          <span class="opt-tag">D</span>
+          <span class="opt-name">Bar above the tabs</span>
+        </div>
+        <div class="phone">
+          <div class="screen">
+            <div class="st-head">
+              <span class="st-title">Notes</span>
+              <span class="st-count">33</span>
+            </div>
+            <div class="st-list">
+              <div class="row"><div class="col"><span class="t">Reading list — Q3</span><span class="m">personal · 2h</span></div><span class="dot s"></span></div>
+              <div class="row"><div class="col"><span class="t">Sync design notes</span><span class="m">deleted on desktop</span></div><span class="ring"></span></div>
+              <div class="row"><div class="col"><span class="t">Groceries</span><span class="m">personal · 3d</span></div><span class="dot s"></span></div>
+              <div class="row"><div class="col"><span class="t">Q3 planning</span><span class="m">work · 5d</span></div><span class="dot s"></span></div>
+              <div class="row dim"><div class="col"><span class="t">Old meeting notes</span><span class="m">work · 1w</span></div><span class="dot s"></span></div>
+            </div>
+            <div class="strip bottombar">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#facc15" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/></svg>
+              <span class="txt">1 note deleted elsewhere <em>· needs a choice</em></span>
+              <svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7a7a7a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+            </div>
+            <div class="st-tabs"><div class="on">NOTES</div><div>BROWSE</div><div>CHAT</div></div>
+          </div>
+        </div>
+        <div class="opt-body">
+          <p>
+            Persistent like A, but docked in the thumb arc where the app already puts primary actions —
+            so resolving it is a one-handed reach rather than a stretch to the top of the screen.
+          </p>
+          <p>
+            It also sits directly above the tab bar and directly beside the FAB, which is the busiest
+            corner of the screen. Two persistent bars stacked at the bottom is the layout most likely
+            to read as clutter, and it pushes the FAB's resting position.
+          </p>
+          <div class="verdict">
+            <div><span class="k">Residue</span><span class="v ok">same bar, one extra kind</span></div>
+            <div><span class="k">Exit</span><span class="v ok">no false exit exists</span></div>
+            <div><span class="k">Cost</span><span class="v bad">collides with FAB + tab bar</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="note">
+      <p>
+        <strong>My pick: A.</strong> It is the only option that is both unmissable and un-dismissable
+        without competing for the bottom corner the FAB already owns. B's scroll-away reintroduces the
+        exact silent deferral the ruling was made to kill; C is calmer than the honest-status rule
+        allows for a two-device divergence; D is A with a worse neighbourhood.
+      </p>
+      <span class="cap">Whichever wins, the resolution sheet itself is unchanged — only how you reach it.</span>
+    </div>
+  </section>
+
+  <!-- ============================ SECTION 2 ============================ -->
+  <section>
+    <h2>2 · Should the sky come to rest?</h2>
+
+    <p>
+      The stars view schedules a frame forever. Running the real <code>stepSimulation</code> headless
+      showed the prescribed fix does not work in the configuration that actually ships: with reduced
+      motion off, the drift term is a sine that never decays, so the simulation
+      <strong>never</strong> becomes idle and a quiescence guard never fires.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>nodes</th><th>reduced motion</th><th>max Δ / frame @ 3000</th><th>settles?</th><th>settles at frame</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="n">30</td><td>off — the default</td><td>0.0375</td><td><span class="bad">never</span></td><td>—</td></tr>
+          <tr><td class="n">30</td><td>on</td><td>0.0000000</td><td><span class="ok">yes</span></td><td>1027</td></tr>
+          <tr><td class="n">100</td><td>off — the default</td><td>0.0444</td><td><span class="bad">never</span></td><td>—</td></tr>
+          <tr><td class="n">100</td><td>on</td><td>0.0000000</td><td><span class="ok">yes</span></td><td>688</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Both canvases below run the shipping force model with its real constants —
+      <code>CENTER_PULL 0.0016</code>, <code>DAMPING 0.9</code>, <code>DRIFT 0.012</code>,
+      <code>REPEL_NUM 2600</code>. The only difference between them is whether the drift term is
+      multiplied by a decaying envelope. Watch the read-out: the left one never reaches zero.
+    </p>
+
+    <div class="sim-grid">
+      <div class="sim">
+        <canvas id="cv-now" aria-label="Star field with drift running forever"></canvas>
+        <div class="sim-cap"><span class="name">Today — drift forever</span><span class="read" id="rd-now">—</span></div>
+      </div>
+      <div class="sim">
+        <canvas id="cv-decay" aria-label="Star field whose drift decays to rest"></canvas>
+        <div class="sim-cap"><span class="name">Proposed — drift decays, loop stops</span><span class="read" id="rd-decay">—</span></div>
+      </div>
+    </div>
+
+    <div class="sim-controls">
+      <button type="button" id="restart">Restart both</button>
+      <label>
+        settle over
+        <input type="range" id="tau" min="2" max="20" step="1" value="8" />
+        <span id="tau-read" class="read">8s</span>
+      </label>
+      <span>— how long the sky keeps breathing before it holds still.</span>
+    </div>
+
+    <div class="options">
+      <div class="opt">
+        <div class="opt-head"><span class="opt-tag">GUARD + DECAY</span><span class="opt-name">recommended</span></div>
+        <div class="opt-body">
+          <p>
+            Drift is multiplied by an envelope that reaches zero over the chosen window; damping then
+            takes the field to rest and the loop stops scheduling. The sky still arrives alive — the
+            entrance is what the motion was for — and then it holds. Battery cost goes to zero on a
+            screen the user is only reading, and the accessibility tree becomes dumpable without the
+            reduced-motion workaround.
+          </p>
+          <p>
+            It changes the resting character of the screen: a sky that used to shimmer indefinitely
+            now becomes a still diagram. <strong>That is the trade being bought.</strong> Any touch,
+            zoom or data change re-arms the envelope, so it never feels frozen in use.
+          </p>
+        </div>
+      </div>
+      <div class="opt">
+        <div class="opt-head"><span class="opt-tag">GUARD ONLY</span><span class="opt-name">the ledger's original fix</span></div>
+        <div class="opt-body">
+          <p>
+            Stop scheduling once positions stop moving. Correct, cheap — and, per the table above,
+            inert in the shipping configuration. It fires only under reduced motion, where the win is
+            real but narrow: the a11y tree stops depending on luck.
+          </p>
+        </div>
+      </div>
+      <div class="opt">
+        <div class="opt-head"><span class="opt-tag">NEITHER</span><span class="opt-name">ambient drift is the point</span></div>
+        <div class="opt-body">
+          <p>
+            Keep the sky breathing and accept the frame cost as the price of the effect, recording the
+            measurement as a known ceiling. Defensible — this is the one screen in the app whose job is
+            atmosphere rather than information.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="note">
+      <span class="cap">
+        Whatever wins here has to be hand-mirrored into the desktop's copy of the same file: the RAF
+        loop and <code>stepSimulation</code>'s logic sit outside every automated parity check, so
+        nothing will catch a one-sided edit.
+      </span>
+    </div>
+  </section>
+
+</div>
+
+<script>
+  // The shipping force model, constants verbatim from phone/src/lib/starsSim.ts.
+  var REPEL_NUM = 2600, REPEL_D2_FLOOR = 40;
+  var CENTER_PULL = 0.0016, DRIFT_VX = 0.012, DRIFT_VY = 0.012, DAMPING = 0.9;
+  var CLAMP_X = [66, 66], CLAMP_Y = [20, 34];
+  var N = 26;
+
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function makeField(w, h) {
+    var arr = [], i;
+    for (i = 0; i < N; i++) {
+      // Deterministic scatter so both canvases start identical — the comparison
+      // is only honest if the only difference is the envelope.
+      var a = i * 2.399963, r = 0.16 + 0.34 * ((i * 7919) % 97) / 97;
+      arr.push({
+        x: w / 2 + Math.cos(a) * r * w, y: h / 2 + Math.sin(a) * r * h,
+        vx: 0, vy: 0, ph: (i * 1.7) % 6.283
+      });
+    }
+    return arr;
+  }
+
+  function step(arr, t, w, h, driftScale) {
+    var i, j, n, o, dx, dy, d2, f;
+    for (i = 0; i < arr.length; i++) {
+      n = arr[i];
+      for (j = i + 1; j < arr.length; j++) {
+        o = arr[j];
+        dx = n.x - o.x; dy = n.y - o.y;
+        d2 = Math.max(dx * dx + dy * dy, REPEL_D2_FLOOR);
+        f = REPEL_NUM / d2;
+        var len = Math.sqrt(d2);
+        n.vx += (dx / len) * f; n.vy += (dy / len) * f;
+        o.vx -= (dx / len) * f; o.vy -= (dy / len) * f;
+      }
+    }
+    var maxD = 0;
+    for (i = 0; i < arr.length; i++) {
+      n = arr[i];
+      n.vx += (w / 2 - n.x) * CENTER_PULL;
+      n.vy += (h / 2 - n.y) * CENTER_PULL;
+      if (driftScale > 0) {
+        n.vx += Math.sin(t / 1700 + n.ph) * DRIFT_VX * driftScale;
+        n.vy += Math.cos(t / 2100 + n.ph) * DRIFT_VY * driftScale;
+      }
+      n.vx *= DAMPING; n.vy *= DAMPING;
+      var px = n.x, py = n.y;
+      n.x += n.vx; n.y += n.vy;
+      n.x = Math.min(Math.max(n.x, CLAMP_X[0]), w - CLAMP_X[1]);
+      n.y = Math.min(Math.max(n.y, CLAMP_Y[0]), h - CLAMP_Y[1]);
+      var d = Math.abs(n.x - px) + Math.abs(n.y - py);
+      if (d > maxD) maxD = d;
+    }
+    return maxD;
+  }
+
+  function mount(canvasId, readId, decaying) {
+    var cv = document.getElementById(canvasId);
+    var rd = document.getElementById(readId);
+    var ctx = cv.getContext("2d");
+    var nodes = null, w = 0, h = 0, t0 = null, raf = 0, frames = 0, held = 0;
+
+    function size() {
+      var r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+      w = Math.max(220, Math.round(r.width)); h = Math.round(r.height);
+      cv.width = w * dpr; cv.height = h * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function reset() {
+      size(); nodes = makeField(w, h); t0 = null; frames = 0; held = 0;
+      cancelAnimationFrame(raf); raf = requestAnimationFrame(loop);
+    }
+
+    function draw(sleeping) {
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = sleeping ? "#a1a1a1" : "#fafafa";
+      for (var i = 0; i < nodes.length; i++) {
+        ctx.beginPath();
+        ctx.arc(nodes[i].x, nodes[i].y, 2.2, 0, 6.283);
+        ctx.fill();
+      }
+    }
+
+    function loop(ts) {
+      if (t0 === null) t0 = ts;
+      var elapsed = (ts - t0) / 1000;
+      var tau = Number(document.getElementById("tau").value);
+      var scale = decaying ? Math.max(0, 1 - elapsed / tau) : 1;
+      var maxD = step(nodes, ts, w, h, scale);
+      frames++;
+      draw(false);
+
+      if (maxD < 0.01) { held++; } else { held = 0; }
+      var sleeping = decaying && held > 30;
+
+      rd.textContent = sleeping
+        ? "asleep · " + frames + " frames drawn, then none"
+        : "Δ " + maxD.toFixed(4) + " px · frame " + frames;
+
+      if (sleeping) { draw(true); return; }   // the guard: stop scheduling
+      raf = requestAnimationFrame(loop);
+    }
+
+    document.getElementById("restart").addEventListener("click", reset);
+    document.getElementById("tau").addEventListener("input", reset);
+    window.addEventListener("resize", reset);
+    reset();
+  }
+
+  document.getElementById("tau").addEventListener("input", function () {
+    document.getElementById("tau-read").textContent = this.value + "s";
+  });
+
+  if (!reduced) {
+    mount("cv-now", "rd-now", false);
+    mount("cv-decay", "rd-decay", true);
+  } else {
+    document.getElementById("rd-now").textContent = "reduced motion — demo held still";
+    document.getElementById("rd-decay").textContent = "reduced motion — demo held still";
+  }
+</script>

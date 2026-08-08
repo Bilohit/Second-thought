@@ -1,0 +1,519 @@
+<title>s160 — how the sky comes to rest</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #262626;
+    --surface-2: #404040;
+    --border: #383838;
+    --border-2: #262626;
+    --text-1: #fafafa;
+    --text-2: #a1a1a1;
+    --text-3: #7a7a7a;
+    --accent: #737373;
+    --green: #4ade80;
+    --yellow: #facc15;
+    --red: #ff6467;
+    --glass-bg: #191919;
+
+    --track: 0.01em;
+    --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", "Consolas", monospace;
+
+    --fs-micro: 9px;
+    --fs-label: 10px;
+    --fs-body: 11px;
+    --fs-read: 12px;
+    --fs-lead: 13px;
+    --fs-title: 16px;
+    --fs-display: 20px;
+    --fs-hero: 22px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text-1);
+    font-family: var(--mono);
+    letter-spacing: var(--track);
+    font-size: var(--fs-read);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 40px 24px 96px; display: flex; flex-direction: column; gap: 48px; }
+
+  .masthead { display: flex; flex-direction: column; gap: 14px; border-bottom: 1px solid var(--border); padding-bottom: 24px; }
+  .masthead h1 { margin: 0; font-size: var(--fs-hero); font-weight: 600; letter-spacing: var(--track); text-wrap: balance; }
+  .masthead p { margin: 0; color: var(--text-2); max-width: 74ch; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--text-3); font-size: var(--fs-body); }
+
+  h2 { margin: 0; font-size: var(--fs-title); font-weight: 600; letter-spacing: var(--track); }
+  p { margin: 0; color: var(--text-2); max-width: 74ch; }
+  strong { color: var(--text-1); font-weight: 600; }
+  em { font-style: normal; color: var(--text-1); }
+  code { background: var(--surface); color: var(--text-1); padding: 1px 5px; font-size: var(--fs-body); }
+
+  .note { border: 1px solid var(--border); background: var(--glass-bg); padding: 14px 16px; display: flex; flex-direction: column; gap: 9px; }
+  .note .cap { color: var(--text-3); font-size: var(--fs-body); }
+
+  /* --- global controls ---------------------------------------------------- */
+  .controls {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+    padding: 12px 16px;
+    background: var(--glass-bg);
+    border: 1px solid var(--border);
+    font-size: var(--fs-body); color: var(--text-2);
+  }
+  .controls button {
+    font-family: var(--mono); letter-spacing: var(--track);
+    background: var(--surface); color: var(--text-1);
+    border: 1px solid var(--border); padding: 6px 12px; font-size: var(--fs-body); cursor: pointer;
+  }
+  .controls button:hover { background: var(--surface-2); }
+  .controls button:focus-visible { outline: 2px solid var(--text-1); outline-offset: 2px; }
+  .controls label { display: flex; align-items: center; gap: 8px; }
+  .controls input[type="range"] { accent-color: var(--text-1); width: 130px; }
+  .controls .val { color: var(--text-1); font-variant-numeric: tabular-nums; }
+
+  /* --- option cards ------------------------------------------------------- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 32px; align-items: start; }
+
+  .card { display: flex; flex-direction: column; gap: 14px; }
+  .card-head { display: flex; align-items: baseline; gap: 10px; }
+  .tag {
+    font-size: var(--fs-label); font-weight: 600; letter-spacing: 0.06em;
+    background: var(--text-1); color: var(--bg); padding: 2px 7px;
+  }
+  .tag.now { background: var(--surface-2); color: var(--text-1); }
+  .card-name { font-size: var(--fs-read); font-weight: 600; color: var(--text-1); }
+
+  .stage { border: 1px solid var(--border); background: var(--bg); position: relative; }
+  .stage canvas { display: block; width: 100%; height: 300px; }
+  .stage .hud {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    display: flex; justify-content: space-between; gap: 12px;
+    padding: 7px 10px;
+    border-top: 1px solid var(--border-2);
+    background: rgba(10, 10, 10, 0.82);
+    font-size: var(--fs-micro); color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+  }
+  .hud .live { color: var(--yellow); }
+  .hud .rest { color: var(--green); }
+
+  .card p { font-size: var(--fs-body); line-height: 1.65; }
+
+  .facts { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-body); }
+  .facts div { display: flex; gap: 9px; }
+  .facts .k { color: var(--text-3); flex: none; width: 78px; }
+  .facts .v { color: var(--text-2); }
+  .facts .v.ok { color: var(--green); }
+  .facts .v.bad { color: var(--red); }
+  .facts .v.warn { color: var(--yellow); }
+
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: var(--fs-micro); color: var(--text-3); }
+  .legend span { display: flex; align-items: center; gap: 6px; }
+  .legend i { width: 7px; height: 7px; display: block; }
+  .legend i.q { background: var(--yellow); }
+  .legend i.c { background: var(--red); }
+  .legend i.p { background: var(--text-1); }
+
+  .tablewrap { overflow-x: auto; border: 1px solid var(--border); }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: var(--fs-body); }
+  th, td { text-align: left; padding: 8px 14px; border-bottom: 1px solid var(--border-2); }
+  th { color: var(--text-3); font-weight: 400; font-size: var(--fs-micro); letter-spacing: 0.05em; }
+  td { color: var(--text-2); font-variant-numeric: tabular-nums; }
+  td.n { color: var(--text-1); }
+  tr:last-child td { border-bottom: 0; }
+  .bad { color: var(--red); }
+  .ok { color: var(--green); }
+  .warn { color: var(--yellow); }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <h1>How the sky comes to rest</h1>
+    <p>
+      Four treatments, each running the shipping force model with its real constants —
+      <code>CENTER_PULL 0.0016</code>, <code>DAMPING 0.9</code>, <code>DRIFT 0.012</code>,
+      <code>REPEL_NUM 2600</code>, <code>CLAMP_X [66,66]</code>. The only thing that differs between
+      panels is what happens <em>after</em> the field has arranged itself. Watch the frame counter in
+      each panel: that number is the battery bill.
+    </p>
+    <div class="meta">
+      <span>s160 · 2026-08-08</span>
+      <span>FR-44</span>
+      <span>pick one</span>
+      <span>changes must be hand-mirrored to desktop — outside every parity check</span>
+    </div>
+  </header>
+
+  <div class="controls">
+    <button type="button" id="restart">Restart all</button>
+    <label>settle over <input type="range" id="tau" min="2" max="16" step="1" value="7" /><span class="val" id="tau-read">7s</span></label>
+    <label>breath period <input type="range" id="per" min="2" max="12" step="1" value="6" /><span class="val" id="per-read">6s</span></label>
+    <span id="rm-warn"></span>
+  </div>
+
+  <p>
+    A note on what "alive" is for. The catalogue is full of ambient star fields, and nearly all of
+    them keep motion going by <em>moving things</em>. The one idea worth stealing is the opposite:
+    the oldest star-field trick is <strong>twinkle</strong> — brightness varies, position does not.
+    That matters here for a reason beyond taste. Position writes are what keep the layout non-idle,
+    which is what burns the battery and what makes the screen impossible for the accessibility
+    tooling to read. Brightness costs neither.
+  </p>
+
+  <div class="grid">
+
+    <!-- NOW -->
+    <div class="card">
+      <div class="card-head"><span class="tag now">TODAY</span><span class="card-name">Drift, forever</span></div>
+      <div class="stage">
+        <canvas id="c-now" aria-label="Star field drifting without ever settling"></canvas>
+        <div class="hud"><span id="h-now-a">—</span><span id="h-now-b">—</span></div>
+      </div>
+      <p>
+        A sine drives every star on an independent phase and never decays, so the field never stops
+        rearranging. It reads as calm, and it is: the motion is slow and the drift is small. The cost
+        is invisible at a glance and constant.
+      </p>
+      <div class="facts">
+        <div><span class="k">Positions</span><span class="v bad">never settle</span></div>
+        <div><span class="k">Frames</span><span class="v bad">60/s while open, indefinitely</span></div>
+        <div><span class="k">a11y dump</span><span class="v bad">impossible — never idle</span></div>
+        <div><span class="k">Cost</span><span class="v">shipping today</span></div>
+      </div>
+    </div>
+
+    <!-- SETTLE -->
+    <div class="card">
+      <div class="card-head"><span class="tag">1</span><span class="card-name">Settle — arrive, then hold still</span></div>
+      <div class="stage">
+        <canvas id="c-settle" aria-label="Star field that decays to a complete stop"></canvas>
+        <div class="hud"><span id="h-settle-a">—</span><span id="h-settle-b">—</span></div>
+      </div>
+      <p>
+        Drift is multiplied by an envelope falling to zero over the settle window; damping carries the
+        rest, and once nothing has moved a perceptible amount for half a second the loop stops
+        scheduling. The entrance is preserved — the sky still assembles itself — and then it is a
+        diagram.
+      </p>
+      <p>
+        The honest objection: a screen whose job is partly atmosphere becomes completely inert. On a
+        vault of three notes this may read less like calm and more like a static image.
+      </p>
+      <div class="facts">
+        <div><span class="k">Positions</span><span class="v ok">settle, then frozen</span></div>
+        <div><span class="k">Frames</span><span class="v ok">zero after settling</span></div>
+        <div><span class="k">a11y dump</span><span class="v ok">works</span></div>
+        <div><span class="k">Cost</span><span class="v">envelope + guard, both sides</span></div>
+      </div>
+    </div>
+
+    <!-- BREATHE -->
+    <div class="card">
+      <div class="card-head"><span class="tag">2</span><span class="card-name">Breathe in place — still, not dead</span></div>
+      <div class="stage">
+        <canvas id="c-breathe" aria-label="Star field settled in position while brightness breathes"></canvas>
+        <div class="hud"><span id="h-breathe-a">—</span><span id="h-breathe-b">—</span></div>
+      </div>
+      <p>
+        Positions settle exactly as in 1 and the physics loop stops for good. What continues is
+        <strong>brightness only</strong> — each star breathes on its own slow phase, never moving.
+        The field holds its shape while still reading as a live sky rather than a screenshot.
+      </p>
+      <p>
+        On the device this is the cheap half: opacity is one of the properties the native animation
+        driver handles off the JS thread, so it costs no JS frames and writes no layout. Positions are
+        static, so the accessibility tree is dumpable and the layout is idle —
+        <em>alive and idle at the same time</em>, which the current design treats as mutually
+        exclusive. <span class="cap">Needs one source check before committing: confirm the stars are
+        driven by a property the native driver accepts.</span>
+      </p>
+      <div class="facts">
+        <div><span class="k">Positions</span><span class="v ok">settle, then frozen</span></div>
+        <div><span class="k">Frames</span><span class="v ok">zero JS frames after settling</span></div>
+        <div><span class="k">a11y dump</span><span class="v ok">works</span></div>
+        <div><span class="k">Cost</span><span class="v warn">1 + a per-star opacity loop</span></div>
+      </div>
+    </div>
+
+    <!-- SEMANTIC -->
+    <div class="card">
+      <div class="card-head"><span class="tag">3</span><span class="card-name">Motion means something</span></div>
+      <div class="stage">
+        <canvas id="c-semantic" aria-label="Settled star field where only notes needing attention pulse"></canvas>
+        <div class="hud"><span id="h-semantic-a">—</span><span id="h-semantic-b">—</span></div>
+      </div>
+      <p>
+        Settles like 1, then stays still — <strong>except</strong> for the stars whose notes have
+        something to say. A queued note breathes; a conflicted one pulses harder. Everything settled
+        and synced is motionless.
+      </p>
+      <p>
+        This extends the rule the product already lives by. Colour here is never decoration, only
+        state; this says the same of motion. The sky stops being wallpaper and starts being a
+        read-out — you can tell from across the room whether anything needs you.
+      </p>
+      <div class="legend">
+        <span><i class="p"></i> settled</span>
+        <span><i class="q"></i> queued — breathes</span>
+        <span><i class="c"></i> conflict — pulses</span>
+      </div>
+      <div class="facts">
+        <div><span class="k">Positions</span><span class="v ok">settle, then frozen</span></div>
+        <div><span class="k">Frames</span><span class="v ok">zero unless something is pending</span></div>
+        <div><span class="k">a11y dump</span><span class="v ok">works</span></div>
+        <div><span class="k">Cost</span><span class="v warn">2 + per-node state in the sky</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="note">
+    <p>
+      <strong>Applies to whichever wins:</strong> any touch, pinch, or data change re-arms the
+      envelope, so the sky wakes when you use it and settles again a few seconds later. Without that,
+      a settled field would feel broken the first time someone dragged a star. It is not a separate
+      option — it is a requirement of all three.
+    </p>
+    <p>
+      <strong>Reduced motion stays honest.</strong> With the OS setting on, there is no drift to
+      decay and no breathing: the field arranges itself and stops. That is already what the code does
+      today, and none of these options change it.
+    </p>
+    <span class="cap">
+      The measured baseline that started this: at 30 nodes with reduced motion off, the maximum
+      per-frame movement is still 0.0375&nbsp;px at frame 3000 and oscillates indefinitely — it does
+      not trend toward zero. With reduced motion on it reaches zero and stays there from frame 1027.
+    </span>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>treatment</th><th>positions</th><th>JS frames at rest</th><th>a11y dump</th><th>reads as</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="n">Today</td><td><span class="bad">never settle</span></td><td><span class="bad">60/s forever</span></td><td><span class="bad">no</span></td><td>calm, quietly expensive</td></tr>
+        <tr><td class="n">1 · Settle</td><td><span class="ok">frozen</span></td><td><span class="ok">0</span></td><td><span class="ok">yes</span></td><td>a diagram</td></tr>
+        <tr><td class="n">2 · Breathe</td><td><span class="ok">frozen</span></td><td><span class="ok">0</span></td><td><span class="ok">yes</span></td><td>a live sky, holding still</td></tr>
+        <tr><td class="n">3 · Semantic</td><td><span class="ok">frozen</span></td><td><span class="ok">0 unless pending</span></td><td><span class="ok">yes</span></td><td>an instrument</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note">
+    <p>
+      <strong>My pick: 2, with 3 as the upgrade path.</strong> Breathing buys back everything settling
+      costs, for free on the native driver, and keeps the change to one concept. 3 is the more
+      interesting idea and the more product-shaped one — but it needs per-node sync state threaded into
+      the sky, which is a bigger change than FR-44 was scoped as, and it is better as a deliberate
+      second step than as a rider on a battery fix.
+    </p>
+  </div>
+
+</div>
+
+<script>
+  var REPEL_NUM = 2600, REPEL_D2_FLOOR = 40;
+  var CENTER_PULL = 0.0016, DRIFT_VX = 0.012, DRIFT_VY = 0.012, DAMPING = 0.9;
+  var CLAMP_X = [66, 66], CLAMP_Y = [20, 34];
+  var N = 30;
+
+  var reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var tauEl = document.getElementById("tau");
+  var perEl = document.getElementById("per");
+
+  document.getElementById("tau-read").textContent = tauEl.value + "s";
+  document.getElementById("per-read").textContent = perEl.value + "s";
+
+  // Deterministic field so every panel starts from the identical arrangement —
+  // the comparison is only honest if the treatment is the sole difference.
+  function makeField(w, h) {
+    var arr = [], i;
+    for (i = 0; i < N; i++) {
+      var a = i * 2.399963;
+      var r = 0.14 + 0.32 * (((i * 7919) % 97) / 97);
+      // kinds: 0 settled, 1 queued, 2 conflict — fixed so panel 3 is stable across restarts
+      var kind = (i === 4 || i === 17) ? 1 : (i === 11 ? 2 : 0);
+      arr.push({
+        x: w / 2 + Math.cos(a) * r * w,
+        y: h / 2 + Math.sin(a) * r * h,
+        vx: 0, vy: 0, ph: (i * 1.7) % 6.283, kind: kind
+      });
+    }
+    return arr;
+  }
+
+  function step(arr, t, w, h, driftScale) {
+    var i, j, n, o, dx, dy, d2, f, len;
+    for (i = 0; i < arr.length; i++) {
+      n = arr[i];
+      for (j = i + 1; j < arr.length; j++) {
+        o = arr[j];
+        dx = n.x - o.x; dy = n.y - o.y;
+        d2 = Math.max(dx * dx + dy * dy, REPEL_D2_FLOOR);
+        len = Math.sqrt(d2);
+        f = REPEL_NUM / d2;
+        n.vx += (dx / len) * f; n.vy += (dy / len) * f;
+        o.vx -= (dx / len) * f; o.vy -= (dy / len) * f;
+      }
+    }
+    var maxD = 0;
+    for (i = 0; i < arr.length; i++) {
+      n = arr[i];
+      n.vx += (w / 2 - n.x) * CENTER_PULL;
+      n.vy += (h / 2 - n.y) * CENTER_PULL;
+      if (driftScale > 0) {
+        n.vx += Math.sin(t / 1700 + n.ph) * DRIFT_VX * driftScale;
+        n.vy += Math.cos(t / 2100 + n.ph) * DRIFT_VY * driftScale;
+      }
+      n.vx *= DAMPING; n.vy *= DAMPING;
+      var px = n.x, py = n.y;
+      n.x += n.vx; n.y += n.vy;
+      n.x = Math.min(Math.max(n.x, CLAMP_X[0]), w - CLAMP_X[1]);
+      n.y = Math.min(Math.max(n.y, CLAMP_Y[0]), h - CLAMP_Y[1]);
+      var d = Math.abs(n.x - px) + Math.abs(n.y - py);
+      if (d > maxD) maxD = d;
+    }
+    return maxD;
+  }
+
+  var COL = { settled: "250,250,250", queued: "250,204,21", conflict: "255,100,103" };
+
+  function Panel(canvasId, hudA, hudB, mode) {
+    var cv = document.getElementById(canvasId);
+    var ctx = cv.getContext("2d");
+    var ea = document.getElementById(hudA), eb = document.getElementById(hudB);
+    var nodes = null, w = 0, h = 0, t0 = null, raf = 0;
+    var physFrames = 0, drawFrames = 0, still = 0, settled = false;
+
+    function size() {
+      var r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+      w = Math.max(240, Math.round(r.width));
+      h = Math.round(r.height) || 300;
+      cv.width = w * dpr; cv.height = h * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function alphaFor(n, elapsed) {
+      var period = Number(perEl.value);
+      if (!settled) return 0.9;
+      if (mode === "breathe") {
+        return 0.5 + 0.42 * (0.5 + 0.5 * Math.sin((elapsed * 6.283) / period + n.ph));
+      }
+      if (mode === "semantic") {
+        if (n.kind === 1) return 0.45 + 0.5 * (0.5 + 0.5 * Math.sin((elapsed * 6.283) / period + n.ph));
+        if (n.kind === 2) return 0.35 + 0.62 * (0.5 + 0.5 * Math.sin((elapsed * 6.283) / (period * 0.45) + n.ph));
+        return 0.82;
+      }
+      return 0.9;
+    }
+
+    function colorFor(n) {
+      if (mode !== "semantic") return COL.settled;
+      if (n.kind === 1) return COL.queued;
+      if (n.kind === 2) return COL.conflict;
+      return COL.settled;
+    }
+
+    function draw(elapsed) {
+      ctx.clearRect(0, 0, w, h);
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        var rad = 2.3;
+        if (mode === "semantic" && settled && n.kind === 2) {
+          rad = 2.3 + 0.9 * (0.5 + 0.5 * Math.sin((elapsed * 6.283) / (Number(perEl.value) * 0.45) + n.ph));
+        }
+        ctx.fillStyle = "rgba(" + colorFor(n) + "," + alphaFor(n, elapsed).toFixed(3) + ")";
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, rad, 0, 6.283);
+        ctx.fill();
+      }
+      drawFrames++;
+    }
+
+    function report(maxD, elapsed) {
+      if (mode === "now") {
+        ea.innerHTML = '<span class="live">moving</span> · Δ ' + maxD.toFixed(4) + " px";
+        eb.textContent = physFrames + " physics frames";
+        return;
+      }
+      if (!settled) {
+        ea.innerHTML = '<span class="live">settling</span> · Δ ' + maxD.toFixed(4) + " px";
+        eb.textContent = physFrames + " physics frames";
+        return;
+      }
+      var alive = (mode === "breathe") || (mode === "semantic");
+      ea.innerHTML = '<span class="rest">at rest</span> · settled at frame ' + physFrames;
+      eb.textContent = alive
+        ? "0 physics frames · brightness only"
+        : "0 frames — loop stopped";
+    }
+
+    function loop(ts) {
+      if (t0 === null) t0 = ts;
+      var elapsed = (ts - t0) / 1000;
+      var maxD = 0;
+
+      if (!settled) {
+        var tau = Number(tauEl.value);
+        var scale = reducedMotion ? 0 : (mode === "now" ? 1 : Math.max(0, 1 - elapsed / tau));
+        maxD = step(nodes, ts, w, h, scale);
+        physFrames++;
+        if (mode !== "now") {
+          if (maxD < 0.01) { still++; } else { still = 0; }
+          if (still > 30) settled = true;   // the quiescence guard
+        }
+      }
+
+      draw(elapsed);
+      report(maxD, elapsed);
+
+      // Mode 1 genuinely stops scheduling. Modes 2 and 3 keep redrawing here only
+      // because a canvas has no native driver; on the device the breathing runs
+      // off the JS thread and the physics loop is genuinely stopped.
+      if (settled && mode === "settle") return;
+      raf = requestAnimationFrame(loop);
+    }
+
+    this.reset = function () {
+      size();
+      nodes = makeField(w, h);
+      t0 = null; physFrames = 0; drawFrames = 0; still = 0; settled = false;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(loop);
+    };
+  }
+
+  var panels = [
+    new Panel("c-now", "h-now-a", "h-now-b", "now"),
+    new Panel("c-settle", "h-settle-a", "h-settle-b", "settle"),
+    new Panel("c-breathe", "h-breathe-a", "h-breathe-b", "breathe"),
+    new Panel("c-semantic", "h-semantic-a", "h-semantic-b", "semantic")
+  ];
+
+  function resetAll() { for (var i = 0; i < panels.length; i++) panels[i].reset(); }
+
+  document.getElementById("restart").addEventListener("click", resetAll);
+  tauEl.addEventListener("input", function () {
+    document.getElementById("tau-read").textContent = this.value + "s";
+    resetAll();
+  });
+  perEl.addEventListener("input", function () {
+    document.getElementById("per-read").textContent = this.value + "s";
+  });
+  window.addEventListener("resize", resetAll);
+
+  if (reducedMotion) {
+    document.getElementById("rm-warn").textContent =
+      "reduced motion is ON in your OS — drift is suppressed, exactly as the app behaves.";
+  }
+
+  resetAll();
+</script>

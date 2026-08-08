@@ -1,0 +1,592 @@
+<title>s160 — the sky's background layer, v2</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #262626;
+    --surface-2: #404040;
+    --border: #383838;
+    --border-2: #262626;
+    --text-1: #fafafa;
+    --text-2: #a1a1a1;
+    --text-3: #7a7a7a;
+    --accent: #737373;
+    --glass-bg: #191919;
+    --green: #4ade80;
+    --yellow: #facc15;
+    --red: #ff6467;
+
+    --track: 0.01em;
+    --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", "Consolas", monospace;
+
+    --fs-micro: 9px;
+    --fs-label: 10px;
+    --fs-body: 11px;
+    --fs-read: 12px;
+    --fs-lead: 13px;
+    --fs-title: 16px;
+    --fs-display: 20px;
+    --fs-hero: 22px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0; background: var(--bg); color: var(--text-1);
+    font-family: var(--mono); letter-spacing: var(--track);
+    font-size: var(--fs-read); line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 40px 24px 110px; display: flex; flex-direction: column; gap: 40px; }
+
+  .masthead { display: flex; flex-direction: column; gap: 13px; border-bottom: 1px solid var(--border); padding-bottom: 22px; }
+  .masthead h1 { margin: 0; font-size: var(--fs-hero); font-weight: 600; text-wrap: balance; }
+  .masthead p { margin: 0; color: var(--text-2); max-width: 76ch; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--text-3); font-size: var(--fs-body); }
+
+  p { margin: 0; color: var(--text-2); max-width: 76ch; }
+  strong { color: var(--text-1); font-weight: 600; }
+  em { font-style: normal; color: var(--text-1); }
+  code { background: var(--surface); color: var(--text-1); padding: 1px 5px; font-size: var(--fs-body); }
+
+  .note { border: 1px solid var(--border); background: var(--glass-bg); padding: 14px 16px; display: flex; flex-direction: column; gap: 9px; }
+  .note .cap { color: var(--text-3); font-size: var(--fs-body); }
+
+  .controls {
+    position: sticky; top: 0; z-index: 30;
+    display: flex; align-items: center; gap: 22px; flex-wrap: wrap;
+    padding: 13px 16px; background: rgba(25,25,25,0.97); border: 1px solid var(--border);
+    font-size: var(--fs-body); color: var(--text-2);
+    backdrop-filter: blur(6px);
+  }
+  .controls button {
+    font-family: var(--mono); letter-spacing: var(--track);
+    background: var(--surface); color: var(--text-1); border: 1px solid var(--border);
+    padding: 7px 13px; font-size: var(--fs-body); cursor: pointer;
+  }
+  .controls button:hover { background: var(--surface-2); }
+  .controls button:focus-visible { outline: 2px solid var(--text-1); outline-offset: 2px; }
+  .controls button[aria-pressed="true"] { background: var(--text-1); color: var(--bg); border-color: var(--text-1); }
+  .controls label { display: flex; align-items: center; gap: 9px; }
+  .controls input[type="range"] { accent-color: var(--text-1); width: 118px; }
+  .controls .val { color: var(--text-1); font-variant-numeric: tabular-nums; min-width: 2.2em; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(296px, 1fr)); gap: 34px 28px; align-items: start; }
+
+  .card { display: flex; flex-direction: column; gap: 13px; }
+  .card-head { display: flex; align-items: baseline; gap: 10px; }
+  .tag { font-size: var(--fs-label); font-weight: 600; letter-spacing: 0.06em; background: var(--text-1); color: var(--bg); padding: 2px 7px; }
+  .tag.now { background: var(--surface-2); color: var(--text-1); }
+  .card-name { font-size: var(--fs-read); font-weight: 600; color: var(--text-1); }
+  .card p { font-size: var(--fs-body); line-height: 1.65; }
+
+  /* phone frame — rounded bezel is the one platform concession; UI inside stays sharp */
+  .phone {
+    width: 100%; max-width: 300px;
+    border-radius: 24px; border: 1px solid var(--surface-2);
+    background: #000; padding: 7px; overflow: hidden;
+  }
+  .screen {
+    position: relative; overflow: hidden;
+    border-radius: 17px;
+    background: var(--bg);
+    height: 560px; display: flex; flex-direction: column;
+  }
+  .screen * { border-radius: 0; }
+  .sc-head { position: relative; z-index: 3; flex: none; padding: 15px 15px 10px; display: flex; align-items: baseline; justify-content: space-between; }
+  .sc-title { font-size: var(--fs-display); font-weight: 600; color: var(--text-1); }
+  .sc-sub { font-size: var(--fs-micro); color: var(--text-3); }
+  .sc-body { position: relative; flex: 1; }
+  .sc-body canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .sc-bg { z-index: 0; }
+  .sc-fg { z-index: 2; }
+  .sc-legend {
+    position: relative; z-index: 3; flex: none;
+    border-top: 1px solid var(--border-2); padding: 8px 13px 10px;
+    display: flex; gap: 14px; flex-wrap: wrap;
+    font-size: var(--fs-micro); color: var(--text-3);
+  }
+  .sc-legend span { display: flex; align-items: center; gap: 6px; }
+  .sc-legend i { width: 6px; height: 6px; display: block; }
+  .sc-legend i.p { background: var(--text-1); }
+  .sc-legend i.q { background: var(--yellow); }
+  .sc-legend i.c { background: var(--red); }
+  .sc-tabs { position: relative; z-index: 3; flex: none; border-top: 1px solid var(--border); display: flex; }
+  .sc-tabs div { flex: 1; text-align: center; padding: 9px 0 11px; font-size: var(--fs-micro); color: var(--text-3); }
+  .sc-tabs div.on { color: var(--text-1); }
+
+  .facts { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-body); }
+  .facts div { display: flex; gap: 9px; }
+  .facts .k { color: var(--text-3); flex: none; width: 66px; }
+  .facts .v { color: var(--text-2); }
+  .facts .v.ok { color: var(--green); }
+  .facts .v.bad { color: var(--red); }
+  .facts .v.warn { color: var(--yellow); }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <h1>What sits behind the stars — second pass</h1>
+    <p>
+      Lattice, sweep and constellation-wash are gone; you were right about all three. Six treatments
+      now, at phone size, with the foreground you picked already in place — settled positions, queued
+      notes breathing, conflicts pulsing — and the real connection edges drawn, so these read as the
+      actual screen rather than dots on black.
+    </p>
+    <div class="meta">
+      <span>s160 · 2026-08-08 · v2</span>
+      <span>FR-44 · background layer</span>
+      <span>pick one</span>
+    </div>
+  </header>
+
+  <div class="note">
+    <p>
+      <strong>Two things worth knowing before you judge them.</strong> First, every option is
+      <em>one</em> opacity or transform on a single layer — the native driver runs it off the JS
+      thread, so none of them costs a frame or re-creates the battery problem one layer down. Second,
+      they are rendered here through a deliberately low-resolution buffer that is then scaled up. That
+      is not a shortcut: it is how soft light is actually made cheaply, and it is what these will look
+      like on the device.
+    </p>
+    <span class="cap">
+      Defaults are set to <strong>shipped-subtle</strong>. Hit BOOSTED to see the mechanism clearly,
+      then come back to subtle to decide.
+    </span>
+  </div>
+
+  <div class="controls">
+    <button type="button" id="restart">Restart all</button>
+    <button type="button" id="boost" aria-pressed="false">BOOSTED</button>
+    <label>speed <input type="range" id="spd" min="1" max="10" step="1" value="4" /><span class="val" id="spd-read">4</span></label>
+    <label>intensity <input type="range" id="amp" min="1" max="12" step="1" value="5" /><span class="val" id="amp-read">5</span></label>
+    <span id="rm-warn"></span>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="note">
+    <p>
+      <strong>My pick, changed by building them bigger: 2 · Aurora.</strong> At phone size the single
+      breath from v1 really is too faint to justify itself, and two overlapping fields on
+      non-harmonic periods never repeat visibly — the field is always slightly different without ever
+      showing you a shape. 5 · Grain is the one to look at if Aurora reads as too soft: it makes the
+      black feel like a material rather than an absence, which is the most terminal-native idea here,
+      and it is the cheapest of the six.
+    </p>
+    <p>
+      <strong>Reduced motion turns the background off entirely</strong> — not slowed, off. A layer that
+      exists only to prevent stagnation has no business overriding someone who asked for stillness.
+    </p>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ---------- the shipping force model, constants verbatim ---------------- */
+  var REPEL_NUM = 2600, REPEL_D2_FLOOR = 40;
+  var CENTER_PULL = 0.0016, DRIFT_VX = 0.012, DRIFT_VY = 0.012, DAMPING = 0.9;
+  var CLAMP_X = [34, 34], CLAMP_Y = [18, 22];
+  var N = 28, SETTLE_S = 5.5;
+
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  var OPTIONS = [
+    {
+      id: "none", tag: "TODAY", cls: "now", name: "Flat field",
+      copy: [
+        "Pure #0a0a0a. Once the foreground settles, the only movement on the whole screen is the two or three notes that need you.",
+        "On a fully-synced vault that means nothing moves at all — which is honest, and is exactly the stagnation you flagged."
+      ],
+      facts: [["Cost", "nothing", "ok"], ["Risk", "reads as a screenshot", "warn"]]
+    },
+    {
+      id: "aurora", tag: "2", cls: "", name: "Aurora",
+      copy: [
+        "Two very large, very soft luminance fields on non-harmonic periods — roughly 34 and 53 seconds — drifting through each other. Grayscale, no edges, no shape.",
+        "Because the periods never line up, the field is always a little different and never shows you a repeating figure. It is the v1 breath done properly: enough presence to register at phone size, still nothing you could point at and name."
+      ],
+      facts: [["Driver", "one opacity pair", "ok"], ["Cost", "zero JS frames", "ok"]]
+    },
+    {
+      id: "deep", tag: "3", cls: "", name: "Deep field",
+      copy: [
+        "A far-back layer of much dimmer, smaller stars at varied softness, drifting slowly sideways. One transform on one pre-rendered layer; they never move relative to each other, so it reads as distance rather than activity.",
+        "The only option that adds real depth — it makes the screen a sky rather than a diagram on black. The standing objection: decorative dots behind meaningful ones invites the question of which dots matter."
+      ],
+      facts: [["Driver", "one transform", "ok"], ["Cost", "zero JS frames", "ok"], ["Risk", "two kinds of dot", "warn"]]
+    },
+    {
+      id: "dust", tag: "4", cls: "", name: "Motes",
+      copy: [
+        "A dozen large, heavily out-of-focus specks drifting on slow independent paths — closer to dust caught in light than to stars. Big and soft enough that they never read as data.",
+        "Solves the deep-field objection by making the background obviously not-a-star. The risk is the opposite one: soft round blobs are the most conventionally decorative thing on this board, and decoration is what the identity rejects."
+      ],
+      facts: [["Driver", "one transform", "ok"], ["Cost", "zero JS frames", "ok"], ["Risk", "closest to decoration", "warn"]]
+    },
+    {
+      id: "grain", tag: "5", cls: "", name: "Grain",
+      copy: [
+        "A fine noise texture at very low opacity, drifting slowly. No shape at any scale — it makes the black read as a material with tooth rather than as an absence of light.",
+        "The most terminal-native idea here and by a distance the cheapest: one pre-rendered tile, one transform, no per-frame work at all. It is also the only option that changes how the screen feels without adding anything to look at."
+      ],
+      facts: [["Driver", "one transform", "ok"], ["Cost", "cheapest of the six", "ok"]]
+    },
+    {
+      id: "field", tag: "6", cls: "", name: "Field lines",
+      copy: [
+        "Very faint contour rings of the centre-pull potential the simulation already computes, breathing slowly outward. The background is the force model made visible — the shape the stars are sitting in.",
+        "The only option whose background is not an invention: it is the physics, drawn. Whether that reads as depth or as a target reticle behind your notes is the thing to judge here."
+      ],
+      facts: [["Driver", "one transform", "ok"], ["Cost", "zero JS frames", "ok"], ["Risk", "may read as a reticle", "warn"]]
+    },
+    {
+      id: "horizon", tag: "7", cls: "", name: "Horizon",
+      copy: [
+        "A soft luminance falloff from a low band that rises and settles over about a minute — the suggestion of ground light under the field, with no line and no edge anywhere.",
+        "Gives the screen an up and a down, which nothing else here does; the star field currently floats in an orientation-free void. Quietest after Grain, and the least likely to compete with anything."
+      ],
+      facts: [["Driver", "one gradient stop", "ok"], ["Cost", "zero JS frames", "ok"]]
+    }
+  ];
+
+  /* ---------- controls ---------------------------------------------------- */
+  var spdEl = document.getElementById("spd"), ampEl = document.getElementById("amp");
+  var boostEl = document.getElementById("boost");
+  var boosted = false;
+  document.getElementById("spd-read").textContent = spdEl.value;
+  document.getElementById("amp-read").textContent = ampEl.value;
+
+  function speed() { return Number(spdEl.value) / 4; }
+  function intensity() { return (Number(ampEl.value) / 5) * (boosted ? 4.5 : 1); }
+
+  /* ---------- field ------------------------------------------------------- */
+  function makeField(w, h) {
+    var arr = [], i;
+    for (i = 0; i < N; i++) {
+      var a = i * 2.399963, r = 0.13 + 0.31 * (((i * 7919) % 97) / 97);
+      var kind = (i === 5 || i === 19) ? 1 : (i === 12 ? 2 : 0);
+      arr.push({
+        x: w / 2 + Math.cos(a) * r * w, y: h / 2 + Math.sin(a) * r * h,
+        vx: 0, vy: 0, ph: (i * 1.7) % 6.283, kind: kind,
+        mag: 0.55 + ((i * 31) % 17) / 17 * 0.45
+      });
+    }
+    return arr;
+  }
+
+  // Deterministic edge set — the real screen draws weighted connections, and
+  // without them these panels read as scattered dots rather than a note graph.
+  var EDGES = [];
+  (function () {
+    for (var i = 0; i < N; i++) {
+      var a = (i * 5 + 3) % N, b = (i * 11 + 7) % N;
+      if (a !== b) EDGES.push([a, b, 0.5 + ((i * 13) % 11) / 11 * 0.5]);
+      if (i % 3 === 0) {
+        var cc = (i * 7 + 2) % N;
+        if (cc !== i) EDGES.push([i, cc, 0.5 + ((i * 17) % 9) / 9 * 0.5]);
+      }
+    }
+  })();
+
+  function step(arr, t, w, h, driftScale) {
+    var i, j, n, o, dx, dy, d2, f, len;
+    for (i = 0; i < arr.length; i++) {
+      n = arr[i];
+      for (j = i + 1; j < arr.length; j++) {
+        o = arr[j];
+        dx = n.x - o.x; dy = n.y - o.y;
+        d2 = Math.max(dx * dx + dy * dy, REPEL_D2_FLOOR);
+        len = Math.sqrt(d2); f = REPEL_NUM / d2;
+        n.vx += (dx / len) * f; n.vy += (dy / len) * f;
+        o.vx -= (dx / len) * f; o.vy -= (dy / len) * f;
+      }
+    }
+    var maxD = 0;
+    for (i = 0; i < arr.length; i++) {
+      n = arr[i];
+      n.vx += (w / 2 - n.x) * CENTER_PULL;
+      n.vy += (h / 2 - n.y) * CENTER_PULL;
+      if (driftScale > 0) {
+        n.vx += Math.sin(t / 1700 + n.ph) * DRIFT_VX * driftScale;
+        n.vy += Math.cos(t / 2100 + n.ph) * DRIFT_VY * driftScale;
+      }
+      n.vx *= DAMPING; n.vy *= DAMPING;
+      var px = n.x, py = n.y;
+      n.x += n.vx; n.y += n.vy;
+      n.x = Math.min(Math.max(n.x, CLAMP_X[0]), w - CLAMP_X[1]);
+      n.y = Math.min(Math.max(n.y, CLAMP_Y[0]), h - CLAMP_Y[1]);
+      var d = Math.abs(n.x - px) + Math.abs(n.y - py);
+      if (d > maxD) maxD = d;
+    }
+    return maxD;
+  }
+
+  /* ---------- shared low-res noise tile ----------------------------------- */
+  var noiseTile = (function () {
+    var s = 128, cv = document.createElement("canvas");
+    cv.width = s; cv.height = s;
+    var ctx = cv.getContext("2d");
+    var img = ctx.createImageData(s, s);
+    var seed = 20260808;
+    function rnd() { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; }
+    for (var i = 0; i < s * s; i++) {
+      var v = 150 + Math.floor(rnd() * 105);
+      img.data[i * 4] = v; img.data[i * 4 + 1] = v; img.data[i * 4 + 2] = v;
+      img.data[i * 4 + 3] = Math.floor(rnd() * 255);
+    }
+    ctx.putImageData(img, 0, 0);
+    return cv;
+  })();
+
+  /* ---------- a panel ----------------------------------------------------- */
+  function Panel(opt, bgCv, fgCv) {
+    var self = this;
+    var bg = bgCv.getContext("2d"), fg = fgCv.getContext("2d");
+    var w = 0, h = 0, dpr = 1;
+    var nodes = null, t0 = null, still = 0, settled = false;
+
+    // Low-res buffer: soft light comes from upscaling, not from stacking gradients.
+    var buf = document.createElement("canvas"), bctx = buf.getContext("2d");
+    var BW = 0, BH = 0, SCALE = 5;
+
+    var deep = [], motes = [];
+
+    function seedLayers() {
+      var seed = 987654321;
+      function rnd() { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; }
+      deep = [];
+      for (var i = 0; i < 90; i++) deep.push({ x: rnd(), y: rnd(), r: 0.35 + rnd() * 0.75, a: 0.05 + rnd() * 0.13 });
+      motes = [];
+      for (var j = 0; j < 12; j++) motes.push({ x: rnd(), y: rnd(), r: 14 + rnd() * 26, a: 0.05 + rnd() * 0.07, sx: (rnd() - 0.5) * 0.9, sy: (rnd() - 0.5) * 0.55 });
+    }
+    seedLayers();
+
+    function size() {
+      var r = fgCv.getBoundingClientRect();
+      dpr = window.devicePixelRatio || 1;
+      w = Math.max(200, Math.round(r.width));
+      h = Math.max(200, Math.round(r.height));
+      [bgCv, fgCv].forEach(function (cv) { cv.width = w * dpr; cv.height = h * dpr; });
+      bg.setTransform(dpr, 0, 0, dpr, 0, 0);
+      fg.setTransform(dpr, 0, 0, dpr, 0, 0);
+      BW = Math.max(24, Math.ceil(w / SCALE)); BH = Math.max(24, Math.ceil(h / SCALE));
+      buf.width = BW; buf.height = BH;
+    }
+
+    function softBlob(ctx, cx, cy, rad, alpha) {
+      var g = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+      g.addColorStop(0, "rgba(250,250,250," + alpha.toFixed(4) + ")");
+      g.addColorStop(0.45, "rgba(250,250,250," + (alpha * 0.42).toFixed(4) + ")");
+      g.addColorStop(1, "rgba(250,250,250,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(cx - rad, cy - rad, rad * 2, rad * 2);
+    }
+
+    function drawBackground(el) {
+      bg.clearRect(0, 0, w, h);
+      if (opt.id === "none" || reduced) return;
+      var sp = speed(), amp = intensity();
+
+      if (opt.id === "grain") {
+        bg.save();
+        bg.globalAlpha = Math.min(0.16, 0.028 * amp);
+        var ox = (el * 5 * sp) % 128, oy = (el * 3 * sp) % 128;
+        for (var gx = -128 + ox; gx < w + 128; gx += 128) {
+          for (var gy = -128 + oy; gy < h + 128; gy += 128) bg.drawImage(noiseTile, gx, gy);
+        }
+        bg.restore();
+        return;
+      }
+
+      if (opt.id === "deep" || opt.id === "dust") {
+        bg.save();
+        if (opt.id === "deep") {
+          var dx = (el * 3.2 * sp) % (w + 60);
+          for (var i = 0; i < deep.length; i++) {
+            var d = deep[i];
+            var px = (d.x * (w + 60) + dx) % (w + 60) - 30;
+            softBlob(bg, px, d.y * h, d.r * 4.5, Math.min(0.5, d.a * amp));
+          }
+        } else {
+          for (var m = 0; m < motes.length; m++) {
+            var o = motes[m];
+            var mx = (((o.x + (el * o.sx * sp) / 120) % 1) + 1) % 1;
+            var my = (((o.y + (el * o.sy * sp) / 120) % 1) + 1) % 1;
+            softBlob(bg, mx * w, my * h, o.r, Math.min(0.28, o.a * amp));
+          }
+        }
+        bg.restore();
+        return;
+      }
+
+      // Everything below renders small, then upscales — that upscale IS the blur.
+      bctx.clearRect(0, 0, BW, BH);
+
+      if (opt.id === "aurora") {
+        var p1 = el * sp / 34 * 6.283, p2 = el * sp / 53 * 6.283;
+        var c1x = BW * (0.5 + 0.30 * Math.cos(p1)), c1y = BH * (0.38 + 0.24 * Math.sin(p1 * 0.83));
+        var c2x = BW * (0.5 + 0.34 * Math.cos(p2 + 2.1)), c2y = BH * (0.60 + 0.26 * Math.sin(p2));
+        softBlob(bctx, c1x, c1y, BW * 0.85, Math.min(0.55, 0.085 * amp));
+        softBlob(bctx, c2x, c2y, BW * 0.70, Math.min(0.55, 0.062 * amp));
+      } else if (opt.id === "field") {
+        var breath = 0.5 + 0.5 * Math.sin(el * sp / 9);
+        var cx = BW / 2, cy = BH / 2;
+        var maxR = Math.max(BW, BH) * 0.78;
+        bctx.lineWidth = 1;
+        for (var k = 1; k <= 6; k++) {
+          var frac = ((k / 6) + breath * 0.16) % 1;
+          var rr = frac * maxR;
+          var fade = Math.sin(frac * 3.1416);
+          bctx.strokeStyle = "rgba(250,250,250," + Math.min(0.5, 0.075 * amp * fade).toFixed(4) + ")";
+          bctx.beginPath(); bctx.ellipse(cx, cy, rr, rr * 0.82, 0, 0, 6.283); bctx.stroke();
+        }
+      } else if (opt.id === "horizon") {
+        var rise = 0.5 + 0.5 * Math.sin(el * sp / 27);
+        var top = BH * (0.62 - 0.14 * rise);
+        var g = bctx.createLinearGradient(0, top, 0, BH);
+        g.addColorStop(0, "rgba(250,250,250,0)");
+        g.addColorStop(1, "rgba(250,250,250," + Math.min(0.5, 0.085 * amp).toFixed(4) + ")");
+        bctx.fillStyle = g;
+        bctx.fillRect(0, top, BW, BH - top);
+      }
+
+      bg.save();
+      bg.imageSmoothingEnabled = true;
+      bg.imageSmoothingQuality = "high";
+      bg.drawImage(buf, 0, 0, BW, BH, 0, 0, w, h);
+      bg.restore();
+    }
+
+    function drawForeground(el) {
+      fg.clearRect(0, 0, w, h);
+
+      // edges first, weighted exactly as the product does
+      for (var e = 0; e < EDGES.length; e++) {
+        var a = nodes[EDGES[e][0]], b = nodes[EDGES[e][1]], wt = EDGES[e][2];
+        fg.strokeStyle = "rgba(250,250,250," + (0.10 + 0.30 * wt).toFixed(3) + ")";
+        fg.lineWidth = 1;
+        fg.beginPath(); fg.moveTo(a.x, a.y); fg.lineTo(b.x, b.y); fg.stroke();
+      }
+
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        var col = "250,250,250", alpha = 0.55 + 0.35 * n.mag, rad = 1.7 + 1.3 * n.mag;
+        if (settled && !reduced) {
+          if (n.kind === 1) { col = "250,204,21"; alpha = 0.40 + 0.52 * (0.5 + 0.5 * Math.sin(el * 1.15 + n.ph)); }
+          else if (n.kind === 2) {
+            col = "255,100,103";
+            var pulse = 0.5 + 0.5 * Math.sin(el * 2.7 + n.ph);
+            alpha = 0.34 + 0.62 * pulse; rad = 2.2 + 1.1 * pulse;
+          }
+        } else if (settled) {
+          if (n.kind === 1) col = "250,204,21";
+          if (n.kind === 2) col = "255,100,103";
+        }
+        // soft core so a dot reads as a light source, not a sticker
+        var g = fg.createRadialGradient(n.x, n.y, 0, n.x, n.y, rad * 3.4);
+        g.addColorStop(0, "rgba(" + col + "," + alpha.toFixed(3) + ")");
+        g.addColorStop(0.34, "rgba(" + col + "," + (alpha * 0.32).toFixed(3) + ")");
+        g.addColorStop(1, "rgba(" + col + ",0)");
+        fg.fillStyle = g;
+        fg.beginPath(); fg.arc(n.x, n.y, rad * 3.4, 0, 6.283); fg.fill();
+
+        fg.fillStyle = "rgba(" + col + "," + Math.min(1, alpha + 0.12).toFixed(3) + ")";
+        fg.beginPath(); fg.arc(n.x, n.y, rad, 0, 6.283); fg.fill();
+      }
+    }
+
+    self.reset = function () {
+      size(); nodes = makeField(w, h); t0 = null; still = 0; settled = false; seedLayers();
+    };
+
+    self.frame = function (ts) {
+      if (t0 === null) t0 = ts;
+      var el = (ts - t0) / 1000;
+      if (!settled) {
+        var scale = reduced ? 0 : Math.max(0, 1 - el / SETTLE_S);
+        var d = step(nodes, ts, w, h, scale);
+        if (d < 0.01) still++; else still = 0;
+        if (still > 24) settled = true;
+      }
+      drawBackground(el);
+      drawForeground(el);
+    };
+  }
+
+  /* ---------- build the board -------------------------------------------- */
+  var grid = document.getElementById("grid");
+  var panels = [];
+
+  OPTIONS.forEach(function (opt) {
+    var card = document.createElement("div");
+    card.className = "card";
+
+    var head = document.createElement("div");
+    head.className = "card-head";
+    head.innerHTML = '<span class="tag ' + opt.cls + '">' + opt.tag + '</span>' +
+                     '<span class="card-name">' + opt.name + '</span>';
+    card.appendChild(head);
+
+    var phone = document.createElement("div");
+    phone.className = "phone";
+    phone.innerHTML =
+      '<div class="screen">' +
+        '<div class="sc-head"><span class="sc-title">Stars</span><span class="sc-sub">33 notes · 39 connections</span></div>' +
+        '<div class="sc-body"><canvas class="sc-bg"></canvas><canvas class="sc-fg"></canvas></div>' +
+        '<div class="sc-legend">' +
+          '<span><i class="p"></i>settled</span><span><i class="q"></i>queued</span><span><i class="c"></i>conflict</span>' +
+        '</div>' +
+        '<div class="sc-tabs"><div>NOTES</div><div class="on">BROWSE</div><div>CHAT</div></div>' +
+      '</div>';
+    card.appendChild(phone);
+
+    opt.copy.forEach(function (t) {
+      var p = document.createElement("p");
+      p.textContent = t;
+      card.appendChild(p);
+    });
+
+    var facts = document.createElement("div");
+    facts.className = "facts";
+    opt.facts.forEach(function (f) {
+      var row = document.createElement("div");
+      row.innerHTML = '<span class="k">' + f[0] + '</span><span class="v ' + (f[2] || "") + '">' + f[1] + '</span>';
+      facts.appendChild(row);
+    });
+    card.appendChild(facts);
+
+    grid.appendChild(card);
+    panels.push(new Panel(opt, phone.querySelector(".sc-bg"), phone.querySelector(".sc-fg")));
+  });
+
+  function resetAll() { panels.forEach(function (p) { p.reset(); }); }
+
+  function tick(ts) {
+    for (var i = 0; i < panels.length; i++) panels[i].frame(ts);
+    requestAnimationFrame(tick);
+  }
+
+  document.getElementById("restart").addEventListener("click", resetAll);
+  boostEl.addEventListener("click", function () {
+    boosted = !boosted;
+    boostEl.setAttribute("aria-pressed", boosted ? "true" : "false");
+    boostEl.textContent = boosted ? "SUBTLE" : "BOOSTED";
+  });
+  spdEl.addEventListener("input", function () { document.getElementById("spd-read").textContent = this.value; });
+  ampEl.addEventListener("input", function () { document.getElementById("amp-read").textContent = this.value; });
+  window.addEventListener("resize", resetAll);
+
+  if (reduced) {
+    document.getElementById("rm-warn").textContent =
+      "reduced motion is ON in your OS — backgrounds are off, exactly as they would ship.";
+  }
+
+  resetAll();
+  requestAnimationFrame(tick);
+})();
+</script>
