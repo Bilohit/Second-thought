@@ -73,6 +73,15 @@ export interface StepOptions {
   // ★ reduced motion kills the idle-drift term ONLY — springs, repulsion, centering, drag and clamp
   // all keep running (DECISIONS §5 s146 pt.4). Default false.
   reducedMotion?: boolean;
+  // FR-44 fix, mirrored from the phone port (same rationale, same field name): the drift term
+  // (Math.sin(...)*DRIFT_VX etc.) is an undecaying forcing function — with reducedMotion:false (the
+  // shipping default) the sky never settles, even though every other force does. This is the
+  // multiplier the caller (BrowseStarsView.tsx) computes from elapsed-time-since-armed via
+  // `driftEnvelope()` below and passes in; it decays 1 -> 0 over SETTLE_SEC so the drift itself
+  // eventually stops without touching DRIFT_VX/DRIFT_VY (both regex-checked across repos by
+  // tools/parity_edge_model.py). Default 1 — every existing caller and test is behaviour-identical
+  // without passing it.
+  driftEnvelope?: number;
 }
 
 // ── deterministic init (never Math.random — same hash the mock/phone both use) ──────────────────
@@ -106,6 +115,16 @@ const DAMPING = 0.9; // :1867
 // OUTSIDE the shared-block markers, so `parity:edge-model` would not catch a one-sided edit.
 const CLAMP_X = [66, 66] as const; // [left margin, right margin] — x in [66, W-66]
 const CLAMP_Y = [20, 34] as const; // y in [20, H-34], :1871
+
+// ── FR-44 settle envelope, mirrored from the phone port — NOT part of the shared edge model, a
+// purely local addition (identical formula on both platforms by hand, not by the marker check).
+// Multiplies the drift term only; every other force (repulsion/springs/centering/damping/clamp) is
+// untouched. `elapsedSec` is time since the caller last "armed" the sky (mount, or any re-arm trigger
+// below) — the caller owns the clock, this stays a pure function of one number.
+export const SETTLE_SEC = 7;
+export function driftEnvelope(elapsedSec: number): number {
+  return Math.max(0, 1 - elapsedSec / SETTLE_SEC);
+}
 
 // ── weight → motion (s152) ───────────────────────────────────────────────────────────────────────
 // The mock shipped two discrete springs; the weighted model interpolates BETWEEN them, so a 1.0
@@ -189,8 +208,9 @@ export function stepSimulation(
       n.vx += (w / 2 - n.x) * CENTER_PULL;
       n.vy += (h / 2 - n.y) * CENTER_PULL;
       if (!reducedMotion) {
-        n.vx += Math.sin(t / 1700 + n.ph) * DRIFT_VX;
-        n.vy += Math.cos(t / 2100 + n.ph) * DRIFT_VY;
+        const envelope = opts.driftEnvelope ?? 1;
+        n.vx += Math.sin(t / 1700 + n.ph) * DRIFT_VX * envelope;
+        n.vy += Math.cos(t / 2100 + n.ph) * DRIFT_VY * envelope;
       }
       n.vx *= DAMPING;
       n.vy *= DAMPING;
@@ -202,7 +222,32 @@ export function stepSimulation(
     n.y = Math.min(Math.max(n.y, CLAMP_Y[0]), h - CLAMP_Y[1]);
   }
 
-  return nodes.map((orig) => byId.get(orig.id) as SimNode);
+  const out = nodes.map((orig) => byId.get(orig.id) as SimNode);
+  // FR-44 quiescence guard, mirrored from the phone port: the max per-node displacement this step,
+  // for the caller's consecutive-quiet-frames counter (quiescenceStep, below). Least-invasive
+  // extension of the existing return shape (SimNode[]) — an attached property, not a new return type,
+  // so every existing caller/test that reads `stepSimulation(...)` as a plain node array is unaffected.
+  let maxDelta = 0;
+  for (const orig of nodes) {
+    const next = byId.get(orig.id);
+    if (!next) continue;
+    const d = Math.hypot(next.x - orig.x, next.y - orig.y);
+    if (d > maxDelta) maxDelta = d;
+  }
+  (out as SimNode[] & { maxDelta: number }).maxDelta = maxDelta;
+  return out;
+}
+
+// ── FR-44 quiescence guard, mirrored from the phone port: after QUIESCENCE_FRAMES consecutive frames
+// whose maxDelta (above) stays under QUIESCENCE_DELTA_PX, the caller stops scheduling
+// requestAnimationFrame — this is what makes the settle envelope's decay-to-zero actually STOP the
+// loop rather than just slow it asymptotically forever. Pure: the caller (BrowseStarsView.tsx) owns
+// the running counter, this just advances it one frame.
+export const QUIESCENCE_DELTA_PX = 0.01;
+export const QUIESCENCE_FRAMES = 30;
+export function quiescenceStep(maxDelta: number, consecutive: number): { consecutive: number; settled: boolean } {
+  const next = maxDelta < QUIESCENCE_DELTA_PX ? consecutive + 1 : 0;
+  return { consecutive: next, settled: next >= QUIESCENCE_FRAMES };
 }
 
 // ── release momentum (Sky.wireDrag's pointerup, :1823) ───────────────────────────────────────────
@@ -527,4 +572,36 @@ export function parseTagsField(raw: string | null | undefined): string[] {
   } catch {
     return [];
   }
+}
+
+// ── FR-44 pt.4: semantic motion at rest — brightness (+ conflict radius) only, only on notes that
+// need attention (queued/conflict), everything else stays completely static once settled. Mirrored
+// byte-for-byte from the phone port (starsSim.ts) — these are the SPEC for the curve (bounds +
+// period), asserted directly in the sibling test. ★ Kept here even though BrowseStarsView.tsx does
+// not yet drive a per-star pulse from them: the desktop sky has no per-node sync (queued/conflict)
+// state wired into it today (StarNote carries no such field — see the caller's own report), so there
+// is nothing on this side to attach the visual to without inventing a data path the brief explicitly
+// forbids. The constants/formulas still have to match the phone's byte-for-byte per the brief, and
+// living here (not invented, not duplicated) is what makes them ready the day a real per-note state
+// survives the trip into this view.
+export const QUEUED_PULSE_PERIOD_SEC = 5.5; // sin(t*1.15+phase): 2*PI/1.15 ~= 5.463s
+export const QUEUED_PULSE_MIN = 0.4;
+export const QUEUED_PULSE_MAX = 0.92;
+export const CONFLICT_PULSE_PERIOD_SEC = 2.3; // sin(t*2.7+phase): 2*PI/2.7 ~= 2.327s
+export const CONFLICT_OPACITY_MIN = 0.34;
+export const CONFLICT_OPACITY_MAX = 0.96;
+export const CONFLICT_RADIUS_MIN = 2.2;
+export const CONFLICT_RADIUS_MAX = 3.3;
+
+function pulseCurve(min: number, max: number, angularFreq: number, tSec: number, phase: number): number {
+  return min + (max - min) * (0.5 + 0.5 * Math.sin(tSec * angularFreq + phase));
+}
+export function queuedPulseOpacity(tSec: number, phase: number): number {
+  return pulseCurve(QUEUED_PULSE_MIN, QUEUED_PULSE_MAX, 1.15, tSec, phase);
+}
+export function conflictPulseOpacity(tSec: number, phase: number): number {
+  return pulseCurve(CONFLICT_OPACITY_MIN, CONFLICT_OPACITY_MAX, 2.7, tSec, phase);
+}
+export function conflictPulseRadius(tSec: number, phase: number): number {
+  return pulseCurve(CONFLICT_RADIUS_MIN, CONFLICT_RADIUS_MAX, 2.7, tSec, phase);
 }

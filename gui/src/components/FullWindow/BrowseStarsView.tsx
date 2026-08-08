@@ -15,11 +15,13 @@
  * No React re-render per animation frame: every star's on-screen position is written straight to its
  * DOM node's `style.transform` (and every wire's SVG endpoints via `setAttribute`) from the RAF loop
  * — exactly what the mock's own `Sky.step()` does. React only re-renders on data fetch, a resize, or
- * a peek-card open/close. The RAF effect's deps are `[visible, size.w, size.h]` ONLY — never `notes`/
- * `edges` — because those are fresh array identities on every unrelated note-store tick; depending on
- * them would restart the loop (and dismiss an open peek card) on every such tick, not just a real
- * STARS entry. This is the exact regression the phone port's own header comment documents having
- * fixed; node/edge state is read through refs instead.
+ * a peek-card open/close. The mount effect's deps are `[visible, size.w, size.h, loop]` — never
+ * `notes`/`edges` directly — because those are fresh array identities on every unrelated note-store
+ * tick; depending on them would restart the loop (and dismiss an open peek card) on every such tick,
+ * not just a real STARS entry. This is the exact regression the phone port's own header comment
+ * documents having fixed; node/edge state is read through refs instead (edgesRef/nodesRef), and a
+ * genuine edge-CONTENT change re-arms the settle clock via its own content-keyed effect (FR-44,
+ * below) rather than restarting the mount effect itself.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
@@ -35,10 +37,12 @@ import {
   buildStarEdges,
   computeDegrees,
   coreVisual,
+  driftEnvelope,
   edgeOpacity,
   initNodes,
   isTap,
   parseTagsField,
+  quiescenceStep,
   releaseMomentum,
   selectRecentIds,
   starsEmptyState,
@@ -105,6 +109,14 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
   // divide a drag delta by yesterday's scale (the exact trap the plan calls out by name).
   const vpRef = useRef<Viewport>(IDENTITY_VIEWPORT);
   const panDragRef = useRef<{ x: number; y: number } | null>(null);
+  // FR-44: the settle envelope's clock, the quiescence counter, and whether the RAF loop is
+  // currently scheduled at all — refs because the RAF loop and every re-arm trigger below (star
+  // drag, sky pan/zoom, node/edge data change) read/write them directly, same rationale as
+  // nodesRef/edgesRef above.
+  const armedAtRef = useRef<number | null>(null);
+  const consecutiveQuietRef = useRef(0);
+  const runningRef = useRef(false);
+  const rafIdRef = useRef(0);
 
   const [notes, setNotes] = useState<StarNote[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -113,6 +125,18 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
   const [peekPos, setPeekPos] = useState({ x: 0, y: 0 });
   const [vp, setVp] = useState<Viewport>(IDENTITY_VIEWPORT);
   const [isPanning, setIsPanning] = useState(false);
+  // FR-44 pt.5/6: reactive, not a one-time effect-local read — both the aurora layer's render gate
+  // and the settle loop's reducedMotion option need this at render/RAF time, not just at mount (the
+  // RAF effect below used to read `window.matchMedia(...).matches` once per effect run).
+  const [reducedMotion, setReducedMotion] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const onChange = () => setReducedMotion(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
   // s152: the opt-in semantic pass. Default OFF — costs a ~1MB vector payload per browse fetch, so
   // it only runs when the user asks for it. Pref lives in lib/smartConnectionsPref.ts, shared with
   // SettingsPanel.tsx and (s156) with the SkyPanel's own toggle row.
@@ -187,6 +211,63 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
 
   const getNode = useCallback((id: string): SimNode | undefined => nodesRef.current.find((n) => n.id === id), []);
 
+  // ── the RAF loop body (FR-44): now stops on its own once the sky is quiescent — the shared drift
+  // term has no decay of its own, so without this the loop ran forever even at rest.
+  // `driftEnvelope(elapsedSec)` decays the drift to 0 over SETTLE_SEC (starsSim.ts); `quiescenceStep`
+  // then counts consecutive near-zero-delta frames and the loop simply stops scheduling itself once
+  // QUIESCENCE_FRAMES is reached. `rearm()` below is how anything that needs the sky moving again (a
+  // pointer/wheel gesture, a zoom, new node/edge data) resets the clock and, if the loop had stopped,
+  // restarts it. Deps intentionally exclude `notes`/`edges` (see the file header comment) — edges are
+  // read through `edgesRef`, nodes live entirely in `nodesRef`.
+  const loop = useCallback(
+    (t: number) => {
+      if (armedAtRef.current === null) armedAtRef.current = t;
+      const elapsedSec = (t - armedAtRef.current) / 1000;
+      const out = stepSimulation(nodesRef.current, edgesRef.current, t, size.w, size.h, {
+        reducedMotion,
+        driftEnvelope: driftEnvelope(elapsedSec),
+      }) as SimNode[] & { maxDelta?: number };
+      nodesRef.current = out;
+      const byIdThisFrame = new Map(out.map((n) => [n.id, n]));
+      for (const n of out) {
+        const el = elemsRef.current.get(n.id);
+        if (el) el.style.transform = `translate(${n.x}px, ${n.y}px) translate(-50%, -50%)`;
+      }
+      for (const entry of lineElemsRef.current) {
+        if (!entry) continue;
+        const { a, b, el } = entry;
+        const na = byIdThisFrame.get(a);
+        const nb = byIdThisFrame.get(b);
+        if (!na || !nb) continue;
+        el.setAttribute("x1", String(na.x));
+        el.setAttribute("y1", String(na.y));
+        el.setAttribute("x2", String(nb.x));
+        el.setAttribute("y2", String(nb.y));
+      }
+      const maxDelta = out.maxDelta ?? Number.POSITIVE_INFINITY;
+      const q = quiescenceStep(maxDelta, consecutiveQuietRef.current);
+      consecutiveQuietRef.current = q.consecutive;
+      if (q.settled) {
+        runningRef.current = false;
+        return; // stop scheduling — rearm() below is the only thing that resumes this
+      }
+      rafIdRef.current = requestAnimationFrame(loop);
+    },
+    [size.w, size.h, reducedMotion]
+  );
+
+  // Resets the settle clock and, if the loop had stopped, restarts it. Called on mount, and on every
+  // FR-44 re-arm trigger: a pointer/wheel interaction on the sky, a zoom-button press, or the node/
+  // edge data changing (the idsKey effect below, and the edgesKey effect further down).
+  const rearm = useCallback(() => {
+    armedAtRef.current = null;
+    consecutiveQuietRef.current = 0;
+    if (!runningRef.current && size.w > 0 && size.h > 0) {
+      runningRef.current = true;
+      rafIdRef.current = requestAnimationFrame(loop);
+    }
+  }, [loop, size.w, size.h]);
+
   // ── host size (ResizeObserver) — the only thing the physics loop below depends on. ──
   useEffect(() => {
     const host = hostRef.current;
@@ -213,6 +294,9 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
     // s156: a vault that changed under a 2.5x zoom must not leave the user staring at empty space —
     // reset the viewport in the same place the node positions themselves reset.
     setVp(IDENTITY_VIEWPORT);
+    // FR-44: the node set changing is a named re-arm trigger — a freshly-seeded star needs its
+    // physics running even if the sky had already settled and stopped.
+    rearm();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idsKey, size.w, size.h]);
 
@@ -223,6 +307,7 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
     if (!host || size.w === 0 || size.h === 0) return;
     const onWheel = (e: WheelEvent): void => {
       e.preventDefault();
+      rearm(); // FR-44: a wheel-zoom interaction re-arms the settle clock
       const rect = host.getBoundingClientRect();
       const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
       setVp((prev) => {
@@ -232,39 +317,34 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
     };
     host.addEventListener("wheel", onWheel, { passive: false });
     return () => host.removeEventListener("wheel", onWheel);
-  }, [size.w, size.h]);
+  }, [size.w, size.h, rearm]);
 
-  // ── the RAF loop. Deps limited to visibility + host size — see the file header comment. ──
+  // ── mounts/unmounts the RAF loop. Deps limited to visibility + host size + the loop's own identity
+  // — see the file header comment on why `notes`/`edges` are deliberately excluded. FR-44: the loop
+  // now ALSO stops on its own once the sky is quiescent (see `loop` above), so this effect only ever
+  // starts it; `rearm()` is what restarts it if a later interaction wakes a settled sky back up. ──
   useEffect(() => {
     if (!visible || size.w === 0 || size.h === 0) return;
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    let raf = 0;
-    const loop = (t: number) => {
-      nodesRef.current = stepSimulation(nodesRef.current, edgesRef.current, t, size.w, size.h, { reducedMotion });
-      const byIdThisFrame = new Map(nodesRef.current.map((n) => [n.id, n]));
-      for (const n of nodesRef.current) {
-        const el = elemsRef.current.get(n.id);
-        if (el) el.style.transform = `translate(${n.x}px, ${n.y}px) translate(-50%, -50%)`;
-      }
-      for (const entry of lineElemsRef.current) {
-        if (!entry) continue;
-        const { a, b, el } = entry;
-        const na = byIdThisFrame.get(a);
-        const nb = byIdThisFrame.get(b);
-        if (!na || !nb) continue;
-        el.setAttribute("x1", String(na.x));
-        el.setAttribute("y1", String(na.y));
-        el.setAttribute("x2", String(nb.x));
-        el.setAttribute("y2", String(nb.y));
-      }
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
+    runningRef.current = true;
+    armedAtRef.current = null;
+    consecutiveQuietRef.current = 0;
+    rafIdRef.current = requestAnimationFrame(loop);
     return () => {
-      cancelAnimationFrame(raf);
+      runningRef.current = false;
+      cancelAnimationFrame(rafIdRef.current);
       setPeekId(null); // Sky.stop() also dismisses the card (:1883)
     };
-  }, [visible, size.w, size.h]);
+  }, [visible, size.w, size.h, loop]);
+
+  // FR-44: the edge SET changing is a re-arm trigger even when the id set doesn't (a note's tags/
+  // project changing under an unrelated store tick, smart-connections toggling, density changing).
+  // Keys on CONTENT, not the `edges` array's identity — `edges` gets a fresh identity on every
+  // unrelated note-store tick, so keying on identity would restart the loop far more than intended.
+  const edgesKey = edges.map((e) => `${e.a} ${e.b} ${e.kind} ${e.weight}`).join("|");
+  useEffect(() => {
+    rearm();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [edgesKey]);
 
   const openPeek = useCallback((id: string, x: number, y: number) => {
     setPeekId(id);
@@ -277,6 +357,7 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
     (id: string) => (e: ReactPointerEvent<HTMLDivElement>) => {
       e.preventDefault();
       e.currentTarget.setPointerCapture(e.pointerId);
+      rearm(); // FR-44: any touch on a star re-arms the sky's settle clock
       const node = getNode(id);
       if (!node) return;
       node.drag = true;
@@ -286,7 +367,7 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
       node.fvy = 0;
       dragMetaRef.current.set(id, { sx: e.clientX, sy: e.clientY, px: e.clientX, py: e.clientY });
     },
-    [getNode]
+    [getNode, rearm]
   );
   const onPointerMove = useCallback(
     (id: string) => (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -345,9 +426,10 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
   const onHostPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).closest(".bs-star, .sky-panel, .bs-card")) return;
     e.currentTarget.setPointerCapture(e.pointerId);
+    rearm(); // FR-44: a background pan re-arms the settle clock
     panDragRef.current = { x: e.clientX, y: e.clientY };
     setIsPanning(true);
-  }, []);
+  }, [rearm]);
   const onHostPointerMove = useCallback(
     (e: ReactPointerEvent<HTMLDivElement>) => {
       const drag = panDragRef.current;
@@ -368,12 +450,17 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
   // ── zoom controls (s156), passed to SkyPanel. Button zoom anchors at the host's own centre —
   // there is no cursor position to anchor on for a button press, unlike the wheel handler. ──
   const onZoomIn = useCallback(() => {
+    rearm(); // FR-44: a zoom-button press re-arms the settle clock
     setVp((prev) => clampPan(zoomAt(prev, ZOOM_STEP, size.w / 2, size.h / 2), size.w, size.h, size.w, size.h));
-  }, [size.w, size.h]);
+  }, [rearm, size.w, size.h]);
   const onZoomOut = useCallback(() => {
+    rearm();
     setVp((prev) => clampPan(zoomAt(prev, 1 / ZOOM_STEP, size.w / 2, size.h / 2), size.w, size.h, size.w, size.h));
-  }, [size.w, size.h]);
-  const onZoomReset = useCallback(() => setVp(IDENTITY_VIEWPORT), []);
+  }, [rearm, size.w, size.h]);
+  const onZoomReset = useCallback(() => {
+    rearm();
+    setVp(IDENTITY_VIEWPORT);
+  }, [rearm]);
 
   if (!visible) return null;
 
@@ -415,6 +502,10 @@ export default function BrowseStarsView({ visible, onOpenNote }: Props) {
 
       {!empty && size.w > 0 && size.h > 0 && (
         <>
+          {/* FR-44 pt.5: ambient background, BEHIND the wires/stars transform layer (it never tracks
+              the viewport — it's the sky's own backdrop, not part of the constellation). Off entirely
+              under reduced motion (not rendered at all), per the brief. */}
+          {!reducedMotion && <AuroraLayer w={size.w} h={size.h} />}
           {emptyState === "offer-smart" && (
             <button
               type="button"
@@ -609,6 +700,52 @@ function PeekCard({
   );
 }
 
+// FR-44 pt.5: the ambient aurora backdrop — two very large, very soft grayscale radial luminance
+// fields drifting through each other on non-harmonic periods (136s / 212s) so the pattern never
+// visibly repeats. Grayscale only (var(--text-1) at low alpha) — no colour, no hard edges. The
+// caller renders this ONLY when motion isn't reduced ("off", not "slowed" — see the render site).
+//
+// Pure CSS animation, no rAF and no React re-render per frame: each field is a static radial-
+// gradient background whose own transform drifts on the compositor via a shared @keyframes
+// (index.css's `bsAuroraDrift`), parameterised per field by the `--ax`/`--ay` custom properties so
+// one keyframe definition serves both fields at their own duration/amplitude — the DOM idiom for
+// the same "two independent, phase-offset, cyclical drivers" shape the phone port gets from two
+// native-driver Animated.loop instances.
+const AURORA_PERIOD_A_MS = 136_000;
+const AURORA_PERIOD_B_MS = 212_000;
+
+function AuroraField({ w, h, periodMs, peakOpacity }: { w: number; h: number; periodMs: number; peakOpacity: number }) {
+  const fieldSize = Math.max(w, h) * 1.8;
+  const ampX = w * 0.18;
+  const ampY = h * 0.18;
+  return (
+    <div
+      className="bs-aurora"
+      style={{
+        position: "absolute",
+        left: w / 2 - fieldSize / 2,
+        top: h / 2 - fieldSize / 2,
+        width: fieldSize,
+        height: fieldSize,
+        borderRadius: "50%",
+        background: `radial-gradient(circle, color-mix(in srgb, var(--text-1) ${peakOpacity * 100}%, transparent), transparent 70%)`,
+        animationDuration: `${periodMs}ms`,
+        ["--ax" as string]: `${ampX}px`,
+        ["--ay" as string]: `${ampY}px`,
+      } as CSSProperties}
+    />
+  );
+}
+
+function AuroraLayer({ w, h }: { w: number; h: number }) {
+  return (
+    <div style={auroraLayerStyle} aria-hidden="true">
+      <AuroraField w={w} h={h} periodMs={AURORA_PERIOD_A_MS} peakOpacity={0.085} />
+      <AuroraField w={w} h={h} periodMs={AURORA_PERIOD_B_MS} peakOpacity={0.062} />
+    </div>
+  );
+}
+
 // ── styles ───────────────────────────────────────────────────────────────────────────────────────
 // .sky background: SecondThoughtV2.html :193-196's radial-gradient overlay, transcribed with the
 // token this app's --surface already equals (#262626 === rgb(38,38,38), the mock's literal), via
@@ -622,6 +759,10 @@ const skyStyle: CSSProperties = {
   touchAction: "none",
 };
 const svgStyle: CSSProperties = { position: "absolute", inset: 0, pointerEvents: "none" };
+// FR-44 pt.5: sits BEHIND the wires/stars transform layer (renders first in source order, no
+// z-index needed) and never tracks the sky's own zoom/pan — it's the backdrop, not part of the
+// constellation.
+const auroraLayerStyle: CSSProperties = { position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" };
 const starStyle: CSSProperties = {
   position: "absolute", left: 0, top: 0, transform: "translate(-50%,-50%)",
   display: "flex", flexDirection: "column", alignItems: "center", cursor: "grab",

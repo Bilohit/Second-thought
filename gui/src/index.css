@@ -852,6 +852,22 @@ html, body, #root {
 .bs-lbl { transition: color 160ms var(--hover-ease-out), text-shadow 160ms var(--hover-ease-out); }
 .bs-star:hover .bs-lbl { color: var(--text-1); text-shadow: 0 0 8px var(--accent-glow); }
 
+/* FR-44 pt.5: the aurora backdrop (BrowseStarsView.tsx's AuroraField) — one keyframe shape shared by
+   both fields, each parameterised by its own --ax/--ay (amplitude) and animation-duration so a single
+   definition serves two independent, non-harmonic periods. The path is a slow ellipse: four cardinal
+   points with ease-in-out between them, the same "ellipse from two 90°-offset drivers" shape the
+   phone port gets from two native-driver Animated.loop instances. Component render-gates this whole
+   layer out under reduced motion (not rendered at all) rather than relying only on the blanket
+   0.01ms collapse below — "off", not "slowed", per the brief. */
+@keyframes bsAuroraDrift {
+  0%   { transform: translate(calc(-1 * var(--ax, 0px)), 0); }
+  25%  { transform: translate(0, calc(-1 * var(--ay, 0px))); }
+  50%  { transform: translate(var(--ax, 0px), 0); }
+  75%  { transform: translate(0, var(--ay, 0px)); }
+  100% { transform: translate(calc(-1 * var(--ax, 0px)), 0); }
+}
+.bs-aurora { animation-name: bsAuroraDrift; animation-timing-function: ease-in-out; animation-iteration-count: infinite; }
+
 /* ═══════════════════════════════════════════════════════════════════════════
    WAVE 6 (O-8c) — animation-pass additions. Same locked vocabulary as above:
    travel cubic-bezier(0.22,1,0.36,1) / settle cubic-bezier(0.16,1,0.3,1),

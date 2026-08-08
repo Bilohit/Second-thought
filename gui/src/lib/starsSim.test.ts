@@ -1,9 +1,17 @@
 import { describe, it, expect } from "vitest";
 import {
   adaptiveSemanticFloor,
+  CONFLICT_OPACITY_MAX,
+  CONFLICT_OPACITY_MIN,
+  CONFLICT_PULSE_PERIOD_SEC,
+  CONFLICT_RADIUS_MAX,
+  CONFLICT_RADIUS_MIN,
+  conflictPulseOpacity,
+  conflictPulseRadius,
   densityStep,
   DENSITY_DEFAULT_INDEX,
   DENSITY_STEPS,
+  driftEnvelope,
   percentileOf,
   buildStarEdges,
   coreVisual,
@@ -15,9 +23,17 @@ import {
   isTap,
   pairWeight,
   parseTagsField,
+  QUEUED_PULSE_MAX,
+  QUEUED_PULSE_MIN,
+  QUEUED_PULSE_PERIOD_SEC,
+  queuedPulseOpacity,
+  QUIESCENCE_DELTA_PX,
+  QUIESCENCE_FRAMES,
+  quiescenceStep,
   releaseMomentum,
   selectRecentIds,
   SEMANTIC_FLOOR,
+  SETTLE_SEC,
   springK,
   springRest,
   stepSimulation,
@@ -454,5 +470,176 @@ describe("density + adaptive floor (s156)", () => {
     const w = pairWeight(a, b, true, 0.8);
     expect(w?.kind).toBe("semantic");
     expect(w?.weight).toBeCloseTo(0.5, 5);
+  });
+});
+
+// ── FR-44: the settle envelope, mirrored from the phone port ─────────────────────────────────────
+describe("driftEnvelope", () => {
+  it("starts at 1 (full drift) and decays linearly to 0 by SETTLE_SEC", () => {
+    expect(driftEnvelope(0)).toBe(1);
+    expect(driftEnvelope(SETTLE_SEC / 2)).toBeCloseTo(0.5, 10);
+    expect(driftEnvelope(SETTLE_SEC)).toBe(0);
+  });
+
+  it("never goes negative past SETTLE_SEC", () => {
+    expect(driftEnvelope(SETTLE_SEC + 100)).toBe(0);
+  });
+
+  it("SETTLE_SEC is 7", () => {
+    expect(SETTLE_SEC).toBe(7);
+  });
+
+  it("wired into stepSimulation: envelope 0 reproduces reducedMotion's drift-free vx/vy exactly", () => {
+    const centred: SimNode = { id: "a", x: 400, y: 300, vx: 0, vy: 0, ph: 0.5, drag: false };
+    const t = 500;
+    const noEnvelope = stepSimulation([centred], [], t, 800, 600, { driftEnvelope: 0 })[0];
+    const reducedMotionOff = stepSimulation([centred], [], t, 800, 600, { reducedMotion: true })[0];
+    expect(noEnvelope.vx).toBe(reducedMotionOff.vx);
+    expect(noEnvelope.vy).toBe(reducedMotionOff.vy);
+  });
+
+  it("omitting driftEnvelope defaults to 1 — every pre-existing caller is behaviour-identical", () => {
+    const centred: SimNode = { id: "a", x: 400, y: 300, vx: 0, vy: 0, ph: 0.5, drag: false };
+    const t = 500;
+    const noOpt = stepSimulation([centred], [], t, 800, 600)[0];
+    const explicit1 = stepSimulation([centred], [], t, 800, 600, { driftEnvelope: 1 })[0];
+    expect(noOpt).toEqual(explicit1);
+  });
+});
+
+// ── FR-44: stepSimulation exposes its own max per-node displacement ────────────────────────────────
+describe("stepSimulation maxDelta", () => {
+  it("is attached to the returned array and is 0 for a frozen (all-dragged) scene", () => {
+    // x/y well inside the clamp bounds (CLAMP_X=[66,66], CLAMP_Y=[20,34]) — a dragged node still
+    // runs the unconditional clamp every step, so a starting position OUTSIDE it would move on
+    // frame one for a reason that has nothing to do with maxDelta itself.
+    const nodes: SimNode[] = [{ id: "a", x: 100, y: 100, vx: 0, vy: 0, ph: 0, drag: true }];
+    const out = stepSimulation(nodes, [], 0, 800, 600) as SimNode[] & { maxDelta: number };
+    expect(out.maxDelta).toBe(0);
+  });
+
+  it("is positive when a node actually moves", () => {
+    const nodes: SimNode[] = [
+      { id: "a", x: 150, y: 240, vx: 0, vy: 0, ph: 0, drag: false },
+      { id: "b", x: 400, y: 240, vx: 0, vy: 0, ph: 1.7, drag: false },
+    ];
+    const edges: SimEdge[] = [{ a: "a", b: "b", kind: "wikilink", weight: 1 }];
+    const out = stepSimulation(nodes, edges, 0, 2000, 2000) as SimNode[] & { maxDelta: number };
+    expect(out.maxDelta).toBeGreaterThan(0);
+  });
+});
+
+// ── FR-44: the quiescence guard ──────────────────────────────────────────────────────────────────
+describe("quiescenceStep", () => {
+  it("QUIESCENCE_DELTA_PX is 0.01 and QUIESCENCE_FRAMES is 30", () => {
+    expect(QUIESCENCE_DELTA_PX).toBe(0.01);
+    expect(QUIESCENCE_FRAMES).toBe(30);
+  });
+
+  it("counts consecutive quiet frames and settles at exactly QUIESCENCE_FRAMES", () => {
+    let consecutive = 0;
+    let settled = false;
+    for (let i = 0; i < QUIESCENCE_FRAMES; i++) {
+      const step = quiescenceStep(0.005, consecutive);
+      consecutive = step.consecutive;
+      settled = step.settled;
+      if (i < QUIESCENCE_FRAMES - 1) expect(settled).toBe(false);
+    }
+    expect(consecutive).toBe(QUIESCENCE_FRAMES);
+    expect(settled).toBe(true);
+  });
+
+  it("a single frame at/above the threshold resets the counter to 0", () => {
+    let step = quiescenceStep(0.005, 20);
+    expect(step.consecutive).toBe(21);
+    step = quiescenceStep(0.01, step.consecutive); // AT the threshold does not count as quiet
+    expect(step.consecutive).toBe(0);
+    expect(step.settled).toBe(false);
+  });
+});
+
+// ── FR-44 pt.4: semantic pulse curves — the SPEC for the CSS-driven animation on BrowseStarsView's
+// side (not sampled per frame there; see the comment beside these exports in starsSim.ts) ──────────
+describe("semantic pulse curves", () => {
+  it("queuedPulseOpacity stays within [QUEUED_PULSE_MIN, QUEUED_PULSE_MAX] and hits both bounds", () => {
+    let min = Infinity;
+    let max = -Infinity;
+    for (let i = 0; i <= 1000; i++) {
+      const v = queuedPulseOpacity((i / 1000) * QUEUED_PULSE_PERIOD_SEC, 0);
+      expect(v).toBeGreaterThanOrEqual(QUEUED_PULSE_MIN - 1e-9);
+      expect(v).toBeLessThanOrEqual(QUEUED_PULSE_MAX + 1e-9);
+      min = Math.min(min, v);
+      max = Math.max(max, v);
+    }
+    expect(min).toBeCloseTo(QUEUED_PULSE_MIN, 3);
+    expect(max).toBeCloseTo(QUEUED_PULSE_MAX, 3);
+  });
+
+  it("conflictPulseOpacity/Radius stay within their own bounds and are in phase (both peak together)", () => {
+    let minO = Infinity;
+    let maxO = -Infinity;
+    let minR = Infinity;
+    let maxR = -Infinity;
+    for (let i = 0; i <= 1000; i++) {
+      const tSec = (i / 1000) * CONFLICT_PULSE_PERIOD_SEC;
+      const o = conflictPulseOpacity(tSec, 0);
+      const r = conflictPulseRadius(tSec, 0);
+      minO = Math.min(minO, o);
+      maxO = Math.max(maxO, o);
+      minR = Math.min(minR, r);
+      maxR = Math.max(maxR, r);
+    }
+    expect(minO).toBeCloseTo(CONFLICT_OPACITY_MIN, 3);
+    expect(maxO).toBeCloseTo(CONFLICT_OPACITY_MAX, 3);
+    expect(minR).toBeCloseTo(CONFLICT_RADIUS_MIN, 3);
+    expect(maxR).toBeCloseTo(CONFLICT_RADIUS_MAX, 3);
+  });
+
+  it("per-node phase actually desyncs two nodes — they are not always equal", () => {
+    const a: number[] = [];
+    const b: number[] = [];
+    for (let i = 0; i <= 20; i++) {
+      const tSec = (i / 20) * QUEUED_PULSE_PERIOD_SEC;
+      a.push(queuedPulseOpacity(tSec, 0));
+      b.push(queuedPulseOpacity(tSec, Math.PI / 2));
+    }
+    expect(a).not.toEqual(b);
+  });
+});
+
+// ── FR-44 integration: the settle envelope + quiescence guard actually stop the loop on a
+// realistically-sized sky — the three pieces above tested in isolation, this is the end-to-end
+// regression guard that they compose correctly (mirrors the phone's own integration test). ────────
+describe("FR-44 integration — settle envelope + quiescence guard actually stop the loop", () => {
+  const FRAME_MS = 16;
+  const MEASURED_WINDOW_FRAMES = 3000;
+
+  function runToSettle(nodeCount: number, useEnvelope: boolean): number {
+    let nodes = initNodes(
+      Array.from({ length: nodeCount }, (_, i) => `n${i}`),
+      800,
+      600
+    );
+    let consecutive = 0;
+    for (let frame = 0; frame < MEASURED_WINDOW_FRAMES; frame++) {
+      const t = frame * FRAME_MS;
+      const opts = useEnvelope ? { driftEnvelope: driftEnvelope(t / 1000) } : {};
+      const out = stepSimulation(nodes, [], t, 800, 600, opts) as SimNode[] & { maxDelta: number };
+      nodes = out;
+      const q = quiescenceStep(out.maxDelta, consecutive);
+      consecutive = q.consecutive;
+      if (q.settled) return frame;
+    }
+    return -1; // never settled inside the window
+  }
+
+  it("WITHOUT driftEnvelope, a 30-node sky does not settle inside the measured window — this IS FR-44", () => {
+    expect(runToSettle(30, false)).toBe(-1);
+  });
+
+  it("WITH driftEnvelope wired in, the same 30-node sky settles well inside the same window", () => {
+    const frame = runToSettle(30, true);
+    expect(frame).toBeGreaterThan(0);
+    expect(frame).toBeLessThan(MEASURED_WINDOW_FRAMES);
   });
 });
