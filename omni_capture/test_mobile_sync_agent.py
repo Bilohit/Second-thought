@@ -3183,3 +3183,222 @@ def test_an_upload_ships_the_disk_bytes_verbatim(tmp_path):
                        if (c.kwargs.get("body") or {}).get("appProperties"))
     media = note_create.kwargs["media_body"]
     assert media.getbytes(0, media.size()) == content.encode("utf-8")
+
+
+# --- Project membership: the desktop applier (design 4, slice-1 Task 11) -------------------
+# A device that wants to re-project a note the OTHER device authored writes a based request into
+# machine-owned frontmatter; the AUTHORING device applies it, writes the body tag, and clears the
+# keys. A request whose base no longer matches the note's current tag is DISCARDED, never applied.
+
+def _request_note(body: str, origin: str, **extra):
+    """A parsed Note carrying `extra` as raw frontmatter lines -- the shape `note.extra` really
+    holds on disk (raw text after the colon, leading space included)."""
+    from note_model import parse_note
+    raw = "---\nid: 01\norigin: note\norigin_device: %s\n%s---\n\n%s" % (
+        origin, "".join(f"{k}: {v}\n" for k, v in extra.items()), body)
+    return parse_note(raw)
+
+
+def test_desktop_applies_request_on_a_desktop_authored_note():
+    from note_model import apply_project_request
+    n = _request_note("b", "desktop", project_request="[research]", project_request_base="[-]",
+                      project_request_at="2026-08-08T10:00:00Z")
+    out = apply_project_request(n)
+    assert "#project@research" in out.body
+    assert "project_request" not in out.extra
+    assert "project_request_base" not in out.extra
+    assert "project_request_at" not in out.extra
+
+
+def test_desktop_does_not_apply_against_a_phone_authored_note():
+    # Provenance gate, identical to the enrichment pass's (mobile_sync_agent.py:1481-1484):
+    # the desktop never writes into content the phone authored -- the request stays pending for
+    # the phone's own applier.
+    from note_model import apply_project_request
+    n = _request_note("b", "phone", project_request="[research]", project_request_base="[-]",
+                      project_request_at="2026-08-08T10:00:00Z")
+    assert apply_project_request(n) is None
+    assert "project_request" in n.extra
+
+
+def test_ambiguous_provenance_is_left_for_an_explicit_user_action():
+    # `shared` is claimable, but ONLY on an explicit user action -- never in a background pass,
+    # which is the only thing this applier ever runs in.
+    from note_model import apply_project_request
+    n = _request_note("b", "shared", project_request="[research]", project_request_base="[-]",
+                      project_request_at="2026-08-08T10:00:00Z")
+    assert apply_project_request(n) is None
+
+
+def test_stale_request_is_cleared_without_touching_the_body():
+    # THE clause this whole mechanism exists for: a request that sat in a shut-down desktop's
+    # inbox for three weeks must not silently reverse a decision the user already made.
+    from note_model import apply_project_request
+    n = _request_note("b\n\ntags: #project@archive", "desktop", project_request="[research]",
+                      project_request_base="[inbox]", project_request_at="2026-08-08T10:00:00Z")
+    out = apply_project_request(n)
+    assert "#project@archive" in out.body
+    assert "#project@research" not in out.body
+    assert "project_request" not in out.extra
+
+
+def test_request_whose_base_matches_the_current_tag_is_applied():
+    # The other half of the staleness rule: a request is only stale when the base DISAGREES with
+    # the current tag. A matching base must still be applied.
+    from note_model import apply_project_request
+    n = _request_note("b\n\ntags: #project@inbox", "desktop", project_request="[research]",
+                      project_request_base="[inbox]", project_request_at="2026-08-08T10:00:00Z")
+    out = apply_project_request(n)
+    assert "#project@research" in out.body
+    assert "#project@inbox" not in out.body
+
+
+def test_request_to_clear_the_project_removes_the_tag():
+    from note_model import apply_project_request
+    n = _request_note("b\n\ntags: #project@inbox", "desktop", project_request="[-]",
+                      project_request_base="[inbox]", project_request_at="2026-08-08T10:00:00Z")
+    out = apply_project_request(n)
+    assert "#project@" not in out.body
+    assert out.body == "\nb\n"
+
+
+def test_invalid_requested_name_is_refused_and_cleared():
+    from note_model import apply_project_request
+    n = _request_note("b", "desktop", project_request="[bad name!]", project_request_base="[-]",
+                      project_request_at="2026-08-08T10:00:00Z")
+    out = apply_project_request(n)
+    assert "#project@" not in out.body
+    assert "project_request" not in out.extra
+
+
+def test_a_note_with_no_request_is_left_alone():
+    from note_model import apply_project_request
+    assert apply_project_request(_request_note("b", "desktop")) is None
+    # a half-written request (no `_at`) is not a request
+    assert apply_project_request(
+        _request_note("b", "desktop", project_request="[research]")) is None
+
+
+def test_a_request_already_satisfied_is_cleared_not_rewritten():
+    from note_model import apply_project_request
+    n = _request_note("b\n\ntags: #project@research", "desktop", project_request="[research]",
+                      project_request_base="[research]",
+                      project_request_at="2026-08-08T10:00:00Z")
+    before = n.body
+    out = apply_project_request(n)
+    assert out.body == before
+    assert "project_request" not in out.extra
+
+
+def test_a_user_authored_project_tag_refuses_the_request():
+    # The user's own `#project@` tag wins outright (contract 1.3: the tag IS the truth) -- the same
+    # clause the enrichment pass already ships (mobile_sync_agent.py:1490-1494). Without it the
+    # applier appends a SECOND tag to the machine's trailing line; the user's still wins by document
+    # order, so the request reads as applied and changed nothing -- silent and permanent.
+    from note_model import apply_project_request
+    n = _request_note("b #project@x", "desktop", project_request="[y]",
+                      project_request_base="[x]", project_request_at="2026-08-08T10:00:00Z")
+    before = n.body
+    out = apply_project_request(n)
+    assert out.body == before  # byte-identical: no second tag, no trailing line
+    assert "#project@y" not in out.body
+    assert "project_request" not in out.extra
+    assert "project_request_base" not in out.extra
+    assert "project_request_at" not in out.extra
+
+
+def test_the_machines_own_trailing_tag_does_not_refuse_the_request():
+    # THE regression that matters: the guard reads the body ABOVE the machine trailing tags line.
+    # Reading the whole body instead would see the machine's own `#project@` on every already-filed
+    # note and disable the applier entirely.
+    from note_model import apply_project_request
+    n = _request_note("b\n\ntags: #project@inbox", "desktop", project_request="[research]",
+                      project_request_base="[inbox]", project_request_at="2026-08-08T10:00:00Z")
+    out = apply_project_request(n)
+    assert "#project@research" in out.body
+    assert "#project@inbox" not in out.body
+    assert "project_request" not in out.extra
+
+
+def test_a_user_tag_refuses_even_when_a_machine_trailing_line_also_exists():
+    # Both tags present: the user's inline one is what `parse_project_tag` returns (document order),
+    # so it is also what the requesting device based on. Refuse and clear, body untouched.
+    from note_model import apply_project_request
+    n = _request_note("b #project@x\n\ntags: #project@x", "desktop", project_request="[y]",
+                      project_request_base="[x]", project_request_at="2026-08-08T10:00:00Z")
+    before = n.body
+    out = apply_project_request(n)
+    assert out.body == before
+    assert "project_request" not in out.extra
+
+
+def test_the_body_sacred_assert_is_live(monkeypatch):
+    # The body-sacred assertion is a tripwire on `apply_trailing_tags_line`, which is safe BY
+    # CONSTRUCTION today. Prove the tripwire actually fires, so it is a check and not decoration.
+    import note_model
+    from note_model import apply_project_request
+    monkeypatch.setattr(note_model, "apply_trailing_tags_line",
+                        lambda body, tags: "MANGLED\ntags: #project@research\n")
+    n = _request_note("b", "desktop", project_request="[research]", project_request_base="[-]",
+                      project_request_at="2026-08-08T10:00:00Z")
+    with pytest.raises(AssertionError):
+        apply_project_request(n)
+
+
+def test_apply_project_requests_writes_back_and_refiles(tmp_path):
+    from mobile_sync_agent import apply_project_requests
+    from machine_tags import strip_trailing_tags_line
+    body = "# My note\n\nSome body text.\n"
+    _note_file(tmp_path, "n1.md",
+               "id: n1\norigin: note\norigin_device: desktop\nenriched: true\n"
+               "project_request: [research]\nproject_request_base: [-]\n"
+               "project_request_at: 2026-08-08T10:00:00Z", body)
+    vault_notes = _vault_notes_from(tmp_path)
+
+    applied, failed = apply_project_requests(vault_notes, str(tmp_path), reg=_reg("research"))
+
+    assert (applied, failed) == (1, 0)
+    written = (tmp_path / "n1.md").read_text(encoding="utf-8")
+    assert "\ntags: #project@research\n" in strip_frontmatter(written)
+    assert strip_trailing_tags_line(strip_frontmatter(written)) == body  # BODY SACRED
+    assert "project_request" not in written
+    assert "project: [research]" in written
+    # the same-pass mirror must see the new content AND the new hub parent
+    assert vault_notes["n1"]["content"] == written
+    assert vault_notes["n1"]["folder"] == "research"
+
+
+def test_apply_project_requests_leaves_a_phone_note_byte_identical(tmp_path):
+    from mobile_sync_agent import apply_project_requests
+    _note_file(tmp_path, "p1.md",
+               "id: p1\norigin: note\norigin_device: phone\nenriched: true\n"
+               "project_request: [research]\nproject_request_base: [-]\n"
+               "project_request_at: 2026-08-08T10:00:00Z", "phone body\n")
+    before = (tmp_path / "p1.md").read_text(encoding="utf-8")
+    vault_notes = _vault_notes_from(tmp_path)
+
+    applied, failed = apply_project_requests(vault_notes, str(tmp_path), reg=_reg("research"))
+
+    assert (applied, failed) == (0, 0)
+    assert (tmp_path / "p1.md").read_text(encoding="utf-8") == before
+
+
+def test_run_once_applies_a_pending_project_request(tmp_path, monkeypatch):
+    # The pass is wired in, not just importable: a request sitting in a desktop-authored note is
+    # applied during a real run_once, between enrich and mirror.
+    from machine_tags import strip_trailing_tags_line
+    body = "Body.\n"
+    _note_file(tmp_path, "n1.md",
+               "id: n1\norigin: note\norigin_device: desktop\nenriched: true\n"
+               "project_request: [research]\nproject_request_base: [-]\n"
+               "project_request_at: 2026-08-08T10:00:00Z", body)
+    drive = _mock_empty_drive()
+    monkeypatch.setattr("mobile_sync_agent.ensure_hub_folder", lambda d, name=HUB_FOLDER_NAME: "HUB")
+
+    result = run_once(str(tmp_path), str(tmp_path / "state.json"), drive, vault_root=str(tmp_path))
+
+    assert len(result) == 7                    # 7-tuple contract intact
+    written = (tmp_path / "n1.md").read_text(encoding="utf-8")
+    assert "\ntags: #project@research\n" in strip_frontmatter(written)
+    assert strip_trailing_tags_line(strip_frontmatter(written)) == body   # BODY SACRED
+    assert "project_request" not in written

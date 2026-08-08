@@ -1,8 +1,11 @@
 """Derived housekeeping: move each note into the directory its tag implies.
 
-DESKTOP ALONE RE-PATHS A FILE. The phone never moves a file and never creates a directory — that is
-the load-bearing safety property of the rework, because a path change is the one operation Drive
-reconcile cannot merge field-wise (contract §1.3).
+DESKTOP ALONE RE-PATHS A FILE FOR PROJECT MEMBERSHIP. The phone never re-paths a file for project
+membership and never creates a directory -- that is the load-bearing safety property of the rework,
+because a path change is the one operation Drive / reconcile cannot merge field-wise (contract §1.3).
+The phone DOES still re-parent into two fixed config folders -- the inbox on create and the trash on
+soft-delete (driveSync.ts:384, :503). Those are lifecycle plumbing, carry no project name, and are
+deliberately out of scope (user ruling 2026-08-08).
 
 Worst case with the desktop off for a week: the vault on disk is untidy while both apps read
 correctly, because both read the tag. Self-healing, never wrong.

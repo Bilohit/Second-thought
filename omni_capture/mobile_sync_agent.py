@@ -26,7 +26,7 @@ from googleapiclient.http import MediaInMemoryUpload
 
 from dedup import _vault_lock
 from frontmatter import add_fields, read_all_fields, strip_frontmatter
-from note_model import parse_note, serialize_note
+from note_model import apply_project_request, parse_note, serialize_note
 from body_tags import extract_body_tags, derive_body_attachments
 from machine_tags import apply_trailing_tags_line, strip_trailing_tags_line
 from reconcile import reconcile
@@ -1560,6 +1560,67 @@ def enrich_notes(
     return enriched_count, failed
 
 
+def apply_project_requests(
+    vault_notes: Dict,
+    vault_root: str,
+    reg: Optional[Registry] = None,
+) -> Tuple[int, int]:
+    """Apply every pending project request the DESKTOP is allowed to act on (design §4).
+
+    The phone cannot write a `#project@` tag into a note the desktop authored, so it leaves a based
+    request in machine-owned frontmatter instead; this pass is the desktop half of the applier.
+    `note_model.apply_project_request` owns the whole decision (provenance gate, staleness discard,
+    name validity, the one sanctioned body write); this function only does the I/O around it.
+
+    A note it changes is written back atomically and its `folder` re-derived from the new tag, so
+    `mirror_to_hub` re-parents the hub file in this same pass. The LOCAL file is moved by the tidy
+    pass (`project_tidy.py`), exactly as for enrichment — sync never re-paths (§1.2, K-1 retired),
+    and re-pathing at all is the desktop's job and only the desktop's.
+
+    Fail-soft per note: a parse/write error leaves the request pending for the next pass.
+    Returns (applied_count, failed)."""
+    if reg is None:
+        reg = project_registry.load(vault_root)
+
+    applied = 0
+    failed = 0
+    for note_id, entry in vault_notes.items():
+        try:
+            note = parse_note(entry["content"])
+        except Exception as e:  # noqa: BLE001 - one unparseable note never costs the rest
+            print(f"[mobile_sync_agent] project request parse skip {entry.get('path')}: {e}")
+            continue
+        if note.origin != "note":
+            continue
+
+        try:
+            user_body = strip_trailing_tags_line(note.body)
+            if apply_project_request(note) is None:
+                continue
+            # The body may have gained or lost the machine trailing line, so the derived caches
+            # are recomputed from it — same contract as enrichment (§1.2/§1.3).
+            note.tags = extract_body_tags(note.body)
+            note.attachments = derive_body_attachments(note.body)
+            new_content = serialize_note(note, reg)
+            # BODY SACRED (amended §3): everything ABOVE the machine trailing tags line is
+            # byte-identical. Belt-and-braces over apply_project_request's own assertion, which
+            # cannot see the frontmatter round-trip this serialize adds.
+            if strip_trailing_tags_line(strip_frontmatter(new_content)) != user_body:
+                raise RuntimeError(f"project request would alter user body of {note_id}")
+            _atomic_write_note(entry["path"], new_content)
+        except Exception as e:  # noqa: BLE001 - fail-soft, retried next pass
+            print(f"[mobile_sync_agent] project request failed {note_id}: {e}")
+            failed += 1
+            continue
+
+        entry["content"] = new_content
+        entry["body"] = strip_frontmatter(new_content)
+        entry["hash"] = _sha256(new_content)
+        entry["folder"] = note_dir_for(resolve_project(entry["body"], reg), reg)
+        applied += 1
+    return applied, failed
+
+
 # Sync-state keys for the registry (contract §13.2). `base_projects` is the registry as of our last
 # sync — the merge BASE, exactly parallel to `base_note`/`base_parent`. Neither key is a note record:
 # every state iteration in this file and delete_detect.py guards on `drive_file_id`, which they lack.
@@ -1656,6 +1717,7 @@ def run_once(
       2. pull hub-only notes the desktop has never seen into the vault,
       3. drain _mobile_inbox/ captures through run_pipeline,
       4. enrich origin:note, enriched:false notes (frontmatter-only; never run_pipeline),
+      4b. apply the peer's based project requests on notes THIS device authored (design §4),
       5. mirror local-only new/changed notes up to the hub.
 
     Reconcile + pull run before mirror so merged/pulled bodies are on disk and re-read;
@@ -1798,6 +1860,21 @@ def run_once(
     enriched = e_failed = 0
     if enrich_fn is not None:
         enriched, e_failed = enrich_fn(vault_notes, vault_root)
+
+    # Design §4: apply the peer's based project requests against notes THIS device authored.
+    # AFTER enrich so an explicit request always wins over the classifier's guess for the same
+    # note in the same pass, and BEFORE mirror so the new tag, content and hub parent all ship
+    # together. Like enrichment it mutates vault_notes in place and never moves the local file —
+    # the tidy pass does that. Fail-soft: a request failure must never abort the sync pass.
+    # ponytail: not folded into run_once's return tuple, which is 7-wide and pinned by tests;
+    # the count is logged, the same posture as reminders_fn below.
+    try:
+        pr_applied, pr_failed = apply_project_requests(vault_notes, vault_root, reg=reg)
+        if pr_applied or pr_failed:
+            print(f"[mobile_sync_agent] project requests: {pr_applied} applied, "
+                  f"{pr_failed} failed")
+    except Exception as exc:  # noqa: BLE001 - a request failure must never abort a sync pass
+        print(f"[mobile_sync_agent] project request pass failed: {exc}")
 
     # Reconcile the reminders table from each note's remind_at (files are the source of
     # truth — DB-only, never writes a note .md). Fail-soft: a reminders error must never

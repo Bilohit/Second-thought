@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import re
 
+from machine_tags import apply_trailing_tags_line, strip_trailing_tags_line
 from reconcile import Note
 from project_registry import Registry, resolve_project
-from projects import project_cache_value
+from projects import is_valid_project_name, parse_project_tag, project_cache_value
 
 # Canonical known-key serialize order (mirrors note.ts KNOWN_KEY_ORDER).
 # Legacy `category:` is IGNORED on read and dropped at the note's first save — Projects S1 does no
@@ -241,3 +242,80 @@ def serialize_note(note: Note, registry: Registry | None = None) -> str:
         sep = "" if raw == "" or raw[0] in (" ", "\t", "\n") else " "
         lines.append(f"{k}:{sep}{raw}")
     return "---\n" + "\n".join(lines) + "\n---\n" + note.body
+
+
+# --- the based project request (design §4) -------------------------------------------------
+# `project_request` / `project_request_base` / `project_request_at` are MACHINE-owned frontmatter,
+# so they ride `extra` verbatim through every parse/serialize and need no Note field. They are the
+# only way one device asks the OTHER to re-project a note: the tag itself is written solely by the
+# device that authored the note.
+_REQUEST_KEYS = ("project_request", "project_request_base", "project_request_at")
+
+
+def _unwrap_request_value(raw: str | None) -> str | None:
+    """`[name]` -> `"name"`; `[-]`, `[]` and None -> None. Mirrors the phone's parseProjectValue.
+
+    The `.strip()` is load-bearing, not cosmetic: `extra` keeps the raw text after the colon with
+    its leading space, so ` [research]` and `[research]` must read as the same request.
+    """
+    if raw is None:
+        return None
+    inner = raw.strip().lstrip("[").rstrip("]").strip()
+    return None if inner in ("", "-") else inner
+
+
+def apply_project_request(note: Note) -> Note | None:
+    """Apply a pending project request to a note THIS device authored (design §4).
+
+    Returns the mutated note, or None when there is nothing to do (no request, or the note was
+    authored elsewhere). A STALE request -- one whose base no longer matches the note's current
+    body tag -- is CLEARED, never applied: without that, a request that sat in a shut-down
+    desktop's inbox for three weeks silently reverses a decision the user already made, and the
+    sync log shows a normal successful merge.
+
+    The three keys are cleared on every outcome the desktop owns (applied, stale, refused), so a
+    request is never retried forever. Body-sacred: the only write is the machine's single trailing
+    `tags:` line (ISS-051 §3), and everything above it is asserted byte-identical.
+    """
+    desired_raw = note.extra.get("project_request")
+    if desired_raw is None or "project_request_at" not in note.extra:
+        return None
+
+    # The same provenance gate the enrichment pass already ships (mobile_sync_agent.py:1481-1484).
+    # Narrower by one value on purpose: `shared`/legacy notes are claimable only on an EXPLICIT
+    # user action, and this applier only ever runs in a background pass.
+    effective_origin = note.origin_device or (
+        "phone" if note.enrich_source == "phone-heuristic" else "desktop"
+    )
+    if effective_origin != "desktop":
+        return None
+
+    # Read BOTH values before clearing: popping first would make `base` unconditionally None, which
+    # reads as "stale" for every note that already carries a tag -- i.e. it would discard exactly
+    # the requests that are freshest.
+    desired = _unwrap_request_value(desired_raw)
+    base = _unwrap_request_value(note.extra.get("project_request_base"))
+    for key in _REQUEST_KEYS:
+        note.extra.pop(key, None)
+
+    current = parse_project_tag(note.body)
+    if current != base or current == desired:
+        return note  # stale, or already satisfied: cleared, body untouched
+    if desired is not None and not is_valid_project_name(desired):
+        return note  # refused, cleared, body untouched
+
+    # The user's own `#project@` tag wins outright -- never reclassified, never overwritten
+    # (contract §1.3: the tag IS the truth). Same clause, same idiom as the enrichment pass
+    # (mobile_sync_agent.py:1490-1494): the question is asked of the body ABOVE the machine's
+    # trailing tags line, because the machine's own tag lives ON that line and reading the whole
+    # body would refuse every already-filed note. Without this the applier appends a SECOND
+    # `#project@` -- a two-tag note (`projects.py:54`: "a validation error the UI prevents") whose
+    # user tag still wins by document order, so the request reads as applied and changed nothing.
+    user_body = strip_trailing_tags_line(note.body)
+    if parse_project_tag(user_body) is not None:
+        return note  # user-tagged, cleared, body untouched
+
+    note.body = apply_trailing_tags_line(note.body, [f"project@{desired}"] if desired else [])
+    assert strip_trailing_tags_line(note.body) == user_body, \
+        "apply_project_request: body-sacred violation above the trailing tag line"
+    return note

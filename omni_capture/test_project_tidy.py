@@ -241,3 +241,29 @@ def test_an_unusable_dir_falls_back_to_the_name_rather_than_leaving_a_note_homel
     entries = [pt.NoteLoc(VAULT / "_loose" / "a.md", "body #project@research")]
     moves = pt.plan_tidy(entries, VAULT, _reg_with_dir("research", "../evil"))
     assert moves == [pt.Move(VAULT / "_loose" / "a.md", VAULT / "research" / "a.md")]
+
+
+def test_phone_has_no_project_reparent_site():
+    """The invariant project_tidy's docstring asserts, checked against the phone's actual source.
+
+    A grep is not normally a test -- but this one guards a CROSS-REPO claim that no runtime assertion
+    on this side can reach. The phone-side seam assertion lives in driveSync.test.ts (plan task 7);
+    this is the desktop's half, and it fails loudly if the phone regrows a project re-parent.
+
+    A bare `"findOrCreateFolder" not in text` substring check (the plan's original wording) would
+    now go red for a HARMLESS reason: driveSync.ts documents the removal in three prose comments
+    that name the function ("...used to resolve...here (findOrCreateFolder)..."), so the literal
+    string is still present even though no call site remains. Stripping `//` line comments before
+    the check keeps the assertion aimed at real code -- a call, a type member, an identifier -- which
+    is what the invariant actually claims, and won't false-fail every time someone writes a comment
+    that mentions the retired function by name.
+    """
+    src = (Path(__file__).resolve().parents[2] / "Second Thought - Android App"
+           / "phone" / "src" / "lib" / "driveSync.ts")
+    if not src.exists():
+        import pytest
+        pytest.skip("phone repo not present alongside this one")
+    text = src.read_text(encoding="utf-8")
+    code_only = "\n".join(line.split("//", 1)[0] for line in text.splitlines())
+    assert "findOrCreateFolder" not in code_only, \
+        "the phone regrew a project folder re-parent; see design §1 and plan task 7"
