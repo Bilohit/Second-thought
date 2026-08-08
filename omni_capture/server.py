@@ -610,12 +610,6 @@ class CaptureRequest(BaseModel):
     content_type: str   # text | url | image_b64 | audio_b64
     content: str
 
-class ShareRequest(BaseModel):
-    """Sent by the browser extension or OS share-target without touching the clipboard."""
-    url: str
-    title: Optional[str] = None
-    selection: Optional[str] = None   # highlighted text on the page, if any
-
 class ConfigPatch(BaseModel):
     vault_root: Optional[str] = None
     ollama_model: Optional[str] = None
@@ -1300,32 +1294,6 @@ async def capture(
         )
     return StreamingResponse(
         _stream_capture(req.content_type, req.content, run_id=x_capture_run_id),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
-    )
-
-
-@app.post("/share")
-async def share(req: ShareRequest, _: None = Depends(_require_secret)):
-    """
-    Browser-extension / OS share-target endpoint.
-
-    Accepts a URL + optional selected text directly from the browser -- no
-    clipboard involved.  If a text selection is provided it is prepended to
-    the URL so the enrichment router receives both the context and the link.
-
-    Returns a streaming SSE response identical to /capture.
-    """
-    if req.selection and req.selection.strip():
-        combined = f"{req.selection.strip()}\n\nSource: {req.url}"
-        content_type = "text"
-        content = combined
-    else:
-        content_type = "url"
-        content = req.url
-
-    return StreamingResponse(
-        _stream_capture(content_type, content),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )

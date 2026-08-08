@@ -175,7 +175,6 @@ def gui(tmp_path, monkeypatch):
 
 GUI_ROUTES: list[tuple[str, str, dict]] = [
     ("POST",   "/capture",                        {"json": {"content_type": "text", "content": "x"}}),
-    ("POST",   "/share",                          {"json": {"url": "https://example.com/a"}}),
     ("GET",    "/ollama/reachable",               {}),
     ("GET",    "/sync/status",                    {}),
     ("POST",   "/sync/run",                       {}),
@@ -437,15 +436,6 @@ def test_oversized_capture_does_not_crash(gui):
     with mock.patch.object(server, "_run_pipeline_blocking", side_effect=_fake_pipeline(counter)):
         resp = client.post("/capture", headers=GOOD_HEADERS,
                            json={"content_type": "text", "content": _BIG})
-    _assert_no_crash(resp, vault)
-
-
-def test_oversized_share_does_not_crash(gui):
-    client, vault = gui
-    counter = {"n": 0}
-    with mock.patch.object(server, "_run_pipeline_blocking", side_effect=_fake_pipeline(counter)):
-        resp = client.post("/share", headers=GOOD_HEADERS,
-                           json={"url": "https://example.com/a", "selection": _BIG})
     _assert_no_crash(resp, vault)
 
 

@@ -98,7 +98,7 @@ OMNI_DEV=1 .\launch.ps1  # force dev mode
 - Python (`omni_capture/`): FastAPI+Uvicorn, Pydantic v2, instructor (structured Ollama output), openai SDK (as Ollama's OpenAI-compatible client only), readability-lxml, youtube-transcript-api, openai-whisper+torch, Pillow, rapidocr-onnxruntime (optional), pyperclip, tomlkit, plyer, stdlib sqlite3, pytest.
 - TypeScript (`gui/`): React 18 (hooks only), Vite 8 single-page (`index.html`), Tauri v2 (`global-shortcut`/`clipboard-manager`/`shell`/`dialog`), TailwindCSS 3, Vitest. No state/router/UI-component library, no ESLint.
 - Rust (`gui/src-tauri/`): tauri 2.3 (`tray-icon`), serde/serde_json, chrono (`clock`), rand. Hand-rolled mini-TOML scanner + keymap parser (deliberate, not a missing dependency).
-- Browser extension: Manifest V3 vanilla JS, no build step, SSE parsing mirrors `gui/src/lib/api.ts`.
+- **No web surface.** The MV3 browser extension and its `POST /share` route were deleted 2026-08-08 (s160, user-directed) — the web is not a direction this product takes. Do not add an extension, a hosted build, or a browser-facing route. See workspace `CLAUDE.md` §"Shared locks".
 
 Other architectural patterns not covered by hard rules above: async job hand-off for slow paths (YouTube transcript+summarization runs on a background executor, write-before-summarize so a transcript is never lost on summarization failure); Map-Reduce chunked summarization with token-budget math in `summarizer.py`; single-window design in the Tauri shell (menu and pill coexist in the main window with the menu rendered as an overlay inside `PillOverlay.tsx` + `PillMenu/`, avoiding cross-monitor `WM_DPICHANGED` jumps).
 
@@ -162,9 +162,6 @@ gui/
     src/main.rs
     tauri.conf.json              window definitions (single main window)
     capabilities/                 Tauri v2 permission manifests
-
-browser_extension/         Manifest V3, vanilla JS, no build step
-  background.js              SSE stream parsing, mirrors gui/src/lib/api.ts protocol
 
 launch.ps1                Windows whole-app launcher
 ```

@@ -26,7 +26,7 @@ def test_lan_app_exposes_only_lan_routes():
     paths = _route_paths(app.routes)
     # No GUI routes (/capture, /config, /look/chat, etc.) -- only the LAN endpoints.
     assert {"/lan/push", "/lan/changes"} <= paths
-    assert paths & {"/capture", "/config", "/look/chat", "/share", "/inbox"} == set()
+    assert paths & {"/capture", "/config", "/look/chat", "/inbox"} == set()
 
 
 def test_lan_app_rejects_gui_routes_at_runtime():
@@ -34,6 +34,6 @@ def test_lan_app_rejects_gui_routes_at_runtime():
     the actual dispatch must 404 on GUI paths -- this is the security-critical
     assertion (LAN listener must never expose the loopback GUI surface)."""
     client = TestClient(lan_server.build_lan_app())
-    for gui_path in ("/capture", "/config", "/look/chat", "/share", "/inbox"):
+    for gui_path in ("/capture", "/config", "/look/chat", "/inbox"):
         assert client.get(gui_path).status_code == 404
         assert client.post(gui_path, json={}).status_code == 404
